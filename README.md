@@ -1,6 +1,6 @@
 # Glyph
 
-A human-readable, visualizable DSL for authoring reusable agent skills that compiles into explicit, task-specific instructions for coding agents.
+A human-readable, visualizable DSL for authoring reusable agent skills that compiles into explicit, task-specific instructions for general-purpose agents, especially current coding agents.
 
 ## The Problem
 
@@ -13,6 +13,7 @@ Agent skills today are written as long, unstructured prompt text. They're hard t
 Glyph separates the authoring form (optimized for humans) from the execution form (optimized for agents). You write structured, readable skill definitions. A compiler turns them into flatter, more explicit, agent-optimized instructions.
 
 This is not a prompt template system. It's a language with a compiler.
+Glyph is a language for skill definition and compilation, not a runtime for long-lived agent orchestration.
 
 ## Example
 
@@ -65,7 +66,7 @@ A 5-pass hybrid compiler with a "Safety Sandwich" pattern -- deterministic passe
 | LangGraph | Stateful graph execution for multi-step agents | Glyph is a *language* that compiles to instructions, not a runtime |
 | Prompt templates (Jinja/Handlebars) | String interpolation for prompts | Glyph has real structure: control flow, constraints, typed parameters |
 | LMQL/Guidance/SGLang | Constrained generation at inference time | Glyph operates at the skill-definition layer, not the generation layer |
-| CrewAI/AutoGen | Multi-agent orchestration | Glyph focuses on single-skill authoring quality, not agent coordination |
+| CrewAI/AutoGen | Multi-agent orchestration | Glyph centers skill authoring and compilation first; coordination may exist around it later, but orchestration is not the primary abstraction |
 
 ## Status
 
