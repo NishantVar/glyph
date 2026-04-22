@@ -23,6 +23,11 @@ Items deferred from MVP decisions that should be revisited in future tiers.
 - **Spread / splat arguments.** Post-MVP. Allow passing a collection as positional args (e.g. `foo(*items)`). Blocked on introducing a collection type.
 - **Variadic parameters.** Post-MVP. Declaration-side form for blocks that accept a variable number of arguments (e.g. `block foo(*items: String)`). Not allowed in MVP. Blocked on collection types and on a parameter-grammar extension (optional / rest / keyword-only).
 
+## Preferences
+
+- **Pref value override mechanism.** MVP defines pref values inline in the declaring file (the literal on the right of `=` is the final value). Post-MVP: allow overriding defaults from a project config file (e.g. `glyph.config.yaml`), CLI flags, or environment variables. Decide precedence and whether overrides can add new prefs or only override declared ones.
+- **Standard prefs file shipped with the compiler.** The compiler should ship a default `prefs.glyph.md` at a known path so any project can `import { tone, verbosity, ... } from "@glyph/prefs"` (or equivalent) and get a baseline pref set without defining their own. Decide the import scheme (`@glyph/...` namespace, well-known relative path, or other), what the standard pref set is, and how it composes with user-defined prefs.
+
 ## Compiler & Runtime
 
 - **Runtime compilation and mutations.** Explore whether skills (or parts of skills) can be compiled and mutated at runtime — e.g. dynamic specialization based on agent state, live parameter injection, or hot-swapping compiled output mid-session. Consider what invariants must hold across a mutation boundary and whether a versioned IR helps.
