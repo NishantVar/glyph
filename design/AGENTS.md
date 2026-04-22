@@ -14,6 +14,8 @@ This folder is the working source of truth for Glyph system design — flat beca
 - [effects.md](effects.md) — MVP effect vocabulary (8 keywords), `effects:` clause syntax, inference and propagation semantics, `none` handling, compiled-output surfacing, and extension policy
 - [ir-roles.md](ir-roles.md) — MVP instruction role taxonomy: `InputContract`, `Step`, `Constraint`, `Context`, `OutputContract`, with constraint strength and polarity attributes
 - [values-and-literals.md](values-and-literals.md) — MVP primitive values: strings (inline and block, no interpolation), numbers (int and float with lossless coercion), booleans, `none`, identifier rules (case-normalized, no shadowing), and name resolution
+- [declaration-headers.md](declaration-headers.md) — MVP declaration header syntax: exact keyword order, parameter lists, return type markers, and terminators for `skill`, `block`, `export block`, `text`, `export text`, and `import`
+- [block-structure.md](block-structure.md) — MVP block structure: Python-style significant indentation, 4-space indent unit, colon-terminated sub-section headers, blank line semantics, line continuation, no Markdown passthrough in source
 - [comments.md](comments.md) — MVP comment syntax: `//` line comments, no block comments, Markdown-safe, stripped from compiled output, preserved by repair
 - [compiled-output.md](compiled-output.md) — compiled `.md` file shape: YAML frontmatter (`name`, `description`), fixed section order (Effects, Inputs, Instructions, Output, When To Use), H3 sub-sections for Steps/Constraints, formatting rules, import inlining, and authoring-construct erasure
 - [llm-repair-pass.md](llm-repair-pass.md) — source-to-source LLM repair for invalid Glyph files before deterministic IR compilation
@@ -27,6 +29,8 @@ This folder is the working source of truth for Glyph system design — flat beca
 - Read `effects.md` for the MVP effect vocabulary, syntax, inference semantics, and extension policy.
 - Read `ir-roles.md` for the closed MVP instruction role set and constraint strength/polarity model.
 - Read `values-and-literals.md` for primitive values, identifier rules, and name resolution.
+- Read `declaration-headers.md` for the exact header-line grammar of each MVP top-level declaration, parameter syntax, return type markers, and import forms.
+- Read `block-structure.md` for significant indentation rules, sub-section header syntax, blank line and line continuation semantics, and the no-Markdown-passthrough decision.
 - Read `compiled-output.md` for the compiled `.md` file shape, section ordering, formatting rules, and how authoring constructs are erased.
 - Read `llm-repair-pass.md` for how invalid but readable source is repaired before compilation.
 - Read `specialization-and-inheritance.md` for post-MVP inheritance-like reuse through explicit specialization rather than general class inheritance.
@@ -40,6 +44,8 @@ This folder is the working source of truth for Glyph system design — flat beca
 - `effects.md` captures the MVP effect vocabulary (8 keywords), `effects:` clause syntax, compiler inference and propagation, and additive extension policy.
 - `ir-roles.md` captures the closed MVP role set for instruction intent, keeps effects separate from roles, and defines constraint strength/polarity plus conservative repair inference for `always`.
 - `values-and-literals.md` captures the MVP primitive value surface: strings, numbers, booleans, `none`, identifier normalization, no-shadowing rule, and name resolution.
+- `declaration-headers.md` captures the MVP declaration header syntax: no trailing colon on headers, parentheses only when parameters exist, `-> ReturnType` for returns (mandatory on `export block`), `text`/`export text` use `= <string-literal>`, whole-module imports require `as <alias>`, selective imports use `{ name, name as alias }`, and parameter syntax reserves the `name: Type = default` slots.
+- `block-structure.md` captures the MVP block structure decisions: Python-style significant indentation with 4-space indent unit, colon-terminated sub-section headers (`flow:`, `effects:`, etc.) with inline and long-form variants, blank lines as non-structural separators, implicit line continuation inside paired delimiters, and no Markdown passthrough in source files.
 - `compiled-output.md` captures the compiled `.md` file shape: YAML frontmatter (`name`, `description`), fixed section order (Effects → Inputs → Instructions → Output → When To Use), H3 sub-sections (`### Steps`, `### Constraints`), formatting rules, import inlining with source auto-fix for unused imports, and complete authoring-construct erasure.
 - `llm-repair-pass.md` captures the source-preserving repair contract for compiler-blocking issues.
 - `specialization-and-inheritance.md` captures a post-MVP reuse model for expert-agent variants.
