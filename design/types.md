@@ -4,7 +4,7 @@ This document defines the MVP type vocabulary for Glyph source files. It covers 
 
 ## Status
 
-MVP Tier 2. Fills the `name: Type` and `-> ReturnType` slots reserved by `declaration-headers.md`.
+Fills the `name: Type` and `-> ReturnType` slots reserved by `declaration-headers.md`.
 
 ## Design Posture
 
@@ -83,7 +83,7 @@ The compiler accepts either casing in either position. The convention exists for
 `None` as a return type means "this block produces no meaningful value." It is required on export blocks that exist only for their instructions or effects:
 
 ```glyph
-export block emit_safety_warning -> None
+export block emit_safety_warning() -> None
     effects: none
 
     flow:

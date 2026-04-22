@@ -4,13 +4,13 @@ This document defines the canonical set of sub-section headers inside `skill`, `
 
 ## Status
 
-MVP Tier 2. Builds on:
+Builds on:
 
-- `block-structure.md` (Tier 1) — defines colon-terminated sub-section syntax, indentation, and short/long forms
-- `declaration-headers.md` (Tier 1) — defines header-line syntax including parameters and return types
-- `compiled-output.md` (Tier 0) — defines the fixed compiled section order
-- `ir-roles.md` (Tier 0) — defines the MVP instruction role taxonomy
-- `effects.md` (Tier 0) — defines effect keywords and `effects:` clause syntax
+- `block-structure.md` — defines colon-terminated sub-section syntax, indentation, and short/long forms
+- `declaration-headers.md` — defines header-line syntax including parameters and return types
+- `compiled-output.md` — defines the fixed compiled section order
+- `ir-roles.md` — defines the MVP instruction role taxonomy
+- `effects.md` — defines effect keywords and `effects:` clause syntax
 
 ## MVP Sub-Section Headers
 

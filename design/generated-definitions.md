@@ -4,7 +4,7 @@ This document defines the MVP source syntax for repair-materialized generated de
 
 ## Status
 
-MVP Tier 3. Formalizes the generated-definition sketch in `llm-repair-pass.md:136-169` and the inlining contract in `compiled-output.md:162`.
+Formalizes the generated-definition sketch in `llm-repair-pass.md` and the inlining contract in `compiled-output.md`.
 
 ## Purpose
 
@@ -112,7 +112,7 @@ No special compiler behavior is needed for any of these. They all work through e
 
 `generated text` is a new top-level declaration form. Its header grammar is the `text` grammar prefixed by `generated`. It follows the same rules: no trailing colon, no parentheses, `=` separates name from value.
 
-The MVP top-level declaration set becomes: `import`, `text`, `export text`, `block`, `export block`, `skill`, and `generated text`.
+The four base declaration kinds are `import`, `text`, `block`, and `skill`. With the `export` visibility modifier (`export text`, `export block`) and the `generated` repair-authorship modifier (`generated text`), the full MVP declaration set is seven forms.
 
 ### With `block-structure.md`
 

@@ -58,7 +58,7 @@ Parameters may have:
 Examples:
 
 ```glyph
-skill update_docs
+skill update_docs()
 
 skill implement_feature(scope, risk = "medium")
 
@@ -196,9 +196,9 @@ Some calls only compute values. Others read files, call tools, edit code, ask th
 The design should distinguish value flow from effects:
 
 ```glyph
-ctx = inspect_repo(scope)       # reads repository
-apply_changes(plan)            # writes files
-result = run_validation(plan)  # executes validation commands
+ctx = inspect_repo(scope)       // reads repository
+apply_changes(plan)            // writes files
+result = run_validation(plan)  // executes validation commands
 ```
 
 The IR should record meaningful effects so the compiler can validate ordering, surface risks, and generate reliable agent instructions.
@@ -276,8 +276,8 @@ This is one reason hidden ambient context should be minimized. If a call depends
 
 The following details remain open:
 
-- whether argument passing should allow both positional and named arguments, or prefer named arguments after the first;
-- whether return types use `-> Type`, a block field, or inference only;
+- ~~whether argument passing should allow both positional and named arguments~~ — decided in `calls-and-args.md`: positional-then-named, no positional after named.
+- ~~whether return types use `-> Type`, a block field, or inference only~~ — decided in `declaration-headers.md`: `-> ReturnType` syntax.
 - whether nested blocks create nested variable scopes;
 - how much structural type information authors can write directly.
 - whether private blocks reachable from an `export block` must be explicitly annotated as closed or can be proven closed by the compiler.

@@ -18,7 +18,7 @@ typed IR
 
 The repair pass is not the compiler. It fixes compiler-blocking issues so the normal compiler can continue.
 
-LLM repair is part of the MVP. In particular, undefined bare instruction names may be expanded by the LLM during repair by materializing stable generated definitions in source. The use sites should remain readable bare names.
+LLM repair is part of the MVP. In particular, undefined bare instruction names may be expanded by the LLM during repair by materializing stable `generated text` declarations in source. The use sites should remain readable bare names.
 
 ## Purpose
 
@@ -31,7 +31,7 @@ It may fix issues such as:
 - invalid primitive usage;
 - malformed block structure or indentation;
 - unresolved local declarations for shorthand instructions that are intentionally author-defined;
-- undefined bare or shorthand instructions that need stable generated definitions;
+- undefined bare or shorthand instructions that need stable `generated text` declarations;
 - import or declaration shape errors that prevent name resolution.
 
 The pass should preserve the author's intended style and readable shorthand wherever possible.
@@ -144,39 +144,30 @@ skill debug_failure(scope)
     root_cause_before_fix
 ```
 
-If the compiler requires declaration before use, repair may produce a stable generated definition while preserving the usage:
+If the compiler requires declaration before use, repair may produce a stable `generated text` declaration while preserving the usage:
 
 ```glyph
 skill debug_failure(scope)
     root_cause_before_fix
 
-generated definition root_cause_before_fix
-    summary: "Root cause first"
-    text: """
+generated text root_cause_before_fix = """
     Identify the root cause before proposing or applying a fix.
-    """
+"""
 ```
 
-Generated definitions should be appended automatically to the end of the current `.glyph.md` file. The repair pass should not inline the generated text at the use site. The semantic commitment is that repair keeps the shorthand name readable while making future compilation deterministic. The LLM expansion happens once, during repair, by creating the generated definition; later compiler passes resolve from that stable definition.
+`generated text` declarations should be appended automatically to the end of the current `.glyph.md` file. The repair pass should not inline the generated text at the use site. The semantic commitment is that repair keeps the shorthand name readable while making future compilation deterministic. The LLM expansion happens once, during repair, by creating the `generated text` declaration; later compiler passes resolve from that stable definition.
 
-The exact declaration syntax is still open. The definition should be visibly marked as generated so authors can review, edit, or promote it into a shared library if they want.
-
-Generated definitions should stay lightweight. They do not need a required review marker such as `review: unreviewed`. The useful fields are:
-
-- `summary`: a short human-facing gloss so generated definitions are easy to scan.
-- `text`: the generated definition content.
-
-The compiler may validate that these fields are well-formed, but the metadata's main purpose is readability and maintenance.
+The declaration syntax is `generated text <name> = <string-literal>`, identical to `text` with a `generated` prefix. The `generated` marker makes it visibly machine-created so authors can review, edit, or promote it into a shared library. See `generated-definitions.md` for the full specification.
 
 ### 4. Keep Generated Definitions Stable
 
 When repair generates a definition for shorthand, that definition becomes the deterministic local meaning of the shorthand. Future compiles should reuse the same definition and should not ask an LLM to regenerate it unless:
 
 - the shorthand name changes;
-- the generated definition is deleted;
+- the `generated text` declaration is deleted;
 - the author explicitly asks to regenerate it;
 - the compiler schema requires a migration;
-- the generated definition no longer validates against the current language rules.
+- the `generated text` declaration no longer validates against the current language rules.
 
 This turns LLM expansion of undefined bare names into a one-time source repair rather than repeated semantic guessing.
 
@@ -187,7 +178,7 @@ Repair may make existing author intent explicit, but it must not make the intent
 This is the intent potency rule:
 
 - repair may add syntax that clarifies an already-present instruction;
-- repair may add a generated definition whose meaning is implied by the shorthand name and local context;
+- repair may add a `generated text` declaration whose meaning is implied by the shorthand name and local context;
 - repair may choose an explicit role or constraint marker when diagnostics and wording make the role, strength, or polarity clear;
 - repair must not upgrade a weak instruction into a hard requirement without evidence;
 - repair must not add new obligations, effects, imports, exports, or safety claims merely because they seem useful.
@@ -230,7 +221,7 @@ When potency is ambiguous, repair should either choose the weakest compiling for
 
 Running repair twice on the same source, diagnostics, imports, standard library, and compiler schema should produce no further source changes after the first accepted repair.
 
-This rule prevents repair from becoming an open-ended rewriting loop. Once a missing keyword, type, declaration, or generated definition has been added, future repair runs should treat that repaired source as stable.
+This rule prevents repair from becoming an open-ended rewriting loop. Once a missing keyword, type, declaration, or `generated text` declaration has been added, future repair runs should treat that repaired source as stable.
 
 Repair may change the file again only when one of its inputs changes:
 
@@ -279,7 +270,7 @@ The repair pass may add:
 - marker-plus-concept normalizations such as `avoid_unrelated_edits` to `avoid unrelated_edits`, with a notification;
 - missing type annotations;
 - local declarations for author-defined shorthand;
-- stable generated definitions for undefined bare or shorthand instructions;
+- stable `generated text` declarations for undefined bare or shorthand instructions;
 - missing imports when the referenced library is obvious from available context;
 - `export` on a block only when an importability diagnostic makes the author's intent clear and the repaired block still passes closure validation;
 - missing block delimiters or indentation fixes;
@@ -319,14 +310,12 @@ may become:
 ```glyph
 root_cause_before_fix
 
-generated definition root_cause_before_fix
-    summary: "Root cause first"
-    text: """
+generated text root_cause_before_fix = """
     Identify the root cause before proposing or applying a fix.
-    """
+"""
 ```
 
-The LLM expansion of `root_cause_before_fix` happened during repair by creating the generated definition. Deterministic semantic expansion later resolves `root_cause_before_fix` from that stable definition into the IR or compiled output.
+The LLM expansion of `root_cause_before_fix` happened during repair by creating the `generated text` declaration. Deterministic semantic expansion later resolves `root_cause_before_fix` from that stable definition into the IR or compiled output.
 
 This separation preserves readability while still giving the compiler explicit structure.
 
@@ -339,7 +328,7 @@ The repair-pass design still needs decisions in these areas:
 
 ## Multi-File Repair
 
-Repair may edit more than the current `.glyph.md` file only when diagnostics require changing those other files. For example, if an imported `.glyph.md` file itself has repairable diagnostics, repair may modify that imported file. Repair should not edit imported files merely because the current file references them; if the current file needs a local generated definition, append that definition to the current file.
+Repair may edit more than the current `.glyph.md` file only when diagnostics require changing those other files. For example, if an imported `.glyph.md` file itself has repairable diagnostics, repair may modify that imported file. Repair should not edit imported files merely because the current file references them; if the current file needs a local `generated text` declaration, append it to the current file.
 
 Repair writes directly to source files, like any normal compiler-assisted source rewrite. The user can review those file changes afterward using normal editor or version-control workflows.
 
@@ -348,5 +337,4 @@ Repair writes directly to source files, like any normal compiler-assisted source
 The pass depends on syntax that is not finalized yet:
 
 - declaration syntax for shorthand instructions;
-- generated-definition syntax for shorthand instructions;
 - whether type annotations use `name: Type = value`, `let name: Type = value`, or another form.

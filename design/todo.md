@@ -10,11 +10,18 @@ Items deferred from MVP decisions that should be revisited in future tiers.
 
 ## Authoring Surface
 
-- **Comments in source files.** MVP has no comment syntax. Add a comment form (e.g. `# ...` line comments) so authors can annotate skills without affecting compiled output. Decide whether block/inline comment variants are needed and how comments interact with the LLM repair pass.
+- ~~**Comments in source files.**~~ Resolved: `//` line comments are the MVP comment syntax. See `comments.md`. `#` was rejected due to Markdown heading collision. Block and doc-comments are deferred beyond MVP.
 - **Preconditions.** Revisit whether `InputContract` should split into required inputs and state preconditions. For MVP, invocation requirements belong under `InputContract`; later design may need a distinct construct for "only valid after X is true" or "before running this, establish Y."
 - **Failure policy.** Add a post-MVP construct for what to do when assumptions fail, inputs are missing, validation fails, or tool calls cannot run. Until then, simple cases should be represented with workflow structure or constraints.
 - **Activation contract.** Add a post-MVP routing/trigger construct for when a skill should be selected. Keep it separate from execution roles.
 - **Constraint compilation treatment.** Design how constraint strength and polarity affect target-specific compilation, including prominence, repetition, wording, demotion protection, and specialization behavior for invariant constraints.
+
+## Calls & Parameters
+
+- **Method-style call syntax (`receiver.foo(args)`).** Post-MVP. MVP allows only bare calls (`foo(x)`) and single-level qualified callees (`Alias.foo(x)`). Revisit method-style as pure sugar for `foo(receiver, args)` once there's a clear need; requires a rule to disambiguate from the qualified-callee form.
+- **Deeper qualified callee nesting (`a.b.c`).** MVP allows only single-level qualified callees (`Alias.name`). Revisit for multi-level namespace access once the import model is richer.
+- **Spread / splat arguments.** Post-MVP. Allow passing a collection as positional args (e.g. `foo(*items)`). Blocked on introducing a collection type.
+- **Variadic parameters.** Post-MVP. Declaration-side form for blocks that accept a variable number of arguments (e.g. `block foo(*items: String)`). Not allowed in MVP. Blocked on collection types and on a parameter-grammar extension (optional / rest / keyword-only).
 
 ## Compiler & Runtime
 

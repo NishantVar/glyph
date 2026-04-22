@@ -159,7 +159,7 @@ Compiled output is fully self-contained. No authoring machinery survives into th
 
 - **Imports** resolve and inline. If a skill uses an imported instruction such as `repo_tools.unrelated_edits`, the compiled output contains the expanded instruction text. No import paths, module references, or library names appear.
 - **Text references** resolve and inline. A bare name like `preserve_existing_patterns` becomes its full text content in the compiled output.
-- **Generated definitions** resolve and inline. The `generated definition` metadata (`summary:`, the `generated` marker) is stripped. Only the instruction content appears.
+- **Generated text** declarations resolve and inline. The `generated` prefix marker is stripped. Only the instruction content appears.
 - **No provenance markers.** The compiled output does not contain comments like `<!-- expanded from repo_tools.unrelated_edits -->`. Clean output only.
 
 ### Only Used Imports Are Inlined
@@ -196,8 +196,7 @@ skill fix_bug(scope)
         identify_root_cause()
         patch_minimally()
         validate_before_success
-
-    return summarize_changes()
+        return summarize_changes()
 ```
 
 Compiled output (`fix_bug.md`):

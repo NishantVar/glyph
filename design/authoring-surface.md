@@ -71,12 +71,11 @@ This lets Glyph feel closer to Python-style duck typing while preserving the ana
 
 ## MVP Top-Level Declarations
 
-The MVP source language should support these five top-level declarations:
+The MVP source language has four base declaration kinds, with `export` and `generated` as modifiers:
 
 - `import` for bringing in exported declarations from other `.glyph.md` files.
-- `text` for reusable named instruction text, with `export text` as the importable variant.
-- `export block` for importable, self-contained reusable blocks.
-- `block` for private helper blocks inside the current file.
+- `text` for reusable named instruction text. `export text` is the importable variant; `generated text` is the repair-materialized variant (see `generated-definitions.md`).
+- `block` for private helper blocks inside the current file. `export block` is the importable, self-contained variant.
 - `skill` for the public task definition that compiles to Markdown agent instructions.
 
 Each MVP `.glyph.md` source file must contain exactly one `skill`. It may also contain imports, text declarations, exported text declarations, private blocks, and exported blocks that support that skill. This is the MVP declaration set, not the permanent ceiling. Later design may add declarations such as `agent`, `abstract agent`, or `trait`, but those additions should not weaken the closure rule for importable blocks.
@@ -92,13 +91,15 @@ Authors can build skills out of defined primitives such as `skill`, `export bloc
 Example:
 
 ```glyph
-skill update_docs
+skill update_docs()
     preserve_existing_patterns
 
     flow:
         inspect_docs()
         return summarize_changes()
+```
 
+```glyph
 skill implement_feature(scope, risk = "medium")
     preserve_existing_patterns
     validate_before_success
@@ -330,11 +331,11 @@ Inline text is useful for one-off details that do not deserve a shared name. If 
 
 ## Open Syntax Choices
 
-The semantic commitments above are stronger than the exact syntax. These details can still change:
+The semantic commitments above are stronger than the exact syntax. Most early syntax choices have been decided in later design documents:
 
-- Whether text bindings use `text name = ...`, `let name = ...`, or another keyword.
-- Whether semantic shortcuts use bare identifiers, function-like calls, or both.
-- The exact quote style for inline and multiline instruction text.
-- The exact spelling of role and constraint source markers.
-- The exact path import syntax for whole-module imports, named imports, and aliases.
+- ~~Whether text bindings use `text name = ...`, `let name = ...`, or another keyword.~~ Decided: `text name = <string-literal>` (`declaration-headers.md`).
+- ~~Whether semantic shortcuts use bare identifiers, function-like calls, or both.~~ Decided: both, distinguished by parentheses (`values-and-literals.md:131-136`).
+- ~~The exact quote style for inline and multiline instruction text.~~ Decided: `"..."` inline, `"""..."""` block strings (`values-and-literals.md`).
+- ~~The exact spelling of role and constraint source markers.~~ Decided: `require`, `avoid`, `prefer`, `always` (`ir-roles.md`).
+- ~~The exact path import syntax for whole-module imports, named imports, and aliases.~~ Decided: `import "path" as alias` / `import "path" { names }` (`declaration-headers.md`).
 - How package-style, registry-backed, or versioned imports should work after the MVP.

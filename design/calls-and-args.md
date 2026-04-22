@@ -4,7 +4,7 @@ This document defines how arguments are passed at call sites in Glyph source: po
 
 ## Status
 
-MVP Tier 2. Formalizes the call-site conventions already illustrated in `data-flow-and-calls.md` and `authoring-surface.md`, building on the parameter declaration syntax fixed in `declaration-headers.md`.
+Formalizes the call-site conventions already illustrated in `data-flow-and-calls.md` and `authoring-surface.md`, building on the parameter declaration syntax fixed in `declaration-headers.md`.
 
 ## Positional And Named Arguments
 
@@ -39,7 +39,7 @@ Arguments are comma-separated inside parentheses. This is already established ac
 result = validate(plan, strict = true)
 ```
 
-Parentheses appear only when arguments exist, matching the declaration-side rule in `declaration-headers.md:16`. A zero-argument call uses empty parentheses to distinguish it from a bare name reference:
+At call sites, parentheses distinguish calls from bare name references. A zero-argument call uses empty parentheses:
 
 ```glyph
 summarize()                    // zero-argument call
@@ -194,7 +194,7 @@ Repair should not rewrite the call structure, reorder arguments, or expand short
 
 - **Declaration headers** (`declaration-headers.md`): Parameter syntax at the definition side is fixed. Call-site syntax mirrors it: `name = value` for named arguments matches `name = default` for parameter defaults.
 - **Block structure** (`block-structure.md`): Line continuation inside parentheses is defined there. This document confirms that call-site argument lists use the same rule.
-- **Values and literals** (`values-and-literals.md`): Argument values must be Tier 0 literals, parameter references, local bindings, imported names, or call expressions. The distinction between bare names and parenthesized calls is defined there.
+- **Values and literals** (`values-and-literals.md`): Argument values must be literals, parameter references, local bindings, imported names, or call expressions. The distinction between bare names and parenthesized calls is defined there.
 - **Effects** (`effects.md`): Effect propagation through calls is defined there. This document confirms no call-site effect syntax.
 - **Types** (`types.md`): Type checking at call boundaries uses nominal matching. The type system validates that argument values match parameter type annotations.
 

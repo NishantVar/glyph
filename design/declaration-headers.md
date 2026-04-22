@@ -4,7 +4,7 @@ This document defines the exact header-line syntax for each MVP top-level declar
 
 ## Status
 
-MVP Tier 1. Formalizes the header shapes already illustrated in `authoring-surface.md` and `data-flow-and-calls.md`.
+Formalizes the header shapes already illustrated in `authoring-surface.md` and `data-flow-and-calls.md`.
 
 ## General Rules
 
@@ -12,7 +12,7 @@ All six declaration headers share these properties:
 
 - **No trailing colon.** Top-level declaration headers introduce their body through indentation on the next line. Colons are reserved for body-level sub-section headers (`flow:`, `effects:`, `constraints:`) as defined in `block-structure.md`.
 - **No braces.** Body delimitation is indentation-based (principle 4, Python-like readability).
-- **Parentheses only when parameters exist.** `skill update_docs` not `skill update_docs()`. Parens signal "this takes input."
+- **Parentheses always required on callable declarations.** `skill update_docs()` not `skill update_docs`. This applies to `skill`, `block`, and `export block` — all callable forms. Matches Python's `def foo():` convention. `text`, `export text`, `generated text`, and `import` do not use parentheses.
 
 ## 1. `skill`
 
@@ -21,7 +21,7 @@ One per file. The public entrypoint that compiles to Markdown agent instructions
 ### Grammar
 
 ```
-skill <name>
+skill <name>()
 skill <name>(<params>)
 skill <name>(<params>) -> <ReturnType>
 ```
@@ -29,7 +29,7 @@ skill <name>(<params>) -> <ReturnType>
 ### Examples
 
 ```glyph
-skill update_docs
+skill update_docs()
 
 skill implement_feature(scope, risk = "medium")
 
@@ -48,7 +48,7 @@ Private helper block, scoped to the current file.
 ### Grammar
 
 ```
-block <name>
+block <name>()
 block <name>(<params>)
 block <name>(<params>) -> <ReturnType>
 ```
@@ -56,7 +56,7 @@ block <name>(<params>) -> <ReturnType>
 ### Examples
 
 ```glyph
-block helper
+block helper()
 
 block validate(plan) -> ValidationResult
 
@@ -75,6 +75,7 @@ Importable, self-contained reusable block. Two-keyword prefix.
 ### Grammar
 
 ```
+export block <name>() -> <ReturnType>
 export block <name>(<params>) -> <ReturnType>
 ```
 
@@ -85,7 +86,7 @@ export block inspect_failure(scope) -> FailureReport
 
 export block validate_changes(files: FileSet, strict = true) -> ValidationResult
 
-export block emit_safety_warning -> none
+export block emit_safety_warning() -> None
 ```
 
 ### Notes
@@ -202,8 +203,8 @@ name: Type = default_value    // typed, with default
 ### Rules
 
 - Required parameters (no default) must precede optional parameters (with default). Same ordering rule as Python.
-- Type annotations use the `name: Type` slot. The full type system is a Tier 2 concern; this document reserves the syntactic position only.
-- Default values must be Tier 0 literals: strings, numbers, booleans, or `none`.
+- Type annotations use the `name: Type` slot. The full type system is defined in `types.md`; this document reserves the syntactic position only.
+- Default values must be literals: strings, numbers, booleans, or `none`.
 - The compiler infers types for untyped parameters from usage context and repairs source when inference fails.
 
 ## Interaction With Block Structure
@@ -238,11 +239,11 @@ The examples in `authoring-surface.md` and `data-flow-and-calls.md` already matc
 
 - Making `-> ReturnType` mandatory on `export block` (implicit in `data-flow-and-calls.md` but not shown as a hard rule).
 - Making `as <alias>` mandatory on whole-module imports (implicit in examples but not stated as a rule).
-- Explicitly stating no empty parens when no parameters.
+- Requiring `()` on all callable declarations even with no parameters, matching Python's `def foo():` convention.
 
 ## Deferred
 
-- Full type annotation syntax beyond the `name: Type` slot (Tier 2).
+- Full type annotation syntax beyond the `name: Type` slot (see `types.md`).
 - Package-style, registry-backed, or versioned imports.
 - `agent`, `abstract agent`, `trait` declaration headers (post-MVP).
 - Global preference parameter syntax (`pref(...)` illustrated in `data-flow-and-calls.md`, not finalized).

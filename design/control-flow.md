@@ -4,13 +4,13 @@ This document defines the MVP syntax for statements inside `flow:` blocks, inclu
 
 ## Status
 
-MVP Tier 3. Builds on:
+Builds on:
 
-- `block-structure.md` (Tier 1) — significant indentation, colon-terminated sub-section headers, 4-space indent unit
-- `section-vocabulary.md` (Tier 2) — `flow:` as the ordered workflow section, content defaults to `Step` role
-- `calls-and-args.md` (Tier 2) — call-site syntax, positional-then-named arguments, binding with `=`, nested calls
-- `ir-roles.md` (Tier 0) — `Step`, `OutputContract`, `Context` roles
-- `values-and-literals.md` (Tier 0) — identifier rules, name resolution, reserved keywords, bare name vs parenthesized call distinction
+- `block-structure.md` — significant indentation, colon-terminated sub-section headers, 4-space indent unit
+- `section-vocabulary.md` — `flow:` as the ordered workflow section, content defaults to `Step` role
+- `calls-and-args.md` — call-site syntax, positional-then-named arguments, binding with `=`, nested calls
+- `ir-roles.md` — `Step`, `OutputContract`, `Context` roles
+- `values-and-literals.md` — identifier rules, name resolution, reserved keywords, bare name vs parenthesized call distinction
 - `data-flow-and-calls.md` — local bindings, return values, call semantics
 
 ## Statement Forms Inside `flow:`
