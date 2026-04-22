@@ -67,27 +67,27 @@ block review_changes(files: FileSet, strict = true) -> ReviewResult
 
 Source-level parameters may be duck-typed. The IR should resolve each parameter to an explicit type or structural contract before output generation.
 
-## Global Preference Parameters
+## Global Preferences
 
-Skills may accept global preference parameters: selected user or project preferences stored in one configured place and passed into the skill as explicit named inputs.
-
-Global preference parameters are not hidden ambient context. The source should make the dependency visible, and the IR should represent the resolved preference as an input to the skill.
-
-Illustrative syntax, not final:
+Skills may depend on user or project preferences such as terminal multiplexer, communication style, validation strictness, preferred tools, or project conventions. In Glyph, these are ordinary `export text`, `export int`, or `export float` declarations in a preferences file, imported like any other name.
 
 ```glyph
-skill open_terminal(terminal_mux = pref("terminal.mux"))
+import "./prefs.glyph.md" { terminal_mux, validation_strictness }
 
-skill implement_feature(scope, validation_strictness = pref("validation.strictness"))
+skill open_terminal()
+    flow:
+        launch(terminal_mux)
 ```
 
-Global preferences are appropriate for stable user choices such as terminal multiplexer, communication style, validation strictness, preferred tools, or project conventions.
+There is no dedicated `pref(...)` call form. Prefs are indistinguishable from any other imported constant at the syntax and effect level. The `reads_prefs` effect was considered and rejected; preferences do not carry a special effect.
 
-In the MVP, global preferences resolve at compile time and are injected into the compiled Markdown as ordinary explicit skill inputs or instructions. If a preference changes, affected skills should be recompiled. The compiler may maintain a reverse dependency map from preference keys to source files to identify which compiled files are stale.
+Compile-time resolution: preference values are inlined into the compiled Markdown at compile time. If a preference value changes, affected skills should be recompiled. The compiler may maintain a reverse dependency map from preference source files to compiled outputs to identify which are stale.
 
-Runtime preference injection may be added later through a Glyph-aware loader or hook that substitutes preference values before the agent reads the compiled skill, but that is not the MVP default.
+Standard prefs library: the compiler ships a default prefs file so any project can import a baseline pref set without defining its own. The exact import scheme is a TODO (see `todo.md`).
 
-An `export block` should not read global preferences implicitly; if an exported block needs a preference, the skill or caller should pass that value as a normal parameter so the exported block remains closed.
+An `export block` that reads a preference does so through an explicit import, keeping its closure contract intact. The preference shows up as a declared dependency, not hidden ambient context.
+
+Override mechanism (project config, CLI flags, env vars): deferred beyond MVP. For MVP, the literal on the right-hand side of a pref declaration is its final value. See `todo.md`.
 
 ## Calls
 

@@ -71,14 +71,14 @@ This lets Glyph feel closer to Python-style duck typing while preserving the ana
 
 ## MVP Top-Level Declarations
 
-The MVP source language has four base declaration kinds, with `export` and `generated` as modifiers:
+The MVP source language has these base declaration kinds, with `export` as a visibility modifier on value-binding and block kinds, and `generated` as a repair-authorship modifier on `text`:
 
 - `import` for bringing in exported declarations from other `.glyph.md` files.
-- `text` for reusable named instruction text. `export text` is the importable variant; `generated text` is the repair-materialized variant (see `generated-definitions.md`).
+- Value-binding declarations: `text` (named instruction text), `int` (named integer), `float` (named floating-point value). Each has an `export` variant (`export text`, `export int`, `export float`). `text` additionally has a `generated` variant (`generated text`) that is repair-materialized (see `generated-definitions.md`).
 - `block` for private helper blocks inside the current file. `export block` is the importable, self-contained variant.
 - `skill` for the public task definition that compiles to Markdown agent instructions.
 
-Each MVP `.glyph.md` source file must contain exactly one `skill`. It may also contain imports, text declarations, exported text declarations, private blocks, and exported blocks that support that skill. This is the MVP declaration set, not the permanent ceiling. Later design may add declarations such as `agent`, `abstract agent`, or `trait`, but those additions should not weaken the closure rule for importable blocks.
+Each MVP `.glyph.md` source file must contain exactly one `skill`. It may also contain imports, value-binding declarations, private blocks, and exported blocks that support that skill. This is the MVP declaration set, not the permanent ceiling. Later design may add declarations such as `bool` (post-MVP), `agent`, `abstract agent`, or `trait`, but those additions should not weaken the closure rule for importable blocks.
 
 ## Authoring Forms
 

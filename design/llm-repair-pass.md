@@ -334,7 +334,7 @@ Repair writes directly to source files, like any normal compiler-assisted source
 
 ## Open Syntax Choices
 
-The pass depends on syntax that is not finalized yet:
+~~The pass depends on syntax that is not finalized yet:~~
 
-- declaration syntax for shorthand instructions;
-- whether type annotations use `name: Type = value`, `let name: Type = value`, or another form.
+- ~~declaration syntax for shorthand instructions~~ — Decided: `text name = <string-literal>` and `generated text name = <string-literal>` (`declaration-headers.md`, `generated-definitions.md`).
+- ~~whether type annotations use `name: Type = value`, `let name: Type = value`, or another form~~ — Decided: `name: Type = value` (`declaration-headers.md:196-199`).
