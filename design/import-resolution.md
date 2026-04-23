@@ -4,7 +4,7 @@ This document defines how cross-file names bind at compile time: path resolution
 
 ## Status
 
-MVP Tier 3. Builds on the import syntax fixed in `declaration-headers.md` (Tier 1) and the qualified callee resolution in `calls-and-args.md` (Tier 2). This document owns the semantics; the syntax is not reopened here.
+Builds on the import syntax fixed in `declaration-headers.md` and the qualified callee resolution in `calls-and-args.md`. This document owns the semantics; the syntax is not reopened here.
 
 ## 1. Path Resolution
 
@@ -205,7 +205,7 @@ Resolution summary:
 
 ## Interaction With Other Design Areas
 
-- **Declaration headers** (`declaration-headers.md`): Import syntax is fixed at Tier 1. This document does not reopen syntax.
+- **Declaration headers** (`declaration-headers.md`): Import syntax is fixed there. This document does not reopen syntax.
 - **Values and literals** (`values-and-literals.md`): The no-shadowing rule and case normalization are defined there. This document extends them to imported names.
 - **Calls and args** (`calls-and-args.md`): Qualified callee resolution (`M.name`) is defined there. This document confirms that `M` must be a whole-module import alias.
 - **Effects** (`effects.md`): Effect inference and union propagation are defined there. This document confirms they apply across import boundaries.

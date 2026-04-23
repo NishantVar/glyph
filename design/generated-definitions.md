@@ -4,7 +4,7 @@ This document defines the MVP source syntax for repair-materialized generated de
 
 ## Status
 
-MVP Tier 3. Formalizes the generated-definition sketch in `llm-repair-pass.md:136-169` and the inlining contract in `compiled-output.md:162`.
+Formalizes the generated-definition sketch in `llm-repair-pass.md` and the inlining contract in `compiled-output.md`.
 
 ## Purpose
 
@@ -45,7 +45,7 @@ This preserves a clean separation: `generated` means machine-created, `text` mea
 
 All `generated text` declarations must appear after all non-generated top-level declarations in the source file. The compiler enforces this ordering rule.
 
-No comment divider or section marker is required. The repair pass appends generated declarations to the end of the file (`llm-repair-pass.md:160`), and the ordering rule keeps them there.
+No comment divider or section marker is required. The repair pass appends generated declarations to the end of the file (`llm-repair-pass.md:156`), and the ordering rule keeps them there.
 
 Example file structure:
 
@@ -69,11 +69,11 @@ generated text root_cause_before_fix = """
 
 ## Usage Site Behavior
 
-The repair pass never inlines generated text at the use site. The bare name stays untouched in the skill or block body (`llm-repair-pass.md:138-139`, `llm-repair-pass.md:158`). The name resolves to the `generated text` declaration through normal name resolution (`values-and-literals.md:119-128`).
+The repair pass never inlines generated text at the use site. The bare name stays untouched in the skill or block body (`llm-repair-pass.md:138-139`, `llm-repair-pass.md:156`). The name resolves to the `generated text` declaration through normal name resolution (`values-and-literals.md:119-128`).
 
 ## Idempotence Detection
 
-Repair does not regenerate an existing definition. Detection uses name resolution: if a bare name already resolves to any declaration — `text`, `generated text`, import, parameter, or local binding — repair skips it (`llm-repair-pass.md:171-181`).
+Repair does not regenerate an existing definition. Detection uses name resolution: if a bare name already resolves to any declaration — `text`, `generated text`, import, parameter, or local binding — repair skips it (`llm-repair-pass.md:164-173`).
 
 No fingerprinting, hashing, or version tracking. The mechanism is: "does this name resolve to something?" If yes, do not regenerate.
 
@@ -112,7 +112,7 @@ No special compiler behavior is needed for any of these. They all work through e
 
 `generated text` is a new top-level declaration form. Its header grammar is the `text` grammar prefixed by `generated`. It follows the same rules: no trailing colon, no parentheses, `=` separates name from value.
 
-The MVP top-level declaration set becomes: `import`, `text`, `export text`, `block`, `export block`, `skill`, and `generated text`.
+The four base declaration kinds are `import`, `text`, `block`, and `skill`. With the `export` visibility modifier (`export text`, `export block`) and the `generated` repair-authorship modifier (`generated text`), the full MVP declaration set is seven forms.
 
 ### With `block-structure.md`
 
@@ -124,7 +124,7 @@ The MVP top-level declaration set becomes: `import`, `text`, `export text`, `blo
 
 ### With `compiled-output.md`
 
-Per `compiled-output.md:162`: "Generated definitions resolve and inline. The `generated definition` metadata (`summary:`, the `generated` marker) is stripped. Only the instruction content appears." With `summary:` dropped, only the `generated` marker is stripped. The inlining contract is unchanged.
+Per `compiled-output.md:162`: "Generated text declarations resolve and inline. The `generated` prefix marker is stripped. Only the instruction content appears." The inlining contract is identical to `text`.
 
 ### With `llm-repair-pass.md`
 

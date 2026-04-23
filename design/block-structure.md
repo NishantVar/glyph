@@ -23,7 +23,7 @@ The indentation unit is 4 spaces.
 
 Sub-sections within a declaration body are introduced by a colon-terminated keyword. The colon is what distinguishes a labeled sub-block from a bare instruction or declaration header.
 
-MVP sub-section keywords: `flow:`, `effects:`, `inputs:`, `outputs:`, `constraints:`, `when_to_use:`.
+MVP sub-section keywords: `flow:`, `effects:`, `inputs:`, `outputs:`, `constraints:`, `when_to_use:`. The canonical reference for sub-section spelling, mandatory/optional rules, and content is [section-vocabulary.md](section-vocabulary.md).
 
 Two forms are allowed:
 
@@ -102,7 +102,7 @@ Glyph source uses three primary indentation levels in practice:
 - **Level 1** (column 4): declaration body — constraints, sub-section headers, bare instructions.
 - **Level 2** (column 8): sub-block body — flow steps, effect list items, nested content.
 
-Deeper nesting is structurally supported for constructs such as `if` inside `flow:`, or nested private blocks inside `skill`. The exact nesting rules for control flow are deferred to later design.
+Deeper nesting is structurally supported for constructs such as `if` inside `flow:`, or nested private blocks inside `skill`. Nesting rules for `if`/`elif`/`else` control flow are defined in [control-flow.md](control-flow.md).
 
 ## Complete Example
 
@@ -150,6 +150,6 @@ The repair pass may fix malformed indentation by normalizing to 4-space levels. 
 
 ## Deferred Sub-Questions
 
-- Whether `if` uses a colon (`if condition:`) or introduces its body by indentation alone. Deferred to control-flow syntax design.
+- ~~Whether `if` uses a colon (`if condition:`) or introduces its body by indentation alone.~~ Decided in [control-flow.md](control-flow.md): `if` uses a colon (`if <condition>:`), Python-style.
 - Whether `for_each` (post-MVP) uses a colon. Deferred.
 - Whether nested private blocks inside `skill` create nested indentation scopes or follow different rules. Deferred to later design but structurally supported by significant indentation.

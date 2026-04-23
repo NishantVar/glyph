@@ -110,7 +110,7 @@ If two declarations in different files or scopes use different casings for the s
 
 The following are reserved keywords and cannot be used as identifiers:
 
-`skill`, `block`, `export`, `import`, `text`, `flow`, `call`, `if`, `return`, `true`, `false`, `none`, `effects`, `as`, `generated`, `input`, `output`, `always`, `require`, `avoid`, `prefer`, `context`.
+`skill`, `block`, `export`, `import`, `text`, `flow`, `call`, `if`, `elif`, `else`, `return`, `true`, `false`, `none`, `effects`, `constraints`, `inputs`, `outputs`, `when_to_use`, `as`, `generated`, `input`, `output`, `always`, `require`, `avoid`, `prefer`, `context`, `and`, `or`, `not`.
 
 This list grows with the language. New keywords should be added conservatively.
 
@@ -120,12 +120,12 @@ This list grows with the language. New keywords should be added conservatively.
 
 A bare identifier such as `make_plan` may resolve to:
 
-- a `text` declaration (named instruction content);
+- a value-binding declaration (`text`, `int`, or `float`) in the current file;
 - a parameter of the enclosing skill or block;
 - a local binding;
 - an imported name;
 - a standard-library entry;
-- a repair-generated definition.
+- a repair-generated definition (MVP: `generated text` only).
 
 A parenthesized form such as `make_plan()` or `make_plan(ctx)` is always a block call.
 
