@@ -10,7 +10,7 @@ Items deferred from MVP decisions that should be revisited in future tiers.
 
 ## Authoring Surface
 
-- ~~**Comments in source files.**~~ Resolved: `//` line comments are the MVP comment syntax. See `comments.md`. `#` was rejected due to Markdown heading collision. Block and doc-comments are deferred beyond MVP.
+- **Block comments and doc-comments.** MVP defines `//` line comments (see `repair.md`, section 6). Consider adding block comments (`/* ... */`) or doc-comments post-MVP if structured documentation or inline annotation needs emerge.
 - **Preconditions.** Revisit whether `InputContract` should split into required inputs and state preconditions. For MVP, invocation requirements belong under `InputContract`; later design may need a distinct construct for "only valid after X is true" or "before running this, establish Y."
 - **Failure policy.** Add a post-MVP construct for what to do when assumptions fail, inputs are missing, validation fails, or tool calls cannot run. Until then, simple cases should be represented with workflow structure or constraints.
 - **Activation contract.** Add a post-MVP routing/trigger construct for when a skill should be selected. Keep it separate from execution roles.

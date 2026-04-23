@@ -4,10 +4,28 @@ This document defines the shape of compiled Markdown files that the Glyph compil
 
 ## Guiding Principles
 
-- **Reliability beats elegance** (principle 16). Compiled output should favor explicitness, clarity, and followability over compression or style.
-- **Target agents broadly, with special care for current coding agents** (boundary 4). The output must be consumable by general-purpose agents, not tied to one execution environment.
-- **Authoring and execution are separate** (principle 8). Source constructs compile away completely. The compiled file is self-contained agent instructions with no traces of authoring machinery.
-- **The IR is the semantic contract** (principle 9). Compiled output is a projection of the IR, not a direct transformation of source.
+- **Reliability beats elegance** (foundations). Favor explicitness, clarity, and followability over compression or style.
+- **Targets agents broadly** (foundations). The output must be consumable by general-purpose agents, not tied to one execution environment.
+- **Authoring and execution are separate** (foundations). Source constructs compile away completely. The compiled file is self-contained agent instructions.
+- **The IR is the semantic contract** (foundations). Compiled output is a projection of the IR, not a direct transformation of source.
+
+## Source-To-Compiled-Output Mapping
+
+Every source form maps to exactly one compiled section. This is the authoritative mapping.
+
+| Source form | Compiled section |
+|-------------|-----------------|
+| `effects:` | `## Effects` |
+| Header params + `inputs:` + body `input` markers | `## Inputs` |
+| Body `context` markers + inline non-normative text | `## Inputs` (as informational context) |
+| `flow:` steps | `### Steps` under `## Instructions` |
+| `constraints:` content | `### Constraints` under `## Instructions` |
+| `return` in flow + `outputs:` + body `output` markers | `## Output` |
+| `when_to_use:` | `## When To Use` |
+
+Context nodes project into `## Inputs` as informational context or assumptions. The wording must not turn context into a requirement.
+
+Constraint strength and polarity affect compiled wording and prominence per [ir-and-semantics.md](ir-and-semantics.md).
 
 ## Frontmatter
 
@@ -20,16 +38,10 @@ description: <when this skill should be used>
 ---
 ```
 
-### Required Keys
-
 - `name` — the skill identifier. Machine-readable, used for skill selection and referencing.
-- `description` — a concise statement of when and why an agent should use this skill. This is the primary trigger for coding agents that select skills from frontmatter.
+- `description` — a concise statement of when and why an agent should use this skill. Primary trigger for coding agents that select skills from frontmatter.
 
-### No H1 Heading
-
-The compiled file does not emit a `# <Skill Name>` heading. The frontmatter `name` is the authoritative title. All agents that consume compiled skills are assumed to parse YAML frontmatter.
-
-**Future TODO:** If Glyph needs to support agents that do not parse frontmatter, add an optional compiler flag to emit a `# <Skill Name>` heading after the frontmatter close.
+The compiled file does not emit a `# <Skill Name>` heading. The frontmatter `name` is the authoritative title.
 
 ## Sections
 
@@ -43,40 +55,22 @@ The compiled file uses H2 sections in a fixed order. All sections except `## Ins
 4. `## Output` (conditional)
 5. `## When To Use` (conditional)
 
-### Section Definitions
+### `## Effects`
 
-#### `## Effects`
+Emitted when the skill has meaningful effects (not `effects: none`). Each effect is a bullet with a human-readable expansion. Omitted for `effects: none` or no meaningful effects. Effects appear first because agents need them before deciding to execute.
 
-Emitted when the skill has meaningful effects (not `effects: none`). Each effect is a bullet with a human-readable expansion describing what the skill touches. Effects come from effect metadata, not from instruction roles.
+### `## Inputs`
 
-```md
-## Effects
+Emitted when the skill declares parameters, `InputContract` nodes, or `Context` nodes visible before execution. Parameter types from `name: Type` annotations render as `(Type)` after the backticked name. No type shown when the annotation is absent.
 
-- Reads files (repository structure, source code, logs)
-- Writes files (source code, configuration)
-- Runs commands (git, test runners)
-```
+### `## Instructions`
 
-Omitted entirely when the skill declares `effects: none` or has no meaningful effects.
+Always emitted. Contains the compiled workflow and behavioral constraints via H3 sub-sections:
 
-Effects appear first because they are one of the first things users and agents need to see before deciding to execute a skill.
+- **`### Steps`** — numbered list (order matters). Each item is one instruction.
+- **`### Constraints`** — bulleted list (order usually does not matter). Each item is one `Constraint` node. Strength and polarity affect wording, not placement in the MVP.
 
-#### `## Inputs`
-
-Emitted when the skill declares parameters, `InputContract` nodes, or `Context` nodes that should be visible before execution.
-
-```md
-## Inputs
-
-- `scope` — the area of code to inspect (file path, module name, or description)
-- `risk` — risk level for the change; defaults to `"medium"`
-```
-
-Omitted when the skill has no parameters, input contracts, or visible context.
-
-#### `## Instructions`
-
-Always emitted. Contains the compiled workflow and behavioral constraints. Uses H3 sub-sections for internal structure.
+Both sub-sections are conditional: `### Constraints` is omitted when there are no explicit constraints; `### Steps` may be omitted for instruction-only skills. At least one must be present. This set may grow (e.g., `### Guidance` for `Constraint(strength: preferred)`), but the MVP starts with two.
 
 ```md
 ## Instructions
@@ -85,98 +79,58 @@ Always emitted. Contains the compiled workflow and behavioral constraints. Uses 
 
 1. Inspect the failure and reproduce it.
 2. Identify the root cause before proposing a fix.
-3. Patch minimally — do not refactor unrelated code.
-4. Run validation before reporting success.
 
 ### Constraints
 
 - Do not make unrelated edits outside the requested scope.
-- Follow the repository's existing patterns, helper APIs, naming, and file organization before introducing a new abstraction or style.
+- Follow the repository's existing patterns before introducing new abstractions.
 ```
 
-**`### Steps`** uses numbered lists because order matters. Each item is one instruction.
+### `## Output`
 
-**`### Constraints`** uses bulleted lists because order usually does not matter. Each item is one `Constraint` node. Constraint strength and polarity affect wording and prominence, not the basic placement in the MVP.
+Emitted when the skill declares an explicit return contract or `OutputContract` nodes. Return types from `-> ReturnType` annotations render as a type note at the top of the section (e.g., "Returns a `ReviewResult`."). No type note when the source omits the return type.
 
-Both sub-sections are conditional within Instructions: if a skill has no explicit constraints, `### Constraints` is omitted; if a skill has no workflow steps (instruction-only skills), `### Steps` may be omitted. However, at least one of the two sub-sections must be present since `## Instructions` is always emitted.
+### `## When To Use`
 
-#### `## Output`
+Emitted only when the source contains trigger guidance that does not fit in the frontmatter `description`. Routing metadata, not an instruction role. Omitted when `description` is sufficient.
 
-Emitted when the skill declares an explicit return contract or `OutputContract` nodes.
+## Projection Rules
 
-```md
-## Output
+Compiled output projects from the typed IR role model defined in [ir-and-semantics.md](ir-and-semantics.md). See that file for role semantics. This section covers only the output-side rules: which section each role projects into, formatting, and ordering.
 
-- A concise summary of changes made, including file paths modified.
-- Any issues that could not be resolved, with explanation.
-```
+| IR role | Compiled target | Format |
+|---------|----------------|--------|
+| Effect metadata | `## Effects` | Bulleted list, human-readable expansions |
+| `InputContract` + parameters | `## Inputs` | Bulleted list with backticked names and `(Type)` annotations |
+| `Context` | `## Inputs` | Bulleted list, informational wording (must not read as a requirement) |
+| `Step` | `### Steps` | Numbered list, one instruction per item |
+| `Constraint` | `### Constraints` | Bulleted list, wording shaped by strength and polarity |
+| `OutputContract` + return | `## Output` | Type note (if declared) then bulleted list |
 
-Omitted when the skill has no explicit output contract (implicit outputs do not warrant a section).
+### Constraint Rendering
 
-#### `## When To Use`
-
-Emitted only when the source contains trigger guidance that does not fit cleanly in the frontmatter `description`. This is for detailed situational triggers, not a restatement of `description`. Trigger guidance is routing metadata, not an instruction role.
-
-```md
-## When To Use
-
-- The user reports a test failure or unexpected behavior.
-- A CI pipeline fails and the user asks for help debugging.
-- The user says "fix" or "debug" in relation to existing code.
-```
-
-Omitted when `description` is sufficient.
-
-## Instructions Internal Structure
-
-The `## Instructions` section uses H3 sub-sections to separate workflow from constraints. The MVP sub-section set is:
-
-- `### Steps` — ordered workflow actions (numbered list)
-- `### Constraints` — behavioral constraints and rules (bulleted list)
-
-This set may grow in the future (e.g., `### Guidance` for preferred constraints distinct from required constraints), but the MVP starts with two.
-If a later target splits preferred constraints into guidance, that should be a projection choice over `Constraint(strength: preferred)`, not a new IR role.
-
-### Projection Rules
-
-Compiled output projects from the typed IR role model in [ir-roles.md](ir-roles.md):
-
-- **Effects** project into `## Effects` from effect metadata. Effects are not instruction roles.
-- **Input contracts** (IR `InputContract` nodes and parameters) project into `## Inputs`.
-- **Context** (IR `Context` nodes) projects into `## Inputs` as informational context or assumptions. The wording must not turn context into a requirement.
-- **Workflow steps** (IR `Step` nodes from `flow:`) project into `### Steps` as numbered items.
-- **Constraints** (IR `Constraint` nodes) project into `### Constraints` as bulleted items in the MVP.
-- **Constraint strength** affects wording and prominence. `invariant` constraints should be rendered as strongest non-negotiable constraints, `required` constraints as mandatory rules, and `preferred` constraints as guidance that yields to stronger constraints.
-- **Constraint polarity** affects phrasing. `polarity: require` renders as a positive obligation; `polarity: avoid` renders as a prohibition.
-- **Output contracts** (IR `OutputContract` nodes and `return` contracts) project into `## Output`.
-- **Conditional logic** (`if` in source) is flattened into prose instructions in the target section for the contained role. The compiled output does not use code-like branching syntax.
-
-The role name should not be changed to match a Markdown section. The same `Constraint` role can produce different wording based on strength and polarity.
+- **Strength** affects wording and prominence. `invariant` renders as strongest non-negotiable rules, `required` as mandatory rules, `preferred` as guidance that yields to stronger constraints.
+- **Polarity** affects phrasing. `polarity: require` renders as a positive obligation; `polarity: avoid` renders as a prohibition.
+- **Conditional logic** (`if` in source) is flattened into prose in the target section. The compiled output does not use code-like branching syntax.
 
 ## Authoring Constructs Compile Away
 
-Compiled output is fully self-contained. No authoring machinery survives into the emitted file:
+Compiled output is fully self-contained. No authoring machinery survives:
 
-- **Imports** resolve and inline. If a skill uses an imported instruction such as `repo_tools.unrelated_edits`, the compiled output contains the expanded instruction text. No import paths, module references, or library names appear.
-- **Text references** resolve and inline. A bare name like `preserve_existing_patterns` becomes its full text content in the compiled output.
-- **Generated text** declarations resolve and inline. The `generated` prefix marker is stripped. Only the instruction content appears.
-- **No provenance markers.** The compiled output does not contain comments like `<!-- expanded from repo_tools.unrelated_edits -->`. Clean output only.
+- **Imports** resolve and inline. The compiled output contains expanded instruction text. No import paths, module references, or library names appear.
+- **Text references** resolve and inline. A bare name like `preserve_existing_patterns` becomes its full text content.
+- **Generated text** declarations resolve and inline. The `generated` marker is stripped; only instruction content appears.
+- **No provenance markers.** No comments like `<!-- expanded from repo_tools.unrelated_edits -->`.
 
-### Only Used Imports Are Inlined
-
-The compiler inlines only imported declarations that are actually used in the skill. Unused imports are dead code and are excluded from compiled output. The compiled file is shaped by what the skill uses, not by what the source file imports.
-
-**Source auto-fix for unused imports.** The compiler should automatically remove unused import declarations from the source `.glyph.md` file, similar to how modern language toolchains strip unused imports. This is a source-to-source fix that happens before or during compilation — not a silent omission. The exact pipeline stage for this auto-fix (pre-compilation lint, part of the repair pass, or a dedicated import-pruning pass) is an open question, but the behavior is: if you import something you don't use, the compiler removes it from your source file.
+Only imports actually used by the skill are inlined; unused imports are dead code excluded from output. The compiler auto-removes unused import declarations from the source `.glyph.md` file (source-to-source fix, not silent omission).
 
 ## Formatting Rules
 
-These rules keep compiled output reliably parseable by current coding agents:
-
-1. **One instruction per list item.** No run-on multi-sentence bullets. Each numbered step or bulleted constraint is a single, clear instruction.
-2. **Numbered lists for `### Steps`** (order matters). **Bulleted lists for `### Constraints`** (order usually does not matter).
-3. **No hard line-wrapping mid-sentence.** Each list item is a single unwrapped line. Agents handle long lines better than soft-wrapped prose that looks like multiple items.
-4. **Single blank line between sections and sub-sections.** No double blank lines, no trailing whitespace.
-5. **No inline HTML or special formatting.** Compiled output uses only standard Markdown: headings, lists, bold, code spans. No HTML tags, no custom directives.
+1. **One instruction per list item.** No run-on multi-sentence bullets.
+2. **Numbered lists for Steps, bulleted lists for Constraints.**
+3. **No hard line-wrapping mid-sentence.** Each list item is a single unwrapped line.
+4. **Single blank line between sections.** No double blank lines, no trailing whitespace.
+5. **No inline HTML or special formatting.** Standard Markdown only: headings, lists, bold, code spans.
 
 ## Complete Example
 
@@ -240,12 +194,13 @@ description: Debug and fix a bug in the codebase with minimal, targeted changes.
 
 ## Interactions With Other Workstreams
 
-- **Effect vocabulary**: The `## Effects` section content depends on the finalized effect keywords and their human-readable expansions.
-- **IR role taxonomy**: The projection from IR roles, constraint strength, and constraint polarity is defined in [ir-roles.md](ir-roles.md).
-- **Source syntax**: The compiled output shape is independent of source syntax decisions, since output is a projection of the IR.
+- **Effect vocabulary**: `## Effects` content depends on finalized effect keywords and expansions ([ir-and-semantics.md](ir-and-semantics.md)).
+- **IR role taxonomy**: Role semantics, constraint strength/polarity, and projection guidance are in [ir-and-semantics.md](ir-and-semantics.md). This file covers only the output-side projection.
+- **Source syntax**: Compiled output shape is independent of source syntax, since output is a projection of the IR.
+- **Type vocabulary**: Parameter and return type rendering depends on type names in [types.md](types.md).
 
 ## Open Questions
 
 - Whether target-specific renderers should add `### Guidance` for `Constraint(strength: preferred)`, or whether preferred constraints should stay merged with Constraints.
 - The exact wording and prominence rules for `Constraint(strength: invariant)`.
-- Whether the compiler should emit a `## Effects` section with "None" content vs. omitting it entirely for pure skills. Current decision: omit entirely.
+- Whether the compiler should emit a `## Effects` section with "None" content vs. omitting entirely for pure skills. Current decision: omit entirely.
