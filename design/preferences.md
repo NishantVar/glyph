@@ -4,7 +4,7 @@ This document defines how Glyph handles user and project preferences — stable 
 
 ## Status
 
-Formalizes decisions captured during Tier 3 work. Builds on `declaration-headers.md` (value-binding declaration kinds), `import-resolution.md` (import semantics), and `effects.md` (effect vocabulary).
+Formalizes decisions captured during Tier 3 work. Builds on `language-surface.md` (value-binding declaration kinds), `imports.md` (import semantics), and `ir-and-semantics.md` (effect vocabulary).
 
 ## Design Posture
 
@@ -34,7 +34,7 @@ Rules:
 
 ## Importing a Preference
 
-Preferences are imported like any other exported name, using the import forms defined in `declaration-headers.md` and the resolution rules in `import-resolution.md`:
+Preferences are imported like any other exported name, using the import forms defined in `language-surface.md` and the resolution rules in `imports.md`:
 
 ```glyph
 import "./prefs.glyph.md" { tone, terminal_mux, validation_strictness }
@@ -70,7 +70,7 @@ The exact import scheme, the standard pref set, and how it composes with user-de
 
 Importing or reading a preference does **not** contribute any effect. A `reads_prefs` effect was considered and rejected: preferences are ordinary compile-time constants, and treating them specially would conflate configuration with runtime side effects.
 
-An `export block` that reads a preference does so through an explicit import. The preference appears as a declared dependency, not hidden ambient context, so closure (see `data-flow-and-calls.md`) is preserved automatically.
+An `export block` that reads a preference does so through an explicit import. The preference appears as a declared dependency, not hidden ambient context, so closure (see `data-flow.md`) is preserved automatically.
 
 ## Recompilation On Preference Change
 
@@ -87,10 +87,10 @@ Runtime injection of preference values is not part of MVP. A future Glyph-aware 
 
 ## Interaction With Other Design Areas
 
-- **Declaration headers** (`declaration-headers.md`): Value-binding declaration grammar for `text`, `int`, `float` and their `export` variants is defined there.
-- **Import resolution** (`import-resolution.md`): Pref imports follow the standard path and selective-import rules; no special resolution is needed.
-- **Effects** (`effects.md`): Pref reads contribute no effects. The 8-keyword MVP effect vocabulary is unchanged.
-- **Data flow** (`data-flow-and-calls.md`): The "Global Preferences" section there defers to this document.
+- **Declaration headers** (`language-surface.md`): Value-binding declaration grammar for `text`, `int`, `float` and their `export` variants is defined there.
+- **Import resolution** (`imports.md`): Pref imports follow the standard path and selective-import rules; no special resolution is needed.
+- **Effects** (`ir-and-semantics.md`): Pref reads contribute no effects. The 8-keyword MVP effect vocabulary is unchanged.
+- **Data flow** (`data-flow.md`): The "Global Preferences" section there defers to this document.
 - **Todo** (`todo.md`): Pref override mechanism and standard prefs file details are tracked as deferred items.
 
 ## Deferred

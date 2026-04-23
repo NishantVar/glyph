@@ -1,6 +1,6 @@
-# Glyph Values And Literals
+# Glyph Values And Names
 
-This document records the MVP decisions for Glyph's primitive value surface: strings, numbers, booleans, `none`, identifiers, and name resolution rules.
+This document records the MVP decisions for Glyph's primitive value surface: strings, numbers, booleans, `none`, identifiers, reserved keywords, and name resolution rules.
 
 ## Strings
 
@@ -31,7 +31,7 @@ Common leading indentation is stripped, similar to Python's `textwrap.dedent`. A
 
 Strings are opaque instruction text. There is no interpolation syntax (`${...}`, `{...}`, or equivalent). Values flow through parameters and call arguments, not string splicing.
 
-This follows boundary 1 (Glyph is not a prompt template system), boundary 6 (text reuse is not prompt templating), and the maintenance rule against ad hoc string concatenation.
+This follows foundations: not a prompt template system and foundations: text reuse is not prompt templating, plus the maintenance rule against ad hoc string concatenation.
 
 ## Numbers
 
@@ -94,7 +94,11 @@ Source is case-insensitive: `none`, `None`, and `NONE` are all accepted. The IR 
 
 ### Allowed Characters
 
-Identifiers match `[a-zA-Z_][a-zA-Z0-9_]*`. They must start with a letter or underscore and may contain letters, digits, and underscores. Hyphens are not allowed in identifiers. Dots are reserved for module-qualified access (`repo_tools.inspect_repo`).
+Identifiers match `[a-zA-Z_][a-zA-Z0-9_]*`. They must start with a letter or underscore and may contain letters, digits, and underscores. Hyphens are not allowed in identifiers.
+
+### Dot Access
+
+Dots are reserved for module-qualified access (`repo_tools.inspect_repo`). Control-flow adds single-level property dot access for bound values (e.g. `ctx.has_tests`); see `data-flow.md` for full rules and disambiguation.
 
 ### Case Normalization
 
@@ -110,7 +114,7 @@ If two declarations in different files or scopes use different casings for the s
 
 The following are reserved keywords and cannot be used as identifiers:
 
-`skill`, `block`, `export`, `import`, `text`, `flow`, `call`, `if`, `elif`, `else`, `return`, `true`, `false`, `none`, `effects`, `constraints`, `inputs`, `outputs`, `when_to_use`, `as`, `generated`, `input`, `output`, `always`, `require`, `avoid`, `prefer`, `context`, `and`, `or`, `not`.
+`skill`, `block`, `export`, `import`, `text`, `int`, `float`, `flow`, `call`, `if`, `elif`, `else`, `return`, `true`, `false`, `none`, `effects`, `constraints`, `inputs`, `outputs`, `when_to_use`, `as`, `generated`, `input`, `output`, `always`, `require`, `avoid`, `prefer`, `context`, `and`, `or`, `not`.
 
 This list grows with the language. New keywords should be added conservatively.
 
@@ -165,7 +169,7 @@ A dedicated enum type with validation and exhaustiveness checking may be added p
 
 ## Open Syntax Choices
 
-The semantic commitments above are stronger than the exact syntax. These details can still change:
+These details can still change without affecting the semantic commitments above:
 
 - The exact normalization algorithm for identifiers (simple lowercasing, or case-insensitive plus underscore-normalized).
 - Whether the reserved word list is maintained in a compiler configuration file or hardcoded.

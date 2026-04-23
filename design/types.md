@@ -4,7 +4,7 @@ This document defines the MVP type vocabulary for Glyph source files. It covers 
 
 ## Status
 
-Fills the `name: Type` and `-> ReturnType` slots reserved by `declaration-headers.md`.
+Fills the `name: Type` and `-> ReturnType` slots reserved by `language-surface.md`.
 
 ## Design Posture
 
@@ -17,11 +17,11 @@ A type annotation like `-> ReviewResult` or `ctx: RepoContext` improves two thin
 
 Types in MVP do not carry structural definitions. The compiler does not check whether `RepoContext` has a `.file_tree` field or whether `ValidationResult` has `.passed`. Field access is trusted in MVP. Structural type definitions and checking are deferred to post-MVP.
 
-This follows principle 3 (forgiving source, strict IR) and principle 7 (keep the core language small). Most Glyph skills are linear flows where values pass through by name and the agent figures out the domain semantics from context. Heavy cross-file structural validation is the exception, not the rule, and can be added later without breaking existing source.
+This follows foundations: forgiving source, strict IR and foundations: core language is small. Most Glyph skills are linear flows where values pass through by name and the agent figures out the domain semantics from context. Heavy cross-file structural validation is the exception, not the rule, and can be added later without breaking existing source.
 
 ## Primitive Types
 
-Each value kind from `values-and-literals.md` has a canonical type name.
+Each value kind from `values-and-names.md` has a canonical type name.
 
 | Value kind | Type name | Literal examples |
 |---|---|---|
@@ -35,11 +35,11 @@ Each value kind from `values-and-literals.md` has a canonical type name.
 
 PascalCase is the recommended convention for all type names. This matches every existing example in the design docs (`RepoContext`, `Plan`, `FileSet`, `ReviewResult`, `ValidationResult`, `FailureReport`, `Summary`).
 
-PascalCase is convention, not enforcement. Since identifiers are case-normalized per `values-and-literals.md:99-103`, `String` and `string` resolve to the same name. The compiler accepts either; PascalCase is recommended because it visually distinguishes type names from value names and parameters.
+PascalCase is convention, not enforcement. Since identifiers are case-normalized per `values-and-names.md`, Case Normalization section, `String` and `string` resolve to the same name. The compiler accepts either; PascalCase is recommended because it visually distinguishes type names from value names and parameters.
 
 ### No `Number` Supertype
 
-`values-and-literals.md:62-65` already handles integer-to-float and float-to-integer conversion through lossless coercion at call boundaries. A `Number` supertype would introduce subtyping machinery with no authoring benefit in the MVP.
+`values-and-names.md`, Numeric Coercion section, already handles integer-to-float and float-to-integer conversion through lossless coercion at call boundaries. A `Number` supertype would introduce subtyping machinery with no authoring benefit in the MVP.
 
 ## Named Domain Types
 
@@ -67,11 +67,11 @@ Field access such as `result.findings` is not validated against the type in MVP.
 
 ### Naming Convention
 
-Domain type names follow the same identifier rules as all other names: `[a-zA-Z_][a-zA-Z0-9_]*` per `values-and-literals.md:96-97`. PascalCase is recommended for types. The no-shadowing rule from `values-and-literals.md:140-150` applies: if a type name collides with a parameter or binding after case normalization, the compiler rejects the program.
+Domain type names follow the same identifier rules as all other names: `[a-zA-Z_][a-zA-Z0-9_]*` per `values-and-names.md`, Allowed Characters section. PascalCase is recommended for types. The no-shadowing rule from `values-and-names.md`, No Shadowing section, applies: if a type name collides with a parameter or binding after case normalization, the compiler rejects the program.
 
 ## `none` Value And `None` Type
 
-`none` is a reserved keyword and value representing the absence of a value (`values-and-literals.md:80-89`). Since identifiers are case-normalized, `none` and `None` resolve to the same name.
+`none` is a reserved keyword and value representing the absence of a value (`values-and-names.md`, None section). Since identifiers are case-normalized, `none` and `None` resolve to the same name.
 
 Recommended convention:
 
@@ -97,7 +97,7 @@ The MVP does not include a bottom type. `None` covers the "returns nothing" case
 
 ## Type-Name Identifier Rules
 
-Types are not a separate lexical class. They are identifiers that follow the same rules as all other identifiers in `values-and-literals.md`.
+Types are not a separate lexical class. They are identifiers that follow the same rules as all other identifiers in `values-and-names.md`.
 
 The parser knows a name is in type position based on syntax:
 
@@ -108,7 +108,7 @@ No separate type keyword, sigil, or capitalization rule is needed for the parser
 
 ## Interaction With Declaration Headers
 
-`declaration-headers.md` reserves the `name: Type` and `-> ReturnType` slots. This document fills those slots:
+`language-surface.md` reserves the `name: Type` and `-> ReturnType` slots. This document fills those slots:
 
 ```glyph
 // Parameter type annotation (optional)
@@ -122,11 +122,11 @@ export block inspect_failure(scope: String) -> FailureReport
 
 Parameter type annotations are always optional. When omitted, the compiler infers the type from usage context or defaults to an untyped parameter that accepts any value. When present, the compiler performs nominal matching at call sites.
 
-Return type annotations are optional on `skill` and `block`, mandatory on `export block` per `declaration-headers.md:93`. On export blocks, the return type is part of the import contract.
+Return type annotations are optional on `skill` and `block`, mandatory on `export block` per `language-surface.md`, Export Block section. On export blocks, the return type is part of the import contract.
 
 ## Interaction With Export Block Closure
 
-Export blocks must declare `-> ReturnType` so callers have a clear contract (`declaration-headers.md:93`, principle 19). In MVP, this contract is nominal:
+Export blocks must declare `-> ReturnType` so callers have a clear contract (see `data-flow.md` for the export-block closure rule). In MVP, this contract is nominal:
 
 ```glyph
 // repo_tools.glyph.md
@@ -156,12 +156,7 @@ The compiled Markdown for `fix_bug` includes "receives a RepoContext from inspec
 
 ## Interaction With Compiled Output
 
-Type names appear in the compiled Markdown output in two places:
-
-- **Inputs section.** Parameter types are rendered as input descriptions: "scope (String)", "plan (Plan)".
-- **Output section.** Return types are rendered as output descriptions: "Produces a ValidationResult."
-
-When type annotations are omitted, the compiled output describes the parameter or return value without a type label.
+See `compiled-output.md` for how types surface in the final Markdown.
 
 ## Deferred
 
@@ -172,7 +167,7 @@ The following type features are deferred beyond the MVP:
 - **Structural type checking.** Validating that field access like `result.findings` is compatible with the declared or inferred type. The compiler records field access in the IR but does not reject unverifiable access in MVP.
 - **Collection types.** `List[T]`, `Set[T]`, `Map[K, V]`, or similar parameterized types. Existing examples use opaque names like `FileSet` which serve the same documentary purpose without requiring generic type machinery.
 - **Callable types.** Blocks are called by name. First-class function values and their types are not needed.
-- **Enum and union types.** Per `values-and-literals.md:157-164`, enumerated values are represented as strings in MVP. Dedicated enum types with exhaustiveness checking may be added later.
+- **Enum and union types.** Per `values-and-names.md`, Enums And Symbols section, enumerated values are represented as strings in MVP. Dedicated enum types with exhaustiveness checking may be added later.
 - **Type aliases.** A shorthand for renaming or combining existing types.
 - **`Never` / bottom type.** For blocks that unconditionally fail or diverge.
 
