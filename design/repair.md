@@ -6,6 +6,8 @@ This document is the single authoritative reference for the LLM repair pass and 
 
 The repair pass is a source-to-source pass that turns invalid or under-specified Glyph source into valid, still-readable Glyph source before deterministic IR compilation.
 
+Repair is not just a safety net for experienced authors — it is the **primary content generation mechanism for novice authors**. A novice using only the kernel surface (`skill`, `require`/`avoid`, `flow:`, quoted strings, calls with parens, `with` modifier) writes source that contains many undefined bare names and parens-calls. Repair materializes these as `generated text` and `generated block` declarations so the source compiles; those generated definitions are the novice's effective "library" until they promote entries to hand-written `text` or `block`. This is why repair emits **one-sentence** generated bodies — short enough to minimize drift from author intent, reviewable at a glance, and easy to promote.
+
 ```text
 loose or invalid Glyph source
     -> parse / resolve / infer diagnostics
@@ -142,29 +144,27 @@ Could not determine whether summarize_tradeoffs is a workflow step or an output 
 Add an explicit step marker or output marker.
 ```
 
-### 4.8 Compound Name Normalization
+### 4.8 Compound Names
 
-When source uses a compact compound name whose marker is clear, repair normalizes it to marker-plus-concept form and reports the normalization:
+Compound names like `avoid_unrelated_edits` are valid identifiers and are **not** forcibly split into marker-plus-concept form. Both `avoid_unrelated_edits` (single identifier) and `avoid unrelated_edits` (marker keyword + concept name) are accepted authoring styles.
 
-```glyph
-skill fix_bug(scope)
-    avoid_unrelated_edits
-```
+When a compound name resolves to a declaration (`text`, `generated text`, import, etc.), the compiler infers role, strength, and polarity from the declaration's text content, with the name prefix (`avoid_*`, `prefer_*`, `must_*`) as supporting evidence. No splitting or renaming occurs.
 
-becomes:
+When a compound name is unresolved, repair generates a definition under the full compound name with the full semantics baked into the text body. For example, an unresolved `avoid_unrelated_edits` produces:
 
 ```glyph
-skill fix_bug(scope)
-    avoid unrelated_edits
+generated text avoid_unrelated_edits = "Do not make changes outside the requested scope."
 ```
 
-The repair report should mention that `avoid_unrelated_edits` was normalized to `avoid unrelated_edits`.
+The definition carries the polarity in its text. No splitting, no renaming.
 
 ## 5. Generated Definitions
 
+Repair materializes two kinds of generated declarations: `generated text` for undefined bare names, and `generated block` for undefined parens-calls. Both follow the same stability, placement, promotion, and idempotence rules.
+
 ### 5.1 Syntax
 
-The `generated text` declaration is the source form for repair-materialized definitions. It is structurally identical to `text` with a `generated` prefix.
+**`generated text`** — for undefined bare names (no parens at the use site):
 
 ```
 generated text <name> = <string-literal>
@@ -180,22 +180,49 @@ generated text root_cause_before_fix = """
 generated text validate_before_success = "Run the full validation suite and confirm all checks pass before reporting success."
 ```
 
-Rules:
+**`generated block`** — for undefined parens-calls (the use site has parentheses, with or without arguments):
+
+```
+generated block <name>(<params>)
+    <one-sentence-body>
+```
+
+Examples:
+
+```glyph
+generated block inspect_failure(area)
+    "Inspect the failure in {area} and identify what is failing."
+
+generated block summarize_changes()
+    "Summarize what was changed and why."
+```
+
+Rules common to both:
+
+- `generated` is already reserved (`values-and-names.md`, Reserved Words section). No new reserved words.
+- String literals follow `values-and-names.md`: inline `"..."` or block `"""..."""`, no interpolation.
+- The repair pass picks the kind from the use site: parens-call → `generated block`; bare name → `generated text`. Never both for the same name.
+
+Rules specific to `generated text`:
 
 - Same shape as `text`. No parameters, no return type, no body with sub-sections.
-- String literals follow `values-and-names.md`: inline `"..."` or block `"""..."""`, no interpolation.
-- `generated` is already reserved (`values-and-names.md`, Reserved Words section). No new reserved words.
 - Not a callable. A bare name resolves to its string content; a parenthesized form is a compile error.
+
+Rules specific to `generated block`:
+
+- Minimal `block` shape with a `generated` prefix. Parameters are allowed (inferred from the use site); the generated form has no explicit return type annotation.
+- The body is exactly one inline or block string — a single sentence. This is the **one-sentence rule**: generated bodies stay close to the name's meaning and leave room for the `with` modifier and downstream passes to shape the final instruction. If the name implies a multi-step workflow, repair emits one summarizing sentence and optionally leaves a diagnostic suggesting the author promote it to a hand-written `block` with a `flow:`.
+- The body may reference parameters by name (e.g. `"{area}"`); the expand pass substitutes them with concrete values. No other interpolation semantics in MVP.
 
 ### 5.2 Repair-Only Authorship
 
-Only the LLM repair pass emits `generated text` declarations. Authors do not hand-write them. Authors who want to define bare names manually use `text` declarations.
+Only the LLM repair pass emits `generated text` and `generated block` declarations. Authors do not hand-write them. Authors who want to define names manually use `text`, `block`, or `export block`.
 
-This preserves a clean separation: `generated` means machine-created, `text` means author-created.
+This preserves a clean separation: `generated` means machine-created; `text`/`block` means author-created.
 
 ### 5.3 Placement
 
-All `generated text` declarations must appear after all non-generated top-level declarations in the source file. The compiler enforces this ordering rule. The repair pass appends generated declarations to the end of the file.
+All generated declarations (both `generated text` and `generated block`) must appear after all non-generated top-level declarations in the source file. The compiler enforces this ordering rule. The repair pass appends generated declarations to the end of the file.
 
 Example file structure:
 
@@ -205,16 +232,20 @@ import "./repo_tools.glyph.md" { unrelated_edits }
 text short_note = "Keep changes minimal."
 
 skill fix_bug(scope)
-    root_cause_before_fix
     avoid unrelated_edits
+    require preserve_existing_patterns
 
     flow:
-        inspect_failure(scope)
+        inspect_failure(scope) with "focus on auth boundaries"
         return summarize_changes()
 
-generated text root_cause_before_fix = """
-    Identify the root cause before proposing or applying a fix.
-"""
+generated text preserve_existing_patterns = "Follow the repository's existing patterns before introducing new abstractions."
+
+generated block inspect_failure(area)
+    "Inspect the failure in {area} and identify what is failing."
+
+generated block summarize_changes()
+    "Summarize what was changed and why."
 ```
 
 ### 5.4 Stability
@@ -227,35 +258,35 @@ Generated definitions are stable once created. Future compiles reuse the same de
 4. the compiler schema requires a migration;
 5. the generated definition no longer validates against the current language rules.
 
-Detection uses the same name-resolution mechanism as idempotence (section 4.5): if the bare name already resolves to any declaration, repair skips it.
+Detection uses the same name-resolution mechanism as idempotence (section 4.5): if the name already resolves to any declaration, repair skips it.
 
-This turns LLM expansion of undefined bare names into a one-time source repair rather than repeated semantic guessing.
+This turns LLM materialization of undefined names into a one-time source repair rather than repeated semantic guessing.
 
 ### 5.5 No-Shadowing Rule
 
-`generated text` participates in the no-shadowing rule (`values-and-names.md`, No Shadowing section). If both `text foo` and `generated text foo` exist in the same file, the compiler emits a warning and deletes the `generated text` declaration, keeping the author-written `text`.
+Both `generated text` and `generated block` participate in the no-shadowing rule (`values-and-names.md`, No Shadowing section). If an author-written declaration (`text`, `block`, or `export block`) exists with the same name as a generated one in the same file, the compiler emits a warning and deletes the generated declaration, keeping the author-written version.
 
-This is the only case where the compiler auto-deletes a declaration. The author's explicit `text` always supersedes the machine-generated version.
+This is the only case where the compiler auto-deletes a declaration. The author's explicit declaration always supersedes the machine-generated version.
 
 ### 5.6 Promotion Paths
 
-Authors may interact with `generated text` declarations in three ways. All work through existing name resolution and the idempotence rule; no special compiler behavior is needed.
+Authors may interact with generated declarations in three ways. All work through existing name resolution and the idempotence rule; no special compiler behavior is needed.
 
-- **Edit the string body.** The declaration stays `generated text`. Repair sees the name is defined and skips it.
-- **Promote to `text`.** Delete the word `generated`. The declaration may then be moved anywhere in the file.
-- **Promote to imported library.** Move the content into another `.glyph.md` file as `export text`, import it back, and delete the local `generated text` line.
+- **Edit the body.** The declaration stays `generated text` / `generated block`. Repair sees the name is defined and skips it. For `generated block`, edits are still constrained to the one-sentence body until promoted.
+- **Promote to `text` or `block`.** Delete the word `generated`. For a promoted `block`, the author may then add `flow:`, `effects:`, `constraints:`, and a proper body with multiple steps. The declaration may also be moved anywhere in the file.
+- **Promote to imported library.** Move the content into another `.glyph.md` file as `export text` or `export block`, import it back, and delete the local `generated` declaration.
 
 ### 5.7 Not Exportable
 
-`export generated text` is not a valid declaration form. A generated definition is local to the file where repair created it. To share across files, the author must first promote it to `export text`.
+Neither `export generated text` nor `export generated block` is a valid declaration form. A generated definition is local to the file where repair created it. To share across files, the author must first promote it to `export text` or `export block`.
 
 ### 5.8 Compile-Time Behavior
 
-`generated text` compiles identically to `text`:
+Generated declarations compile identically to their hand-written counterparts:
 
-- At the usage site, the bare name is replaced by the string content.
-- The `generated text` declaration itself produces nothing in compiled output.
-- The `generated` marker is erased. No provenance marker appears in the compiled `.md` file.
+- `generated text`: at the usage site, the bare name is replaced by the string content.
+- `generated block`: at the usage site, the call expands to the one-sentence body, with parameters substituted by concrete argument values and the optional `with` modifier applied by the expand pass.
+- The declaration itself produces nothing in compiled output. The `generated` marker is erased. No provenance marker appears in the compiled `.md` file.
 
 ## 6. Comment Syntax
 
@@ -273,10 +304,11 @@ Glyph uses `//` (double slash) for line comments. Block comments and doc-comment
 The repair pass may add:
 
 - explicit role or constraint markers when context makes the intended role, strength, or polarity very clear;
-- marker-plus-concept normalizations (e.g. `avoid_unrelated_edits` to `avoid unrelated_edits`), with a notification;
+- `generated text` definitions for unresolved compound names (e.g. `avoid_unrelated_edits`), with full semantics baked into the text body;
 - missing type annotations;
 - local declarations for author-defined shorthand;
-- stable `generated text` definitions for undefined bare or shorthand instructions;
+- stable `generated text` definitions for undefined bare names;
+- stable `generated block` definitions for undefined parens-calls (one-sentence bodies);
 - missing imports when the referenced library is obvious from available context;
 - `export` on a block only when an importability diagnostic makes the author's intent clear;
 - missing block delimiters or indentation fixes;
@@ -309,7 +341,7 @@ Repair writes directly to source files. The user can review changes afterward us
 
 ## 10. Open Questions
 
-- **Diagnostic taxonomy.** Define which compiler errors are repairable, which require author input, and which must fail immediately.
+- **Diagnostic taxonomy.** The diagnostic shape and classification tiers are defined in [diagnostics.md](diagnostics.md). The full catalog of individual diagnostics will be built out as the compiler is implemented.
 - **Security and trust.** Prevent repair from adding imports, effects, exports, or generated text that broadens behavior beyond the author's apparent intent.
 - **Generation limits.** Whether the compiler should limit the number of `generated text` declarations per file.
 - **Migration hashing.** Whether `generated text` should carry a compiler-generated hash for migration detection when language rules change.

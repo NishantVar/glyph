@@ -4,15 +4,16 @@ This document is the single authoritative source for Glyph's MVP IR structure, c
 
 ## 1. IR Roles
 
-The MVP instruction role set is **closed**:
+The MVP instruction role set is **closed** to four roles:
 
 | Role | Meaning |
 |------|---------|
-| `InputContract` | What must be provided at invocation time, or what an input must mean for the unit to be valid. Defines the caller/callee boundary — differs from `Context` (which informs but is not required) and from `Constraint` (which governs behavior, not inputs). |
+| `InputContract` | What must be provided at invocation time, or what an input must mean for the unit to be valid. Defines the caller/callee boundary — differs from `Constraint` (which governs behavior, not inputs). |
 | `Step` | An ordered action in the workflow. Inside `flow:`, bare calls default to `Step`. A step may carry effect annotations, but effects are not roles. |
 | `Constraint` | A behavioral rule governing how work is performed. Hard positive rules, prohibitions, and preferences are all constraints with different strength/polarity attributes — they do not become separate roles. |
-| `Context` | Non-normative information the agent needs to interpret the task. Not an obligation. Repair must not silently turn context into required behavior. If text could be either context or a constraint, the compiler should request clarification rather than defaulting to `Context`. |
 | `OutputContract` | What the final result, return value, or report should contain or satisfy. Describes the result boundary, not a workflow action (`Step`) or a process rule (`Constraint`). |
+
+`Context` (non-normative informational framing) is **deferred from MVP** — see [todo.md](todo.md). With `## Inputs` removed from compiled output there is no clean projection target, and any genuine context can be authored as a Step, a Constraint, or a leading inline sentence inside `flow:`. The `context` keyword stays reserved for this future restoration.
 
 Activation/routing rules, preconditions, failure policies, and effects are **not** MVP instruction roles. They are either separate IR structures or deferred design areas.
 
@@ -30,15 +31,15 @@ Activation/routing rules, preconditions, failure policies, and effects are **not
 
 ### Projection Guidance
 
-Projection from IR to compiled Markdown is target-specific. General guidance:
+Projection from IR to compiled Markdown is target-specific. MVP projection produces only YAML frontmatter and a single `## Instructions` section (see [compiled-output.md](compiled-output.md)):
 
-- `Step` controls ordered workflow rendering.
-- `Constraint` controls behavioral rule rendering; strength and polarity influence wording, prominence, and protection against demotion.
-- `InputContract` controls input/assumption rendering.
-- `Context` controls informational context rendering.
-- `OutputContract` controls final-result or return-contract rendering.
+- `Step` → numbered list items under `### Steps`. Parameters carried by the step resolve to concrete values during the expand pass; the compiled Step contains concrete prose, not variable references.
+- `Constraint` → bulleted items under `### Constraints`. Strength and polarity influence wording, prominence, and protection against demotion.
+- `InputContract` → folded into the expand pass; concrete argument values flow into the Step prose. No dedicated compiled section in MVP.
+- `OutputContract` → folded into the final `Step`. The `return` expression becomes the closing sentence of the last numbered step. No dedicated compiled section in MVP.
+- Effects → YAML frontmatter `effects` list, not a prose section.
 
-The IR preserves role, strength, and polarity even if a target currently renders several distinctions near each other.
+The IR preserves role, strength, polarity, and the full `InputContract` / `OutputContract` structure even though MVP compiled output does not project them as separate sections.
 
 ## 2. Constraints
 
@@ -71,25 +72,28 @@ Constraint {
 | `require` | `Constraint(strength: required, polarity: require)` |
 | `avoid` | `Constraint(strength: required, polarity: avoid)` |
 | `prefer` | `Constraint(strength: preferred, polarity: require)` |
-| `always` | `Constraint(strength: invariant, polarity: require)` |
-| `always avoid` | `Constraint(strength: invariant, polarity: avoid)` |
+| `must` | `Constraint(strength: invariant, polarity: require)` |
+| `must avoid` | `Constraint(strength: invariant, polarity: avoid)` |
 | `prefer avoid` | `Constraint(strength: preferred, polarity: avoid)` |
 
-`always` modifies strength. `avoid` modifies polarity. This allows the source to stay readable without multiplying IR roles.
+`must` modifies strength. `avoid` modifies polarity. This allows the source to stay readable without multiplying IR roles.
 
 Other source markers:
 
 | Marker | IR mapping |
 |--------|------------|
-| `input` | `InputContract` |
-| `output` | `OutputContract` |
 | `flow` | contains `Step` nodes |
 
-`context` may be available as an author-facing disambiguator but is not part of the everyday recommended marker set. Most `Context` nodes come from clearly non-normative inline text or repaired/intermediate source.
+`input`, `output`, and `context` markers are deferred from MVP alongside the `inputs:` / `outputs:` sub-sections and the `Context` role (see [todo.md](todo.md)). Header parameters cover input definition; `return` covers output.
 
 ### Marker-Plus-Concept Form
 
-The canonical source form is marker-plus-concept. Authors may write compact compound names such as `avoid_unrelated_edits`, but repair normalizes them to explicit marker form such as `avoid unrelated_edits` and emits a notification.
+Two authoring styles are both valid:
+
+- **Marker-plus-concept:** `avoid unrelated_edits` — the marker keyword carries polarity, the concept name resolves to a polarity-neutral definition.
+- **Compound name:** `avoid_unrelated_edits` — the name is a single identifier whose definition carries the full semantics (including polarity).
+
+There is no forced normalization from one form to the other. If a compound name resolves to a declaration, the compiler uses it as-is and infers role, strength, and polarity from the declaration's text content, with the name prefix as supporting evidence. If a compound name is unresolved, repair generates a definition under the full compound name with full semantics baked in — no splitting.
 
 ### Body-Level Constraint Normalization
 
@@ -115,17 +119,17 @@ Evidence order:
 2. Metadata from same-file `text` or block declarations.
 3. Metadata from imported or standard-library declarations.
 4. Position and structure (e.g., `flow:` implies `Step`).
-5. Compound-name cues (`avoid_*`, `prefer_*`, `always_*`, `never_*`, `must_never_*`) — repaired to marker-plus-concept form.
+5. Compound-name cues (`avoid_*`, `prefer_*`, `must_*`, `never_*`, `must_never_*`) — used as evidence for role/polarity inference; no forced splitting.
 6. LLM repair-generated definitions.
 7. Diagnostic if role, strength, or polarity remains ambiguous.
 
-`require`, `avoid`, and `prefer` may be inferred during repair when evidence is clear. `always` must be inferred conservatively — only when the source already carries invariant-level intent (trusted metadata, strong wording like `always_*`, `never_*`, `must_never_*`). A plain `avoid_*` cue repairs to required avoidance, not invariant. `always` should stay rare; it is not just a more emphatic `require`.
+`require`, `avoid`, and `prefer` may be inferred during repair when evidence is clear. `must` should be inferred conservatively — only when the source already carries invariant-level intent (trusted metadata, strong wording like `must_*`, `never_*`, `must_never_*`). A plain `avoid_*` cue repairs to required avoidance, not invariant. `must` should stay rare; it is not just a more emphatic `require`.
 
 ## 3. Effects
 
 ### MVP Keywords
 
-Eight `verb_noun` snake_case effect keywords:
+Nine `verb_noun` snake_case effect keywords:
 
 | Keyword | Meaning |
 |---------|---------|
@@ -137,6 +141,7 @@ Eight `verb_noun` snake_case effect keywords:
 | `uses_network` | Accesses web resources, downloads packages, calls remote APIs, or contacts external services. |
 | `asks_user` | Pauses execution to request human input, approval, or clarification. |
 | `creates_artifacts` | Produces durable outputs (reports, generated assets, compiled Markdown, archives). Distinct from `writes_files`: artifact creation is the skill's purpose, not a side-effect file edit. |
+| `spawns_agent` | Spawns a subagent to perform delegated work (see [stdlib.md](stdlib.md)). |
 
 ### Syntax
 
@@ -189,58 +194,64 @@ A role classifies author intent. An effect classifies capabilities or side effec
 
 ## 4. Section Vocabulary
 
-### The Six MVP Sub-Section Headers
+### The Four MVP Sub-Section Headers
 
-Six colon-terminated headers are available inside `skill`, `block`, and `export block` bodies:
+Four colon-terminated headers are available inside `skill`, `block`, and `export block` bodies:
 
 | Section | Spelling | Content |
 |---------|----------|---------|
-| `effects:` | plural | Effect keywords (see section 3) |
-| `constraints:` | plural | Constraint markers: `require`, `avoid`, `prefer`, `always` + concept |
-| `inputs:` | plural | `input` marker statements — InputContract detail beyond header params |
-| `outputs:` | plural | `output` marker statements — OutputContract detail beyond `return` |
+| `description:` | singular | One-line summary of when/why to use this skill; compiles to frontmatter `description` |
+| `effects:` | plural | Effect keywords (see section 3); compiles to frontmatter `effects` |
+| `constraints:` | plural | Constraint markers: `require`, `avoid`, `prefer`, `must` + concept |
 | `flow:` | singular | Ordered steps: calls, bindings, `return`, `if`, bare names, inline strings |
-| `when_to_use:` | snake_case phrase | Trigger guidance for skill routing |
 
-**Spelling convention:** all headers use snake_case. Plural for set-like sections. Singular for the workflow container. Multi-word phrase for `when_to_use:`.
+`inputs:`, `outputs:`, and `when_to_use:` are deferred from MVP ([todo.md](todo.md)). Header parameters cover input definition; `return` covers output; `description:` covers routing.
 
-### No `context:` Section
+**Spelling convention:** all headers use snake_case. Plural for set-like sections. Singular for value and workflow containers.
 
-`Context` is an IR role but has no dedicated section header. Context is non-normative information that authors place inline — as quoted strings, bare informational text, or with the `context` disambiguator. The compiler classifies clearly non-normative text as `Context` IR nodes without a separate section.
+### `description:` Section
+
+`description:` provides a concise, one-line summary of when and why a skill should be used. It compiles to the `description` field in YAML frontmatter (see `compiled-output.md`), which is the primary trigger for coding agents that select skills. Content is a single inline string or bare text.
+
+```glyph
+skill fix_bug(scope)
+    description: "Debug and fix a bug in the codebase with minimal, targeted changes."
+
+    flow:
+        ...
+```
+
+If `description:` is omitted, the compiler generates a description from the skill name and body during the LLM expand pass. Authors should prefer explicit descriptions for predictable skill routing.
 
 ### Section Content Rules
 
-**`inputs:`** — adds InputContract detail beyond header parameters. Header params define names and types; `inputs:` adds semantic descriptions, availability assumptions, or contract prose. Not a duplicate of header parameters. When present, InputContract nodes merge with header param information in compiled output. Omitted when parameters are self-explanatory.
+**`description:`** — a concise one-line summary of when and why to use this skill. Compiles to frontmatter `description`. If omitted, the compiler generates one from the skill name and body. Available only on `skill` declarations.
 
-**`outputs:`** — adds OutputContract detail beyond `return`. `return` in `flow:` defines what value is produced; `outputs:` describes what the output should contain or satisfy. Not a duplicate of `return`. Omitted when the return value is self-explanatory.
+**`effects:`** — declared effect keywords (see section 3). Compiles to frontmatter `effects` as a YAML list. Validated against the inferred effect set.
 
-**`flow:`** — the ordered workflow section. All content defaults to the `Step` IR role unless explicit syntax or resolved metadata says otherwise. The only section that contains ordered, sequential content.
+**`constraints:`** — constraint markers with explicit strength and polarity. Projects to `### Constraints` under `## Instructions`.
 
-**`when_to_use:`** — trigger guidance for skill routing, beyond what fits in `description`. Available only on `skill` declarations.
+**`flow:`** — the ordered workflow section. All content defaults to the `Step` IR role unless explicit syntax or resolved metadata says otherwise. The only section that contains ordered, sequential content. Projects to `### Steps` under `## Instructions`; `return` folds into the final Step.
 
 ### Mandatory / Optional Per Declaration Kind
 
 | Section | `skill` | `block` | `export block` |
 |---------|---------|---------|----------------|
+| `description:` | Optional (generated if omitted) | N/A | N/A |
 | `effects:` | Optional | Optional | Optional (validated against inference) |
 | `constraints:` | Optional | Optional | Optional |
-| `inputs:` | Optional | Optional | Optional |
-| `outputs:` | Optional | Optional | Optional |
 | `flow:` | Required (unless instruction-only) | Optional | Expected (needs explicit `return`) |
-| `when_to_use:` | Optional | N/A | N/A |
 
-A `skill` body must contain at least `constraints:` or `flow:` (or both). An empty skill body is a compile error. An `export block` must have an explicit `return` path, which in practice means it will have `flow:`. `when_to_use:` is restricted to `skill` because trigger guidance is routing metadata for the compiled entrypoint.
+A `skill` body must contain at least `constraints:` or `flow:` (or both). An empty skill body is a compile error. An `export block` must have an explicit `return` path, which in practice means it will have `flow:`.
 
 ### Recommended Source Order
 
 Source order is free — the compiler reorders to the fixed compiled-output order. Recommended convention:
 
-1. `effects:`
-2. `constraints:`
-3. `inputs:` (if used)
+1. `description:` (if used)
+2. `effects:`
+3. `constraints:`
 4. `flow:`
-5. `outputs:` (if used)
-6. `when_to_use:` (if used)
 
 The compiler's source normalization pass enforces this order when rewriting.
 

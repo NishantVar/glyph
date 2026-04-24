@@ -42,7 +42,7 @@ skill implement_feature(scope, framework, risk="medium") -> result
 
 4. **Visualizable** -- Skills can be viewed as code, as a graph/workflow, or as compiled agent output. Structured flows are easier to scan than walls of text.
 
-5. **Small syntax** -- A limited set of primitives (`skill`, `block`, `call`, `if`, `for_each`, `require`/`prefer`/`avoid`, `return`) keeps things expressive yet constrained.
+5. **Small syntax** -- A limited set of primitives (`skill`, `block`, `call`, `if`, `require`/`prefer`/`avoid`/`must`, `return`) keeps things expressive yet constrained.
 
 6. **Hybrid compilation** -- Deterministic parsing, validation, and normalization combined with LLM-assisted semantic expansion where needed. Compiles through an intermediate representation (IR).
 
@@ -53,10 +53,18 @@ skill implement_feature(scope, framework, risk="medium") -> result
 ## Architecture (Planned)
 
 ```
-Source (.glyph) -> Parse -> Analyze -> Transform -> Expand [LLM] -> Validate -> Output
+Source (.glyph.md)
+  -> 1. Parse      (deterministic)
+  -> 2. Analyze    (deterministic)
+  -> 3. Repair     [LLM, bounded loop]
+  -> 4. Lower      (deterministic)
+  -> 5. Validate   (deterministic)
+  -> 6. Expand     [LLM, per-invocation]
+  -> 7. Emit       (deterministic)
+Output (.md)
 ```
 
-A 5-pass hybrid compiler with a "Safety Sandwich" pattern -- deterministic passes bound the LLM-assisted expansion pass to maintain reliability.
+A 7-phase hybrid compiler with a "Safety Sandwich" pattern -- deterministic passes bound the two LLM-assisted passes (Repair and Expand) to maintain reliability. See [design/pipeline.md](design/pipeline.md) for the canonical reference.
 
 ## How It Differs
 

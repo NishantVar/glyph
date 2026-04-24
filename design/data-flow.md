@@ -137,6 +137,27 @@ summarize                      // bare name reference (text, parameter, binding)
 
 See `values-and-names.md` for the full name resolution rules, reserved keywords, and identifier conventions.
 
+### `with` Modifier
+
+A call may carry a trailing `with "modifier string"` clause. The modifier is a short natural-language prompt that specializes the called definition at this specific call site:
+
+```glyph
+flow:
+    inspect_failure(scope) with "focus on auth boundaries"
+    summarize_changes() with "include any remaining gaps"
+```
+
+Rules:
+
+- Syntax: `<call-expression> with <string-literal>`. The string is a single inline `"..."` or block `"""..."""`; no interpolation.
+- The modifier attaches to the call site, not the binding. With a binding, it still attaches to the call: `report = inspect_failure(scope) with "focus on auth"`.
+- The modifier is consumed by the expand pass. It shapes the generated prose for that one invocation and does **not** survive into compiled output (no "with modifier" text appears in the `.md`).
+- The modifier does not change the callee's declared effects, constraints, return type, or parameters. It only adjusts the wording of the expanded Step.
+- Exactly one `with` clause per call site in MVP. No chained `with ... with ...`.
+- Applies to bare calls (`foo()`), qualified calls (`Alias.foo()`), and calls inside bindings (`x = foo()`). Does not apply to bare-name statements (no parens).
+
+IR representation: the modifier is stored on the `Call` IR node as an optional `site_modifier: String` field. See the call-node normalization below.
+
 ### Nested Calls
 
 Nested calls are allowed in the MVP. A call may appear as an argument to another call:
@@ -160,7 +181,8 @@ Call {
   args: { <param_name>: <value_or_ref>, ... },
   output: Binding(<name>) | none,
   return_type: <resolved type>,
-  effects: [<inferred effect set>]
+  effects: [<inferred effect set>],
+  site_modifier: <string> | none
 }
 ```
 
@@ -187,7 +209,7 @@ Six statement forms are allowed inside `flow:` blocks. All content defaults to t
 | Binding | `ctx = inspect_repo(scope)` | `Step` with output binding |
 | Bare call | `apply_changes(plan)` | `Step`, no output binding |
 | Bare name | `validate_before_success` | `Step`, resolved via name resolution |
-| Inline string | `"Mention any issues found."` | `Step` or `Context` (inferred) |
+| Inline string | `"Mention any issues found."` | `Step` |
 | Return | `return summarize(plan)` | `OutputContract` |
 | If/elif/else | `if <cond>:` block | `Branch` container |
 
@@ -282,7 +304,7 @@ Blank lines inside `if`/`elif`/`else` bodies are visual separators and do not cl
 | `x = call(...)` | `Call { output: Binding(x), ... }` | `Step` |
 | `call(...)` | `Call { output: none, ... }` | `Step` |
 | `bare_name` | `InstructionRef { name }` | `Step` |
-| `"text"` | `InlineInstruction { text }` | `Step` or `Context` |
+| `"text"` | `InlineInstruction { text }` | `Step` |
 | `return expr` | `Return { value }` | `OutputContract` |
 | `if/elif/else` | `Branch { condition, then_body, elif_branches, else_body }` | Container |
 | `x.prop` | `PropertyAccess { object, property }` | Value expression |
@@ -347,7 +369,7 @@ Data flow should be visualizable as a graph: parameters are entry nodes, calls a
 
 ## Interaction With Other Design Areas
 
-`language-surface.md` (parameter definition syntax), `language-surface.md` (indentation, line continuation, colon-terminated headers), `values-and-names.md` (identifier rules, name resolution, bare name vs call, reserved keywords), `ir-and-semantics.md` (effect propagation, no call-site effect syntax), `types.md` (nominal matching at call boundaries), `ir-and-semantics.md` (`flow:` section), `ir-and-semantics.md` (`Step`, `OutputContract`, `Context`, `Branch`), `compiled-output.md` (conditional logic flattens to prose).
+`language-surface.md` (parameter definition syntax), `language-surface.md` (indentation, line continuation, colon-terminated headers), `values-and-names.md` (identifier rules, name resolution, bare name vs call, reserved keywords), `ir-and-semantics.md` (effect propagation, no call-site effect syntax), `types.md` (nominal matching at call boundaries), `ir-and-semantics.md` (`flow:` section), `ir-and-semantics.md` (`Step`, `OutputContract`, `Branch`), `compiled-output.md` (conditional logic flattens to prose).
 
 ## Deferred
 

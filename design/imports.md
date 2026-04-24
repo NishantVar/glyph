@@ -24,8 +24,13 @@ Only explicitly exported declarations are importable (foundations: only exports 
 |---|---|---|
 | `export block` | Yes | Selective import or `M.name` call |
 | `export text` | Yes | Selective import or `M.name` reference |
+| `export int` | Yes | Selective import or `M.name` reference |
+| `export float` | Yes | Selective import or `M.name` reference |
 | `block` | No -- private | Compile error if named in a selective import |
 | `text` | No -- private | Compile error if named in a selective import |
+| `int` | No -- private | Compile error if named in a selective import |
+| `float` | No -- private | Compile error if named in a selective import |
+| `generated text` | No -- private | Compile error if named in a selective import |
 | `skill` | Special | Accessible only via `M.skill_name` on whole-module imports |
 
 ### Skill Accessibility
