@@ -6,7 +6,9 @@ This document is the single authoritative reference for Glyph source syntax: dec
 
 A `.glyph.md` file is a Glyph source module. It compiles to exactly one Markdown file by replacing `.glyph.md` with `.md` (e.g. `skill.glyph.md` -> `skill.md`). The entire file is Glyph source; there is no Markdown passthrough. Markdown structure lives in the compiled output, not in the source.
 
-Each `.glyph.md` file must contain exactly one `skill` declaration. It may also contain imports, value-binding declarations (`text`, `int`, `float`), blocks, and exported blocks that support that skill. The MVP base declaration kinds are `skill`, `block`, `text`, `int`, and `float`, with `export` as visibility modifier on value-binding and block kinds, and `generated` as repair-authorship modifier on `text`. Later design may add `agent`, `abstract agent`, or `trait`.
+Each `.glyph.md` file must contain exactly one `skill` declaration. It may also contain imports, value-binding declarations (`text`, `int`, `float`), blocks, and exported blocks that support that skill. The MVP base declaration kinds are `skill`, `block`, `text`, `int`, and `float`, with `export` as visibility modifier on value-binding and block kinds, and `generated` as repair-authorship modifier on both `text` and `block`.
+
+**Novice kernel.** A new author only needs a small subset to write useful skills: `skill`, `require`/`avoid`, `flow:`, quoted inline strings, calls with parentheses, and the `with` modifier on calls (see [data-flow.md](data-flow.md)). Blocks, named text, types, effects, and imports are discoverable later; repair materializes `generated text` and `generated block` definitions for undefined names so novice skills compile without those constructs present in source.
 
 Glyph source optimizes for easy readability, easy maintenance, and forgiving authoring. The source surface may be duck-typed and partially inferred; the compiler is responsible for turning that into a strict IR. The split is: source can be ergonomic; IR and compiled output must be explicit.
 
@@ -45,7 +47,9 @@ Top-level declarations introduce their body by indentation alone. They do not us
 
 Sub-sections within a declaration body use a colon-terminated keyword. MVP sub-section keywords:
 
-`flow:`, `effects:`, `inputs:`, `outputs:`, `constraints:`, `when_to_use:`
+`description:`, `flow:`, `effects:`, `constraints:`
+
+`inputs:`, `outputs:`, and `when_to_use:` are deferred from MVP (see [todo.md](todo.md)). Header parameters cover input definition; `return` in `flow:` covers output; `description:` covers routing.
 
 Two forms are allowed:
 
@@ -117,9 +121,9 @@ skill implement_feature(scope, risk = "medium")
 
 **Rules:**
 
-- Parentheses always required on callable declarations: `skill update_docs()` not `skill update_docs`. This applies to `skill`, `block`, and `export block`. Value-binding declarations (`text`, `int`, `float` and their `export`/`generated` variants) and `import` do not use parentheses.
-- Return type is optional. When present, it becomes the `## Output` section in compiled Markdown.
-- Parameters are optional. In MVP, global preferences resolve at compile time as explicit inputs, not hidden state.
+- Parentheses always required on callable declarations: `skill update_docs()` not `skill update_docs`. This applies to `skill`, `block`, `export block`, and `generated block`. Value-binding declarations (`text`, `int`, `float` and their `export`/`generated` variants) and `import` do not use parentheses.
+- Return type is optional. When present, it annotates the IR's `OutputContract`; in MVP compiled output, the `return` expression folds into the final Step rather than producing a separate section (see [compiled-output.md](compiled-output.md)).
+- Parameters are optional. In MVP, global preferences resolve at compile time as explicit inputs, not hidden state. Parameters resolve to concrete values during the expand pass and appear as concrete prose in the compiled output.
 
 ### 3.2 `block`
 
@@ -302,7 +306,65 @@ import "./coding_agent_safety.glyph.md" {
 - Circular imports are rejected in the MVP.
 - MVP imports are path-based. Package names, registries, and versioned imports are deferred.
 
-### 3.8 Parameter Syntax
+### 3.8 `generated text`
+
+Repair-materialized instruction text. Structurally identical to `text` with a `generated` prefix. Only the LLM repair pass emits this form; authors who want to define bare names manually use `text`.
+
+**Grammar:**
+
+```
+generated text <name> = <string-literal>
+```
+
+**Example:**
+
+```glyph
+generated text root_cause_before_fix = """
+    Identify the root cause before proposing or applying a fix.
+"""
+```
+
+**Rules:**
+
+- Same shape as `text`. No parameters, no return type, no body with sub-sections.
+- The `=` is required and separates the name from its value.
+- String literals follow `values-and-names.md`: inline `"..."` or block `"""..."""`.
+- Not a callable. A bare name resolves to its string content; a parenthesized form is a compile error.
+- Not exportable. `export generated text` is invalid. To share, promote to `export text`.
+- All `generated text` declarations must appear after all non-generated top-level declarations in the source file.
+- Full rules for authorship, stability, placement, promotion, and the no-shadowing interaction are in [repair.md](repair.md).
+
+### 3.9 `generated block`
+
+Repair-materialized block. Structurally a minimal `block` with a `generated` prefix. Only the LLM repair pass emits this form; authors who want to define blocks manually use `block` or `export block`.
+
+**Grammar:**
+
+```
+generated block <name>(<params>)
+    <one-sentence-body>
+```
+
+**Example:**
+
+```glyph
+generated block inspect_failure(area)
+    "Inspect the failure in {area} and identify what is failing."
+
+generated block summarize_changes()
+    "Summarize what was changed and why."
+```
+
+**Rules:**
+
+- Same header shape as `block` (parameters allowed, no return type in the generated form).
+- Body is a single inline or block string — one sentence. This keeps the machine-generated definition close to the name's meaning and minimizes drift from author intent.
+- Used for undefined parens-calls. Bare names without parens still materialize as `generated text`.
+- Not exportable. `export generated block` is invalid. To share, promote to `block` or `export block`.
+- All `generated block` declarations must appear after all non-generated top-level declarations, alongside `generated text`.
+- Full rules for authorship, the one-sentence constraint, placement, promotion, and the no-shadowing interaction are in [repair.md](repair.md).
+
+### 3.10 Parameter Syntax
 
 Parameters appear inside parentheses on `skill`, `block`, and `export block` headers. Four forms:
 
@@ -330,9 +392,9 @@ A `flow` becomes an ordered sequence and a `return` becomes an output contract i
 
 Source instructions need not carry compiler-shaped keywords everywhere. A bare name or inline string compiles into an inferred IR role depending on context and metadata.
 
-The closed MVP role set ([ir-and-semantics.md](ir-and-semantics.md)): `InputContract`, `Step`, `Constraint`, `Context`, `OutputContract`. Prohibitions and preferences are `Constraint` nodes with separate strength and polarity attributes. **Constraint markers** (`require`, `avoid`, `prefer`, `always`, and composed forms like `always avoid`) set role, strength, and polarity directly. For the complete marker-to-IR mapping, see [ir-and-semantics.md](ir-and-semantics.md).
+The closed MVP role set ([ir-and-semantics.md](ir-and-semantics.md)): `InputContract`, `Step`, `Constraint`, `OutputContract`. (`Context` is deferred — see [todo.md](todo.md).) Prohibitions and preferences are `Constraint` nodes with separate strength and polarity attributes. **Constraint markers** (`require`, `avoid`, `prefer`, `must`, and composed forms like `must avoid`) set role, strength, and polarity directly. For the complete marker-to-IR mapping, see [ir-and-semantics.md](ir-and-semantics.md).
 
-Inference uses: position in the skill, metadata from bindings/imports/standard-library, natural meaning of expanded text, and explicit keywords. If inference succeeds, repair adds the smallest explicit marker back into source. Compound names like `avoid_unrelated_edits` repair to `avoid unrelated_edits` with author notification. `always` is inferred only from invariant-level wording. When inference fails, the compiler emits a diagnostic.
+Inference uses: position in the skill, metadata from bindings/imports/standard-library, natural meaning of expanded text, and explicit keywords. If inference succeeds, repair adds the smallest explicit marker back into source. Compound names like `avoid_unrelated_edits` are valid identifiers — they are not forcibly split into marker-plus-concept form. The compiler uses the name prefix as evidence for role/polarity inference alongside the resolved text content. `must` is inferred only from invariant-level wording. When inference fails, the compiler emits a diagnostic.
 
 ### 4.3 Bare Names and Generated Definitions
 
@@ -367,17 +429,14 @@ If the same text appears repeatedly, promote it to a `text` block or imported li
 
 ## 5. Source-to-IR Pipeline
 
-Glyph source may contain shorthand, omitted annotations, text aliases, imported names, and inline natural-language instructions. The compiler resolves them before Markdown output generation:
+Glyph source may contain shorthand, omitted annotations, text aliases, imported names, and inline natural-language instructions. The compiler resolves them through a 7-phase pipeline: **Parse → Analyze → Repair → Lower → Validate → Expand → Emit**. See [pipeline.md](pipeline.md) for the canonical reference covering phase responsibilities, the Safety Sandwich pattern, the repair loop, multi-file compilation order, and cacheability.
 
-1. **Parse** `.glyph.md` source into a loose source AST.
-2. **Diagnose** syntax, name resolution, role inference, constraint attribute inference, and type inference deterministically.
-3. **Repair** source-preserving LLM pass if deterministic passes report repairable diagnostics.
-4. **Re-parse** and re-check the repaired source.
-5. **Resolve** local names, imported libraries, and known standard names. Undefined bare names are materialized as stable generated definitions during repair.
-6. **Infer** instruction role, constraint strength, and constraint polarity when source omits them.
-7. **Normalize** values, instruction text, blocks, calls, and constraints into explicit IR nodes.
-8. **Type** the IR.
-9. **Validate** the IR before producing compiled Markdown output.
+Source-level takeaways that shape authoring:
+
+- Deterministic parsing and analysis run first; the LLM repair pass runs only when repairable diagnostics remain and is bounded by re-parse + re-analyze cycles.
+- Repair is source-to-source: it may rewrite your `.glyph.md`, materialize `generated text` / `generated block` definitions, add minimal markers, and fix structural issues. It does not expand shorthand into agent-facing prose.
+- Lower converts the repaired source into the typed IR (resolving positional args to named, desugaring nested calls, filling defaults, propagating effects).
+- Expand is per-invocation: parameters resolve to concrete values at compile time, and the `.md` output is a specialization for that invocation.
 
 If ergonomic source does not compile directly, the LLM repair pass rewrites it into valid Glyph source while preserving shorthand and readability. Repair fixes compiler-blocking issues; it does not expand shorthand into prose or produce agent-facing output.
 
@@ -388,12 +447,12 @@ If ergonomic source does not compile directly, the LLM repair pass rewrites it i
 - Use aliases when an imported name would collide or read poorly.
 - Make every `export block` self-contained (inputs, outputs, constraints, effects declared).
 - Use semantic shortcuts when the name communicates intent; use inline quotes for one-off guidance.
-- Prefer marker-plus-concept form (`avoid unrelated_edits`) over compound names (`avoid_unrelated_edits`).
+- Both marker-plus-concept form (`avoid unrelated_edits`) and compound names (`avoid_unrelated_edits`) are valid; choose whichever reads better in context.
 - The compiler should surface unresolved or ambiguous names as diagnostics, not guess silently.
 
 ## Deferred
 
 - Full type annotation syntax beyond the `name: Type` slot (Tier 2).
 - Package-style, registry-backed, or versioned imports; selective import globs.
-- `agent`, `abstract agent`, `trait` declarations; global preference parameter syntax (post-MVP).
+- Skill inheritance and specialization (post-MVP, see `todo.md`).
 - `for_each` control flow; `if` colon syntax (see [data-flow.md](data-flow.md)); nested private block scoping.

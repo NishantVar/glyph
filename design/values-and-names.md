@@ -114,7 +114,7 @@ If two declarations in different files or scopes use different casings for the s
 
 The following are reserved keywords and cannot be used as identifiers:
 
-`skill`, `block`, `export`, `import`, `text`, `int`, `float`, `flow`, `call`, `if`, `elif`, `else`, `return`, `true`, `false`, `none`, `effects`, `constraints`, `inputs`, `outputs`, `when_to_use`, `as`, `generated`, `input`, `output`, `always`, `require`, `avoid`, `prefer`, `context`, `and`, `or`, `not`.
+`skill`, `block`, `export`, `import`, `text`, `int`, `float`, `flow`, `call`, `if`, `elif`, `else`, `return`, `true`, `false`, `none`, `effects`, `constraints`, `inputs`, `outputs`, `when_to_use`, `description`, `as`, `generated`, `input`, `output`, `must`, `require`, `avoid`, `prefer`, `context`, `and`, `or`, `not`.
 
 This list grows with the language. New keywords should be added conservatively.
 

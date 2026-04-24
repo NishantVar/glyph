@@ -29,7 +29,7 @@ Each item is 1-2 sentences; detailed rules live in the linked design docs.
 
 9. **Authoring and execution are separate.** Source Glyph exists for humans; compiled output exists for agents. The compiler handles flattening, expansion, defaults, and target-specific generation.
 
-10. **Source is `.glyph.md`; MVP output is same-basename `.md`.** See `compiled-output.md` for the full compiled-file shape.
+10. **Source is `.glyph.md`; compiled output is a specialization, not a template.** Compilation resolves parameters to concrete values at expand time; the compiled `.md` contains no variable references. The `.glyph.md` is the reusable artifact, the `.md` is produced for a specific invocation. See `compiled-output.md` for the full compiled-file shape.
 
 11. **Reliability beats elegance in compiled output.** Compiled agent instructions favor explicitness and followability over compression.
 
@@ -73,7 +73,7 @@ Each item is 1-2 sentences; detailed rules live in the linked design docs.
 
 26. **MVP imports are local-path based.** Package-style, registry-backed, or versioned imports are future work (see `imports.md`).
 
-27. **Specialization is not unrestricted class inheritance.** Reuse uses `abstract agent` bases, declared slots, deterministic merge, and compile-time operations; no runtime inheritance or hidden dispatch (see `specialization.md`).
+27. **Specialization is deferred.** Skill inheritance and reuse beyond imports are post-MVP (see `todo.md`).
 
 ## LLM Repair
 
@@ -88,3 +88,7 @@ Each item is 1-2 sentences; detailed rules live in the linked design docs.
 31. **Visualizability is a language constraint.** Every skill must support source view, graph/workflow view, and compiled-output view; constructs that cannot be represented across all three likely do not belong in the early language.
 
 32. **Tooling and testing are part of language design.** Every feature must justify how it is parsed, type-checked, visualized, transformed, and tested; features difficult to validate are too vague for the core language.
+
+## Learnability
+
+33. **Novice learnability is a first-principles goal.** A new author should be able to write a useful skill using a small kernel: `skill`, `require`/`avoid`, `flow:`, quoted inline strings, calls with parentheses, and the `with` modifier. Every other construct (blocks, named text, types, effects, imports) must be discoverable later or inferred by the compiler and repair pass; the novice surface must not require learning them up front.
