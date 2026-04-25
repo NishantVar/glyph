@@ -71,7 +71,7 @@ The repaired file should still look like the author's Glyph file. The pass prese
 
 ### 4.2 Prefer Minimal Syntax
 
-When a missing annotation blocks compilation, add the smallest disambiguating syntax. For instruction roles and constraints, add only the marker needed to make role, strength, or polarity deterministic.
+When a missing annotation blocks compilation, add the smallest disambiguating syntax. For instruction roles and constraints, add only the marker needed to make role, strength, and polarity deterministic.
 
 ```glyph
 skill fix_bug(scope)
@@ -99,7 +99,7 @@ Repair may make existing author intent explicit, but it must not make the intent
 
 - Repair may add syntax that clarifies an already-present instruction.
 - Repair may add a generated definition whose meaning is implied by the shorthand name and local context.
-- Repair may choose an explicit role or constraint marker when diagnostics and wording make the role, strength, or polarity clear.
+- Repair may choose an explicit role or constraint marker when diagnostics and wording make the role, strength, and polarity clear.
 - Repair must not upgrade a weak instruction into a hard requirement without evidence.
 - Repair must not add new obligations, effects, imports, exports, or safety claims merely because they seem useful.
 
@@ -148,7 +148,7 @@ Add an explicit step marker or output marker.
 
 Compound names like `avoid_unrelated_edits` are valid identifiers and are **not** forcibly split into marker-plus-concept form. Both `avoid_unrelated_edits` (single identifier) and `avoid unrelated_edits` (marker keyword + concept name) are accepted authoring styles.
 
-When a compound name resolves to a declaration (`text`, `generated text`, import, etc.), the compiler infers role, strength, and polarity from the declaration's text content, with the name prefix (`avoid_*`, `prefer_*`, `must_*`) as supporting evidence. No splitting or renaming occurs.
+When a compound name resolves to a declaration (`text`, `generated text`, import, etc.), the compiler infers role, strength, and polarity from the declaration's text content, with the name prefix (`avoid_*`, `must_*`) as supporting evidence. No splitting or renaming occurs.
 
 When a compound name is unresolved, repair generates a definition under the full compound name with the full semantics baked into the text body. For example, an unresolved `avoid_unrelated_edits` produces:
 
@@ -285,7 +285,7 @@ Neither `export generated text` nor `export generated block` is a valid declarat
 Generated declarations compile identically to their hand-written counterparts:
 
 - `generated text`: at the usage site, the bare name is replaced by the string content.
-- `generated block`: at the usage site, the call expands to the one-sentence body, with parameters substituted by concrete argument values and the optional `with` modifier applied by the expand pass.
+- `generated block`: at the usage site, the call expands to the one-sentence body, with `{param}` references preserved as named slots and the optional `with` modifier applied by the expand pass.
 - The declaration itself produces nothing in compiled output. The `generated` marker is erased. No provenance marker appears in the compiled `.md` file.
 
 ## 6. Comment Syntax
@@ -303,13 +303,13 @@ Glyph uses `//` (double slash) for line comments. Block comments and doc-comment
 
 The repair pass may add:
 
-- explicit role or constraint markers when context makes the intended role, strength, or polarity very clear;
+- explicit role or constraint markers when context makes the intended role, strength, and polarity very clear;
 - `generated text` definitions for unresolved compound names (e.g. `avoid_unrelated_edits`), with full semantics baked into the text body;
 - missing type annotations;
 - local declarations for author-defined shorthand;
 - stable `generated text` definitions for undefined bare names;
 - stable `generated block` definitions for undefined parens-calls (one-sentence bodies);
-- missing imports when the referenced library is obvious from available context;
+- missing imports when the referenced library is obvious from available context (deferred from MVP — see `todo.md`);
 - `export` on a block only when an importability diagnostic makes the author's intent clear;
 - missing block delimiters or indentation fixes;
 - explicit section headers when the source already implies the section.
@@ -335,11 +335,27 @@ The LLM repair pass is never treated as proof of correctness. The deterministic 
 
 ## 9. Multi-File Repair
 
-Repair may edit more than the current `.glyph.md` file only when diagnostics require changing those other files. Repair should not edit imported files merely because the current file references them; if the current file needs a local generated definition, append that definition to the current file.
+**MVP: repair only edits the current file.** All repairs — generated definitions, marker additions, indentation fixes, section reordering — are local to the file being compiled. If a diagnostic requires changes to another file (e.g., an imported block is not exported), repair emits a non-repairable diagnostic for the author to fix manually. Repair does not add `export` to another file's declarations and does not discover or add new `import` statements pointing to files the author did not already import.
 
-Repair writes directly to source files. The user can review changes afterward using normal editor or version-control workflows.
+This restriction eliminates cross-file trigger propagation: one file's repair cannot force another file to re-run from Phase 1. Each file's repair loop is self-contained.
 
-## 10. Open Questions
+**Post-MVP:** cross-file repair (editing other `.glyph.md` files when diagnostics require it) and auto-import discovery (adding imports to files the author did not reference) are deferred. See `todo.md`.
+
+## 10. Argument-Agnosticism Invariant
+
+**Repair is argument-agnostic.** It operates on authored source without any concrete argument values. It does not receive, inspect, or depend on concrete argument values. (Since compilation is parameterless, no phase receives concrete argument values — parameters appear as `{param}` slots in compiled output, resolved by the consuming LLM at runtime.) This property holds for three structural reasons:
+
+1. **Nominal-only types.** The MVP type system (`types.md`) uses opaque name tags with no union types, generics, or conditional types. No type can narrow based on a concrete argument value, so no type diagnostic is hidden from Repair by the absence of arguments.
+
+2. **Branch conditions are structural, not evaluated.** `if`/`elif`/`else` blocks are checked exhaustively — Repair resolves names and assigns roles in every branch regardless of the condition. Conditions are preserved as text through Lower and flattened into prose by Expand; no phase evaluates them.
+
+3. **Topological compilation order.** An importing file cannot enter Phase 2 (Analyze) until the imported file has passed Phase 5 (Validate) — see `pipeline.md` §Multi-File Compilation Order. Repair always sees dependencies in post-repair, post-validate form.
+
+This invariant is what enables the cache-key-by-post-repair-source-hash strategy (`pipeline.md` §Cacheability): Phases 1-5 produce a validated IR that is independent of invocation arguments.
+
+**Post-MVP consideration:** If the type system gains union types, structural narrowing, or value-dependent type features, this invariant must be re-examined.
+
+## 11. Open Questions
 
 - **Diagnostic taxonomy.** The diagnostic shape and classification tiers are defined in [diagnostics.md](diagnostics.md). The full catalog of individual diagnostics will be built out as the compiler is implemented.
 - **Security and trust.** Prevent repair from adding imports, effects, exports, or generated text that broadens behavior beyond the author's apparent intent.

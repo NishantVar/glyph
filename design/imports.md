@@ -87,7 +87,7 @@ The compiler auto-removes unused imports from the `.glyph.md` source file (see a
 
 **Whole-module imports:** If no qualified reference `M.x` appears anywhere in the file, the entire `import "..." as M` statement is removed.
 
-This is a source-to-source fix, not a silent omission from compiled output. The exact pipeline stage is an open question per `compiled-output.md`.
+This is a source-to-source fix, not a silent omission from compiled output. It runs in Phase 3a (deterministic source rewrites) of the compiler pipeline — see `pipeline.md`.
 
 ## 8. Effect Propagation
 

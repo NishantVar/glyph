@@ -123,7 +123,7 @@ skill implement_feature(scope, risk = "medium")
 
 - Parentheses always required on callable declarations: `skill update_docs()` not `skill update_docs`. This applies to `skill`, `block`, `export block`, and `generated block`. Value-binding declarations (`text`, `int`, `float` and their `export`/`generated` variants) and `import` do not use parentheses.
 - Return type is optional. When present, it annotates the IR's `OutputContract`; in MVP compiled output, the `return` expression folds into the final Step rather than producing a separate section (see [compiled-output.md](compiled-output.md)).
-- Parameters are optional. In MVP, global preferences resolve at compile time as explicit inputs, not hidden state. Parameters resolve to concrete values during the expand pass and appear as concrete prose in the compiled output.
+- Parameters are optional. In MVP, global preferences resolve at compile time as explicit inputs, not hidden state. Parameters appear in the compiled output's `## Parameters` section with names, descriptions, and optional defaults; the consuming LLM resolves them from user context at runtime.
 
 ### 3.2 `block`
 
@@ -181,7 +181,7 @@ export block inspect_failure(scope) -> FailureReport
 - An `export block` may call imported `export block`s or same-file private blocks if the compiler can prove those private blocks are closed under the exported block's contract.
 - Every `export block` must end in an explicit `return`. Instruction-only exported blocks should still return `none`.
 - `effects:` appears in the body, not on the header line.
-- MVP effects: `none`, `reads_files`, `reads_env`, `writes_files`, `runs_commands`, `uses_network`, `asks_user`, `creates_artifacts`.
+- MVP effects: `none`, `reads_files`, `reads_env`, `writes_files`, `runs_commands`, `uses_network`, `asks_user`, `creates_artifacts`, `spawns_agent`.
 
 ### 3.4 `text` / `export text`
 
@@ -392,9 +392,9 @@ A `flow` becomes an ordered sequence and a `return` becomes an output contract i
 
 Source instructions need not carry compiler-shaped keywords everywhere. A bare name or inline string compiles into an inferred IR role depending on context and metadata.
 
-The closed MVP role set ([ir-and-semantics.md](ir-and-semantics.md)): `InputContract`, `Step`, `Constraint`, `OutputContract`. (`Context` is deferred — see [todo.md](todo.md).) Prohibitions and preferences are `Constraint` nodes with separate strength and polarity attributes. **Constraint markers** (`require`, `avoid`, `prefer`, `must`, and composed forms like `must avoid`) set role, strength, and polarity directly. For the complete marker-to-IR mapping, see [ir-and-semantics.md](ir-and-semantics.md).
+The closed MVP role set ([ir-and-semantics.md](ir-and-semantics.md)): `InputContract`, `Step`, `Constraint`, `OutputContract`. (`Context` is deferred — see [todo.md](todo.md).) Obligations and prohibitions are `Constraint` nodes with strength (`soft`/`hard`) and polarity (`require`/`avoid`) attributes. **Constraint markers** — three keywords (`require`, `avoid`, `must`) composing into four forms (`require`, `avoid`, `must`, `must avoid`) — set role, strength, and polarity directly. For the complete marker-to-IR mapping, see [ir-and-semantics.md](ir-and-semantics.md).
 
-Inference uses: position in the skill, metadata from bindings/imports/standard-library, natural meaning of expanded text, and explicit keywords. If inference succeeds, repair adds the smallest explicit marker back into source. Compound names like `avoid_unrelated_edits` are valid identifiers — they are not forcibly split into marker-plus-concept form. The compiler uses the name prefix as evidence for role/polarity inference alongside the resolved text content. `must` is inferred only from invariant-level wording. When inference fails, the compiler emits a diagnostic.
+Inference uses: position in the skill, metadata from bindings/imports/standard-library, natural meaning of expanded text, and explicit keywords. If inference succeeds, repair adds the smallest explicit marker back into source. Compound names like `avoid_unrelated_edits` are valid identifiers — they are not forcibly split into marker-plus-concept form. The compiler uses the name prefix as evidence for role/polarity inference alongside the resolved text content. `must` is inferred only from hard-strength wording. When inference fails, the compiler emits a diagnostic.
 
 ### 4.3 Bare Names and Generated Definitions
 
@@ -436,7 +436,7 @@ Source-level takeaways that shape authoring:
 - Deterministic parsing and analysis run first; the LLM repair pass runs only when repairable diagnostics remain and is bounded by re-parse + re-analyze cycles.
 - Repair is source-to-source: it may rewrite your `.glyph.md`, materialize `generated text` / `generated block` definitions, add minimal markers, and fix structural issues. It does not expand shorthand into agent-facing prose.
 - Lower converts the repaired source into the typed IR (resolving positional args to named, desugaring nested calls, filling defaults, propagating effects).
-- Expand is per-invocation: parameters resolve to concrete values at compile time, and the `.md` output is a specialization for that invocation.
+- Expand is parameterless: compilation produces one `.md` output per source file. Parameters appear in a `## Parameters` section with defaults; the consuming LLM resolves them from context at runtime. `{param}` references in Steps and Constraints are preserved as named slots.
 
 If ergonomic source does not compile directly, the LLM repair pass rewrites it into valid Glyph source while preserving shorthand and readability. Repair fixes compiler-blocking issues; it does not expand shorthand into prose or produce agent-facing output.
 

@@ -15,12 +15,12 @@ Source (.glyph.md)
   → 3. Repair          [LLM, bounded loop]
   → 4. Lower           (deterministic)
   → 5. Validate        (deterministic)
-  → 6. Expand          [LLM, per-invocation]
+  → 6. Expand          [deterministic + LLM]
   → 7. Emit            (deterministic)
 Output (.md)
 ```
 
-Phases 1-5 operate on source and produce a validated IR. They run once per source file and their output is cacheable. Phases 6-7 take the validated IR plus concrete invocation arguments and produce the compiled Markdown. They run fresh for each invocation with different arguments.
+All seven phases operate once per source file. Phases 1-5 produce a validated IR; Phases 6-7 take the validated IR and produce the compiled Markdown. Compilation is parameterless — parameters appear in the compiled output as named slots that the consuming LLM resolves from context at runtime.
 
 ## Safety Sandwich
 
@@ -45,11 +45,11 @@ This is the "Safety Sandwich" pattern referenced in `foundations.md` #18: determ
 Parse turns raw text into structure without understanding meaning.
 
 - Reads the `.glyph.md` file and tracks indentation levels (4-space units per `language-surface.md`).
-- Rejects tabs and mixed indentation as hard errors.
+- Flags tabs and mixed indentation as repairable diagnostics (repair may auto-fix to 4-space indentation).
 - Identifies top-level declarations: `skill`, `block`, `export block`, `text`, `export text`, `int`, `float`, `import`, `generated text`, `generated block` (and their `export` variants where valid).
 - Identifies declaration headers: name, parameters, return types.
 - Identifies sub-section headers: `description:`, `flow:`, `effects:`, `constraints:`.
-- Identifies body content: bare names, inline strings, calls with arguments, `with` modifiers on calls, `if`/`elif`/`else`, `return`, constraint markers (`require`, `avoid`, `prefer`, `must`).
+- Identifies body content: bare names, inline strings, calls with arguments (including UFCS calls like `x.foo(args)`), `with` modifiers on calls, `if`/`elif`/`else`, `return`, constraint markers (`require`, `avoid`, `must`).
 - Handles paired delimiters for line continuation: `()`, `{}`, `"""`.
 - Strips comments (`//`) but preserves their positions for repair.
 - Produces a loose AST — names are unresolved, types are not checked, roles are not assigned. Purely structural.
@@ -68,9 +68,11 @@ Analyze tries to understand the source as deeply as it can using deterministic r
 
 - **Name resolution.** For every name in the source, checks in order: (1) same-file parameter or local binding, (2) same-file `text`/`int`/`float` declaration, (3) selectively imported name, (4) qualified name via whole-module import, (5) standard library entry (see `stdlib.md`). Unresolved names are marked and a repairable diagnostic is emitted.
 
+- **UFCS disambiguation.** For dot-syntax calls (`x.foo(args)`), determines whether the left side is a whole-module import alias (→ qualified callee) or a value binding/parameter (→ UFCS call, desugared to `foo(x, args)` in Lower). See `data-flow.md` §UFCS.
+
 - **Role inference.** For every instruction, determines its IR role (`InputContract`, `Step`, `Constraint`, `OutputContract` — the four MVP roles per `ir-and-semantics.md`). Uses the evidence chain: explicit marker → metadata from declarations → metadata from imports/stdlib → position (e.g., inside `flow:` implies `Step`) → compound-name cues (`avoid_*` implies Constraint). Emits a repairable diagnostic when role is ambiguous.
 
-- **Constraint attribute inference.** For instructions identified as constraints, determines strength (`invariant`, `required`, `preferred`) and polarity (`require`, `avoid`) per the marker table in `ir-and-semantics.md` §2. Emits a diagnostic when ambiguous.
+- **Constraint attribute inference.** For instructions identified as constraints, determines strength (`soft`, `hard`) and polarity (`require`, `avoid`) per the marker table in `ir-and-semantics.md` §2. Emits a diagnostic when ambiguous.
 
 - **Type inference.** Traces types through the call graph. Where types cannot be inferred and are not needed for a call-boundary check, marks as untyped (acceptable in MVP per `types.md`).
 
@@ -115,7 +117,7 @@ The LLM receives the source, the remaining diagnostics, and the compiler's rules
 - **Missing `description:`:** generates a one-line summary from the skill name and body content, adds it as a `description:` sub-section in the source.
 - **Missing `effects:`:** infers effects from the call graph and adds an `effects:` sub-section.
 - **Broken indentation or delimiters:** fixes structural issues that Parse flagged.
-- **Marker addition when inference succeeds:** materializes the smallest explicit marker back into source when role/strength/polarity confidence is high.
+- **Marker addition when inference succeeds:** materializes the smallest explicit marker back into source when role, strength, and polarity confidence is high.
 
 Generated definitions follow the one-sentence rule: bodies stay close to the name's meaning and minimize drift from author intent. Full rules in `repair.md` §5.
 
@@ -130,10 +132,12 @@ repeat (max 3 iterations):
     re-run Phase 2 (Analyze) on the re-parsed AST
     if zero repairable diagnostics: accept, exit loop
 if still has repairable diagnostics after 3 iterations:
-    fail with the remaining diagnostics for author to fix manually
+    hard fail — no .md emitted, non-zero exit, residual diagnostics surfaced to author
 ```
 
-**Why max 3:** Iteration 1 handles the bulk. Iteration 2 catches cascading issues — e.g., a generated definition introduces a new name that needs role inference, or splitting a compound name at a use site reveals a new unresolved concept name. Iteration 3 is the safety margin. If 3 rounds cannot converge, the source has a deeper problem that requires human intervention.
+**Hard fail on non-convergence.** If repairable diagnostics remain after 3 iterations, the compiler does not emit a compiled `.md` file. It exits with a non-zero status and surfaces the residual diagnostics on stderr for the author to fix manually. The source file retains whatever partial repairs succeeded in earlier iterations (since Repair writes back to `.glyph.md` after each accepted iteration). The author sees the residual diagnostics, fixes them, and recompiles. The compiler never emits a compiled file from source that still has `repairable` diagnostics.
+
+**Why max 3:** Iteration 1 handles the bulk. Iteration 2 catches cascading issues — e.g., a generated definition introduces a new name that needs role inference, or splitting a compound name at a use site reveals a new unresolved concept name. Iteration 3 is the safety margin. If 3 rounds cannot converge, the source has a deeper problem that requires human intervention. The bound is a practical limit, not a convergence guarantee — source with deeper dependency chains (e.g., a generated definition that introduces a call to another undefined name, which itself implies a role that requires a third repair) may require author intervention between compiles.
 
 **Idempotence:** Running repair on already-valid source produces zero changes. The mechanism is name resolution: if every name resolves and every role is determined, there are no repairable diagnostics, so neither 3a nor 3b runs. See `repair.md` §4.5.
 
@@ -147,7 +151,8 @@ if still has repairable diagnostics after 3 iterations:
 
 Lower converts the human-friendly source AST into the strict IR. Every shortcut is resolved into its explicit form.
 
-- **Named arguments only.** Positional call arguments are mapped to parameter names by declaration order. The IR contains only named arguments (per `data-flow.md`).
+- **UFCS desugaring.** UFCS calls like `x.foo(args)` are desugared to `foo(x, args)` — the receiver becomes the first positional argument (per `data-flow.md` §UFCS).
+- **Named arguments only.** Positional call arguments (including UFCS receivers) are mapped to parameter names by declaration order. The IR contains only named arguments (per `data-flow.md`).
 - **Flat calls only.** Nested calls like `validate(make_plan(ctx))` are desugared into sequential calls with compiler-generated temporary bindings (per `data-flow.md`).
 - **Defaults filled.** Omitted optional parameters get their default values inserted.
 - **Callee resolution.** Every call target is resolved to its full declaration — same-file block, imported export block, or standard library primitive.
@@ -175,60 +180,179 @@ Validate is the final correctness gate before any LLM touches the IR.
 - **Completeness.** Every name resolves to a definition. Every call has a matching declaration. Every type is assigned (or explicitly untyped, which is allowed in MVP).
 - **Type matching.** At every call boundary, if both sides have type annotations, the names must match per `types.md` (nominal matching). If either side is untyped, no check.
 - **Effect validation.** If the author declared `effects:`, the declared set must be a superset of the inferred set. Otherwise compile error (per `ir-and-semantics.md` §3).
+- **Effect propagation across imports and inlines.** A caller's declared `effects:` must be a superset of every imported callee's declared effects and every inlined private callee's inferred effects. Per `data-flow.md` §Effect Propagation, this is a hard error, not a warning. Repair (Phase 3) may add the missing effect keywords when confidence is high.
+- **Closure boundary.** Closure of `export block` is enforced once per file at the export boundary, not transitively across imports. An importer sees only the imported callee's declared contract (parameters, return type, `effects:`, `constraints:`); private declarations in the imported file are invisible to the importer (per `data-flow.md` §Closure Across Imports).
 - **Return path completeness.** Every `export block` must have an explicit `return` on every code path. Private blocks and skills may implicitly return `none` (per `data-flow.md`).
 - **Skill body non-empty.** A `skill` must have at least `constraints:` or `flow:` (or both). Empty skill body is an error (per `ir-and-semantics.md` §4).
 - **Effect `none` exclusivity.** `effects: none, reads_files` is an error (per `ir-and-semantics.md` §3).
-- **Constraint well-formedness.** Constraint attributes have valid strength and polarity.
+- **Constraint well-formedness.** Constraint attributes have valid strength (`soft`/`hard`) and polarity (`require`/`avoid`).
 
 **What Validate does not do:** Does not change the IR. Does not generate output. Pure pass/fail gate.
 
-## Phase 6: Expand (LLM, per-invocation)
+## Phase 6: Expand (deterministic + LLM)
 
-**Input:** Validated IR from Phase 5 + concrete argument values for the skill's parameters.
+**Input:** Validated IR from Phase 5.
 
-**Output:** Expanded IR — every node carries its final agent-facing prose.
+**Output:** Expanded IR — every node carries its final agent-facing prose, with parameter references preserved as `{param}` slots.
 
 Expand is where the structured IR becomes readable agent instructions. Repair made the source *valid*. Expand makes the output *useful*.
 
-Expand is **per-invocation**: it receives concrete argument values (e.g., `scope = "auth"`) and produces compiled Markdown in which every parameter has been resolved into prose. Different argument sets produce different compiled files. The `.glyph.md` source is the reusable artifact; the compiled `.md` is a specialization for one use (per `compiled-output.md`).
+Compilation is **parameterless**: Expand does not receive concrete argument values. Parameters appear in the compiled output as named slots (e.g., `{scope}`) listed in a `## Parameters` section with descriptions and optional defaults. The consuming LLM resolves them from user context at runtime. The `.glyph.md` source is the authoring artifact; the compiled `.md` is a stable, single artifact per source file (per `compiled-output.md`).
 
-**What Expand does:**
+### Two-step expansion model
 
-- **Step expansion.** Each `Step` node gets a full prose instruction sentence.
-  - A call like `inspect_failure(scope)` with `scope = "auth"` expands into prose that mentions "the auth module" — concrete, no variable references.
-  - A `with` modifier on the call (e.g., `with "focus on auth boundaries"`) shapes the expanded wording. The modifier is consumed and does not appear in output.
-  - A bare name reference like `validate_before_success` that resolves to `generated text` uses that text as-is (deterministic, no LLM needed).
-  - An inline string like `"Don't propose a fix until you've confirmed the root cause."` is used as-is (deterministic).
+Expand has a strict internal ordering: **deterministic resolution first, then LLM reshaping**. This separation is architecturally important — it produces a concrete intermediate artifact between the two steps that is inspectable, debuggable, and independent of LLM behavior.
 
-- **Constraint expansion.** Each `Constraint` node gets wording shaped by its strength and polarity.
-  - `Constraint(strength: required, polarity: avoid)` renders as a prohibition: "Do not make changes outside the requested scope."
-  - `Constraint(strength: invariant, polarity: require)` renders with strongest possible wording.
-  - `Constraint(strength: preferred, polarity: require)` renders with softer wording ("When possible, ..." or "Prefer ...").
+#### Step 1: Deterministic resolution (no LLM)
 
-- **Effect set finalization.** The full inferred effect set is prepared for frontmatter output as a YAML list.
+All mechanical substitutions happen first, before any LLM is involved:
 
-- **Description generation.** If `description:` is still missing after repair (unlikely but possible), generates one from the skill name and IR body.
+- **Parameter reference preservation.** `{param}` placeholders in `generated block` bodies and parameter references in the IR are **not** substituted — they are preserved as named slots for the consuming LLM to resolve at runtime. `"Inspect the failure in {area}"` stays as `"Inspect the failure in {area}"`.
+- **Parameter metadata assembly.** For each parameter in the skill's `InputContract`, Step 1 collects the name, type annotation (if any), and default value (if any) into a parameter list for the `## Parameters` section.
+- **Bare name inlining.** Bare names that resolve to `text` or `generated text` are replaced with their string content as-is.
+- **Inline string passthrough.** Inline strings like `"Don't propose a fix until you've confirmed the root cause."` pass through unchanged.
+- **Effect keyword passthrough.** The inferred effect set is prepared for frontmatter as a YAML list.
 
-- **Return folding.** The `return` expression becomes the closing sentence of the final numbered step (per `compiled-output.md`). No separate output section.
+After Step 1, every IR node has resolved content — bare names and inline strings are concrete, but `{param}` references remain as named slots. An unresolved bare name after this step is a compile error. A `{param}` reference to a name not in the skill's parameter list is also a compile error. The result is a **resolved IR** that could theoretically be emitted as-is (it would be correct but stilted).
 
+#### Step 2: LLM reshaping (only where needed)
+
+The LLM receives the resolved IR nodes and produces natural-language prose. It does not see raw parameters or unresolved names — only concrete content. Its job is to turn structured data into readable agent instructions.
+
+- **Call-node expansion.** Each resolved `Call` node becomes a full prose instruction sentence. The LLM receives the resolved body text (with `{param}` references preserved as named slots) and the call's context (what role it plays, what comes before and after). The LLM must preserve `{param}` references in its output.
+- **`with` modifier application.** If a call carries a `site_modifier`, the LLM uses it as a reshaping prompt applied to the resolved body text. The modifier steers tone, emphasis, and detail — it does not introduce new parameters or change the call's semantics. The modifier is consumed and does not appear in output. Parameter references in the body text are preserved through the reshaping.
+- **Constraint rewording.** Each `Constraint` node gets wording shaped by its strength and polarity. `Constraint(strength: soft, polarity: avoid)` renders as a prohibition; `Constraint(strength: hard, polarity: require)` renders with strongest possible wording; `Constraint(strength: soft, polarity: require)` renders with standard wording.
 - **Conditional flattening.** `if`/`elif`/`else` branches are turned into prose conditional instructions within steps.
+- **Return folding.** The `return` expression becomes the closing sentence of the final numbered step.
+- **Description generation.** `description:` should always be present after Repair (Phase 3 generates it if the author omitted it). If it is still missing due to a repair failure, this is a Phase 5 (Validate) error, not an Expand responsibility.
 
-- **Parameter resolution.** Every parameter is resolved to its concrete value. No `{param}` placeholders survive. A surviving placeholder is a compile error (per `compiled-output.md`).
+Not every node needs the LLM. After Step 1, nodes that are already complete prose (inline strings, resolved `text` references) skip Step 2 entirely. The LLM only touches nodes that need reshaping: call expansions, `with`-modified calls, constraint rewording, conditional flattening, return folding, and parameter description generation for the `## Parameters` section.
 
-**What is deterministic vs. LLM in Expand:**
+### How `with` works: the modifier as a reshaping prompt
 
-Not everything needs the LLM:
-- Bare names that resolve to full prose `text` or `generated text` → used as-is (deterministic).
-- Inline strings → used as-is (deterministic).
-- Effect keyword lists → passed through (deterministic).
+The `with` modifier is the **only call-site specialization mechanism in MVP**. It lets an author reuse the same block definition across multiple call sites, producing different prose each time without creating separate blocks.
 
-The LLM handles:
-- Call-node expansion into natural-language step instructions.
-- `with` modifier consumption and wording specialization.
-- Constraint rewording based on strength and polarity.
-- Parameter value weaving into step prose.
-- Conditional flattening into prose.
-- Return folding into the final step.
+The modifier is a short natural-language prompt that the Expand LLM applies to the resolved body text. It does not change the callee's parameters, effects, constraints, or return type — it only adjusts the wording of the expanded Step.
+
+**Mechanical sequence for a `with`-modified call:**
+
+```
+1. Lower (Phase 4) stores the modifier string on the Call IR node as site_modifier.
+2. Expand Step 1 preserves {param} references in the callee's body text.
+   → Resolved body: "Inspect the failure in {area} and identify what is failing."
+   (where {area} maps to the skill-level parameter passed at the call site)
+3. Expand Step 2 sends the resolved body + site_modifier to the LLM.
+   → LLM prompt (conceptual): "Here is an instruction: 'Inspect the failure in {area}
+      and identify what is failing.' Reshape it with this emphasis: 'focus on auth
+      boundaries'. Preserve {param} references. Produce a single instruction sentence."
+   → LLM output: "Inspect the failure in {area}, focusing on auth boundaries
+      and permission checks. Identify what is failing and whether any auth-related
+      logic is involved."
+```
+
+The same call without `with` would skip the reshaping prompt and produce output closer to the resolved body text.
+
+**Example: same block, three different `with` modifiers.**
+
+Source:
+
+```glyph
+skill security_audit(repo)
+    flow:
+        inspect_failure(repo) with "focus on authentication and authorization"
+        inspect_failure(repo) with "focus on input validation and injection vectors"
+        inspect_failure(repo) with "focus on secrets and credential handling"
+        return summarize_changes()
+```
+
+After repair, `inspect_failure` has the same generated definition:
+
+```glyph
+generated block inspect_failure(area)
+    "Inspect the failure in {area} and identify what is failing."
+```
+
+Compiled output:
+
+```md
+## Parameters
+- **repo**: Repository or service to audit
+
+### Steps
+
+1. Inspect {repo} for authentication and authorization issues. Check session management, role-based access controls, and token validation for weaknesses.
+2. Inspect {repo} for input validation and injection vulnerabilities. Check all user-facing inputs, database queries, and command construction for injection vectors.
+3. Inspect {repo} for secrets and credential handling. Check for hardcoded keys, unencrypted storage, leaked tokens in logs, and insecure credential rotation practices.
+4. Summarize what was found and why, and return that as your result.
+```
+
+Each call expands differently because the `with` modifier steers the LLM's reshaping. The resolved body text is identical for all three (`"Inspect the failure in {repo} and identify what is failing."`) — the modifier is what differentiates them.
+
+**Example: `with` on a hand-written block.**
+
+`with` is not limited to generated blocks. It works on any call, including hand-written blocks and imported blocks:
+
+```glyph
+export block review_code(files) -> ReviewResult
+    effects: reads_files
+
+    flow:
+        scan(files)
+        check_patterns(files)
+        return compile_report(files)
+```
+
+Two skills that import and call `review_code` with different emphasis:
+
+```glyph
+// In security_review.glyph.md
+skill security_review(scope)
+    flow:
+        files = gather_files(scope)
+        report = review_code(files) with "prioritize security vulnerabilities and unsafe patterns"
+        return report
+
+// In performance_review.glyph.md
+skill performance_review(scope)
+    flow:
+        files = gather_files(scope)
+        report = review_code(files) with "prioritize hot paths, unnecessary allocations, and O(n²) patterns"
+        return report
+```
+
+Same block, same parameters, same effects — but each compiled skill gets review instructions shaped for its specific concern. The `with` modifier is the only thing that differs, and it produces meaningfully different agent behavior.
+
+**Example: call without `with` vs. call with `with`.**
+
+```glyph
+skill quick_fix(scope)
+    flow:
+        inspect_failure(scope)
+        return summarize_changes()
+```
+
+Compiled output (no `with` modifier):
+
+```md
+## Parameters
+- **scope**: Area of codebase to focus on
+
+### Steps
+
+1. Inspect the failure in {scope} and identify what is failing.
+2. Summarize what was changed and why, and return that as your result.
+```
+
+Compare to the earlier `fix_bug` example where the same call carries `with "focus on auth boundaries"`:
+
+```md
+### Steps
+
+1. Inspect the failure in {scope}, focusing on auth boundaries and permission checks. Identify what is failing and whether any auth-related logic is involved.
+...
+```
+
+Without `with`, the output hews closely to the resolved body text. With `with`, the LLM reshapes the prose to emphasize the modifier's concern. The modifier is the author's lever for controlling expansion specificity without touching the block definition.
 
 **What Expand does not do:** Does not change the source file. Does not alter the IR's structure (roles, types, effects, call graph). Only adds prose content to existing nodes.
 
@@ -245,12 +369,14 @@ Emit is pure formatting. The IR has all the content; Emit arranges it into the f
   - `description` — from the skill's `description:` sub-section (generated by Repair or Expand if omitted).
   - `effects` — YAML flow-sequence list of the full inferred effect set. Field omitted entirely when effects are `none` or empty.
 
-- **`## Instructions`** — the single H2 section. Always emitted. Contains:
+- **`## Parameters`** — emitted when the skill declares parameters. Contains a bulleted list of parameter names, descriptions (generated by Step 2), and optional default values. Omitted for parameterless skills.
+
+- **`## Instructions`** — always emitted. Contains:
   - `### Steps` — numbered list, one expanded instruction per item. Order matters. The final item includes the return-summary sentence. Conditional: omitted only for pure constraint-only skills.
   - `### Constraints` — bulleted list, one expanded constraint per item. Order usually does not matter. Conditional: omitted when there are no constraints.
   - At least one of `### Steps` or `### Constraints` must be present.
 
-- **Authoring construct erasure.** All imports, text references, `generated text`/`generated block` markers, comments, module paths, `with` modifiers, parameter names — everything from the authoring world is gone. The compiled file is fully self-contained (per `compiled-output.md`).
+- **Authoring construct erasure.** All imports, text references, `generated text`/`generated block` markers, comments, module paths, `with` modifiers — everything from the authoring world is gone. Parameter names survive only as `{param}` references in Steps/Constraints and as entries in the `## Parameters` section. The compiled file is fully self-contained (per `compiled-output.md`).
 
 - **Formatting rules** (per `compiled-output.md`):
   1. One instruction per list item (except the final Step, which may include the return sentence).
@@ -275,7 +401,7 @@ When compiling multiple `.glyph.md` files that import each other:
 
 4. **Expand/Emit can parallelize.** A dependency's Phases 6-7 (Expand + Emit) can run in parallel with the importer's Phases 1-5, since importers only need the validated IR, not the compiled output.
 
-5. **Multi-file repair.** Repair may edit files other than the current one when diagnostics require it (per `repair.md` §9). If this changes a dependency, that dependency must re-run from Phase 1. The same max-3-iteration bound applies across the whole build. If multi-file repair does not converge in 3 rounds, fail with diagnostics.
+5. **Repair is per-file only.** Repair only edits the current file (per `repair.md` §9). It does not edit dependencies or add new imports. Each file gets up to 3 repair iterations independently; there is no cross-file trigger propagation. If a file still has repairable diagnostics after its 3 iterations, fail with diagnostics for that file.
 
 ## Visualization
 
@@ -302,13 +428,13 @@ This document reconciles three prior descriptions:
 | — | 3. Repair | **3. Repair** (loop includes re-parse + re-analyze) |
 | — | 4. Re-parse | (inside Repair loop) |
 | Transform | 5. Resolve, 6. Infer, 7. Normalize, 8. Type | **4. Lower** |
-| Expand [LLM] | (not in the 9-step list) | **6. Expand** (per-invocation, distinct from Repair) |
+| Expand [LLM] | (not in the 9-step list) | **6. Expand** (parameterless, distinct from Repair) |
 | Validate | 9. Validate | **5. Validate** |
 | Output | (implicit) | **7. Emit** |
 
 Key clarifications this reconciliation makes:
 
-- The README's "Expand [LLM]" is **Phase 6 (Expand)**, the per-invocation pass that turns IR into agent-facing prose. It is distinct from the README's implied single-LLM-pass model — there are two LLM passes (Repair and Expand), each bounded by deterministic checks.
+- The README's "Expand [LLM]" is **Phase 6 (Expand)**, the pass that turns IR into agent-facing prose with parameter references preserved as `{param}` slots. It is distinct from the README's implied single-LLM-pass model — there are two LLM passes (Repair and Expand), each bounded by deterministic checks.
 - The 9-step list's steps 5-8 (Resolve, Infer, Normalize, Type) all happen inside **Phase 4 (Lower)** as sub-operations of the source-to-IR conversion.
 - The 9-step list does not mention an LLM expand pass; this document adds it as Phase 6.
 - The README does not mention repair as a separate pass; this document makes it explicit as Phase 3 with a bounded loop.
@@ -331,21 +457,28 @@ Key clarifications this reconciliation makes:
 | Default value filling | 4 | No (IR only) |
 | Effect propagation (union) | 4 | No (IR only) |
 | `with` modifier recording | 4 | No (IR only) |
-| Parameter resolution to concrete values | 6 | No (in-memory) |
-| `with` modifier consumption | 6 | No (in-memory) |
-| Return folding into final step | 6 | No (in-memory) |
-| Conditional flattening to prose | 6 | No (in-memory) |
+| Parameter metadata assembly | 6 (Step 1, deterministic) | No (in-memory) |
+| Bare name / inline string passthrough | 6 (Step 1, deterministic) | No (in-memory) |
+| Call-node expansion into prose | 6 (Step 2, LLM) | No (in-memory) |
+| `with` modifier reshaping | 6 (Step 2, LLM) | No (in-memory) |
+| Constraint rewording | 6 (Step 2, LLM) | No (in-memory) |
+| Return folding into final step | 6 (Step 2, LLM) | No (in-memory) |
+| Conditional flattening to prose | 6 (Step 2, LLM) | No (in-memory) |
 
 ## Cacheability
 
 | Phases | Cacheable? | Key |
 |---|---|---|
-| 1-5 (Parse through Validate) | Yes | Source file content hash + import content hashes |
-| 6-7 (Expand + Emit) | Per-invocation | Source hash + concrete argument values |
+| 1-5 (Parse through Validate) | Yes | Post-repair source file content hash + import content hashes |
+| 6-7 (Expand + Emit) | Yes | Post-repair source hash + import content hashes |
 
-Phases 1-5 produce a validated IR that does not depend on invocation arguments. If the source file and its imports have not changed, the validated IR can be reused across invocations. Phases 6-7 must run fresh whenever arguments change, since the compiled output is a specialization for those specific values.
+All seven phases produce output that depends only on source content and imports — there is no argument-dependent variation. If the source file and its imports have not changed, the entire pipeline output can be reused.
 
-Incremental compilation and build caching are **deferred** from MVP (per `todo.md`). The pipeline design supports them by separating argument-independent phases (1-5) from argument-dependent phases (6-7), but the MVP compiler may re-run all phases on every invocation.
+**Note:** The cache key is the **post-repair** source hash, not the original author-written source. Repair (Phase 3) writes back to the `.glyph.md` file, so the source on disk after a successful compile already includes all repairs. Subsequent compilations of the same file will find no repairable diagnostics, skip repair, and produce the same validated IR — which matches the cached entry.
+
+**Step 2 non-determinism caveat:** Step 2 (LLM reshaping) is not idempotent across model versions or repeated runs at temperature > 0 (see `expand.md` §7). Byte-stable caching of compiled output requires including the Step 2 output in the cache entry. If the source has not changed and a cached Step 2 output exists, the pipeline may skip Step 2 entirely and reuse the cached prose.
+
+Incremental compilation and build caching are **deferred** from MVP (per `todo.md`). The pipeline design supports them since all phases are argument-independent, but the MVP compiler may re-run all phases on every compilation.
 
 ## Cross-References
 
@@ -354,7 +487,7 @@ Incremental compilation and build caching are **deferred** from MVP (per `todo.m
 - **IR and roles:** `ir-and-semantics.md` — four MVP roles, constraint model, effects, section vocabulary.
 - **Repair:** `repair.md` — full repair rules, generated definitions (text and block), one-sentence rule, idempotence, intent potency.
 - **Data flow:** `data-flow.md` — parameters, calls, `with` modifier, control flow, return semantics, closure.
-- **Compiled output:** `compiled-output.md` — frontmatter shape, `## Instructions` structure, projection rules, per-invocation model.
+- **Compiled output:** `compiled-output.md` — frontmatter shape, `## Parameters` section, `## Instructions` structure, projection rules, parameterless compilation model.
 - **Imports:** `imports.md` — path resolution, cycle rejection, effect propagation, multi-file compilation order.
 - **Types:** `types.md` — nominal matching at call boundaries.
 - **Standard library:** `stdlib.md` — MVP stdlib entries and their effect signatures.

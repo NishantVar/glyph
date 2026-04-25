@@ -33,6 +33,16 @@ Strings are opaque instruction text. There is no interpolation syntax (`${...}`,
 
 This follows foundations: not a prompt template system and foundations: text reuse is not prompt templating, plus the maintenance rule against ad hoc string concatenation.
 
+### No Value-Level Operators
+
+MVP expressions contain only four forms: bindings, literals, calls, and dot access (`data-flow.md` §IR Mapping). There are no value-level operators — no `+`, `-`, `*`, `/`, comparisons, or any other infix/prefix operator in expression position.
+
+String concatenation via `+` is explicitly forbidden. Authors who need to combine context with a call should use the `with` modifier (`data-flow.md`) to pass specialization context at the call site. The Expand LLM weaves parameter context into prose instructions — manual string assembly is redundant with the pipeline's job.
+
+If the parser encounters an operator token in expression position, it emits a `G::parse::operator-in-expression` diagnostic (repairable). The Repair pass can mechanically rewrite patterns like `f("prefix " + x)` into `f(x) with "prefix"`.
+
+General-purpose operators (arithmetic, comparison, string manipulation) are deferred post-MVP.
+
 ## Numbers
 
 ### Integers
@@ -114,7 +124,7 @@ If two declarations in different files or scopes use different casings for the s
 
 The following are reserved keywords and cannot be used as identifiers:
 
-`skill`, `block`, `export`, `import`, `text`, `int`, `float`, `flow`, `call`, `if`, `elif`, `else`, `return`, `true`, `false`, `none`, `effects`, `constraints`, `inputs`, `outputs`, `when_to_use`, `description`, `as`, `generated`, `input`, `output`, `must`, `require`, `avoid`, `prefer`, `context`, `and`, `or`, `not`.
+`skill`, `block`, `export`, `import`, `text`, `int`, `float`, `flow`, `call`, `if`, `elif`, `else`, `return`, `true`, `false`, `none`, `effects`, `constraints`, `inputs`, `outputs`, `when_to_use`, `description`, `as`, `generated`, `input`, `output`, `must`, `require`, `avoid`, `context`, `and`, `or`, `not`.
 
 This list grows with the language. New keywords should be added conservatively.
 

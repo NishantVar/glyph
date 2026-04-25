@@ -52,9 +52,19 @@ Once an ID exists it is never renamed or reassigned. It can be deprecated and re
 
 The `::` separator avoids collision with `.` (module access) and `/` (file paths).
 
+## Catalog Completeness Rule
+
+The catalog below is representative, not exhaustive. It grows as the compiler is implemented. The completeness meta-rule is:
+
+1. **Every check in Phases 1–5 and 6b that can fail MUST have exactly one diagnostic ID.** No check may emit an unstructured error string, a bare exception, or a generic fallback diagnostic.
+2. **The ID follows the `G::<phase>::<descriptive-name>` convention** defined above.
+3. **Every diagnostic has the full shape** defined in §Diagnostic Shape (id, classification, message, span, optional related spans, optional hints).
+4. **Classification is deterministic per ID.** Each diagnostic ID maps to exactly one of `error`/`repairable`/`warning`. The same ID never changes classification based on context.
+5. **Implementers add IDs as checks are implemented**, following this convention. The representative catalog below serves as guidance and a naming reference.
+
 ## Examples
 
-Representative diagnostics implied by the current design. This is not a complete catalog — entries are added as the compiler is built.
+Representative diagnostics implied by the current design.
 
 ### Parse phase
 
@@ -63,9 +73,10 @@ Representative diagnostics implied by the current design. This is not a complete
 | `G::parse::tab-indent` | repairable | Tabs used instead of 4-space indentation (`language-surface.md` §2.2) |
 | `G::parse::mixed-indent` | repairable | Tabs and spaces on the same line (`language-surface.md` §2.2) |
 | `G::parse::nested-flow` | error | `flow:` inside `flow:` (`data-flow.md`) |
-| `G::parse::none-with-effects` | repairable | `effects: none, reads_files` — `none` alongside other keywords (`ir-and-semantics.md` §3) |
+| `G::parse::none-with-effects` | error | `effects: none, reads_files` — `none` alongside other keywords (`ir-and-semantics.md` §3). Detectable in Parse because the token sequence is unambiguous, but semantically an error — `none` exclusivity is a hard rule, not repairable. |
 | `G::parse::multiple-with` | error | Chained `with ... with ...` on a single call (`data-flow.md`) |
 | `G::parse::with-on-bare-name` | error | `with` modifier on a non-call statement (`data-flow.md`) |
+| `G::parse::operator-in-expression` | repairable | Operator token (`+`, `-`, `*`, `/`, etc.) in expression position; MVP has no value-level operators (`values-and-names.md`) |
 
 ### Analyze phase
 
@@ -82,6 +93,7 @@ Representative diagnostics implied by the current design. This is not a complete
 | `G::analyze::unused-import` | repairable | Imported name never referenced; removed (`imports.md` §7) |
 | `G::analyze::ambiguous-role` | repairable | Can't determine instruction role from context (`ir-and-semantics.md` §2) |
 | `G::analyze::effects-under-declared` | error | Declared effects are a subset of inferred effects (`ir-and-semantics.md` §3) |
+| `G::analyze::effects-over-declared` | warning | Declared effects include keywords not inferred from the body; non-blocking, surfaced for author cleanup (`ir-and-semantics.md` §3) |
 | `G::analyze::nominal-mismatch` | error | Type name mismatch at a call boundary (`types.md`) |
 | `G::analyze::lossy-coercion` | error | Lossy numeric conversion, e.g. `3.7` where integer expected (`values-and-names.md`) |
 | `G::analyze::missing-return` | repairable | Export block lacks `return` on a code path (`language-surface.md` §3.3) |

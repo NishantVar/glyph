@@ -18,17 +18,21 @@ This folder is the working source of truth for Glyph system design. The reposito
 - [preferences.md](preferences.md) — preferences as ordinary exported constants (`export text`/`export int`/`export float`), no `pref(...)` call, no special effect, compile-time resolution
 
 ### IR and Semantics
-- [ir-and-semantics.md](ir-and-semantics.md) — IR roles (`InputContract`, `Step`, `Constraint`, `OutputContract`), constraint strength/polarity, effects (9 keywords, propagation, validation), section vocabulary
+- [ir-and-semantics.md](ir-and-semantics.md) — IR roles (`InputContract`, `Step`, `Constraint`, `OutputContract`), constraint keywords (`require`/`avoid`/`must`, 4-form model with `soft`/`hard` strength), effects (9 keywords, propagation, validation), section vocabulary
 
 ### Modules
 - [imports.md](imports.md) — path-based import resolution, importable vs. private declarations, cycle rejection, effect propagation across boundaries
-- [stdlib.md](stdlib.md) — standard library: MVP contains one entry (`subagent`), the `Agent` compiler-known type, and the `spawns_agent` effect
+- [stdlib.md](stdlib.md) — standard library: MVP contains two entries (`subagent`, `send`), the `Agent` compiler-known type, UFCS method-call syntax, and the `spawns_agent` effect
+
+### IR
+- [ir-schema.md](ir-schema.md) — **canonical IR node schema**: every node type (`Skill`, `Block`, `ExportBlock`, `Call`, `Constraint`, `InlineInstruction`, `InstructionRef`, `Branch`, `Return`), enums (`Role`, `Strength`, `Polarity`, `EffectKeyword`, `TypeTag`, `Value`), resolved IR shape
 
 ### Compilation
 - [pipeline.md](pipeline.md) — **canonical compiler pipeline**: 7 phases (Parse, Analyze, Repair, Lower, Validate, Expand, Emit), Safety Sandwich, multi-file order, cacheability
 - [diagnostics.md](diagnostics.md) — structured diagnostic shape, classification tiers (`error`/`repairable`/`warning`), ID scheme, representative catalog
 - [repair.md](repair.md) — LLM repair pass, generated definitions (text and block), comment syntax, intent potency, idempotence
-- [compiled-output.md](compiled-output.md) — compiled Markdown shape: YAML frontmatter, `## Instructions` (`### Steps` + `### Constraints`), per-invocation model
+- [expand.md](expand.md) — Expand pass Step 2 (LLM reshaping) and Phase 6b validation gate: input schema, output contract, role-preservation check, retry / deterministic-fallback / hard-fail policy, non-idempotence
+- [compiled-output.md](compiled-output.md) — compiled Markdown shape: YAML frontmatter, `## Parameters` (conditional), `## Instructions` (`### Steps` + `### Constraints`), parameterless compilation model
 
 ## Reading Order
 

@@ -1,6 +1,6 @@
 # Glyph Compiled Output
 
-This document defines the shape of compiled Markdown files that the Glyph compiler emits. It covers the MVP output format: a `.glyph.md` source file compiles, at the time an author or caller invokes it with concrete arguments, into a same-basename `.md` file that is the executing agent's prompt.
+This document defines the shape of compiled Markdown files that the Glyph compiler emits. It covers the MVP output format: a `.glyph.md` source file compiles into a same-basename `.md` file that serves as the executing agent's skill instructions. Compilation is parameterless — parameters appear as named slots resolved by the consuming LLM at runtime.
 
 ## Guiding Principles
 
@@ -10,16 +10,17 @@ This document defines the shape of compiled Markdown files that the Glyph compil
 - **The IR is the semantic contract** (foundations). Compiled output is a projection of the IR, not a direct transformation of source.
 - **Novice learnability** (foundations). Compiled output stays radically simple — frontmatter plus one instruction section — so new authors see exactly how their source maps onto agent-facing Markdown.
 
-## Per-Invocation Compilation
+## Parameterless Compilation
 
-MVP compilation is per-invocation. The expand pass takes the source plus **concrete argument values** for the skill's parameters and produces compiled Markdown in which every parameter has already been resolved into prose. The compiled file is a specialization of the source for one use, not a reusable template.
+MVP compilation is parameterless. `glyph compile skill.glyph.md` produces one `.md` file per source file, regardless of how the skill will be invoked. Parameters are not resolved at compile time — they appear in the compiled output as named slots that the consuming LLM resolves from user context at runtime.
 
 Practical consequences:
 
-- The `.glyph.md` source is the reusable artifact; it is what authors share, import, and version.
-- The `.md` compiled output is tied to a specific invocation. Different argument sets produce different compiled files.
-- The compiled file contains no variable references, no `{param}` placeholders, no conditional logic in template form. It reads as flat, concrete instructions.
-- Tooling (IDEs, repositories, skill registries) that needs a discovery artifact can compile with default arguments or a documentation-style invocation; MVP does not define a separate "abstract card" output.
+- The `.glyph.md` source is the authoring artifact; it is what authors share, import, and version.
+- The `.md` compiled output is a single, stable artifact per source file. There is no argument-dependent variation.
+- The compiled file contains a `## Parameters` section listing each parameter with its name, a brief description, and an optional default value. Steps and Constraints may reference parameters by name using `{param}` syntax.
+- The consuming LLM reads the Parameters section, resolves each parameter from the user's request context (or falls back to the listed default), and executes the Steps with those values in mind.
+- Since compilation is parameterless, there is no need for a separate "abstract card" output — the compiled file already serves that role.
 
 ## Source-To-Compiled-Output Mapping
 
@@ -33,9 +34,9 @@ Every source form maps to exactly one compiled location. This is the authoritati
 | `flow:` steps (non-`return`) | `### Steps` under `## Instructions` |
 | `return <expr>` in flow | Closing sentence of the final `### Steps` item |
 | `constraints:` content + body-level markers | `### Constraints` under `## Instructions` |
-| Header parameters + concrete arguments | Resolved into Step prose at expand time (no dedicated section) |
+| Header parameters + defaults | `## Parameters` section (names, descriptions, optional defaults) |
 
-Constraint strength and polarity affect compiled wording and prominence per [ir-and-semantics.md](ir-and-semantics.md).
+Constraint strength (`soft`/`hard`) and polarity (`require`/`avoid`) affect compiled wording and prominence per [ir-and-semantics.md](ir-and-semantics.md).
 
 ## Frontmatter
 
@@ -50,23 +51,35 @@ effects: [<effect-keyword>, <effect-keyword>, ...]
 ```
 
 - `name` — the skill identifier, taken from the `skill` declaration name. Machine-readable, used for skill selection and referencing.
-- `description` — a concise statement of when and why an agent should use this skill. Primary trigger for coding agents that select skills from frontmatter. Sourced from the `description:` sub-section (see [ir-and-semantics.md](ir-and-semantics.md)). If the source omits `description:`, the compiler generates one from the skill name and body during the expand pass.
+- `description` — a concise statement of when and why an agent should use this skill. Primary trigger for coding agents that select skills from frontmatter. Sourced from the `description:` sub-section (see [ir-and-semantics.md](ir-and-semantics.md)). If the source omits `description:`, Repair (Phase 3) generates one from the skill name and body and adds it to the source as a `description:` sub-section.
 - `effects` — YAML flow-sequence list of the skill's full inferred effect set. Omitted entirely (the field is not emitted) when the skill has no meaningful effects or is explicitly `effects: none`. Effects live in frontmatter so selectors and routing tools can read them without parsing the body; they are not repeated in the prose.
 
 The compiled file does not emit a `# <Skill Name>` heading. The frontmatter `name` is the authoritative title.
 
 ## Sections
 
-MVP compiled output emits exactly one H2 section: `## Instructions`. No other sections are produced.
+MVP compiled output emits two H2 sections: `## Parameters` (conditional) and `## Instructions`. No other sections are produced.
 
-Deferred sections (`## Inputs`, `## Output`, `## Effects` as a prose section, `## When To Use`) are logged in [todo.md](todo.md) for possible post-MVP restoration.
+Deferred sections (`## Output`, `## Effects` as a prose section, `## When To Use`) are logged in [todo.md](todo.md) for possible post-MVP restoration.
+
+### `## Parameters`
+
+Emitted when the skill declares one or more parameters. Omitted for parameterless skills. Contains a bulleted list where each item names a parameter, provides a brief description (generated by the expand pass from the parameter's name, type, and usage context), and lists the default value if one exists.
+
+```md
+## Parameters
+- **scope**: Area of codebase to focus on
+- **risk**: Risk level — "low" | "medium" | "high" (default: "medium")
+```
+
+The consuming LLM reads this section before executing the Steps. It resolves each parameter from the user's request context; if the user does not specify a value, the LLM uses the listed default or infers a reasonable value from context. Parameter descriptions are guidance for the LLM, not rigid schemas.
 
 ### `## Instructions`
 
 Always emitted. Contains the compiled workflow and behavioral rules via H3 sub-sections:
 
 - **`### Steps`** — numbered list (order matters). Each item is one instruction. The `return` expression from the source folds into the final item rather than producing a separate section.
-- **`### Constraints`** — bulleted list (order usually does not matter). Each item is one `Constraint` node. Strength and polarity affect wording, not placement in MVP.
+- **`### Constraints`** — bulleted list (order usually does not matter). Each item is one `Constraint` node. Strength (`soft`/`hard`) and polarity (`require`/`avoid`) affect wording, not placement in MVP.
 
 Both sub-sections are conditional: `### Constraints` is omitted when there are no explicit constraints; `### Steps` may be omitted only for pure instruction-only skills (all content is constraints). At least one must be present.
 
@@ -95,23 +108,23 @@ Compiled output projects from the typed IR role model defined in [ir-and-semanti
 | Skill description | Frontmatter `description` | String |
 | Effect set | Frontmatter `effects` | YAML list; field omitted if effect set is empty or `none` |
 | `Step` | `### Steps` | Numbered list, one concrete instruction per item |
-| `Constraint` | `### Constraints` | Bulleted list, wording shaped by strength and polarity |
-| `InputContract` + parameters | Folded into `### Steps` prose at expand time | No dedicated section |
+| `Constraint` | `### Constraints` | Bulleted list, wording shaped by constraint keyword (`require`/`avoid`/`must`/`must avoid`) |
+| `InputContract` + parameters | `## Parameters` section (names, descriptions, defaults) | Bulleted list |
 | `OutputContract` + `return` | Closing sentence of the final `### Steps` item | No dedicated section |
 
 ### Constraint Rendering
 
-- **Strength** affects wording and prominence. `invariant` renders as strongest non-negotiable rules, `required` as mandatory rules, `preferred` as guidance that yields to stronger constraints.
+- **Strength** affects wording and prominence. `hard` renders as strongest non-negotiable rules; `soft` renders as standard rules. Strength is advisory prose framing — not enforced; target agent compliance is not guaranteed.
 - **Polarity** affects phrasing. `polarity: require` renders as a positive obligation; `polarity: avoid` renders as a prohibition.
 - **Conditional logic** (`if` in source) is flattened into prose in `### Steps`. The compiled output does not use code-like branching syntax.
 
-### Parameter Resolution Into Steps
+### Parameter References In Steps
 
-The expand pass receives concrete argument values for every parameter. Those values flow into the Step prose directly:
+Parameters are **not** resolved at compile time. Steps and Constraints may reference parameters by name using `{param}` syntax. The consuming LLM substitutes the actual values at runtime based on user context and the `## Parameters` section.
 
-- A step like `inspect_failure(scope)` with `scope = "auth"` expands to a Step whose prose mentions "the auth area" or "the auth module" (wording determined by the expand pass and any `with` modifier).
+- A step like `inspect_failure(scope)` expands to a Step whose prose references `{scope}` — e.g., "Inspect the failure in {scope}, focusing on auth boundaries."
 - A `with "modifier"` clause on the call site attaches a specialization prompt that shapes the expanded wording. The modifier itself does not appear in compiled output.
-- Parameter names never appear in compiled output. If an expanded Step would still contain a `{param}` placeholder, that is a compile error.
+- Parameter names appear in compiled output as `{param}` references. A Step that references a parameter name not declared in the skill's header is a compile error.
 
 ### Return Folding
 
@@ -194,7 +207,7 @@ generated block summarize_changes()
     "Summarize what was changed and why."
 ```
 
-Compiled output (`fix_bug.md`), produced with `scope = "auth"`:
+Compiled output (`fix_bug.md`):
 
 ```md
 ---
@@ -203,11 +216,14 @@ description: Debug and fix a bug in the codebase with minimal, targeted changes.
 effects: [reads_files, writes_files, runs_commands]
 ---
 
+## Parameters
+- **scope**: Area of codebase to focus on
+
 ## Instructions
 
 ### Steps
 
-1. Inspect the failure within the auth module, focusing on authentication boundaries and permission checks. Identify what is failing and whether any auth-related logic is involved.
+1. Inspect the failure in {scope}, focusing on auth boundaries and permission checks. Identify what is failing and whether any auth-related logic is involved.
 2. Identify the root cause of the issue.
 3. Don't propose a fix until you've confirmed the root cause.
 4. Apply the smallest change that fixes the issue.
@@ -216,26 +232,26 @@ effects: [reads_files, writes_files, runs_commands]
 
 ### Constraints
 
-- Do not make changes outside the requested scope.
+- Do not make changes outside {scope}.
 - Follow the repository's existing patterns before introducing new abstractions.
 ```
 
 Notes on the example:
 
-- `scope = "auth"` is resolved into Step 1 as "the auth module" and "authentication boundaries"; the `with` modifier further focuses Step 1 on auth semantics. Neither the parameter name nor the modifier string survive.
+- `scope` appears in the `## Parameters` section and is referenced as `{scope}` in Steps 1 and the first Constraint. The consuming LLM resolves `{scope}` from the user's request context at runtime.
+- The `with "focus on auth boundaries"` modifier shaped Step 1's wording to mention auth boundaries and permission checks. The modifier string itself does not survive.
 - The final flow item `return summarize_changes()` folds into Step 6 as "…and return that as your result." — no `## Output` section.
 - Effects appear only in frontmatter. There is no `## Effects` section.
 
 ## Interactions With Other Workstreams
 
 - **Effect vocabulary**: `effects` frontmatter content depends on finalized effect keywords ([ir-and-semantics.md](ir-and-semantics.md)).
-- **IR role taxonomy**: Role semantics, constraint strength/polarity, and projection guidance are in [ir-and-semantics.md](ir-and-semantics.md). This file covers only the output-side projection.
+- **IR role taxonomy**: Role semantics, constraint strength (`soft`/`hard`) and polarity (`require`/`avoid`), and projection guidance are in [ir-and-semantics.md](ir-and-semantics.md). This file covers only the output-side projection.
 - **Source syntax**: Compiled output shape is independent of source syntax, since output is a projection of the IR.
 - **Type vocabulary**: MVP compiled output does not render parameter or return types; they stay in the IR for validation and visualization.
-- **Pipeline**: The expand pass is per-invocation and consumes concrete arguments (see pipeline doc when canonicalized).
+- **Pipeline**: The expand pass is parameterless — it produces one compiled file per source file (see pipeline doc when canonicalized).
 
 ## Open Questions
 
-- Whether target-specific renderers should add `### Guidance` for `Constraint(strength: preferred)`, or whether preferred constraints should stay merged with Constraints.
-- The exact wording and prominence rules for `Constraint(strength: invariant)`.
-- Whether a skill registry / discovery tool wants an "abstract-card" compilation mode (frontmatter plus placeholder body) alongside the per-invocation compiled output. Logged as a deferred concern; see [todo.md](todo.md).
+- The exact wording and prominence rules for `Constraint(strength: hard)` vs `Constraint(strength: soft)`.
+- Whether a skill registry / discovery tool wants additional metadata beyond the compiled file's `## Parameters` section and frontmatter. Since compilation is now parameterless, the compiled file already serves as both the execution artifact and the discovery artifact. Logged as a deferred concern; see [todo.md](todo.md).
