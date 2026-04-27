@@ -143,7 +143,7 @@ export block inspect_repo(scope) -> RepoContext
 // fix_bug.glyph.md
 import "./repo_tools.glyph.md" { inspect_repo }
 
-skill fix_bug(scope)
+skill fix_bug(scope = ".")
     flow:
         ctx = inspect_repo(scope)
         plan = diagnose(ctx)

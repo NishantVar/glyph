@@ -95,13 +95,13 @@ Analyze tries to understand the source as deeply as it can using deterministic r
 
 Repair makes the source valid so it can compile. It is not just a safety net — it is the **primary content generation mechanism for novice authors** (`foundations.md` #33, `repair.md` §1). A novice using only the kernel surface writes source that contains many undefined names and calls; repair materializes definitions for them.
 
-Repair has two sub-steps that run together:
+Repair has three sub-steps:
 
 ### 3a. Deterministic source rewrites (always run, no LLM)
 
 Mechanical transformations where the correct fix is unambiguous:
 
-- Body-level constraint hoisting: if `require foo` appears at body level without a `constraints:` wrapper, wrap it into a `constraints:` section (per `ir-and-semantics.md` §2).
+- Body-level constraint hoisting: if `require foo` appears at body level without a `constraints:` wrapper, wrap it into a `constraints:` section (per `ir-and-semantics.md` §2). This source-to-source rewrite covers only constraint markers at the declaration body level. Constraint markers that appear inside `flow:` are **not** source-rewritten — they remain as flow statements and are handled at IR level by Phase 4 (Lower) per `ir-and-semantics.md` §Flow-Level Constraint Markers.
 - Duplicate import merging: two imports from the same file merge into one statement (per `imports.md` §6).
 - Unused import removal: imported names not referenced anywhere in the file are removed (per `imports.md` §7).
 - Source section reordering: sections within a declaration body are reordered to the recommended convention (per `ir-and-semantics.md` §4).
@@ -121,6 +121,15 @@ The LLM receives the source, the remaining diagnostics, and the compiler's rules
 
 Generated definitions follow the one-sentence rule: bodies stay close to the name's meaning and minimize drift from author intent. Full rules in `repair.md` §5.
 
+### 3c. Constraint conflict scan (LLM, runs once after 3a/3b convergence per declaration with ≥2 constraints)
+
+After 3a and 3b have stabilized the source (no remaining `repairable` diagnostics), Phase 3c runs a focused LLM judgment pass over each declaration's `constraints:` set. It does **not** modify source; it emits diagnostics:
+
+- **`G::repair::constraint-tension`** (warning) — two constraints are in friction but both reasonable to hold (e.g., "be thorough" + "be efficient"). Build proceeds; both constraints survive into compiled output.
+- **`G::repair::constraint-contradiction`** (error) — two constraints cannot both be satisfied. Compilation fails; the author must edit one. The compiler does not silently drop a constraint.
+
+3c runs once per declaration with ≥2 constraints (skill-level and block-level scanned independently). Cross-scope pairs (callee scoped constraints vs. caller top-level) are intentionally **not** scanned — those compose deliberately. Full rules in `repair.md` §4.10.
+
 ### The repair loop
 
 ```
@@ -133,6 +142,12 @@ repeat (max 3 iterations):
     if zero repairable diagnostics: accept, exit loop
 if still has repairable diagnostics after 3 iterations:
     hard fail — no .md emitted, non-zero exit, residual diagnostics surfaced to author
+
+# After loop converges, run 3c once per declaration with ≥2 constraints
+for each declaration D with len(D.constraints) >= 2:
+    run 3c (constraint conflict scan) on D
+    if any contradiction diagnostic: hard fail — no .md emitted, non-zero exit
+    tension diagnostics emitted as warnings, build proceeds
 ```
 
 **Hard fail on non-convergence.** If repairable diagnostics remain after 3 iterations, the compiler does not emit a compiled `.md` file. It exits with a non-zero status and surfaces the residual diagnostics on stderr for the author to fix manually. The source file retains whatever partial repairs succeeded in earlier iterations (since Repair writes back to `.glyph.md` after each accepted iteration). The author sees the residual diagnostics, fixes them, and recompiles. The compiler never emits a compiled file from source that still has `repairable` diagnostics.
@@ -166,6 +181,8 @@ Lower converts the human-friendly source AST into the strict IR. Every shortcut 
   - `Branch { condition, then_body, elif_branches, else_body }`
   - `PropertyAccess { object, property }`
 - **Section assignment.** Every IR node is assigned to its output location based on its role: `Step` → Steps, `Constraint` → Constraints, `InputContract` → folded into Steps at expand time, `OutputContract` → folded into final Step.
+- **Flow-level constraint hoisting.** A `Constraint` node admitted as a flow statement (per `ir-schema.md` §Flow Nodes) is split by location: a Constraint at flow top-level is hoisted out of the flow and appended to the enclosing declaration's `constraints` list (deduplicated by canonical text + polarity + strength); a Constraint inside any `Branch` body (`then_body`, `elif_branches[*].body`, or `else_body`) stays inline in that branch and renders as part of the conditional Step prose at Expand time. See `ir-and-semantics.md` §Flow-Level Constraint Markers and `compiled-output.md` §Constraint Rendering.
+- **Stable IR node IDs.** Lower assigns each IR node a stable identifier (e.g., `n0`, `n1`, …) used for Phase 6b structural validation and diagnostic messages. The format, allocation order, scope, stability guarantees, and synthetic-node policy are defined in `ir-schema.md` §Node Identifiers (canonical spec). The ID is opaque, file-local, and never appears in compiled output.
 
 **What Lower does not do:** Does not generate prose. Does not validate correctness (that is Phase 5). Does not touch the source file. One-way transformation from source world to IR world.
 
@@ -186,6 +203,13 @@ Validate is the final correctness gate before any LLM touches the IR.
 - **Skill body non-empty.** A `skill` must have at least `constraints:` or `flow:` (or both). Empty skill body is an error (per `ir-and-semantics.md` §4).
 - **Effect `none` exclusivity.** `effects: none, reads_files` is an error (per `ir-and-semantics.md` §3).
 - **Constraint well-formedness.** Constraint attributes have valid strength (`soft`/`hard`) and polarity (`require`/`avoid`).
+
+- **Post-Lower IR invariants.** Validate also confirms the IR shape Lower produced is internally consistent. All five are errors and never elided (see `diagnostics.md` Validate phase):
+  - **Stable IR node IDs are unique within a file.** Lower assigns these; Validate confirms no collisions (`G::validate::duplicate-node-id`).
+  - **Every `Call` node's callee resolves post-Lower.** Sanity check after Lower's UFCS desugaring and branch extraction; closes the call graph (`G::validate::unresolved-callee`).
+  - **Branch IR has the shape Phase 6b expects.** Every `Branch` has at least an `if` arm and arm bodies are well-formed (`G::validate::malformed-branch`).
+  - **No recursive calls within a file.** The local block-to-block call graph is acyclic (recursion is forbidden in MVP) (`G::validate::recursive-call`).
+  - **Every Step-projecting IR node has non-empty body text.** No silently-empty Steps (`G::validate::empty-step`).
 
 **What Validate does not do:** Does not change the IR. Does not generate output. Pure pass/fail gate.
 
@@ -212,6 +236,7 @@ All mechanical substitutions happen first, before any LLM is involved:
 - **Bare name inlining.** Bare names that resolve to `text` or `generated text` are replaced with their string content as-is.
 - **Inline string passthrough.** Inline strings like `"Don't propose a fix until you've confirmed the root cause."` pass through unchanged.
 - **Effect keyword passthrough.** The inferred effect set is prepared for frontmatter as a YAML list.
+- **Block projection tier assignment.** For each `Call` node targeting a block, Step 1 selects a projection tier (inline, same-file procedure, or external file) based on callee complexity, conditionality, and reuse. The tier is stored on the `ResolvedCall` node as `projection_mode`. For `same_file_procedure` and `external_file` tiers, Step 1 also attaches the callee's resolved flow nodes and constraints to the `ResolvedCall`. See `compiled-output.md` §Three-Tier Block Projection for the heuristic.
 
 After Step 1, every IR node has resolved content — bare names and inline strings are concrete, but `{param}` references remain as named slots. An unresolved bare name after this step is a compile error. A `{param}` reference to a name not in the skill's parameter list is also a compile error. The result is a **resolved IR** that could theoretically be emitted as-is (it would be correct but stilted).
 
@@ -222,9 +247,9 @@ The LLM receives the resolved IR nodes and produces natural-language prose. It d
 - **Call-node expansion.** Each resolved `Call` node becomes a full prose instruction sentence. The LLM receives the resolved body text (with `{param}` references preserved as named slots) and the call's context (what role it plays, what comes before and after). The LLM must preserve `{param}` references in its output.
 - **`with` modifier application.** If a call carries a `site_modifier`, the LLM uses it as a reshaping prompt applied to the resolved body text. The modifier steers tone, emphasis, and detail — it does not introduce new parameters or change the call's semantics. The modifier is consumed and does not appear in output. Parameter references in the body text are preserved through the reshaping.
 - **Constraint rewording.** Each `Constraint` node gets wording shaped by its strength and polarity. `Constraint(strength: soft, polarity: avoid)` renders as a prohibition; `Constraint(strength: hard, polarity: require)` renders with strongest possible wording; `Constraint(strength: soft, polarity: require)` renders with standard wording.
-- **Conditional flattening.** `if`/`elif`/`else` branches are turned into prose conditional instructions within steps.
+- **Conditional projection.** Each `if`/`elif`/`else` chain becomes a single numbered Step with lettered sub-steps per arm. Each arm is introduced by a condition header, and each Step-projecting node inside the arm becomes a lettered sub-step (`a.`, `b.`, `c.`, resetting per arm). Nested branches flatten into prose within their parent sub-step (see `compiled-output.md` §Constraint Rendering).
 - **Return folding.** The `return` expression becomes the closing sentence of the final numbered step.
-- **Description generation.** `description:` should always be present after Repair (Phase 3 generates it if the author omitted it). If it is still missing due to a repair failure, this is a Phase 5 (Validate) error, not an Expand responsibility.
+- **Description generation.** `description:` should always be present after Repair (Phase 3 generates it if the author omitted it). If Repair fails to converge (e.g., `G::analyze::missing-description` persists after 3 iterations), the build hard-fails via `G::repair::no-convergence` — the missing description never reaches Expand. There is no separate `G::validate::missing-description` diagnostic; the Repair convergence check is the safety net.
 
 Not every node needs the LLM. After Step 1, nodes that are already complete prose (inline strings, resolved `text` references) skip Step 2 entirely. The LLM only touches nodes that need reshaping: call expansions, `with`-modified calls, constraint rewording, conditional flattening, return folding, and parameter description generation for the `## Parameters` section.
 
@@ -257,7 +282,7 @@ The same call without `with` would skip the reshaping prompt and produce output 
 Source:
 
 ```glyph
-skill security_audit(repo)
+skill security_audit(repo = ".")
     flow:
         inspect_failure(repo) with "focus on authentication and authorization"
         inspect_failure(repo) with "focus on input validation and injection vectors"
@@ -306,14 +331,14 @@ Two skills that import and call `review_code` with different emphasis:
 
 ```glyph
 // In security_review.glyph.md
-skill security_review(scope)
+skill security_review(scope = ".")
     flow:
         files = gather_files(scope)
         report = review_code(files) with "prioritize security vulnerabilities and unsafe patterns"
         return report
 
 // In performance_review.glyph.md
-skill performance_review(scope)
+skill performance_review(scope = ".")
     flow:
         files = gather_files(scope)
         report = review_code(files) with "prioritize hot paths, unnecessary allocations, and O(n²) patterns"
@@ -325,7 +350,7 @@ Same block, same parameters, same effects — but each compiled skill gets revie
 **Example: call without `with` vs. call with `with`.**
 
 ```glyph
-skill quick_fix(scope)
+skill quick_fix(scope = ".")
     flow:
         inspect_failure(scope)
         return summarize_changes()
@@ -335,7 +360,7 @@ Compiled output (no `with` modifier):
 
 ```md
 ## Parameters
-- **scope**: Area of codebase to focus on
+- **scope**: Area of codebase to focus on (default: ".")
 
 ### Steps
 
@@ -374,9 +399,10 @@ Emit is pure formatting. The IR has all the content; Emit arranges it into the f
 - **`## Instructions`** — always emitted. Contains:
   - `### Steps` — numbered list, one expanded instruction per item. Order matters. The final item includes the return-summary sentence. Conditional: omitted only for pure constraint-only skills.
   - `### Constraints` — bulleted list, one expanded constraint per item. Order usually does not matter. Conditional: omitted when there are no constraints.
+  - `### Procedure: <name>` — zero or more procedure sections for blocks projected at the same-file procedure tier. Each contains the callee's expanded flow as a numbered list with an optional constraint preamble. See `compiled-output.md` §Three-Tier Block Projection.
   - At least one of `### Steps` or `### Constraints` must be present.
 
-- **Authoring construct erasure.** All imports, text references, `generated text`/`generated block` markers, comments, module paths, `with` modifiers — everything from the authoring world is gone. Parameter names survive only as `{param}` references in Steps/Constraints and as entries in the `## Parameters` section. The compiled file is fully self-contained (per `compiled-output.md`).
+- **Authoring construct erasure.** All imports, text references, `generated text`/`generated block` markers, comments, module paths, `with` modifiers — everything from the authoring world is gone. Parameter names survive only as `{param}` references in Steps/Constraints and as entries in the `## Parameters` section. The compiled file is self-contained for Tier 1/2 projections; Tier 3 projections retain procedure file paths as runtime references (per `compiled-output.md` §Three-Tier Block Projection).
 
 - **Formatting rules** (per `compiled-output.md`):
   1. One instruction per list item (except the final Step, which may include the return sentence).
@@ -385,7 +411,9 @@ Emit is pure formatting. The IR has all the content; Emit arranges it into the f
   4. Single blank line between sections.
   5. Standard Markdown only.
 
-- **File output.** Same-basename `.md`. E.g., `fix_bug.glyph.md` → `fix_bug.md`.
+- **File output.** Same-basename `.md` for skills. E.g., `fix_bug.glyph.md` → `fix_bug.md`. For external-file procedure projections, Emit also writes standalone procedure `.md` files to a subdirectory named after the source file (e.g., `review_tools.glyph.md` with `export block review_code` → `review_tools/review-code.md`). Procedure files carry `kind: procedure` in frontmatter to distinguish from top-level skills.
+
+- **Library file emission.** A library file (zero `skill` declarations) runs through the same Emit phase. Since there is no skill to project, Emit produces no skill-level `.md` file. However, each `export block` in the library whose expanded prose is >= 150 words (above the Tier 1 inline threshold; see `compiled-output.md` §Three-Tier Block Projection) emits a standalone procedure `.md` file into a subdirectory named after the library source file (e.g., `repo_tools.glyph.md` with `export block inspect_repo` → `repo_tools/inspect-repo.md`). Export blocks below the threshold and all `export text`/`int`/`float` constants emit nothing — they contribute to consumers only through the validated IR. A library that produces zero `.md` files compiles successfully with no output; this is normal, not an error (see `language-surface.md` §File-Level Rules). Sibling exports within a single library file are visited in **source order** (top-to-bottom as they appear in the `.glyph.md`); this fixes diagnostic ordering and on-disk write order for reproducibility. Forward references between sibling exports are legal — same-file blocks have no declaration-order requirement (`data-flow.md`).
 
 **What Emit does not do:** No LLM involvement. No content generation. No decisions about what to say. If Expand did its job, Emit is trivial.
 
@@ -402,6 +430,18 @@ When compiling multiple `.glyph.md` files that import each other:
 4. **Expand/Emit can parallelize.** A dependency's Phases 6-7 (Expand + Emit) can run in parallel with the importer's Phases 1-5, since importers only need the validated IR, not the compiled output.
 
 5. **Repair is per-file only.** Repair only edits the current file (per `repair.md` §9). It does not edit dependencies or add new imports. Each file gets up to 3 repair iterations independently; there is no cross-file trigger propagation. If a file still has repairable diagnostics after its 3 iterations, fail with diagnostics for that file.
+
+### Partial Failure Policy
+
+When some files in a multi-file build fail, the compiler uses a **skip-dependents, leave-stale-`.md`, partial-output** policy:
+
+1. **Skip-dependents.** For each file in topological order: if **all** of its (transitive) imports validated successfully **in this build**, run Phases 1–7 normally. Otherwise mark the file as `skipped-due-to-dep` and do not run any phase on it. The skip emits `G::build::skipped-due-to-failed-import` (warning) naming the failed dependency's file path.
+
+2. **Atomic per-file emission.** `.md` files are written atomically per file at the end of Phase 7. A file either fully succeeds (its `.md` is written or replaced) or its `.md` is not touched. There is no half-written compiled output.
+
+3. **Stale `.md` policy.** If a previous build emitted `b.md` and the current build fails (or skips) `b.glyph.md`, the existing `b.md` on disk is **left in place** (not deleted). The compiler emits a stderr note: "`b.md` was not regenerated; the on-disk version reflects the previous successful build of `b.glyph.md` and may be out of sync." Authors who want stale outputs purged must delete them manually; the compiler never deletes a previously emitted `.md` on a failed re-build.
+
+4. **Exit code.** The build exits `0` only if every file in the build set succeeded. If any file failed or was skipped, exit `1`. A build that succeeds for some files and fails for others still produces partial output (the successful files' `.md` are written) but signals failure via the exit code.
 
 ## Visualization
 
@@ -458,21 +498,24 @@ Key clarifications this reconciliation makes:
 | Effect propagation (union) | 4 | No (IR only) |
 | `with` modifier recording | 4 | No (IR only) |
 | Parameter metadata assembly | 6 (Step 1, deterministic) | No (in-memory) |
+| Block projection tier assignment | 6 (Step 1, deterministic) | No (in-memory) |
 | Bare name / inline string passthrough | 6 (Step 1, deterministic) | No (in-memory) |
 | Call-node expansion into prose | 6 (Step 2, LLM) | No (in-memory) |
 | `with` modifier reshaping | 6 (Step 2, LLM) | No (in-memory) |
 | Constraint rewording | 6 (Step 2, LLM) | No (in-memory) |
 | Return folding into final step | 6 (Step 2, LLM) | No (in-memory) |
-| Conditional flattening to prose | 6 (Step 2, LLM) | No (in-memory) |
+| Conditional projection to sub-steps | 6 (Step 2, LLM) | No (in-memory) |
 
 ## Cacheability
 
 | Phases | Cacheable? | Key |
 |---|---|---|
-| 1-5 (Parse through Validate) | Yes | Post-repair source file content hash + import content hashes |
-| 6-7 (Expand + Emit) | Yes | Post-repair source hash + import content hashes |
+| 1-5 (Parse through Validate) | Yes | Post-repair source file content hash + **transitive** import content hashes |
+| 6-7 (Expand + Emit) | Yes | Post-repair source hash + **transitive** import content hashes |
 
 All seven phases produce output that depends only on source content and imports — there is no argument-dependent variation. If the source file and its imports have not changed, the entire pipeline output can be reused.
+
+**Transitive dependency hashes.** The cache key includes the post-repair source hashes of **all transitive dependencies**, not just direct imports. If a library file changes, its procedure `.md` files may change, which means every consumer whose cache key includes that library's hash is stale and must recompile. This is conservative — a library change triggers consumer recompilation even if the change did not affect the specific export the consumer uses. Fine-grained per-export invalidation is a post-MVP optimization.
 
 **Note:** The cache key is the **post-repair** source hash, not the original author-written source. Repair (Phase 3) writes back to the `.glyph.md` file, so the source on disk after a successful compile already includes all repairs. Subsequent compilations of the same file will find no repairable diagnostics, skip repair, and produce the same validated IR — which matches the cached entry.
 

@@ -46,6 +46,7 @@ Specifically, Step 2 receives:
 - for every `Branch` node: `{ condition_text, then_body, elif_branches, else_body }` with every sub-body already resolved;
 - for the `Return` expression: its resolved text plus a flag indicating it must fold into the final Step;
 - skill-level metadata: `name`, `description` (if present), `effects` (as a list), the ordered position of each node in `flow:`, and the parameter list (names, types, and defaults — used for generating the `## Parameters` section).
+- a **stable, file-local IR node ID** (e.g., `n0`, `n1`, …) on every node, assigned by Lower (`pipeline.md` Phase 4). The IDs are opaque, never appear in compiled output, and are not echoed back by Step 2 (the output contract in §3.3 is Markdown only). They exist so that Phase 6b's count + ordering checks (§4.1) and any internal diagnostic referring to "the IR node Step 2 failed to project" can name a specific node unambiguously across runs and across the parse-then-re-parse boundary inside Repair.
 
 **Whole-skill prompting, not per-node.** Step 2 is invoked **once per skill compilation**, with the full resolved IR visible in a single prompt. This is deliberate:
 
@@ -70,7 +71,7 @@ A `block` (or `export block`) called from within a flow may itself declare const
 
 Step 2 picks per call based on what reads naturally. Multiple scoped constraints on one call may be combined into a single framing sentence or distributed across the inlined steps.
 
-**Strength and polarity wording.** The same wording rules as top-level constraints apply to scoped constraints. The deterministic-fallback table in §5.2 also applies (see §5.2 for fallback projection of scoped constraints).
+**Strength and polarity wording.** The same wording rules as top-level constraints apply to scoped constraints — `hard` renders with strongest non-negotiable wording, `soft` renders with standard wording, `require` renders as a positive obligation, `avoid` renders as a prohibition (per `compiled-output.md` §Constraint Rendering).
 
 **Output placement.** Scoped constraints **never** appear as items in `### Constraints`. The caller's `### Constraints` section lists only the caller's own top-level `Constraint` IR nodes. Phase 6b enforces this (see §4.1).
 
@@ -99,13 +100,16 @@ Step 2 must return **Markdown only** — specifically, the body of the compiled 
 The output must preserve the following structural invariants:
 
 1. **Exactly one `## Instructions` H2.** No other H2 sections.
-2. **At most two H3 sub-sections**, both under `## Instructions`: `### Steps` and `### Constraints`. `### Constraints` is omitted when the IR has no constraints. `### Steps` is omitted only for pure constraint-only skills.
+2. **H3 sub-sections under `## Instructions`** are limited to: `### Steps`, `### Constraints`, and zero or more `### Procedure: <name>` sections. `### Constraints` is omitted when the IR has no constraints. `### Steps` is omitted only for pure constraint-only skills. `### Procedure:` sections appear only for calls with `same_file_procedure` projection.
 3. **Role preservation** (1-to-1):
-   - Every `Step` node (and every `Call`, `InlineInstruction`, `Branch`, `Return` that projects to a Step per `compiled-output.md`) must produce exactly one numbered list item under `### Steps`, in the same order as the IR.
+   - Every top-level `Step` node (and every top-level `Call`, `InlineInstruction`, `InstructionRef` that projects to a Step per `compiled-output.md`) must produce exactly one top-level numbered list item under `### Steps`, in the same order as the IR.
+   - Every top-level `Branch` node must produce exactly one top-level numbered list item under `### Steps`, containing lettered sub-steps per arm (see `compiled-output.md` §Constraint Rendering). Each arm is introduced by a condition header (`If <condition>:` for `if`/`elif`, `Otherwise:` for `else`), and each Step-projecting node inside the arm produces a lettered sub-step (`a.`, `b.`, `c.`). Letters reset per arm.
    - Every `Constraint` node must produce exactly one bulleted list item under `### Constraints`. Order is not required to match the IR.
-   - The `Return` expression must fold into the last `### Steps` item, not produce a separate item or section.
-4. **No invented content.** Step 2 may reshape wording but must not add new steps, new constraints, new sections, or commentary.
-5. **Bounded length.** Each step is **one instruction-sized paragraph** — at most three sentences, typically one or two. Each constraint is **one sentence**. This is the floor and ceiling; longer nodes indicate Step 2 is inventing content, shorter nodes indicate Step 2 is stripping content.
+   - The `Return` expression must fold into the last `### Steps` item (or the last sub-step of the final arm, if the last Step is a Branch), not produce a separate item or section.
+   - Every Call with `projection_mode: same_file_procedure` must additionally produce one `### Procedure: <name>` section with numbered items matching the callee's flow node count. The referencing Step includes the procedure name in its prose.
+   - Calls with `projection_mode: external_file` produce one Step whose prose includes the file path from `procedure_path`. No `### Procedure:` section is emitted for external projections.
+4. **No invented content.** Step 2 may reshape wording but must not add new steps, new sub-steps, new constraints, new sections, or commentary.
+5. **Bounded length.** For non-conditional Steps, each step is **one instruction-sized paragraph** — at most three sentences, typically one or two. For conditional Steps (Branch projections), each **sub-step** is at most three sentences. Each constraint is **one sentence**. This is the floor and ceiling; longer items indicate Step 2 is inventing content, shorter items indicate Step 2 is stripping content.
 6. **Parameter references preserved.** `{param}` references from the resolved IR must survive into the output unchanged. Step 2 must not substitute, remove, or rename them. Step 2 must not invent new `{param}` references for names not in the skill's parameter list.
 7. **No authoring artifacts.** No `generated` markers, no `with` modifier text, no import paths, no IR field names. `{param}` references for declared parameters are the only authoring-adjacent syntax that survives.
 8. **Standard Markdown only.** Headings, numbered lists, bulleted lists, inline emphasis. No HTML, no tables, no code blocks inside steps.
@@ -123,13 +127,36 @@ For the Markdown returned by Step 2:
 - **Section shape.**
   - At most two H2 sections: `## Parameters` (conditional) and `## Instructions` (always present).
   - No other H2 sections exist.
-  - Every H3 under `## Instructions` is either `### Steps` or `### Constraints`. No other H3s.
+  - H3 sections under `## Instructions` are limited to: `### Steps`, `### Constraints`, and zero or more `### Procedure: <name>` sections. No other H3s.
   - At least one of `### Steps` or `### Constraints` is present (per `compiled-output.md`).
+  - H3 ordering: `### Steps` first, then `### Constraints` (if present), then `### Procedure:` sections (if any) in order of first reference from `### Steps`.
 
 - **Role preservation (1-to-1 count).**
-  - The number of numbered items under `### Steps` equals the count of Step-projecting IR nodes (every IR node whose role projects to `Step`, with conditional `Branch` nodes counting as one Step per flattened branch group and the `Return` folded into the last Step rather than producing an additional one).
-  - The number of bulleted items under `### Constraints` equals the count of **top-level** `Constraint` IR nodes. Scoped constraints carried on `Call` nodes (§3.2) are projected into the inlined Step prose, not counted here.
+  - **Top-level Step count.** The number of top-level numbered items under `### Steps` equals:
+    ```
+    (count of top-level FlowNodes whose role is Step)
+    + (count of top-level Branch nodes × 1)
+    - (1 if the flow ends with a Return that folds into the last Step)
+    ```
+    Each top-level `Branch` node contributes exactly **1** to the top-level count, regardless of how many arms it has or how many statements each arm contains. `Return` folds into the preceding Step and does not produce its own numbered item.
+  - **Per-Branch sub-step count.** Each `Branch` projects to a single numbered Step with lettered sub-steps per arm (`compiled-output.md` §Constraint Rendering). For each arm, the count of lettered sub-steps (`a.`, `b.`, `c.`, resetting per arm) equals the count of Step-projecting nodes in that arm's body. `Constraint` nodes inside an arm do **not** receive their own letter — they inline into adjacent sub-step prose. Nested `Branch` nodes inside an arm also do not receive their own sub-step structure — they flatten into prose within their parent sub-step (only one level of structured sub-steps is supported).
+  - The number of bulleted items under `### Constraints` equals the count of **top-level** `Constraint` IR nodes — i.e., entries in `Skill.constraints` / `Block.constraints` / `ExportBlock.constraints` after Lower's flow-top-level hoisting (`ir-and-semantics.md` §Flow-Level Constraint Markers). Two categories are excluded from this count and instead projected into Step prose: (a) **scoped constraints** carried on `Call` nodes (§3.2), and (b) **branch-scoped `Constraint` flow nodes** that remain inside `Branch` bodies after Lower (these inline into the conditional Step's sub-step prose, per `compiled-output.md` §Constraint Rendering).
   - Ordering under `### Steps` matches the IR's `flow:` order.
+
+- **Procedure section validation** (for `same_file_procedure` projections).
+  - One `### Procedure: <name>` section per unique callee with `projection_mode: same_file_procedure`.
+  - Procedure name in H3 matches the callee name (kebab-case).
+  - Numbered items in each procedure section equal the callee's flow node count.
+  - If the callee declares constraints, a preamble paragraph exists before the numbered list.
+  - Every Step that references a procedure uses the procedure's name in its prose.
+  - Reference count: the number of Steps referencing procedure X matches the number of Call nodes targeting X with `same_file_procedure` projection.
+  - No duplicate procedure names.
+  - Procedure sections appear after `### Steps` and `### Constraints`, ordered by first reference.
+
+- **External file reference validation** (for `external_file` projections).
+  - Every Call node with `projection_mode: external_file` produces a Step whose prose includes the procedure file path from `procedure_path`.
+  - The file path in the Step matches the `procedure_path` on the `ResolvedCall` node.
+  - No `### Procedure:` section is emitted for external-file projections.
 
 - **Parameter reference validity.**
   - Every `{...}` reference in any list item must correspond to a declared parameter in the skill's `InputContract`. Invented parameter references are rejected.
@@ -142,7 +169,8 @@ For the Markdown returned by Step 2:
   - If the skill has no parameters, `## Parameters` must not be present.
 
 - **Content shape.**
-  - Each `### Steps` item is at most three sentences.
+  - Each non-conditional `### Steps` item is at most three sentences.
+  - Each lettered sub-step within a conditional Step (Branch projection) is at most three sentences.
   - Each `### Constraints` item is a single sentence.
   - Markdown parses cleanly.
 
@@ -156,8 +184,9 @@ For the Markdown returned by Step 2:
 |---|---|---|
 | `G::expand::extra-h2` | error | Step 2 emitted an H2 other than `## Instructions` |
 | `G::expand::missing-instructions` | error | Step 2 did not emit `## Instructions` |
-| `G::expand::extra-h3` | error | Step 2 emitted an H3 beyond `### Steps` / `### Constraints` |
-| `G::expand::step-count-mismatch` | error | Number of `### Steps` items does not match Step-projecting IR node count |
+| `G::expand::extra-h3` | error | Step 2 emitted an H3 not matching `### Steps`, `### Constraints`, or `### Procedure: <name>` |
+| `G::expand::step-count-mismatch` | error | Number of top-level `### Steps` items does not match expected top-level Step count (see §4.1 count formula) |
+| `G::expand::substep-count-mismatch` | error | Number of lettered sub-steps in a Branch's arm does not match the count of Step-projecting nodes in that arm's IR body |
 | `G::expand::constraint-count-mismatch` | error | Number of `### Constraints` items does not match `Constraint` node count |
 | `G::expand::step-order-mismatch` | error | Step order diverges from `flow:` order |
 | `G::expand::invented-param-ref` | error | `{...}` reference does not match any declared parameter |
@@ -166,10 +195,17 @@ For the Markdown returned by Step 2:
 | `G::expand::params-section-mismatch` | error | `## Parameters` item count does not match `InputContract` parameter count |
 | `G::expand::params-section-missing` | error | Skill has parameters but `## Parameters` section is absent |
 | `G::expand::params-section-spurious` | error | Skill has no parameters but `## Parameters` section is present |
-| `G::expand::step-too-long` | error | A step exceeds three sentences |
+| `G::expand::step-too-long` | error | A non-conditional step exceeds three sentences, or a sub-step within a conditional step exceeds three sentences |
 | `G::expand::constraint-multi-sentence` | error | A constraint is more than one sentence |
 | `G::expand::frontmatter-returned` | error | Step 2 returned YAML frontmatter |
 | `G::expand::malformed-markdown` | error | Output does not parse as Markdown |
+| `G::expand::procedure-count-mismatch` | error | Number of `### Procedure:` sections does not match count of `same_file_procedure` projection calls |
+| `G::expand::procedure-name-mismatch` | error | Procedure H3 name does not match any callee with `same_file_procedure` projection |
+| `G::expand::procedure-step-count-mismatch` | error | Numbered items in a procedure section do not match the callee's flow node count |
+| `G::expand::procedure-ref-missing` | error | A `same_file_procedure` Call produced no procedure reference in its Step prose |
+| `G::expand::procedure-ref-dangling` | error | Step references a procedure name that has no matching `### Procedure:` section |
+| `G::expand::procedure-duplicate` | error | Same procedure name appears in two or more `### Procedure:` sections |
+| `G::expand::procedure-order` | error | `### Procedure:` sections are not ordered by first reference from `### Steps` |
 
 All 6b diagnostics are classified `error`, not `repairable`. Phase 3 Repair operates on source; 6b failures are a Step 2 output problem and are handled by the retry / fallback policy in §5, not by re-running Repair.
 
@@ -178,50 +214,70 @@ All 6b diagnostics are classified `error`, not `repairable`. Phase 3 Repair oper
 - **Semantic faithfulness of wording.** 6b does not verify that the prose the LLM produced for a step actually reflects the IR node's meaning. That is out of scope for a deterministic gate. The Safety Sandwich bounds the LLM structurally, not semantically; semantic drift is mitigated by the one-sentence rule for generated bodies (`repair.md` §5) and by the resolved-body text flowing in as Step 2's primary input.
 - **Effect correctness.** Effects are fixed in Phase 4 and validated in Phase 5. Step 2 cannot touch them.
 - **Style.** Tone, formality, and clarity are not checked. Only the structural contract is enforced.
+- **Markdown well-formedness via a real Markdown parser.** 6b's lightweight structural checks (§4.1) plus `G::expand::malformed-markdown` are sufficient for MVP. A full parser-based well-formedness pass beyond these checks is **deferred** — see `todo.md` §Phase 6b Validation.
+- **No-embedded-HTML scan.** A scan rejecting raw HTML in Step 2's output is **deferred** — false-positive risk on legitimate constraint prose mentioning HTML tags is real, and consuming LLMs treat the file as text. See `todo.md` §Phase 6b Validation.
 
 ## 5. Failure Policy
 
-Step 2 is not infallible. Phase 6b failures are handled by a three-tier policy, in order.
+Step 2 is not infallible. There is **no deterministic fallback emitter**: the `with` modifier is the construct that makes a mechanical projection structurally low-quality (its weaving into prose has no good deterministic phrasing — see `pipeline.md` §Phase 6 and the discussion in `foundations.md` #18 of where the LLM is load-bearing). Maintaining a second emitter that is always uglier than the primary path would erode trust in the abstraction every time it triggered. Step 2 either succeeds (after at most two retries per failure mode, see §5.5) or hard-fails; the user re-runs.
 
-### 5.1 Retry (tier 1)
+### 5.1 Transient Failure (network or 5xx)
 
-On the first 6b failure, Step 2 is re-invoked with the same resolved IR and an additional **violation summary** describing what 6b rejected — e.g., "the previous attempt produced 5 steps but the IR has 6 Step nodes; Step 3 was missing." The violation summary is structured feedback, not free-form prose.
+Retry up to 3 times with exponential backoff. After exhaustion, emit `G::expand::llm-unavailable` (error) and abort compilation. No `.md` file is written. The user re-runs.
 
-**Retry budget: 2 retries** (so up to 3 Step 2 attempts total per invocation). The budget is small deliberately: Step 2 operates on already-valid IR, so a correct output should be within reach; repeated failure indicates the LLM is consistently misreading the input, and more retries will not help.
+### 5.2 Malformed Output (does not match expected shape)
 
-If any retry passes 6b, the pipeline continues to Emit. The earlier failed attempts are discarded.
+Up to **two retries** with progressively richer feedback. Each retry's prompt includes:
 
-### 5.2 Deterministic Fallback (tier 2)
+1. **The original prompt** — resolved IR, output template, formatting rules (unchanged).
+2. **The model's previous failed output** — verbatim, clearly labeled as "your previous attempt."
+3. **A structured violation report** — naming the failure (e.g., "the previous attempt did not parse as Markdown" or "the previous attempt contained a YAML frontmatter block; frontmatter is assembled by Emit, not Step 2") and pointing to where in the previous output the violation appeared.
+4. **An edit directive** — "Edit your previous output to fix these violations rather than starting from scratch."
 
-If all retries fail 6b, the pipeline does **not** abort. It falls back to a **deterministic projection** of the resolved IR. This projection is a minimal, mechanical rendering of the Step 1 output directly into Markdown:
+This gives the LLM the structural target, its own draft, and a precise pointer to what's wrong, so the retry can converge by editing rather than regenerating.
 
-- The `## Parameters` section is assembled mechanically: each parameter → one bulleted item with name in bold, type (if annotated), and default (if declared). No LLM-generated description.
-- Each Step-projecting IR node → one numbered item using its `resolved_body_text` verbatim, with `{param}` references preserved (with light punctuation cleanup: capitalize first letter, ensure trailing period).
-- Each top-level `Constraint` node → one bulleted item shaped by a fixed lookup table:
-  - `(soft, require)`: `"Do <resolved text>."`
-  - `(soft, avoid)`: `"Do not <resolved text>."`
-  - `(hard, require)`: `"Always <resolved text>."`
-  - `(hard, avoid)`: `"Never <resolved text>."`
-- Scoped constraints on `Call` nodes (§3.2) are projected as a localized framing sentence appended to the call's inlined Step using the same lookup table — e.g., a `(hard, avoid)` scoped constraint with text "unrelated edits" becomes `" Never unrelated edits."` appended to the step's resolved body. They are not added to `### Constraints`.
-- `with` modifiers are ignored in fallback (no LLM to apply them).
-- Return folding is approximated by appending `"Return the result."` to the last Step.
+If both retries also fail, emit the specific 6b structural diagnostic that fired (e.g., `G::expand::malformed-markdown` or `G::expand::frontmatter-returned`) and abort. No `.md` file is written.
 
-The fallback output is stilted — that is the point. It trades prose quality for determinism and guarantees 6b will pass (the projection is defined to satisfy the 1-to-1 mapping by construction). The user-visible result is a compiled file that is less polished than a successful Step 2 run, but still correct and usable.
+### 5.3 Phase 6b Validation Failure (structural rejection)
 
-The fallback also emits a `G::expand::fell-back-to-projection` diagnostic at `warning` classification, surfaced to the author via the compiler CLI but not embedded in the compiled output.
+Up to **two retries** with the same info-rich feedback model as §5.2. Each retry's prompt includes:
 
-### 5.3 Hard Failure (tier 3)
+1. **The original prompt.**
+2. **The model's previous failed output** — verbatim.
+3. **The specific 6b violation report** — naming the diagnostic ID(s) (per §4.2), the failing nodes by **stable IR node ID** (§3.1), and where in the previous output the violation appeared. Examples:
+   - "the previous attempt produced 5 steps but the IR has 6 Step-projecting nodes; node `n3` (Call to `identify_root_cause`) was missing from `### Steps`."
+   - "the previous attempt invented a `{ctx}` reference in Step 4; `ctx` is not declared in the skill's `InputContract`."
+4. **An edit directive** — "Edit your previous output to fix these violations rather than starting from scratch."
 
-The invocation aborts only when the deterministic fallback itself cannot be produced. In practice this means the input IR is malformed in a way Phase 5 should have caught — a structural bug in the compiler. The pipeline emits a `G::expand::fallback-failed` diagnostic at `error` classification, does not write a `.md` file, and returns a non-zero exit status. This path should never fire for a Phase-5-validated IR; if it does, it is a compiler bug, not a user error.
+If both retries also fail 6b, emit the specific 6b diagnostic that fired (the catalog in §4.2) and abort. No `.md` file is written.
 
-### 5.4 User-Visible Behavior Summary
+**Determinism of retries.** Because each retry's prompt differs from the original (it includes the previous failed output and the violation report), retries are inherently non-idempotent across runs — even at temperature 0, the trajectory diverges. This does not change §7's existing non-idempotence claim; it just makes the source of divergence on the failure path explicit.
+
+**Cache interaction.** Failed attempts are **never cached**. Only the final successful Step 2 output enters the cache. The cache key is `(skill IR, prompt template, model id)`; retry history is invisible to the cache layer (`pipeline.md` §Cacheability).
+
+### 5.4 Quality
+
+Semantic wrongness — output that passes 6b but reshapes prose in a way the author would object to — is not detected by the compiler. The Safety Sandwich bounds the LLM structurally, not semantically (`foundations.md` #18). The mitigations are the one-sentence rule for generated bodies (`repair.md` §5), the resolved-body text flowing into Step 2 unchanged, and the Phase 6b slot/role/count enforcement.
+
+### 5.5 Retry Budget Constants
+
+| Path | Budget |
+|---|---|
+| Transient (network/5xx) | 3 retries with exponential backoff |
+| Malformed output | 2 retries with info-rich feedback (original prompt + previous failed output + violation report + edit directive) |
+| Phase 6b validation failure | 2 retries with info-rich feedback (original prompt + previous failed output + 6b violation report by IR node ID + edit directive) |
+
+These numbers are compiler-config values, not hardcoded constants.
+
+### 5.6 User-Visible Behavior Summary
 
 | Path | User sees |
 |---|---|
 | Step 2 passes 6b on attempt 1 | Normal compiled `.md`, no warnings |
-| Step 2 passes 6b after 1–2 retries | Normal compiled `.md`, no warnings (retries are invisible) |
-| All retries fail, fallback succeeds | Compiled `.md` with stilted wording, plus a `fell-back-to-projection` warning on stderr |
-| Fallback fails | No `.md` written, `fallback-failed` error on stderr, non-zero exit |
+| Step 2 passes 6b on retry | Normal compiled `.md`, no warnings (the retry is invisible) |
+| Transient failure persists | No `.md` written, `G::expand::llm-unavailable` on stderr, non-zero exit |
+| Malformed output persists | No `.md` written, the specific 6b diagnostic on stderr, non-zero exit |
+| Validation failure persists | No `.md` written, the specific 6b diagnostic on stderr, non-zero exit |
 
 ## 6. Partial Failure
 
@@ -234,9 +290,8 @@ Rationale:
 - **The Safety Sandwich collapses otherwise.** If 6b accepts partial outputs, every 6b pass-with-patches is a point where the LLM-produced content has leaked past the deterministic boundary. The boundary exists precisely to prevent that.
 - **No principled repair target.** If 6b tries to fix only the broken items, it would need a per-node LLM retry with only one node's resolved IR visible — the opposite of the whole-skill prompting model Step 2 relies on. The re-prompted node would lose its surrounding context and likely produce worse prose than a full retry.
 - **Diagnostics stay clean.** One invocation produces one output or one diagnostic path, never a mix.
-- **Fallback already exists.** The deterministic fallback (§5.2) is the correct "partial failure is unacceptable, produce something" mechanism. It is deterministic by construction and covers the edge cases a partial-repair mechanism would try to cover.
 
-Compiler authors who are tempted to add a per-node repair path should instead consider whether Step 1 is doing too little (the LLM should not need so much latitude) or whether the retry budget in §5.1 is too small.
+Compiler authors who are tempted to add a per-node repair path should instead consider whether Step 1 is doing too little (the LLM should not need so much latitude) or whether the retry budget in §5.5 is too small.
 
 ## 7. Determinism and Reproducibility
 
@@ -246,7 +301,7 @@ What *is* guaranteed:
 
 - **Structural idempotence.** Every Step 2 output that passes 6b has the same structural shape: the same H2, the same H3s, the same number of Steps in the same order, the same number of Constraints. Word-level prose is not stable; IR-level projection is.
 - **Semantic content bounds.** The resolved body text going into Step 2 is identical across runs (Step 1 is fully deterministic). The LLM may reshape wording but cannot invent content that was not in the resolved IR, because 6b enforces the 1-to-1 role mapping.
-- **Fallback is fully deterministic.** If Step 2 repeatedly fails, the §5.2 fallback produces byte-for-byte identical output every run.
+- **Hard-fail is deterministic.** When Step 2 cannot produce a 6b-passing output within the retry budget (§5.5), the compiler aborts deterministically with the specific 6b diagnostic. There is no fallback emitter; failure is loud, not silent.
 
 **Contrast with Repair's idempotence** (`repair.md` §4.5): Repair is idempotent because its detection mechanism is name resolution — if every name already resolves, there is nothing for Repair to do, so no LLM is invoked on the second run. Step 2 has no such no-op path: every invocation produces prose from structured IR, and that production is an LLM call every time. Repair makes the *source* stable; Step 2 makes the *output* structurally stable but not textually stable.
 
@@ -268,7 +323,7 @@ After Phases 1–5, the IR for `fix_bug` looks roughly like:
 Skill {
   name: "fix_bug"
   description: "Debug and fix a bug in the codebase with minimal, targeted changes."
-  input_contract: [ Param(name: "scope", type: String) ]
+  input_contract: [ Param(name: "scope", type: String, default: ".") ]
   effects: [ reads_files, writes_files, runs_commands ]
   constraints: [
     Constraint(strength: soft, polarity: avoid, resolved_text: "Making changes outside {scope}."),
@@ -296,7 +351,7 @@ Step 1 resolves bare names and inline strings, preserving `{param}` references a
 - `InstructionRef(validate_before_success)` → `resolved_text: "Validate that the fix works before reporting success."`
 - `Return(Call(summarize_changes))` → `resolved_body_text: "Summarize what was changed and why."`, flagged as the return.
 - Constraints → unchanged (their text is already concrete).
-- Parameter metadata → `[ { name: "scope", type: String, default: none } ]`.
+- Parameter metadata → `[ { name: "scope", type: String, default: "." } ]`.
 
 After Step 1, every bare name and inline string has concrete content. `{scope}` references are preserved as named slots for the consuming LLM. This is the input to Step 2.
 
@@ -308,7 +363,7 @@ Step 2's prompt contains the resolved IR, the output template, and the formattin
 You are producing the `## Parameters` and `## Instructions` sections of a compiled skill file.
 
 Parameters:
-  - name: "scope", type: String, default: none
+  - name: "scope", type: String, default: "."
 
 Input IR (resolved):
 
@@ -346,7 +401,7 @@ Rules:
 
 ```md
 ## Parameters
-- **scope**: Area of codebase to focus on
+- **scope**: Area of codebase to focus on (default: ".")
 
 ## Instructions
 
@@ -389,4 +444,4 @@ Rules:
 - **IR and semantics** (`ir-and-semantics.md`): the node shapes Step 2 consumes (`InputContract`, `Step`, `Constraint`, `OutputContract`), strength/polarity model, effect vocabulary.
 - **Compiled output** (`compiled-output.md`): the output shape Step 2 must produce — `## Parameters` (conditional), `## Instructions` with `### Steps` + `### Constraints`, formatting rules. YAML frontmatter is assembled by Emit.
 - **Diagnostics** (`diagnostics.md`): the diagnostic schema and ID convention used by Phase 6b.
-- **Foundations** (`foundations.md`): #18 (deterministic passes own correctness — the Safety Sandwich), #11 (reliability beats elegance — justifies the deterministic fallback in §5.2), #33 (novice learnability — motivates `with` modifier as the only call-site specialization mechanism).
+- **Foundations** (`foundations.md`): #18 (deterministic passes own correctness — the Safety Sandwich), #33 (novice learnability — motivates `with` modifier as the only call-site specialization mechanism, which in turn motivates the no-fallback posture in §5).

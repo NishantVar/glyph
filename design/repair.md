@@ -74,7 +74,7 @@ The repaired file should still look like the author's Glyph file. The pass prese
 When a missing annotation blocks compilation, add the smallest disambiguating syntax. For instruction roles and constraints, add only the marker needed to make role, strength, and polarity deterministic.
 
 ```glyph
-skill fix_bug(scope)
+skill fix_bug(scope = ".")
     unrelated_edits
     preserve_existing_patterns
 ```
@@ -82,7 +82,7 @@ skill fix_bug(scope)
 If the compiler cannot infer polarity for the first line but can for the second, repair may produce:
 
 ```glyph
-skill fix_bug(scope)
+skill fix_bug(scope = ".")
     avoid unrelated_edits
     preserve_existing_patterns
 ```
@@ -158,6 +158,97 @@ generated text avoid_unrelated_edits = "Do not make changes outside the requeste
 
 The definition carries the polarity in its text. No splitting, no renaming.
 
+### 4.9 Nested Branch Auto-Extraction
+
+When a `Branch` appears inside another `Branch`'s arm body (i.e., an `if`/`elif`/`else` nested inside another `if`/`elif`/`else`), the compiled output supports only one level of structured sub-steps (`compiled-output.md` §Constraint Rendering). To keep compiled output clean and unambiguous, Repair auto-extracts the inner branch into a `generated block` declaration.
+
+**Mechanism (Phase 3b, LLM-assisted):**
+
+1. **Detection.** Analyze (Phase 2) detects a `Branch` nested inside another `Branch`'s arm and emits a `repairable` diagnostic (`G::analyze::nested-branch`).
+2. **Extraction.** The LLM repair pass extracts the inner `Branch` and its arm contents into a new `generated block` declaration. The LLM names the block based on the inner branch's intent and the surrounding context.
+3. **Closure capture.** Any bindings or parameters from the outer scope that the inner branch references become parameters of the extracted `generated block`. This is a mini closure analysis: the LLM (guided by the diagnostic's related spans) identifies which outer-scope names appear inside the inner branch's bodies and adds them as parameters to the new block's header.
+4. **Call replacement.** The inner `Branch` is replaced with a call to the new `generated block`, passing the captured bindings as arguments.
+5. **Notification.** Repair emits a `warning` diagnostic (`G::repair::branch-extracted`) informing the author that a nested branch was extracted into a helper block, naming the new block and explaining why.
+
+**Example.** Before extraction:
+
+```glyph
+flow:
+    if risk == "high":
+        ctx = inspect(scope)
+        if ctx.has_tests:
+            run_tests(ctx)
+        else:
+            "Flag for manual review."
+    else:
+        "No action needed."
+```
+
+After extraction:
+
+```glyph
+flow:
+    if risk == "high":
+        ctx = inspect(scope)
+        handle_test_availability(ctx)
+    else:
+        "No action needed."
+
+generated block handle_test_availability(ctx)
+    "If tests are available for the inspected context, run the test suite. Otherwise, flag for manual review."
+```
+
+The extracted block follows the same rules as all generated blocks: one-sentence body (§5.1), appended after all non-generated declarations (§5.3), stable once created (§5.4), promotable to a hand-written `block` (§5.6).
+
+**Idempotence.** After extraction, the inner `Branch` no longer exists — it has been replaced by a call. Re-running Analyze finds no nested branch, so no further extraction occurs.
+
+### 4.10 Constraint Conflict Scan (Phase 3c)
+
+Phase 3 has three sub-steps:
+
+- **3a — deterministic auto-fixes.** Tab→spaces, unused import removal, etc. No LLM.
+- **3b — LLM-assisted repairs.** Driven by `repairable` diagnostics from Phase 2 (undefined names, ambiguous roles, missing returns, etc.).
+- **3c — constraint conflict scan.** Always runs (when triggered by constraint count). Independent of Phase 2 diagnostics.
+
+Phase 3c runs once per declaration that has **2 or more** entries in its `constraints:` set. It runs on:
+
+- `Skill.constraints` (top-level constraints declared on a skill);
+- `Block.constraints` and `ExportBlock.constraints` (constraints declared on private and exported blocks).
+
+It does **not** scan across scopes — a callee's scoped constraints (carried as `scoped_constraints` on `Call` nodes per `expand.md` §3.2) are intentional composition, not conflict candidates. Caller and callee constraints coexist legitimately because the callee's constraints apply only to the inlined region.
+
+**Mechanism (LLM-assisted, structured output):**
+
+1. **Input.** The constraint set for one declaration: each entry as `{ id, resolved_text, strength, polarity }`. Identifiers are **declaration-local constraint indices** from the annotated AST (`c0`, `c1`, …, assigned in source order), not IR node IDs — Lower has not run yet at Phase 3c time. These indices are sufficient to name specific constraints unambiguously in diagnostics. See `ir-schema.md` §Node Identifiers for the distinction.
+2. **Prompt.** A structured judgment task: for each pair `(A, B)` in the set, classify as one of:
+   - `contradiction` — following A would prevent following B; both cannot be satisfied simultaneously;
+   - `tension` — A and B are in friction but both reasonable to hold; the agent can balance them at runtime;
+   - `none` — no meaningful conflict.
+3. **Output (structured JSON).** `{ conflicts: [{ pair: [id_A, id_B], type: "contradiction" | "tension" | "none", explanation: "..." }, ...] }`. The model addresses every pair; pairs classified `none` may be omitted from the output.
+4. **Compiler-level handling:**
+   - All pairs `none` (or empty `conflicts` list) → no diagnostic, Phase 3 ends, source proceeds to Lower.
+   - At least one `tension` pair → emit `G::repair::constraint-tension` (warning, non-blocking) for each tension pair. Build proceeds. Both constraints survive into compiled output. The warning carries the LLM's `explanation` as a hint.
+   - At least one `contradiction` pair → emit `G::repair::constraint-contradiction` (error) for each contradiction pair. Compilation fails. The author must edit one of the two; the compiler will not silently drop a constraint.
+
+**Why hard-error on contradiction (not auto-fix):**
+
+- Picking which constraint wins is a semantic judgment the author should make. Auto-dropping erodes trust in compiler-preserved authoring intent.
+- 3b's LLM work generates *new* content from missing references; 3c proposing to *delete* authored content would be a categorically higher-stakes action and crosses the readability/intent-preservation rules in §4.1, §4.4.
+
+**Why warning on tension (not auto-resolve):**
+
+- Tension is often deliberate ("be thorough" + "be efficient"). The agent balances at runtime; the warning lets the author know the friction is visible.
+- Tension does not invalidate compiled output — both constraints render in `### Constraints` and the consuming agent reads them.
+
+**Retry policy.** Same info-rich pattern as Expand Step 2 (`expand.md` §5):
+
+- Up to **2 retries** if the LLM output is malformed (not valid JSON, doesn't address every pair, references ID not in the input set, returns a `type` outside the three-value enum). Each retry includes the original prompt, the previous failed output, a structured violation report, and an edit directive.
+- After two failed retries, emit `G::repair::constraint-scan-malformed` (error) and abort. No compiled output is written.
+
+**Idempotence.** Phase 3c does not modify source — it only emits diagnostics. So re-running Repair on the same source produces the same constraint set, the same prompt, and (modulo model non-determinism, the same caveat as 3b) the same verdict. The overall Repair idempotence claim from §4.5 is preserved.
+
+**Cost.** One LLM call per declaration with ≥2 constraints. Skills/blocks with 0 or 1 constraints incur no Phase 3c call. The prompt is small (constraint texts only, no IR graph or surrounding flow).
+
 ## 5. Generated Definitions
 
 Repair materializes two kinds of generated declarations: `generated text` for undefined bare names, and `generated block` for undefined parens-calls. Both follow the same stability, placement, promotion, and idempotence rules.
@@ -231,7 +322,7 @@ import "./repo_tools.glyph.md" { unrelated_edits }
 
 text short_note = "Keep changes minimal."
 
-skill fix_bug(scope)
+skill fix_bug(scope = ".")
     avoid unrelated_edits
     require preserve_existing_patterns
 
@@ -310,9 +401,12 @@ The repair pass may add:
 - stable `generated text` definitions for undefined bare names;
 - stable `generated block` definitions for undefined parens-calls (one-sentence bodies);
 - missing imports when the referenced library is obvious from available context (deferred from MVP — see `todo.md`);
+- missing `effects:` on an `export block` whose inferred set is non-empty — Phase 3b inserts an `effects:` sub-section with the inferred set into the source, triggered by `G::analyze::missing-export-effects` (see `ir-and-semantics.md` §3 and `diagnostics.md`);
+- missing `description:` on a `skill` — Phase 3b generates a one-sentence description from the skill name, parameters, and body, and adds it as a `description:` sub-section, triggered by `G::analyze::missing-description` (see `ir-and-semantics.md` §4 and `diagnostics.md`);
 - `export` on a block only when an importability diagnostic makes the author's intent clear;
 - missing block delimiters or indentation fixes;
-- explicit section headers when the source already implies the section.
+- explicit section headers when the source already implies the section;
+- `generated block` declarations extracted from nested branches, replacing the inner `if`/`elif`/`else` with a call (§4.9).
 
 The repair pass may remove:
 
@@ -333,11 +427,42 @@ Repair is iterative but bounded:
 
 The LLM repair pass is never treated as proof of correctness. The deterministic compiler remains the authority.
 
+### 8.1 LLM Call Granularity
+
+The LLM-assisted sub-step (3b) is invoked **once per file per iteration**, with the full file source and *all* repairable diagnostics for that file in a single prompt. Repair is not invoked per-diagnostic and does not stream diagnostics; the LLM produces one rewritten file in one call.
+
+Rationale:
+
+- Glyph files are small by design; whole-file context fits comfortably in modern LLM context windows.
+- Single-call repair eliminates merge complexity (two per-diagnostic repairs that both want to add an import would otherwise require a separate merge step).
+- Idempotence is naturally achievable: after repair, a re-run of Analyze should produce zero repairable diagnostics, and the next compile finds nothing to repair.
+- The call is cacheable per-file by `(post-rewrite-file-hash, diagnostics-hash, repair-model-version)`.
+
+Cross-file repairs are not in scope for MVP (see §9). Each file's repair loop is self-contained.
+
+### 8.2 Retry and Failure Policy
+
+Repair has three failure modes, each with its own policy.
+
+**Transient failure (network or 5xx).** Retry up to 3 times with exponential backoff. After exhaustion, the compiler emits `G::repair::llm-unavailable` and aborts compilation. The user re-runs the compiler.
+
+**Invalid Glyph output.** A single LLM call. If the rewritten file does not parse (Phase 1 fails on the LLM's output), the compiler emits `G::repair::output-invalid` (which captures the LLM's output for inspection) and aborts compilation. **No retry.** A self-correction prompt for syntactic errors is not part of the contract; in practice an LLM that produces non-parseable Glyph once is unlikely to self-correct on a second prompt. The source on disk is left untouched (the failed rewrite is not written back), and the user re-runs.
+
+**No convergence.** The repair loop in Phase 3 caps at 3 iterations. If repairable diagnostics remain after the third iteration, the compiler emits `G::repair::no-convergence` with the residual diagnostics attached, surfaces them to the author on stderr, and aborts compilation. Whatever partial repairs succeeded in earlier iterations remain in the source file (Repair writes back after each accepted iteration).
+
+The numbers (3 transient retries, 3 convergence iterations) are compiler-config values, not hardcoded constants.
+
+**Quality.** Semantic wrongness — a rewrite that parses, validates, and converges but does not match author intent — is not detected by the compiler. The mitigation is the per-generation warning (`G::repair::generated-text` / `G::repair::generated-block`) plus author review of generated definitions (§5). This is a social contract, not an automated check.
+
 ## 9. Multi-File Repair
 
 **MVP: repair only edits the current file.** All repairs — generated definitions, marker additions, indentation fixes, section reordering — are local to the file being compiled. If a diagnostic requires changes to another file (e.g., an imported block is not exported), repair emits a non-repairable diagnostic for the author to fix manually. Repair does not add `export` to another file's declarations and does not discover or add new `import` statements pointing to files the author did not already import.
 
 This restriction eliminates cross-file trigger propagation: one file's repair cannot force another file to re-run from Phase 1. Each file's repair loop is self-contained.
+
+**Imports as resolution targets, not as repair targets.** Repair is allowed to *resolve* against existing imports — if an unresolved bare name happens to match an already-imported declaration (selectively imported name, qualified-call alias, or stdlib entry the author already imported), repair prefers that resolution over materializing a `generated text` / `generated block` (per §4.5 idempotence detection: "does this name resolve to something? If yes, do not regenerate"). Repair may also add markers (`avoid`, `require`, `must`) in front of imported names when the diagnostic chain calls for it. What repair never does is *modify the import set itself*: it cannot add a new `import` statement, change an import's `as` alias, switch between selective and whole-module form, or rewrite an imported file's declarations. The post-repair source's import block is byte-identical to the pre-repair version unless §4.4 (intent potency) or a deterministic 3a rewrite (duplicate-import merging, unused-import removal) explicitly triggered.
+
+**Generated bodies do not introduce cross-file dependencies.** A `generated block` body is a single instruction string with `{param}` slots (§5.1, one-sentence rule). It is not a `flow:` block and cannot contain calls into other declarations — neither same-file nor imported. This sidesteps the question of whether a repair-generated body could legitimately reference an imported callee: by construction, it never does. If the author's intent requires composing imported callees, the right surface is a hand-written `block` or `export block`, not a generated definition.
 
 **Post-MVP:** cross-file repair (editing other `.glyph.md` files when diagnostics require it) and auto-import discovery (adding imports to files the author did not reference) are deferred. See `todo.md`.
 
@@ -355,7 +480,27 @@ This invariant is what enables the cache-key-by-post-repair-source-hash strategy
 
 **Post-MVP consideration:** If the type system gains union types, structural narrowing, or value-dependent type features, this invariant must be re-examined.
 
-## 11. Open Questions
+## 11. Determinism and Reproducibility
+
+Repair is LLM-driven and **not byte-deterministic** across runs. Two compiles of the same pre-repair source can produce different post-repair source — different `generated text` wording, different choices among defensible repairs. The compiler accepts this non-determinism by design: Repair is the primary content-generation mechanism for novice authors (§1), and forcing determinism would either gut its capability or require seeding/temperature controls that don't transfer across model versions.
+
+**Authoring workflow.** The expected model is:
+
+1. Author writes source using the novice kernel (often with undefined names, missing markers, etc.).
+2. Author runs the compiler locally. Repair fires, writes back to the `.glyph.md` file, compilation succeeds.
+3. Author **commits the post-repair source**. The committed file is fully repaired — subsequent compiles find no `repairable` diagnostics, skip Repair entirely, and produce identical IR.
+
+This makes downstream builds (CI, other contributors) reproducible by construction: they read the post-repair source and Repair becomes a no-op.
+
+**CI mode.** The compiler is fully deterministic and does not run Phase 3 itself (see `build-foundation.md`). If `repairable` diagnostics exist after Phase 2, the compiler exits with code 2 — it is the agent's responsibility to perform LLM repair and re-invoke. In CI (where no agent is running), exit code 2 is a build failure, which enforces the "commit post-repair source" workflow and guarantees deterministic builds. See `cli.md` for exit code semantics.
+
+**Cache implications.** The cache key is the post-repair source hash (`pipeline.md` §Cacheability). After the author commits, the on-disk source IS the post-repair source, so cache keys are stable across machines that compile the same committed file. The non-determinism of Repair is a one-time cost paid at authoring time, not at build time.
+
+**Hostile case: un-repaired source committed.** If an author commits source with `repairable` diagnostics and CI runs the compiler directly (no agent), exit code 2 fails the build. If CI runs the agent skill, the agent repairs — but may produce different post-repair source on each machine → different compiled `.md`. The recommended CI configuration is to run the compiler directly (no agent), which treats exit 2 as failure and enforces committed post-repair source.
+
+**Step 2 (Expand) non-determinism is separate.** Expand Step 2's LLM reshaping is also non-deterministic but is bounded by Phase 6b's role-preservation gate (`expand.md` §4). There is no deterministic fallback emitter for Step 2 — it either passes 6b (after at most two retries) or hard-fails (`expand.md` §5). The cache strategy at `pipeline.md:522` allows reusing Step 2 output when source has not changed.
+
+## 12. Open Questions
 
 - **Diagnostic taxonomy.** The diagnostic shape and classification tiers are defined in [diagnostics.md](diagnostics.md). The full catalog of individual diagnostics will be built out as the compiler is implemented.
 - **Security and trust.** Prevent repair from adding imports, effects, exports, or generated text that broadens behavior beyond the author's apparent intent.

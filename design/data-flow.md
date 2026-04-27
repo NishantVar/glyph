@@ -16,7 +16,7 @@ Parameters may have:
 ```glyph
 skill update_docs()
 
-skill implement_feature(scope, risk = "medium")
+skill implement_feature(scope = ".", risk = "medium")
 
 block review_changes(files: FileSet, strict = true) -> ReviewResult
 ```
@@ -60,7 +60,12 @@ risk = "high"
 max_attempts = 3
 ```
 
-Local bindings are scoped to the enclosing `skill` or `block`. A binding should not silently shadow an existing binding if doing so would make data flow ambiguous.
+Local bindings are scoped to the smallest enclosing structural region:
+
+- A binding introduced at the top level of `flow:` (or at the body level of a `skill` / `block` outside any `if`/`elif`/`else`) is scoped to the entire enclosing `skill` or `block` and is visible to all subsequent flow statements in that declaration.
+- A binding introduced inside an `if`, `elif`, or `else` branch body is scoped **only to that branch body**. It is not visible after the conditional ends, nor in sibling branches. Re-binding the same name in a different branch is allowed because the scopes do not overlap.
+
+Across either scope, a binding should not silently shadow an existing binding if doing so would make data flow ambiguous (per `values-and-names.md` §No Shadowing — name collisions across overlapping scopes are hard errors).
 
 The source may omit types. The compiler infers or repairs types as needed.
 
@@ -133,7 +138,7 @@ A value may be used as the receiver of a function call using dot syntax. `x.foo(
 ```glyph
 import "@glyph/std" { subagent, send }
 
-skill investigate(scope)
+skill investigate(scope = ".")
     effects: spawns_agent
 
     flow:
@@ -241,7 +246,7 @@ The LLM repair pass may add minimal syntax when call-site data flow cannot compi
 
 ### Statement Forms Inside `flow:`
 
-Seven statement forms are allowed inside `flow:` blocks. All content defaults to the `Step` IR role unless explicit syntax or resolved metadata says otherwise.
+Eight statement forms are allowed inside `flow:` blocks. All content defaults to the `Step` IR role unless explicit syntax or resolved metadata says otherwise.
 
 | Form | Example | IR Role |
 |------|---------|---------|
@@ -250,10 +255,13 @@ Seven statement forms are allowed inside `flow:` blocks. All content defaults to
 | UFCS call | `researcher.send("check edges")` | `Step`, desugars to `send(researcher, ...)` |
 | Bare name | `validate_before_success` | `Step`, resolved via name resolution |
 | Inline string | `"Mention any issues found."` | `Step` |
+| Constraint marker | `avoid unrelated_edits` | `Constraint` (hoisted or inlined; see below) |
 | Return | `return summarize(plan)` | `OutputContract` |
 | If/elif/else | `if <cond>:` block | `Branch` container |
 
 A call without a binding is a statement call -- the return value, if any, is discarded. Both binding and bare-call forms occupy one line each unless the argument list wraps inside parentheses.
+
+A **constraint marker** (`require <name>`, `avoid <name>`, `must <name>`, `must avoid <name>`, or any of those forms with an inline string in place of the bare name) parses to a `Constraint` IR node admitted in the flow's `FlowNode` union (`ir-schema.md` §Flow Nodes). Lower (`pipeline.md` Phase 4) splits these by location: a constraint marker at flow top-level is hoisted into the enclosing declaration's `constraints` list; a constraint marker inside an `if`/`elif`/`else` branch body stays inline and is rendered as part of the conditional Step prose by Expand. See `ir-and-semantics.md` §Flow-Level Constraint Markers and `compiled-output.md` §Constraint Rendering for the projection rules.
 
 ### Branching: `if`/`elif`/`else`
 
@@ -284,7 +292,7 @@ Rules:
 - `else:` introduces the fallback branch. Optional. If omitted and no branch condition matches, execution continues to the next statement after the `if` chain.
 - `elif` and `else` appear at the same indentation level as their matching `if`.
 - No parentheses are required around conditions, but parentheses are allowed for grouping complex expressions.
-- Branch bodies may contain any statement form allowed in `flow:`: bindings, bare calls, bare names, inline strings, `return`, and nested `if`/`elif`/`else`.
+- Branch bodies may contain any statement form allowed in `flow:` *except* `return`: bindings, bare calls, bare names, inline strings, constraint markers, and nested `if`/`elif`/`else`. `return` is restricted to the top level of `flow:` (see §Return Semantics).
 - `if`, `elif`, `else`, `return`, and `flow` are reserved keywords (see `values-and-names.md`).
 
 ### Condition Expressions
@@ -353,7 +361,21 @@ The `Branch` IR node is a container. Its children carry their own roles. The bra
 
 ### Compiled-Output Projection
 
-Conditional logic in `flow:` flattens into prose instructions in `### Steps` under `## Instructions` (`compiled-output.md`). Each `if`/`elif`/`else` chain compiles into a single numbered step with conditional sub-instructions. Simple single-branch `if` statements may compile into a single conditional sentence within a step.
+Conditional logic in `flow:` projects to a **single numbered Step** with **lettered sub-steps per arm** under `### Steps` in `## Instructions` (`compiled-output.md`). Each arm is introduced by a condition header (`If <condition>:` for `if`/`elif`, `Otherwise:` for `else`), and each Step-projecting node inside the arm becomes a lettered sub-step (`a.`, `b.`, `c.`). Letters reset per arm.
+
+```md
+3. If the risk is high and tests exist:
+   a. Run the full test suite.
+   b. Request a code review.
+   If the risk is high but no tests are available:
+   a. Flag for manual review.
+   Otherwise:
+   a. No action needed.
+```
+
+Nested branches (a `Branch` inside another `Branch`'s arm) flatten into prose within their parent sub-step rather than producing their own sub-step structure. Only one level of structured sub-steps is supported. The Repair pass auto-extracts deeply nested branches into helper `generated block` declarations (see `repair.md` §4.9).
+
+Branch-scoped constraints inline into adjacent sub-step prose rather than receiving their own letter. Bindings inside arms project their call as a lettered sub-step; the binding name is invisible in compiled output.
 
 ## Return Semantics
 
@@ -369,9 +391,18 @@ Rules:
 
 - `return <expr>` where `<expr>` is a call, binding reference, dot access, literal, or `none`.
 - `return` alone (no expression) is equivalent to `return none`.
-- `return` may appear anywhere inside `flow:`, including inside `if`/`elif`/`else` branches, enabling early return.
-- Every `export block` must have an explicit `return` on every code path. The compiler validates this statically.
-- For `skill` and private `block`, a definition that ends without `return` implicitly returns `none`. If the declaration produces a value, it must use an explicit `return` statement.
+- **Single, terminal-only.** Exactly **one** `return` statement per `skill`, `block`, or `export block`, and it must appear as the **last statement at the top level of `flow:`**. `return` is **not** allowed inside `if`/`elif`/`else` branch bodies (no early return). Multiple `return` statements in a single `flow:` are a parse error.
+- If `return` is omitted, the body implicitly returns `none`. This applies uniformly to `skill`, `block`, and `export block` — there is no per-path return-coverage analysis, because `return` is forbidden in branches and only appears once at the end of `flow:` (or not at all).
+
+Parse-level diagnostics enforcing this rule:
+
+| ID | Trigger |
+|---|---|
+| `G::parse::return-not-terminal` | `return` appears before the last statement of `flow:` |
+| `G::parse::return-in-branch` | `return` appears inside an `if`/`elif`/`else` body |
+| `G::parse::multiple-returns` | More than one `return` in a single `flow:` |
+
+(See `todo.md` for the deferred consideration of branch-nested early returns.)
 
 Returns become explicit output contracts in the IR. If the return expression is a call, the call is evaluated first and its result becomes the return value, following the same desugaring as nested calls.
 

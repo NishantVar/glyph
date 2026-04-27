@@ -8,7 +8,6 @@ This folder is the working source of truth for Glyph system design. The reposito
 
 ### Foundations
 - [foundations.md](foundations.md) — stable design principles and hard conceptual boundaries (reference card)
-- [foundations-first-principles.md](foundations-first-principles.md) — candidate reduction of the foundations into a smaller set of bedrock principles centered on novice learnability and intent-first authoring
 
 ### Language
 - [language-surface.md](language-surface.md) — source syntax: declarations (`skill`, `block`, `export block`, `text`, `int`, `float`, `import` and their `export`/`generated` variants), header grammar, indentation, sub-section syntax, authoring model, source-to-IR pipeline
@@ -22,10 +21,11 @@ This folder is the working source of truth for Glyph system design. The reposito
 
 ### Modules
 - [imports.md](imports.md) — path-based import resolution, importable vs. private declarations, cycle rejection, effect propagation across boundaries
-- [stdlib.md](stdlib.md) — standard library: MVP contains two entries (`subagent`, `send`), the `Agent` compiler-known type, UFCS method-call syntax, and the `spawns_agent` effect
+- [stdlib.md](stdlib.md) — standard library: MVP contains three entries (`subagent`, `send`, `load`), the `Agent` compiler-known type, UFCS method-call syntax, the `spawns_agent` effect, and the uniform synthetic-body projection model
 
 ### IR
-- [ir-schema.md](ir-schema.md) — **canonical IR node schema**: every node type (`Skill`, `Block`, `ExportBlock`, `Call`, `Constraint`, `InlineInstruction`, `InstructionRef`, `Branch`, `Return`), enums (`Role`, `Strength`, `Polarity`, `EffectKeyword`, `TypeTag`, `Value`), resolved IR shape
+- [ir-schema.md](ir-schema.md) — **canonical IR node schema**: every node type (`Skill`, `Block`, `ExportBlock`, `Call`, `Constraint`, `InlineInstruction`, `InstructionRef`, `Branch`, `Return`), enums (`Role`, `Strength`, `Polarity`, `EffectKeyword`, `TypeTag`, `Value`), resolved IR shape, node identifier spec
+- [ir-json-schema.md](ir-json-schema.md) — **canonical IR JSON serialization**: top-level envelope, per-node-kind JSON shapes, enum casing (all snake_case), Expression/Value unions, versioning policy, worked example. Contract for both `--emit-ir` (produces) and `validate-output` (consumes).
 
 ### Compilation
 - [pipeline.md](pipeline.md) — **canonical compiler pipeline**: 7 phases (Parse, Analyze, Repair, Lower, Validate, Expand, Emit), Safety Sandwich, multi-file order, cacheability
@@ -33,6 +33,19 @@ This folder is the working source of truth for Glyph system design. The reposito
 - [repair.md](repair.md) — LLM repair pass, generated definitions (text and block), comment syntax, intent potency, idempotence
 - [expand.md](expand.md) — Expand pass Step 2 (LLM reshaping) and Phase 6b validation gate: input schema, output contract, role-preservation check, retry / deterministic-fallback / hard-fail policy, non-idempotence
 - [compiled-output.md](compiled-output.md) — compiled Markdown shape: YAML frontmatter, `## Parameters` (conditional), `## Instructions` (`### Steps` + `### Constraints`), parameterless compilation model
+
+### CLI
+- [cli.md](cli.md) — **v0 CLI surface**: subcommands (`compile`, `check`, `fmt`, `validate-output`), flags (`--emit-ir`, `--out-dir`, `--format`), exit codes (0/1/2/3 agent-oriented), diagnostic channel discipline, multi-file behavior, deferred features
+
+### Agent
+- [agent-skill.md](agent-skill.md) — **agent skill design**: workflow state machine, repair guidance, constraint conflict scan, Step 2 prose reshaping, `validate-output` subcommand (Phase 6b), IR JSON schema reference
+
+### Meta
+- [todo.md](todo.md) — deferred design items, open questions, and post-MVP feature tracking
+
+### MVP
+- [build-foundation.md](build-foundation.md) — **Rust implementation foundation**: two-crate workspace, hand-rolled parser, span/arena types, sync-only architecture, error/diagnostic channels, CLI contract, agent workflow, dependency inventory
+- [mvp-acceptance.md](mvp-acceptance.md) — walking skeleton (`update_docs.glyph.md`), test corpus structure, 5-skill multi-file acceptance project, 67 compiler-scope + 10 agent-scope diagnostic IDs, exit criteria
 
 ## Reading Order
 

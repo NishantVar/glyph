@@ -25,9 +25,18 @@ MVP compiled output contains YAML frontmatter (`name`, `description`, `effects`)
 - **`## Effects` section.** Removed because effects now live only in YAML frontmatter. Restore if executing agents (not just selectors/tooling) need effects visible in the prose body. Human-readable expansions (e.g. "Reads files (source code, logs, test output)") would live here.
 - **`## When To Use` section.** Removed because routing fully moves to frontmatter `description`. Restore if trigger guidance exceeds what fits in a one-line description, or if tooling wants a structured routing block separate from description. Also revisit the `when_to_use:` source sub-section header.
 
+## Block Projection
+
+- **Tune block-projection word-count thresholds against real corpora.** Current values (150 / 500) in `compiled-output.md` §Three-Tier Block Projection were chosen without empirical grounding. Revisit when (a) we have a corpus of real-world Glyph skills, and (b) telemetry shows misclassification — e.g., Tier-1 inlines that visibly bloat compiled `.md`, or Tier-3 promotions for blocks that would have read fine inline. Possibly expose a project-level config knob at that point.
+
 ## IR Roles
 
 - **`Context` role.** MVP closes the role set to four: `InputContract`, `Step`, `Constraint`, `OutputContract`. `Context` (non-normative informational framing) was dropped because with `## Inputs` gone there is no section for it to project into, and any genuine context can be authored as a Step, a Constraint, or a leading inline sentence in `flow:`. Restore post-MVP if authors consistently produce framing text that doesn't fit the four roles. Reserved keyword `context` stays reserved for this restoration.
+
+## Control Flow
+
+- **Branch-nested `return` (early return).** MVP allows exactly one `return` statement per `flow:`, and only as the last top-level statement (`data-flow.md` §Return Semantics). `return` inside `if`/`elif`/`else` branches is rejected by Parse. This was chosen to keep the "fold return into the last Step" projection (`expand.md` §3.3) trivially valid and to avoid per-path return-coverage analysis. Revisit post-MVP if real authoring needs emerge for early returns; restoring it requires (a) defining how multiple `Return` IR nodes project into the linear `### Steps` list, (b) per-path coverage analysis for declared return types, and (c) updating Phase 6b's "single fold-into-final-Step" rule.
+- **Multi-level sub-step numbering for nested branches.** MVP supports one level of structured sub-steps for `Branch` projections (lettered sub-steps per arm under a single numbered Step). Nested branches are auto-extracted into `generated block` declarations by Repair (`repair.md` §4.9). Post-MVP: consider supporting multi-level sub-step numbering (e.g., `a.`/`b.`/`c.` outer, `i.`/`ii.`/`iii.` inner) as an alternative to auto-extraction, if deeply conditional workflows are common enough to warrant richer compiled output structure.
 
 ## Calls & Parameters
 
@@ -49,7 +58,8 @@ MVP compiled output contains YAML frontmatter (`name`, `description`, `effects`)
 ## Design Coherence
 
 - ~~**Canonicalize the compiler pipeline.**~~ **Done.** `pipeline.md` is the canonical 7-phase reference. README, `language-surface.md` §5, and `foundations.md` #18 now defer to it. See the reconciliation table in `pipeline.md`.
-- **Foundations drift: `foundations.md` vs `foundations-first-principles.md`.** Both live in `design/` with overlapping content. `foundations.md` is canonical (33 principles, wired into reading order). `foundations-first-principles.md` reframes 5 of those as upstream axioms — structural contribution only, no new content. Decide whether to merge the axiom framing into `foundations.md` or archive the candidate. Deferred 2026-04-25.
+- ~~**Foundations drift: `foundations.md` vs `foundations-first-principles.md`.**~~ **Resolved.** `foundations-first-principles.md` archived. `foundations.md` remains canonical (33 principles). A proper first-principles document — defining the axiomatic bedrock from which the 33 principles derive — should be written as a separate effort, not a reduction of the existing list.
+- **First principles document.** Write a proper `foundations-first-principles.md` that defines the small set of upstream axioms from which `foundations.md` derives. The archived version was a candidate reduction of existing principles; the real version should be written ground-up as genuine axioms, with explicit derivation links to the 33 principles. Should own its status (not "candidate"), and both files should cross-reference each other.
 - **`context` disambiguator syntax.** `context` is a reserved keyword and available as an "author-facing disambiguator" per `ir-and-semantics.md`, but no document shows its source syntax or placement. Define how authors explicitly mark something as `Context` role, or explicitly defer it.
 
 ## Inheritance & Specialization
@@ -57,13 +67,39 @@ MVP compiled output contains YAML frontmatter (`name`, `description`, `effects`)
 - **Skill-level inheritance via block override.** Post-MVP. Allow a skill to derive from an exported parent skill (e.g. `skill security_review(scope) from code_review`), inheriting the parent's flow, constraints, effects, and description. The child overrides behavior by defining local blocks that shadow the parent's exported blocks — name resolution picks the local definition, so blocks are the implicit extension points. Constraints can be appended/prepended. Locked constraints on the parent cannot be removed or weakened by the child. The compiler flattens inheritance during the Lower phase; no runtime inheritance.
 - **Earlier `agent`/`abstract agent` design (archived).** An earlier heavier proposal (`archive/specialization.md`) introduced `agent` and `abstract agent` as separate declaration kinds with named slots, override/append/prepend operations, traits, and contract versioning. Key ideas worth revisiting: locked constraints (presence/potency/non-contradiction rules), deterministic single-pass merge order, trait-based cross-cutting behavior, base agent versioning with contract fingerprints. The simpler block-override model above may replace this entirely — evaluate once MVP usage patterns clarify real reuse needs.
 
+## Phase 6b Validation
+
+- **Markdown well-formedness via a real Markdown parser.** MVP Phase 6b uses lightweight structural checks (`expand.md` §4.1) plus `G::expand::malformed-markdown` to reject obviously broken output. A full parser-based well-formedness pass is deferred because the existing checks are sufficient for MVP and a parser dependency is heavy. Revisit if reports surface of malformed Markdown slipping past the structural checks into compiled output.
+- **No-embedded-HTML scan.** MVP Phase 6b does not reject raw HTML in Step 2's output. Deferred because false-positive risk on legitimate constraint prose mentioning HTML tags is real, and consuming LLMs treat the compiled file as text anyway. Revisit if reports surface of consuming LLMs misbehaving when Step 2 emits HTML.
+
 ## Repair
 
 - **Cross-file repair.** MVP repair only edits the current file (`repair.md` §9). Post-MVP: allow repair to edit other `.glyph.md` files when diagnostics require it (e.g., adding `export` to a dependency's private block). Requires defining an iteration budget that accounts for cross-file trigger propagation — either an across-build bound (simpler termination proof) or a per-file bound with cumulative counters (scales with project size). Key sub-question: can cross-file repair maintain system-level idempotence, not just per-file idempotence?
 - **Auto-import discovery.** MVP repair resolves unknown names by generating local definitions only. Post-MVP: allow repair to scan available `.glyph.md` files for matching exports and add `import` statements automatically (IDE-style auto-import). Requires filesystem scanning, ranking heuristics for ambiguous matches, and careful interaction with cycle rejection (a new import must not close a cycle in the dependency DAG).
 
+## Visualization
+
+- **Visualization output format.** `foundations.md` #21 ("Glyph is human-readable and visualizable") and `data-flow.md` ("Data flow should be visualizable as a graph: parameters are entry nodes, calls are operation nodes, bindings are value edges, returns are exit nodes, effects are annotations") both assert visualization is a goal, but no spec pins down format, scope, or the bundled-vs-external boundary. **MVP defers visualization entirely** — no compiler subcommand, no graph emission, no Mermaid/GraphViz output. The IR (`ir-schema.md`) is the contract; any post-MVP visualizer (bundled or third-party) consumes it. Post-MVP decisions to make: (a) emit format (Mermaid for inline docs vs. GraphViz `dot` for tooling vs. JSON-graph for custom), (b) what to render (full IR vs. call graph vs. flow order vs. layered), (c) compiler-bundled vs. separate package, (d) opt-in flag (e.g., `glyph compile --emit-ir`) for emitting the post-Lower IR as a sidecar JSON for external consumers — even before a bundled visualizer exists.
+
 ## Compiler & Runtime
 
+- ~~**CLI surface.**~~ **Done.** v0 CLI is specified in `cli.md`: subcommands (`compile`, `check`, `fmt`, `validate-output`), `--emit-ir` for tooling, exit codes (0/1/2/3 with agent-oriented semantics), diagnostic output formats. The compiler is fully deterministic — LLM phases (Repair, Expand Step 2) live in an external agent skill per `build-foundation.md` and `agent-skill.md`.
+- ~~**IR JSON schema.**~~ **Done.** `ir-json-schema.md` is the canonical spec: top-level envelope (`ir_version` monotonic int, separate from compiler version), per-node JSON shapes, all-snake_case enum serialization, Expression/Value unions, versioning policy, worked example. Contract for both `--emit-ir` (produces) and `validate-output` (consumes). Node ID format spec formalized in `ir-schema.md` §Node Identifiers.
 - **Runtime compilation and mutations.** Explore whether skills (or parts of skills) can be compiled and mutated at runtime — e.g. dynamic specialization based on agent state, live parameter injection, or hot-swapping compiled output mid-session. Consider what invariants must hold across a mutation boundary and whether a versioned IR helps.
 - **Deduplication of shared imports across multi-skill composition.** When multiple included/imported skills pull in the same dependency (e.g. the same shared block or text), the compiled output currently may repeat that content. Design a merge/dedup pass so identical imported fragments are emitted once, with a clear ownership and conflict-resolution model for near-identical variants.
 - **Structured return types.** MVP return values are the agent's final output string; return type annotations are advisory (shape prose framing, no runtime enforcement). Post-MVP: explore parseable JSON return, typed artifact extraction, schema validation of agent output against declared return types, and structured binding (e.g. `result.findings` resolving to a parsed field rather than prose reference).
+
+## Post-MVP CLI
+
+Features explicitly deferred from the v0 CLI surface (see `cli.md` §What Is Not In v0):
+
+- **`glyph init`** — project scaffolding and config file generation.
+- **`glyph watch`** — file-watching with incremental recompilation.
+- **`glyph lsp`** — Language Server Protocol integration.
+- **Incremental compilation** — pipeline supports it architecturally; v0 re-runs all phases.
+- **SARIF diagnostic output** — standardized static analysis format for IDE/CI integration.
+- **Config file** (`glyph.config.yaml`) — project-level compiler settings; v0 uses flags only.
+- **Stdin support** (`--stdin --filename <virtual>`) — for editor integration; blocked on virtual file path semantics for imports and diagnostics.
+- **Manpages** — `--help` is the documentation for v0.
+- **`tracing` / structured logging** — v0 uses verbosity-gated `eprintln!`. Add `tracing` when incremental builds or watch mode warrant structured log filtering.
+- **Embedded LLM mode** — v0 compiler is fully deterministic; LLM phases live in an external agent skill. An embedded mode (`glyph-llm` crate) may be added if single-binary deployment is needed.

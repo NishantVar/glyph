@@ -41,6 +41,12 @@ The `skill` entrypoint of an imported module is accessible through whole-module 
 
 Attempting to selectively import a private `block` or `text` is a compile error. The diagnostic names the declaration and notes that it is not exported.
 
+### Library Files As Import Targets
+
+Library files (zero `skill` declarations) are the primary import targets. They export reusable blocks and constants consumed by skill files. Importing from a library file follows all the same rules as importing from a skill file — selective imports, whole-module imports, collision handling, and effect propagation all apply identically. The only difference: a library file has no `skill` entrypoint, so `M.skill_name` is not available on whole-module imports of a library. Attempting to access a skill entrypoint on a library's whole-module alias is a compile error.
+
+Library files must have at least one `export` declaration (`G::analyze::no-exports-in-library`). See `language-surface.md` §File-Level Rules for the full library compilation and emission model.
+
 ## 3. Name Collision Rules
 
 Imported names participate in the universal no-shadowing rule defined in `values-and-names.md`. That rule is the single authoritative source for collision semantics across all name sources (locals, parameters, text declarations, imports). Key import-specific points:
@@ -100,6 +106,8 @@ When a caller invokes an imported block, the callee's effect set is unioned into
 - The compiled output for the caller includes the full unioned effect set.
 
 No import-specific effect syntax is needed. The existing `effects:` clause and inference machinery handle propagation.
+
+**Projection tier does not affect propagation.** Whether an imported block is projected as inline (Tier 1), same-file procedure (Tier 2), or external file (Tier 3) is a Phase 6 layout decision that does not change the callee's effect contribution resolved in Phases 2/5. Tier 3 selection may require the caller to additionally declare `reads_files` — see `ir-and-semantics.md` §Projection Tier And Effect Propagation for the full mechanism.
 
 ## 9. Closure Enforcement Timing
 

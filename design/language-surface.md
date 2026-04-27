@@ -4,15 +4,41 @@ This document is the single authoritative reference for Glyph source syntax: dec
 
 ## 1. Overview
 
-A `.glyph.md` file is a Glyph source module. It compiles to exactly one Markdown file by replacing `.glyph.md` with `.md` (e.g. `skill.glyph.md` -> `skill.md`). The entire file is Glyph source; there is no Markdown passthrough. Markdown structure lives in the compiled output, not in the source.
+A `.glyph.md` file is a Glyph source module. It is either a **skill file** (contains exactly one `skill` declaration, compiles to a same-basename `.md`) or a **library file** (contains zero `skill` declarations, may emit standalone procedure `.md` files for qualifying `export block` declarations — see §File-Level Rules). The entire file is Glyph source; there is no Markdown passthrough. Markdown structure lives in the compiled output, not in the source.
 
-Each `.glyph.md` file must contain exactly one `skill` declaration. It may also contain imports, value-binding declarations (`text`, `int`, `float`), blocks, and exported blocks that support that skill. The MVP base declaration kinds are `skill`, `block`, `text`, `int`, and `float`, with `export` as visibility modifier on value-binding and block kinds, and `generated` as repair-authorship modifier on both `text` and `block`.
+A skill file contains one `skill` declaration plus supporting imports, value-binding declarations (`text`, `int`, `float`), blocks, and exported blocks. A library file contains only imports, value-binding declarations, and blocks (some exported) — no skill. Both file types compile through the same 7-phase pipeline. The MVP base declaration kinds are `skill`, `block`, `text`, `int`, and `float`, with `export` as visibility modifier on value-binding and block kinds, and `generated` as repair-authorship modifier on both `text` and `block`.
 
 **Novice kernel.** A new author only needs a small subset to write useful skills: `skill`, `require`/`avoid`, `flow:`, quoted inline strings, calls with parentheses, and the `with` modifier on calls (see [data-flow.md](data-flow.md)). Blocks, named text, types, effects, and imports are discoverable later; repair materializes `generated text` and `generated block` definitions for undefined names so novice skills compile without those constructs present in source.
 
 Glyph source optimizes for easy readability, easy maintenance, and forgiving authoring. The source surface may be duck-typed and partially inferred; the compiler is responsible for turning that into a strict IR. The split is: source can be ergonomic; IR and compiled output must be explicit.
 
 ## 2. Block Structure
+
+### File-Level Rules
+
+A `.glyph.md` file is a unit of compilation. The following rules apply at the file level:
+
+- **Non-empty.** A file containing only whitespace or comments emits `G::parse::empty-file` (error). There is nothing to compile.
+- **At most one `skill` declaration per file.** A file may contain zero or one `skill` declarations. A second `skill` in the same file emits `G::parse::multiple-skills` (error). The reason is pragmatic: compiled output is named after the skill (`<skill_name>.md`), and most coding-agent ecosystems expect one skill per file (e.g., `SKILL.md`). Multi-skill files would collide on output naming. Cross-skill composition is via `import`, not by co-locating skills in one source file.
+- **Library files (zero `skill` declarations).** A file containing only `import`, `text` / `int` / `float`, and `block` / `export block` declarations — no `skill` — is a **library file** (e.g., `prefs.glyph.md`, `repo_tools.glyph.md`). Library files are consumed by sibling skill files via `import`. Formal rules:
+
+  - **At least one `export` declaration required.** A file with zero skills AND zero exports has no consumer-visible contribution. This emits `G::analyze::no-exports-in-library` (error). Private helpers (`block`, `text`, `int`, `float`) alongside exports are fine — they support the exports internally.
+  - **Compilation.** Library files compile through the same 7-phase pipeline as skill files. The DAG-driven multi-file compile (see `pipeline.md` §Multi-File Compilation Order) runs Phases 1–7 on every file in dependency order; a library file is a DAG node like any other, it just has no `skill` to project.
+  - **Emission rules — per-declaration, not per-file.** What a library file emits depends on what it exports:
+
+    | Declaration | Emits standalone `.md`? | Mechanism |
+    |---|---|---|
+    | `export block` whose expanded prose is **>= 150 words** (above the Tier 1 inline threshold; see `compiled-output.md` §Three-Tier Block Projection) | **Yes** — one procedure `.md` per qualifying block | Library's own Phase 7 emits it into a subdirectory named after the source file (e.g., `repo_tools.glyph.md` → `repo_tools/inspect-repo.md`) |
+    | `export block` whose expanded prose is **< 150 words** (Tier 1 — small, inlinable) | **No** — consumers inline the body at each call site | No emission from the library |
+    | `export text` / `export int` / `export float` | **No** — compile-time constants, always inlined into consumers | No emission |
+    | Private `block`, `text`, `int`, `float`, `import` | **No** — contribute to other compilations only | Validation only |
+
+  - **Empty emission is normal.** A library file that compiles successfully but produces zero `.md` files (e.g., `prefs.glyph.md` with only `export text` constants) is not an error or warning. It contributes names and values to consumers through the validated IR.
+  - **Zero consumers.** In DAG-driven compilation, unreferenced library files are never visited — no diagnostic. If a user explicitly compiles a library file (`glyph compile prefs.glyph.md`), it compiles and emits whatever qualifies, succeeding silently even if zero files are produced.
+  - **Tier ownership.** Whether an `export block` qualifies for a standalone procedure `.md` is a property of the block itself, decided when the library compiles. Whether a *specific call site* in a consumer inlines that block or references the procedure file is a per-call-site decision in the consumer's Expand Step 1 (the `ResolvedCall.projection_mode` field in `ir-schema.md`). A procedure `.md` may exist but go unused at a call site that projects the block as Tier 1 (inline) or Tier 2 (same-file procedure) — this is intentional, not an error.
+  - **Consumer guarantees.** DAG order (libraries compile before consumers) ensures procedure `.md` files exist before consumers reference them via `load`. If a library failed to compile, the consumer's Phase 5 (Validate) catches the missing dependency.
+  - **Mixed library files.** A file exporting both `export block` and `export text` declarations is common (e.g., a `repo_tools.glyph.md` exporting both procedures and constants). The emission rules apply per-declaration — blocks may emit procedure files while constants are inlined. No special handling needed.
+- **Skill body must contain at least one of `flow:` (with statements) or `constraints:` (with markers).** A skill with empty `description:`, no `flow:`, no `constraints:`, no `effects:` emits `G::analyze::empty-skill-body` (error). A constraint-only skill (no `flow:` at all, but `constraints:` present) is **legal** — its compiled output omits `### Steps` per `compiled-output.md`. An empty `flow:` body (header present but zero statements) emits `G::parse::empty-flow` (error); the author should either remove the header or add a statement.
 
 ### 2.1 Significant Indentation
 
@@ -92,7 +118,7 @@ Line comments use `//`. No block comments. Comments are stripped from compiled o
 
 ### 3.1 `skill`
 
-The public entrypoint that compiles to Markdown agent instructions. One per file.
+The public entrypoint that compiles to Markdown agent instructions. **Exactly one per file** (multi-skill files are rejected — see §File-Level Rules below).
 
 **Grammar:**
 
@@ -105,7 +131,7 @@ skill <name>(<params>) -> <ReturnType>
 **Example:**
 
 ```glyph
-skill implement_feature(scope, risk = "medium")
+skill implement_feature(scope = ".", risk = "medium")
     require preserve_existing_patterns
     avoid unrelated_edits
 
@@ -190,8 +216,12 @@ Named instruction text. `text` is file-private; `export text` is importable.
 **Grammar:**
 
 ```
-text <name> = <string-literal>
-export text <name> = <string-literal>
+text <name> = <string-rhs>
+export text <name> = <string-rhs>
+
+<string-rhs> = <string-literal>
+             | <bare-name>            // resolves to a same-file `text` / `export text`
+             | <qualified-name>       // resolves to an imported `export text` via whole-module alias
 ```
 
 **Example:**
@@ -212,6 +242,7 @@ Never execute destructive operations without confirmation.
 - No parameters, no return type. A `text` declaration is a named constant, not a callable.
 - The `=` is required and separates the name from its value.
 - String literals follow `values-and-names.md`: inline `"..."` or block `"""..."""`.
+- The RHS may be a string literal or a static reference to another `text` / `export text` (same-file bare name or imported via whole-module alias). Lower resolves the reference at compile time and inlines the underlying string content into the IR; the binding is not re-resolved at runtime. References to non-`text` declarations, parameters, locals, or anything that produces a value at flow time are rejected (a `text` body is fixed at compile time, not computed).
 - These bindings are not arbitrary string interpolation. The compiler treats them as named instruction resources resolved into IR nodes.
 
 ### 3.5 `int` / `export int`
@@ -221,8 +252,12 @@ Named integer constant. `int` is file-private; `export int` is importable.
 **Grammar:**
 
 ```
-int <name> = <int-literal>
-export int <name> = <int-literal>
+int <name> = <int-rhs>
+export int <name> = <int-rhs>
+
+<int-rhs> = <int-literal>
+          | <bare-name>            // resolves to a same-file `int` / `export int`
+          | <qualified-name>       // resolves to an imported `export int` via whole-module alias
 ```
 
 **Example:**
@@ -236,7 +271,8 @@ export int default_max_attempts = 3
 
 - No parameters, no return type. An `int` declaration is a named constant, not a callable.
 - The `=` is required and separates the name from its value.
-- RHS must be an integer literal. No cross-assignment from float literals; lossless coercion at call boundaries is per [values-and-names.md](values-and-names.md).
+- The RHS may be an integer literal or a static reference to another `int` / `export int` (same-file bare name or imported via whole-module alias). No cross-assignment from `float` declarations or from float literals; lossless coercion at call boundaries is per [values-and-names.md](values-and-names.md). References to parameters, locals, or any non-`int` declaration are rejected.
+- Lower resolves the reference at compile time and inlines the underlying integer value into the IR; the binding is not re-resolved at runtime.
 - These bindings are not arbitrary numeric expressions. The compiler treats them as named constant resources resolved into IR nodes.
 
 ### 3.6 `float` / `export float`
@@ -246,8 +282,12 @@ Named floating-point constant. `float` is file-private; `export float` is import
 **Grammar:**
 
 ```
-float <name> = <float-literal>
-export float <name> = <float-literal>
+float <name> = <float-rhs>
+export float <name> = <float-rhs>
+
+<float-rhs> = <float-literal>
+            | <bare-name>            // resolves to a same-file `float` / `export float`
+            | <qualified-name>       // resolves to an imported `export float` via whole-module alias
 ```
 
 **Example:**
@@ -261,7 +301,8 @@ export float default_temperature = 0.7
 
 - No parameters, no return type. A `float` declaration is a named constant, not a callable.
 - The `=` is required and separates the name from its value.
-- RHS must be a float literal. No cross-assignment from integer literals; lossless coercion at call boundaries is per [values-and-names.md](values-and-names.md).
+- The RHS may be a float literal or a static reference to another `float` / `export float` (same-file bare name or imported via whole-module alias). No cross-assignment from `int` declarations or from integer literals; lossless coercion at call boundaries is per [values-and-names.md](values-and-names.md). References to parameters, locals, or any non-`float` declaration are rejected.
+- Lower resolves the reference at compile time and inlines the underlying float value into the IR; the binding is not re-resolved at runtime.
 - These bindings are not arbitrary numeric expressions. The compiler treats them as named constant resources resolved into IR nodes.
 
 ### 3.7 `import`
@@ -369,15 +410,14 @@ generated block summarize_changes()
 Parameters appear inside parentheses on `skill`, `block`, and `export block` headers. Four forms:
 
 ```
-name                          // untyped, required
 name = "default"              // untyped, with default
-name: Type                    // typed, required
 name: Type = default_value    // typed, with default
 ```
 
-- Required parameters (no default) must precede optional parameters. Same ordering rule as Python.
+- **Default values are mandatory on parameters whose declarations compile to `.md` files** — i.e., `skill` parameters (which surface in the skill's `## Parameters` section) and `export block` parameters (which surface in external procedure files when projected at Tier 3). The consuming LLM uses the default as a fallback when the user does not specify a value. A parameter without a default on a `skill` or `export block` emits `G::analyze::missing-param-default` (**compile error**, not repairable). Author must add an explicit default; the compiler does not synthesize defaults — there is no principled non-LLM repair, and LLM-guessed defaults would introduce non-determinism into a value that ships in compiled output.
+- **Private `block` parameters may omit defaults.** Private blocks never compile to standalone files — their parameters are resolved at call sites within the same file. A private block parameter without a default is legal; the caller must supply the argument.
 - Type annotations use the `name: Type` slot. The full type system is a Tier 2 concern; this reserves the syntactic position.
-- Default values must be Tier 0 literals: strings, numbers, booleans, or `none`.
+- Default values are either Tier 0 literals (strings, numbers, booleans, `none`) **or** a name reference to an in-scope value-binding declaration (`text` / `int` / `float`, including imported ones). Named references must be type-compatible with the parameter and must resolve at compile time — since `text`/`int`/`float` declarations are compile-time constants, this is always satisfied. The compiled `## Parameters` section emits the **resolved literal value**, not the name; consumers see the concrete default at runtime. This makes preferences (`preferences.md`) usable directly as parameter defaults: `summarize(temperature: Float = default_temperature)` resolves to the prefs library's current value at compile time. References to other parameters or to `block` declarations are not permitted; calls and arbitrary expressions are not permitted. A default that is neither a literal nor a name reference to a value-binding is a parse error.
 - The compiler infers types for untyped parameters from usage context and repairs source when inference fails.
 
 ## 4. Authoring Model
@@ -394,6 +434,8 @@ Source instructions need not carry compiler-shaped keywords everywhere. A bare n
 
 The closed MVP role set ([ir-and-semantics.md](ir-and-semantics.md)): `InputContract`, `Step`, `Constraint`, `OutputContract`. (`Context` is deferred — see [todo.md](todo.md).) Obligations and prohibitions are `Constraint` nodes with strength (`soft`/`hard`) and polarity (`require`/`avoid`) attributes. **Constraint markers** — three keywords (`require`, `avoid`, `must`) composing into four forms (`require`, `avoid`, `must`, `must avoid`) — set role, strength, and polarity directly. For the complete marker-to-IR mapping, see [ir-and-semantics.md](ir-and-semantics.md).
 
+**Constraint marker placement.** Constraint markers are legal in three positions: (1) inside a `constraints:` sub-section, (2) at declaration body level (the compiler normalizes these into a `constraints:` section as a source-to-source rewrite — `ir-and-semantics.md` §Body-Level Constraint Normalization), and (3) as a flow statement inside `flow:`, including inside `if`/`elif`/`else` branch bodies. Flow-top-level markers are hoisted into the enclosing declaration's constraint list at IR-level by Lower; branch-scoped markers remain inline and render as part of the conditional Step prose (`ir-and-semantics.md` §Flow-Level Constraint Markers, `compiled-output.md` §Constraint Rendering).
+
 Inference uses: position in the skill, metadata from bindings/imports/standard-library, natural meaning of expanded text, and explicit keywords. If inference succeeds, repair adds the smallest explicit marker back into source. Compound names like `avoid_unrelated_edits` are valid identifiers — they are not forcibly split into marker-plus-concept form. The compiler uses the name prefix as evidence for role/polarity inference alongside the resolved text content. `must` is inferred only from hard-strength wording. When inference fails, the compiler emits a diagnostic.
 
 ### 4.3 Bare Names and Generated Definitions
@@ -405,7 +447,7 @@ Bare instruction names are allowed. Resolution order: (1) same-file binding, (2)
 Authors can write small function-like or identifier-like instructions directly when the name is instructive enough to expand:
 
 ```glyph
-skill debug_failure(scope)
+skill debug_failure(scope = ".")
     root_cause_before_fix
     reproduce_before_patch
     root_cause_trace()
@@ -416,7 +458,7 @@ skill debug_failure(scope)
 One-off instruction text may be placed inline with quoted strings for short cases and block strings for longer cases:
 
 ```glyph
-skill update_docs(scope)
+skill update_docs(scope = ".")
     "Do not change public behavior while updating documentation."
 
     flow:

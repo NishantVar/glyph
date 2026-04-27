@@ -103,7 +103,7 @@ Inside a `constraints:` section, soft (`require`/`avoid`) and hard (`must`/`must
 Authors may write constraint markers directly at body level without a `constraints:` wrapper:
 
 ```glyph
-skill fix_bug(scope)
+skill fix_bug(scope = ".")
     require preserve_existing_patterns
     avoid unrelated_edits
     flow:
@@ -111,6 +111,15 @@ skill fix_bug(scope)
 ```
 
 The compiler normalizes body-level markers into a `constraints:` section as a source-to-source rewrite (part of the repair/formatting pass). Both forms produce identical IR. The canonical source form always uses the `constraints:` section.
+
+#### Flow-Level Constraint Markers
+
+Constraint markers (`require`/`avoid`/`must`/`must avoid`) are also legal as flow statements inside `flow:`, including inside `if`/`elif`/`else` branch bodies. The IR represents them as `Constraint` nodes admissible in the `FlowNode` union (`ir-schema.md` §Flow Nodes). Lower (Phase 4) splits them by location:
+
+- **Flow top-level** — a constraint marker at the top level of `flow:` (not inside a branch) is **hoisted** out of the flow and appended to the enclosing declaration's `constraints` list, deduplicated against existing entries by canonical text + polarity + strength. It is not source-rewritten the way body-level markers are; the hoisting is an IR-level operation. After hoisting it renders in `### Constraints` like any other top-level constraint.
+- **Branch-scoped** — a constraint marker inside an `if`/`elif`/`else` branch body **stays inline** in that branch. Expand renders it as part of the conditional Step prose so the consuming LLM sees that the constraint applies only when that branch is taken (e.g., "If the change touches public APIs, do not break backwards compatibility."). It does not appear in `### Constraints`. See `compiled-output.md` §Constraint Rendering.
+
+This means a single `Constraint` can come from three sources by the time Expand runs: a top-level `constraints:` section, a body-level marker (normalized into `constraints:` by source-to-source rewrite), or a flow-top-level marker (hoisted into `Skill.constraints` / `Block.constraints` at Lower time). Branch-scoped markers are the only constraints that remain inside the flow.
 
 ### Inference And Repair
 
@@ -169,17 +178,33 @@ effects:
 
 ### Propagation
 
-The compiler infers effects by walking the call graph:
+The compiler infers effects by walking the call graph using a **transitive-eager, single-compilation-unit** algorithm. Three propagation rules cover every call, applied unconditionally to every reachable callee — including calls inside `if`/`elif`/`else` branch arms and calls modified by `with`. There is no per-arm reachability analysis; every reachable call contributes.
 
-- Each primitive call or block call contributes its declared or inferred effects.
-- A block's inferred effect set is the **union** of its own direct effects and the effects of every block it calls.
-- Skills, exported blocks, and private blocks all participate in inference.
-- There is no effect subtraction or masking in the MVP.
-- Effect sets are unordered; the compiler may sort them alphabetically or by declaration order.
+- **Stdlib-direct.** A call to a standard-library entry contributes that entry's documented effects (see `stdlib.md`).
+- **Local-transitive.** A call to a same-file `block` contributes the callee's **inferred** effect set, computed transitively through that callee's own call graph. Same-file `export block` calls follow this rule too — locally we have full visibility.
+- **Import-by-declaration.** A call to a callee imported from another file contributes the imported `export block`'s **declared** effect set (the import contract). The importer never re-derives the imported callee's inferred set; it trusts the dependency's declaration as validated by that file's own Validate pass (per `pipeline.md` §Multi-File Compilation Order and `data-flow.md` §Effect Propagation).
+
+A block's inferred effect set is the **union** of its own direct effects and the contributions from every reachable call. Skills, exported blocks, and private blocks all participate in inference. There is no effect subtraction or masking in the MVP. Effect sets are unordered; the compiler may sort them alphabetically or by declaration order.
+
+### Effect Boundaries At Subagent Spawns
+
+The three propagation rules above already produce the correct effect set for skills that spawn subagents — no fourth rule is needed. When a skill calls `subagent(task)`, it calls a stdlib entry whose declared effect is `{ spawns_agent }`. That single keyword propagates to the caller via the Stdlib-direct rule. The *spawned skill* is never a callee in the caller's call graph: it is a runtime artifact selected and executed by the consuming agent, analogous to a subprocess. Its own effect declarations are validated independently when *that* skill is compiled.
+
+Concretely: if skill A spawns a subagent that runs skill B, and skill B declares `effects: writes_files, uses_network`, skill A's inferred effect set does **not** include `writes_files` or `uses_network`. Skill A declares `spawns_agent` and that is the full contract. Skill B's effect surface is validated by skill B's own compilation — the two are independent compilation units with independent effect validation.
+
+This is consistent with the design posture that `spawns_agent` is a self-contained declaration meaning "this skill triggers another execution context" (see `stdlib.md` §The `spawns_agent` Effect). The spawned skill's effects are opaque to the caller for the same reason an imported library's internal private-block effects are opaque to the importer: each compilation unit validates its own contract.
+
+### Projection Tier And Effect Propagation
+
+Projection tier (inline, same-file procedure, external file — see `compiled-output.md` §Three-Tier Block Projection) is a Phase 6 output-layout decision. Effect propagation is resolved in Phases 2 and 5, before projection tiers are assigned. Therefore, **projection tier does not affect effect semantics**: a callee's effect set propagates identically regardless of which tier the compiler later selects for compiled output.
+
+The one addendum: when the compiler selects Tier 3 (external file) for an imported block in Phase 6 Step 1, the compiled output directs the consuming agent to load an external file — a runtime `reads_files` action. If the skill's effect set (resolved in Phases 2/5) does not already include `reads_files`, Phase 6 Step 1 emits an error requiring the author to add it. This is a **post-Phase-5 validation check** specific to Tier 3 selection, not a propagation-time contribution. In practice, most skills that call imported blocks already carry `reads_files` from the callee's own declared effects; the check catches the rare case where the callee has no file-reading effects but the tier selection introduces one. See `compiled-output.md` §External Procedure Files.
 
 ### Author Declaration And Validation
 
-Authors may optionally declare `effects:` for readability. When declared, the compiler validates that the **declared set is a superset of the inferred set**. If the declared set is smaller than inferred, that is a compile error (the declaration is lying about what the block does).
+Authors may optionally declare `effects:` for readability. When declared, the compiler validates that the **declared set is a superset of the inferred set**. If the declared set is smaller than inferred, that is a compile error (the declaration is lying about what the block does). Writing `effects: none` on a declaration whose inferred set is non-empty triggers `effects-under-declared` for the same reason — `none` is a strict subset claim that contradicts inference.
+
+**Auto-fill for export blocks.** An `export block` declaration that omits `effects:` entirely (i.e., does not write the keyword at all) and whose inferred set is non-empty does **not** trigger `effects-under-declared`. Instead, Phase 2 (Analyze) emits `G::analyze::missing-export-effects` (repairable) and Phase 3b (Repair) inserts an `effects:` sub-section with the inferred set into the source. This keeps export contracts explicit at the file boundary without forcing authors to hand-write what the compiler already knows. See `repair.md` §3b and `diagnostics.md`.
 
 If the declared set is **larger** than inferred (e.g. `effects: reads_files, runs_commands` when only `reads_files` is inferred), the compiler emits a `warning`-tier diagnostic (`G::analyze::effects-over-declared`). Compilation proceeds. Over-declaration is legitimate (forward-compat, intentional widening of a public contract), so it is not an error; the warning lets the author remove the extra keyword if they are confident it is no longer needed. Repair never narrows a declared effect set, since that would silently break import contracts.
 
@@ -211,7 +236,7 @@ Four colon-terminated headers are available inside `skill`, `block`, and `export
 
 | Section | Spelling | Content |
 |---------|----------|---------|
-| `description:` | singular | One-line summary of when/why to use this skill; compiles to frontmatter `description` |
+| `description:` | singular | One-line summary of when/why to use this skill; compiles to frontmatter `description`. Body is a single quoted string literal (`"..."` or `"""..."""`) or a bare-name reference to a `text` / `export text` declaration |
 | `effects:` | plural | Effect keywords (see section 3); compiles to frontmatter `effects` |
 | `constraints:` | plural | Constraint markers: `require`, `avoid`, `must` + concept |
 | `flow:` | singular | Ordered steps: calls, bindings, `return`, `if`, bare names, inline strings |
@@ -222,10 +247,18 @@ Four colon-terminated headers are available inside `skill`, `block`, and `export
 
 ### `description:` Section
 
-`description:` provides a concise, one-line summary of when and why a skill should be used. It compiles to the `description` field in YAML frontmatter (see `compiled-output.md`), which is the primary trigger for coding agents that select skills. Content is a single inline string or bare text.
+`description:` provides a concise, one-line summary of when and why a skill should be used. It compiles to the `description` field in YAML frontmatter (see `compiled-output.md`), which is the primary trigger for coding agents that select skills.
+
+**Body grammar.** The body is **exactly one quoted string literal** — either an inline `"..."` or a block `"""..."""` — or a **bare name** that resolves to a same-file `text` / `export text` declaration. Concatenation, multiple literals, and arbitrary expressions are forbidden (consistent with the no-string-concatenation foundation in `foundations.md`). For long descriptions, extract to a `text` declaration and reference it by name. Both the short form (content on the same line) and the long form (keyword alone, indented body below) are accepted, per the generic sub-section rule in `language-surface.md` §2.5.
+
+**Parameter slots.** `{name}` parameter references inside the description body are **illegal** and emit `G::parse::param-slot-in-non-instruction-string` (see `values-and-names.md` §No Interpolation). The compiled frontmatter `description` is a literal string, not an instruction with runtime substitutions.
+
+**Singular.** `description:` is set-like neither in source nor in IR — exactly one description per skill. A second `description:` sub-section in the same `skill` body emits `G::parse::duplicate-subsection`, classified **repairable**: Phase 3 Repair merges compatible duplicates into one combined description (and emits a hard error if they contradict). After repair re-parses, only one `description:` is accepted.
+
+**Availability.** `description:` is available only on `skill` declarations — N/A for `block`, `export block`, and value-binding declarations.
 
 ```glyph
-skill fix_bug(scope)
+skill fix_bug(scope = ".")
     description: "Debug and fix a bug in the codebase with minimal, targeted changes."
 
     flow:

@@ -29,9 +29,17 @@ Common leading indentation is stripped, similar to Python's `textwrap.dedent`. A
 
 ### No Interpolation
 
-Strings are opaque instruction text. There is no interpolation syntax (`${...}`, `{...}`, or equivalent). Values flow through parameters and call arguments, not string splicing.
+Strings are opaque instruction text. There is no source-time interpolation syntax (no `${...}`, no expression splicing, no concatenation). Values flow through parameters and call arguments, not string splicing.
 
 This follows foundations: not a prompt template system and foundations: text reuse is not prompt templating, plus the maintenance rule against ad hoc string concatenation.
+
+**Parameter slot exception (`{name}`).** A `{name}` slot — a strict identifier (`[a-zA-Z_][a-zA-Z0-9_]*`) inside single curly braces — is **not** source-time interpolation. It is a *runtime parameter slot* preserved verbatim into the compiled Markdown for the consuming LLM to fill at execution time (`compiled-output.md` §Parameter References In Steps). The compiler never substitutes the slot's value.
+
+Slots are legal **only inside instruction-bearing string positions**: `text` / `generated text` bodies, `generated block` body strings, inline instruction strings inside `flow:`, constraint texts, and string arguments to stdlib calls whose body becomes a compiled instruction (`subagent`, `send`). A `{name}` token in any other string position (a parameter default value, a `description:` field, etc.) emits `G::parse::param-slot-in-non-instruction-string` (repairable: the braces are stripped and the content is treated as literal).
+
+The slot grammar is strict: `{IDENTIFIER}` only. Anything else with braces — `{ "key": "value" }`, `{x, y}`, `if x { ... }`, or any other non-identifier content — is literal text and is parsed as such. There is no escape mechanism; an author who wants the literal text `{name}` where `name` happens to also be an in-scope parameter or binding must rephrase the instruction.
+
+A slot whose `name` does not resolve to a parameter or a local binding in scope at the slot's source position is a hard error (`G::analyze::unknown-param-slot`, not repairable). The resolution scope is the enclosing declaration's parameters plus the local bindings visible at that point; neither imports nor `text` declarations participate in slot resolution (those are reused via bare-name reference, a separate mechanism).
 
 ### No Value-Level Operators
 
@@ -166,6 +174,18 @@ The author's fix is always to rename one of the conflicting names. This is cheap
 ### Generated Definitions Must Be Visible
 
 When the repair pass generates definitions for undefined bare names, the compiler must emit a warning-level diagnostic for each generated definition. This ensures the author notices when a name they thought was already defined was actually auto-generated, preventing silent misresolution.
+
+### UFCS Name Resolution
+
+UFCS (Uniform Function Call Syntax) is **pure syntactic sugar in a single namespace**. `x.foo(args)` desugars to `foo(x, args)` during Lower (Phase 4). There is no method namespace, no trait dispatch, and no overload resolution.
+
+The name `foo` in `x.foo(args)` resolves through the **same name resolution rules** as a free call `foo(x, args)` — the resolution table above applies identically. If `foo` resolves to an imported `export block`, a same-file `block`, or a stdlib entry, the desugared call proceeds normally. If `foo` does not resolve, it is an undefined-call error, same as any other unresolved parens-call.
+
+After desugaring, the receiver's type is checked against the callee's first parameter type via nominal matching (`types.md`). If the types are annotated and the names differ, the compiler emits `G::analyze::nominal-mismatch` — the same error as if the author had written `foo(x, args)` directly with a mismatched first argument.
+
+The no-shadowing rule applies unchanged: if multiple declarations named `foo` are visible after case normalization, the compiler rejects the program regardless of whether the call was written as `x.foo()` or `foo(x)`.
+
+UFCS desugaring happens in Lower (Phase 4), not Parse. The AST preserves the `.foo()` syntax so diagnostic spans point to what the author actually wrote. Analyze disambiguates dot syntax from qualified-call syntax (`M.foo()`) based on what the left-hand side resolves to — see `data-flow.md` §UFCS for the full disambiguation rule and worked examples.
 
 ## Enums And Symbols
 
