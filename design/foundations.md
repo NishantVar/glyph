@@ -23,13 +23,13 @@ Each item is 1-2 sentences; detailed rules live in the linked design docs.
 
 7. **Use Python-like readability, not Python runtime semantics.** Borrow indentation, low punctuation, and duck-typed ergonomics; do not inherit arbitrary runtime execution or hidden side effects.
 
-8. **Optional markers should not dominate the source.** Explicit role and constraint markers are available for disambiguation, but the compiler should infer roles, constraint strength, and polarity when it can (see `ir-and-semantics.md`).
+8. **Optional markers should not dominate the source.** Explicit role and constraint markers are available for disambiguation, but the compiler should infer role, strength, and polarity when it can (see `ir-and-semantics.md`).
 
 ## Source vs. Compiled Output
 
 9. **Authoring and execution are separate.** Source Glyph exists for humans; compiled output exists for agents. The compiler handles flattening, expansion, defaults, and target-specific generation.
 
-10. **Source is `.glyph.md`; compiled output is a specialization, not a template.** Compilation resolves parameters to concrete values at expand time; the compiled `.md` contains no variable references. The `.glyph.md` is the reusable artifact, the `.md` is produced for a specific invocation. See `compiled-output.md` for the full compiled-file shape.
+10. **Compiled output is parameterized, with tiered self-containment.** Compilation is parameterless — `glyph compile skill.glyph.md` produces one `.md` file per skill, with parameters as named `{param}` slots resolved by the consuming LLM at runtime. Simple skills are fully self-contained in one file. Complex skills may reference separately compiled procedure files for imported blocks that are large, conditional, or shared across skills — the compiler decides the projection tier (inline, same-file procedure section, or external procedure file) based on callee complexity, conditionality, and reuse. See `compiled-output.md` for the three-tier projection model.
 
 11. **Reliability beats elegance in compiled output.** Compiled agent instructions favor explicitness and followability over compression.
 
@@ -39,7 +39,7 @@ Each item is 1-2 sentences; detailed rules live in the linked design docs.
 
 13. **The source language is forgiving; the IR is strict.** Authors may omit annotations and use duck-typed values; compilation normalizes permissive source into an explicit, typed IR.
 
-14. **Instruction roles are inferred by default.** The compiler infers role, constraint strength, and polarity from context; explicit markers are available for disambiguation (see `ir-and-semantics.md`).
+14. **Instruction roles are inferred by default.** The compiler infers role, strength, and polarity from context; explicit markers are available for disambiguation (see `ir-and-semantics.md`).
 
 15. **Text reuse is not prompt templating.** Named text, imported libraries, and semantic shortcuts compile into structured IR nodes, not arbitrary string interpolation (see `language-surface.md`).
 
@@ -53,7 +53,7 @@ Each item is 1-2 sentences; detailed rules live in the linked design docs.
 
 ## Constraints and Effects
 
-19. **Constraints are first-class and phase-aware.** Constraints are represented explicitly in the language and IR with strength and polarity, not buried in prose (see `ir-and-semantics.md`).
+19. **Constraints are first-class and phase-aware.** Constraints are represented explicitly in the language and IR with strength (`soft`/`hard`) and polarity (`require`/`avoid`), not buried in prose (see `ir-and-semantics.md`).
 
 20. **Data flow and effects must be explicit.** Skills and blocks declare inputs, outputs, and effects; hidden ambient context is minimized (see `ir-and-semantics.md`, `data-flow.md`).
 
@@ -91,4 +91,4 @@ Each item is 1-2 sentences; detailed rules live in the linked design docs.
 
 ## Learnability
 
-33. **Novice learnability is a first-principles goal.** A new author should be able to write a useful skill using a small kernel: `skill`, `require`/`avoid`, `flow:`, quoted inline strings, calls with parentheses, and the `with` modifier. Every other construct (blocks, named text, types, effects, imports) must be discoverable later or inferred by the compiler and repair pass; the novice surface must not require learning them up front.
+33. **Novice learnability is a first-principles goal.** A new author should be able to write a useful skill using a small kernel: `skill`, `require`/`avoid`/`must`, `flow:`, quoted inline strings, calls with parentheses, and the `with` modifier. Every other construct (blocks, named text, types, effects, imports) must be discoverable later or inferred by the compiler and repair pass; the novice surface must not require learning them up front.

@@ -143,7 +143,7 @@ export block inspect_repo(scope) -> RepoContext
 // fix_bug.glyph.md
 import "./repo_tools.glyph.md" { inspect_repo }
 
-skill fix_bug(scope)
+skill fix_bug(scope = ".")
     flow:
         ctx = inspect_repo(scope)
         plan = diagnose(ctx)
@@ -176,5 +176,3 @@ The following type features are deferred beyond the MVP:
 The semantic commitments above are stronger than the exact syntax. These details can still change:
 
 - Whether the compiled output renders type names in parentheses, as labels, or in another format.
-- The exact nominal matching rules when one side has a type and the other does not.
-- Whether the compiler should warn when the same domain type name is used inconsistently across files (e.g., `RepoContext` in one file means something different than in another).

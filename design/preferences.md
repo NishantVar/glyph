@@ -29,6 +29,7 @@ export float default_temperature = 0.7
 Rules:
 
 - MVP pref values are `String`, `Int`, or `Float` literals. Other types are not supported until the corresponding value-binding declaration is added.
+- **A default value is mandatory.** Every preference declaration must include the `= <literal>` assignment. An `export text tone` without a right-hand side is a parse error. This ensures every preference has a known fallback — both for the current compile-time inlining model and for any future runtime-slot mechanism.
 - The literal on the right-hand side is the **final value** in MVP. An override mechanism (project config file, CLI flags, env vars) is deferred; see `todo.md`.
 - Any `.glyph.md` file may declare preferences. A dedicated prefs file is conventional, not required.
 
@@ -56,6 +57,18 @@ skill write_summary()
 
 At compile time the preference value is inlined into the compiled Markdown, identical to any other imported `text` / `int` / `float` constant.
 
+Preferences may also be used directly as **parameter defaults** on `skill` and `export block` declarations (per `language-surface.md` §3.10). For example:
+
+```glyph
+import "./prefs.glyph.md" { default_temperature }
+
+skill summarize(temperature: Float = default_temperature)
+    flow:
+        ...
+```
+
+The default is resolved at compile time and the resolved literal value appears in the compiled `## Parameters` section. When the prefs library's value changes, every skill that defaults to it picks up the new value on the next compile — single source of truth.
+
 ## Standard Prefs Library
 
 The compiler ships a default prefs file so any project can import a baseline pref set without defining its own:
@@ -72,9 +85,17 @@ Importing or reading a preference does **not** contribute any effect. A `reads_p
 
 An `export block` that reads a preference does so through an explicit import. The preference appears as a declared dependency, not hidden ambient context, so closure (see `data-flow.md`) is preserved automatically.
 
+## Library File Semantics
+
+A prefs file like `prefs.glyph.md` is a library file under the rules in `language-surface.md` §File-Level Rules. It has zero `skill` declarations and only `export text` / `export int` / `export float` constants. Under the library emission model:
+
+- **It emits zero `.md` files.** Constants are always inlined into consumers at compile time — they never meet a tier threshold for standalone procedure files.
+- **It compiles successfully.** Zero output is not an error. The file contributes names and values to consumers through the validated IR.
+- **It satisfies the "at least one export" rule.** Every declaration in a prefs file is already `export`.
+
 ## Recompilation On Preference Change
 
-Preference values are inlined at compile time. If a preference value changes, affected skills must be recompiled. The compiler may maintain a reverse dependency map from preference source files to compiled outputs to identify which compiled files are stale.
+Preference values are inlined at compile time. If a preference value changes, affected skills must be recompiled. The compiler's cache key for each file includes the post-repair source hashes of **all transitive dependencies** (see `pipeline.md` §Cacheability). Since the prefs file is a transitive dependency of every skill that imports it, changing a preference value invalidates every consuming skill's cache entry and triggers recompilation.
 
 Runtime injection of preference values is not part of MVP. A future Glyph-aware loader or hook could substitute preference values before the agent reads the compiled skill.
 
@@ -89,13 +110,14 @@ Runtime injection of preference values is not part of MVP. A future Glyph-aware 
 
 - **Declaration headers** (`language-surface.md`): Value-binding declaration grammar for `text`, `int`, `float` and their `export` variants is defined there.
 - **Import resolution** (`imports.md`): Pref imports follow the standard path and selective-import rules; no special resolution is needed.
-- **Effects** (`ir-and-semantics.md`): Pref reads contribute no effects. The 8-keyword MVP effect vocabulary is unchanged.
+- **Effects** (`ir-and-semantics.md`): Pref reads contribute no effects. The 9-keyword MVP effect vocabulary is unchanged.
 - **Data flow** (`data-flow.md`): The "Global Preferences" section there defers to this document.
 - **Todo** (`todo.md`): Pref override mechanism and standard prefs file details are tracked as deferred items.
 
 ## Deferred
 
 - Project-level or user-level override mechanism (config file, CLI flags, env vars).
+- **Preferences as runtime parameter slots.** Instead of inlining preference values at compile time, the compiler could promote imported prefs to entries in the consuming skill's `## Parameters` section with `{pref_name}` slots in Step/Constraint prose and the declared literal as the default value. This preserves the parameterless compilation model (one stable `.md` per source file) while letting the consuming LLM resolve prefs from user context at runtime — identical to how skill parameters already work. Trade-offs: (1) a skill importing N prefs gains N extra parameters, potentially cluttering `## Parameters`; (2) prefs bubble up through every intermediate caller in the call graph; (3) it blurs the distinction between operational inputs (e.g., `scope`) and behavioral configuration (e.g., `tone`). The mandatory default value rule (see §Declaring a Preference) ensures every pref has a fallback regardless of which model is active.
 - Standard prefs library contents, import scheme (`@glyph/prefs` or equivalent), and composition rules with user-defined prefs.
 - `bool` preferences (blocked on adding `bool` as a declaration kind).
 - Structured preferences (objects, lists) — blocked on collection types.
