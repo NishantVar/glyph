@@ -202,11 +202,15 @@ The extracted block follows the same rules as all generated blocks: one-sentence
 
 **Idempotence.** After extraction, the inner `Branch` no longer exists — it has been replaced by a call. Re-running Analyze finds no nested branch, so no further extraction occurs.
 
+### 4.9.1 No Overwrite of Existing Declarations
+
+Repair never silently overwrites, deletes, or renames an existing declaration — `generated text`, `generated block`, hand-written `text`, hand-written `block`, or any other form — to make room for a newly-generated one. If a name collision would arise (the author wrote a declaration whose name matches a stale `generated` declaration, or two different unresolved use sites would generate the same name), the compiler hard-fails with `G::analyze::name-collision` (`diagnostics.md`). The author resolves manually: rename one of the conflicting declarations, or explicitly delete the stale `generated` declaration themselves. This is the only safe rule given that the LLM cannot infer with certainty that a stale `generated` definition is no longer needed.
+
 ### 4.10 Constraint Conflict Scan (Phase 3c)
 
 Phase 3 has three sub-steps:
 
-- **3a — deterministic auto-fixes.** Tab→spaces, unused import removal, etc. No LLM.
+- **3a — deterministic auto-fixes.** Tab→spaces, unused import removal, etc. No LLM. 3a operates in two strata mirroring `glyph fmt` (`cli.md` §`glyph fmt`): pre-Parse text-level rewrites (tab → 4 spaces, mixed-indent normalization) run first on raw source and may turn a previously-rejecting source into one Phase 1 can accept; post-Parse AST-level rewrites (unconditional constraint hoisting, duplicate import merging, unused import removal, source section reordering) require a successful Phase 1. If Phase 1 fails after the pre-Parse pass, only the pre-Parse fixes are written and the parse diagnostic is surfaced to subsequent phases; AST-level rewrites are skipped.
 - **3b — LLM-assisted repairs.** Driven by `repairable` diagnostics from Phase 2 (undefined names, ambiguous roles, missing returns, etc.).
 - **3c — constraint conflict scan.** Always runs (when triggered by constraint count). Independent of Phase 2 diagnostics.
 

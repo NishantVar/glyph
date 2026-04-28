@@ -103,3 +103,7 @@ Features explicitly deferred from the v0 CLI surface (see `cli.md` §What Is Not
 - **Manpages** — `--help` is the documentation for v0.
 - **`tracing` / structured logging** — v0 uses verbosity-gated `eprintln!`. Add `tracing` when incremental builds or watch mode warrant structured log filtering.
 - **Embedded LLM mode** — v0 compiler is fully deterministic; LLM phases live in an external agent skill. An embedded mode (`glyph-llm` crate) may be added if single-binary deployment is needed.
+
+## Tooling & Adjacent Skills
+
+- **Recursive multi-file lifting in `glyph-lift`.** The `glyph-lift` skill (reverse direction: `.md` skill file → `.glyph.md` source) treats external file references in v1 as `import "<path>"` declarations only — it does not recursively lift the referenced files. The user runs the lifter again on each referenced file manually. Post-MVP: add a recursive mode that walks file references, lifts each file, and emits a multi-file project. Requires a cycle-rejection guard (paralleling the compiler's import cycle rejection in `imports.md`) and a strategy for when a referenced file is already in `.glyph.md` form (no-op vs. re-lift).

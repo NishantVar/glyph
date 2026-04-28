@@ -56,6 +56,10 @@ Parse turns raw text into structure without understanding meaning.
 
 **Multi-file:** When compiling multiple files, Parse reads every `import` path, resolves it to a file, and builds a directed acyclic graph (DAG) of file dependencies. Cycles are rejected here with a diagnostic naming the full cycle path (per `imports.md` §5). The DAG determines compilation order: leaves (files with no imports) compile first.
 
+**Bail at first parse error.** Within a single file, Phase 1 stops at the first parse error and emits exactly one diagnostic. There is no error recovery, no skip-to-next-declaration, and no multi-error collection across the file. The agent (Phase 3) sees one diagnostic per Phase 1 invocation; subsequent parse problems surface in the next compile after repair. The reasoning: Glyph source is small, repair is cheap to re-invoke, and a noisy multi-error parse output frequently misleads repair when later "errors" are merely cascade artifacts of the first.
+
+**Pre-Parse stratum exemption.** The pre-Parse text-rewrite stratum (`cli.md` §`glyph fmt`) — tab → 4-space conversion and mixed-indentation fixes — is **not** subject to bail-at-first because it operates at the lexer/source-text level before any AST exists. Those repairs are batched: every tab line and every mixed-indent line in the file is normalised in a single pre-Parse pass. Only AST-level parsing follows the one-error-then-stop rule.
+
 **What Parse does not do:** No name resolution, no type checking, no understanding of semantics. `avoid_unrelated_edits` is just an identifier at this point.
 
 ## Phase 2: Analyze (deterministic)
@@ -101,7 +105,7 @@ Repair has three sub-steps:
 
 Mechanical transformations where the correct fix is unambiguous:
 
-- Body-level constraint hoisting: if `require foo` appears at body level without a `constraints:` wrapper, wrap it into a `constraints:` section (per `ir-and-semantics.md` §2). This source-to-source rewrite covers only constraint markers at the declaration body level. Constraint markers that appear inside `flow:` are **not** source-rewritten — they remain as flow statements and are handled at IR level by Phase 4 (Lower) per `ir-and-semantics.md` §Flow-Level Constraint Markers.
+- Unconditional constraint hoisting: constraint markers (`require`/`avoid`/`must`/`must avoid`) that appear at **body level** (directly under a declaration, outside any sub-section) or at **flow top-level** (directly inside `flow:`, not inside a `Branch`) are moved into a `constraints:` section (creating it if needed). This is a source-to-source rewrite — it normalizes the source so that all unconditional constraints are visually grouped in `constraints:`. Constraint markers inside `if`/`elif`/`else` branch bodies are **not** source-rewritten — they are conditional, remain as flow statements, and are handled at IR level by Phase 4 (Lower). See `ir-and-semantics.md` §Body-Level Constraint Normalization and §Flow-Level Constraint Markers. Note: when Phase 3b (LLM repair) adds a constraint marker to resolve an ambiguous role (`G::analyze::ambiguous-role`), the next iteration's 3a pass picks up the newly-marked constraint and hoists it — this is the expected two-iteration cascade.
 - Duplicate import merging: two imports from the same file merge into one statement (per `imports.md` §6).
 - Unused import removal: imported names not referenced anywhere in the file are removed (per `imports.md` §7).
 - Source section reordering: sections within a declaration body are reordered to the recommended convention (per `ir-and-semantics.md` §4).
@@ -181,7 +185,7 @@ Lower converts the human-friendly source AST into the strict IR. Every shortcut 
   - `Branch { condition, then_body, elif_branches, else_body }`
   - `PropertyAccess { object, property }`
 - **Section assignment.** Every IR node is assigned to its output location based on its role: `Step` → Steps, `Constraint` → Constraints, `InputContract` → folded into Steps at expand time, `OutputContract` → folded into final Step.
-- **Flow-level constraint hoisting.** A `Constraint` node admitted as a flow statement (per `ir-schema.md` §Flow Nodes) is split by location: a Constraint at flow top-level is hoisted out of the flow and appended to the enclosing declaration's `constraints` list (deduplicated by canonical text + polarity + strength); a Constraint inside any `Branch` body (`then_body`, `elif_branches[*].body`, or `else_body`) stays inline in that branch and renders as part of the conditional Step prose at Expand time. See `ir-and-semantics.md` §Flow-Level Constraint Markers and `compiled-output.md` §Constraint Rendering.
+- **Body-level and flow-level constraint hoisting.** Constraint markers that appear at body level (outside any sub-section) or as flow statements (per `ir-schema.md` §Flow Nodes) are split by location: a Constraint at body level or flow top-level is hoisted out and appended to the enclosing declaration's `constraints` list (deduplicated by canonical text + polarity + strength); a Constraint inside any `Branch` body (`then_body`, `elif_branches[*].body`, or `else_body`) stays inline in that branch and renders as part of the conditional Step prose at Expand time. This IR-level hoisting is the compiler's internal normalization and runs regardless of whether `glyph fmt` (Phase 3a) already performed the equivalent source-to-source rewrite. See `ir-and-semantics.md` §Body-Level Constraint Normalization, §Flow-Level Constraint Markers, and `compiled-output.md` §Constraint Rendering.
 - **Stable IR node IDs.** Lower assigns each IR node a stable identifier (e.g., `n0`, `n1`, …) used for Phase 6b structural validation and diagnostic messages. The format, allocation order, scope, stability guarantees, and synthetic-node policy are defined in `ir-schema.md` §Node Identifiers (canonical spec). The ID is opaque, file-local, and never appears in compiled output.
 
 **What Lower does not do:** Does not generate prose. Does not validate correctness (that is Phase 5). Does not touch the source file. One-way transformation from source world to IR world.
@@ -413,6 +417,10 @@ Emit is pure formatting. The IR has all the content; Emit arranges it into the f
 
 - **File output.** Same-basename `.md` for skills. E.g., `fix_bug.glyph.md` → `fix_bug.md`. For external-file procedure projections, Emit also writes standalone procedure `.md` files to a subdirectory named after the source file (e.g., `review_tools.glyph.md` with `export block review_code` → `review_tools/review-code.md`). Procedure files carry `kind: procedure` in frontmatter to distinguish from top-level skills.
 
+- **Atomic rename on disk.** Both compiled artifacts are written through a temp-then-rename pattern: Phase 7 first writes to `foo.md.tmp` and (when `--emit-ir` is set) `foo.ir.json.tmp`, then renames each to its final path only after the entire pipeline succeeds for that file. On hard-fail anywhere in Phases 1–7, the `.tmp` files are deleted and any **prior** `foo.md` / `foo.ir.json` on disk is left untouched. The same rule applies uniformly to compiled Markdown and emitted IR JSON. This is the per-file half of the partial-failure policy (see §Partial Failure Policy below for the multi-file build-level rules).
+
+- **Startup cleanup of stale `.tmp` siblings.** At the very start of Phase 7, before writing any new `.tmp` file, the compiler scans the output paths it is about to write and deletes any pre-existing `.tmp` siblings (`foo.md.tmp`, `foo.ir.json.tmp`, and the `.tmp` companions of any procedure files this build will emit). This handles leftovers from a prior run that crashed, was SIGINT-killed, or was otherwise terminated between writing a `.tmp` and renaming it. There is no lockfile and no separate process supervisor — the sweep is idempotent (deleting a non-existent `.tmp` is a no-op) and self-contained per file. A `.tmp` belonging to a *different* output path (one this build is not about to produce) is left untouched.
+
 - **Library file emission.** A library file (zero `skill` declarations) runs through the same Emit phase. Since there is no skill to project, Emit produces no skill-level `.md` file. However, each `export block` in the library whose expanded prose is >= 150 words (above the Tier 1 inline threshold; see `compiled-output.md` §Three-Tier Block Projection) emits a standalone procedure `.md` file into a subdirectory named after the library source file (e.g., `repo_tools.glyph.md` with `export block inspect_repo` → `repo_tools/inspect-repo.md`). Export blocks below the threshold and all `export text`/`int`/`float` constants emit nothing — they contribute to consumers only through the validated IR. A library that produces zero `.md` files compiles successfully with no output; this is normal, not an error (see `language-surface.md` §File-Level Rules). Sibling exports within a single library file are visited in **source order** (top-to-bottom as they appear in the `.glyph.md`); this fixes diagnostic ordering and on-disk write order for reproducibility. Forward references between sibling exports are legal — same-file blocks have no declaration-order requirement (`data-flow.md`).
 
 **What Emit does not do:** No LLM involvement. No content generation. No decisions about what to say. If Expand did its job, Emit is trivial.
@@ -427,9 +435,17 @@ When compiling multiple `.glyph.md` files that import each other:
 
 3. **Dependency readiness.** An importing file cannot enter Phase 2 (Analyze) until the imported file has passed Phase 5 (Validate). The importer needs the dependency's validated IR for name resolution, type matching, and effect propagation.
 
-4. **Expand/Emit can parallelize.** A dependency's Phases 6-7 (Expand + Emit) can run in parallel with the importer's Phases 1-5, since importers only need the validated IR, not the compiled output.
+4. **Expand/Emit are not parallelised in MVP.** Although a dependency's Phases 6–7 (Expand + Emit) are architecturally independent of an importer's Phases 1–5 — importers only need the dependency's validated IR, not its compiled output — the MVP compiler does not exploit this overlap. Item 7 below makes the build strictly serial across files. The architectural independence is preserved as a post-MVP optimisation note: when parallelism is later introduced, dependency Expand/Emit and importer Parse/Analyze/Lower/Validate can overlap safely.
 
 5. **Repair is per-file only.** Repair only edits the current file (per `repair.md` §9). It does not edit dependencies or add new imports. Each file gets up to 3 repair iterations independently; there is no cross-file trigger propagation. If a file still has repairable diagnostics after its 3 iterations, fail with diagnostics for that file.
+
+6. **Per-file repair iteration accounting.** The compiler is stateless across `glyph compile` invocations — every invocation re-parses every file. The repair iteration counter is owned by the agent and is per-file (see `agent-skill.md` §Iteration Budgets): the agent increments a file's counter only when that file emitted `repairable` diagnostics in the latest invocation. A file that converged in an earlier iteration is skipped on subsequent LLM repair passes even though the compiler still re-processes it on disk. The 3-iteration hard-fail bound is therefore per-file, not per-build.
+
+7. **Strictly serial compilation.** Files compile one at a time, in topological order. The MVP compiler does not parallelize independent files in the DAG — no threadpool, no `rayon`, no async fan-out. This matches the sync-only architecture decision in `build-foundation.md` §A5 (Async Strategy / no async runtime). Parallelism is a post-MVP optimization.
+
+8. **Consumer-side projection-tier word counts.** During a library's Phase 6 Step 1, the resolved expanded prose for each `export block` is computed once and the word count is recorded as a derived field on the validated IR's `ExportBlock` node (in-memory only; not part of the JSON schema — see `ir-schema.md` §Top-Level Compilation Units). Consumers depend on this: when a downstream skill enters its own Phase 6 Step 1, its three-tier projection heuristic reads the imported callee's `resolved_word_count` directly from the in-memory IR. Topological order guarantees the value is computed before any consumer needs it.
+
+9. **Directory-mode scope: every file, no reachability filter.** When the user invokes `glyph compile dir/` (per `cli.md` §`glyph compile`), every `.glyph.md` file in scope compiles unconditionally, regardless of whether any in-scope skill reaches it through imports. A library file with no in-scope consumer still goes through Phases 1–7 and may produce zero emitted artifacts (which is normal — exit 0). Reachability filtering — pruning the build to only files transitively reachable from a designated root skill — is post-MVP. The DAG ordering above governs which files compile *before* which, not *whether* a file compiles.
 
 ### Partial Failure Policy
 
@@ -483,7 +499,7 @@ Key clarifications this reconciliation makes:
 
 | Transform | Phase | Touches `.glyph.md`? |
 |---|---|---|
-| Body-level constraint → `constraints:` section | 3a | Yes |
+| Unconditional constraint → `constraints:` section (body-level + flow-top-level) | 3a | Yes |
 | Unused import removal | 3a | Yes |
 | Duplicate import merging | 3a | Yes |
 | Section reorder to convention | 3a | Yes |

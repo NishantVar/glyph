@@ -21,6 +21,8 @@ The compiler never calls an LLM. The agent never runs deterministic compilation 
 
 The skill encodes this state machine. The agent follows it top-to-bottom.
 
+**`glyph fmt` runs exactly once, at the top of the workflow, before the first `glyph compile`.** It does **not** re-run between LLM repair iterations. The Phase 3b repair prompt is responsible for producing already-formatted source — correct 4-space indentation, generated declarations appended after all non-generated top-level declarations, no tab characters. Re-running fmt mid-loop is wasted work.
+
 ```
                     ┌──────────────────────────────┐
                     │  glyph fmt <path>             │
@@ -79,10 +81,12 @@ The skill encodes this state machine. The agent follows it top-to-bottom.
 
 | Phase | Max iterations | On exhaustion |
 |---|---|---|
-| Repair loop (3b) | 3 | Hard fail. Surface residual diagnostics to user. |
+| Repair loop (3b) | 3 (per file) | Hard fail. Surface residual diagnostics to user. |
 | Phase 3c retry (malformed LLM output) | 2 | Emit `G::repair::constraint-scan-malformed`. Hard fail. |
 | Step 2 retry (6b validation failure) | 2 | Hard fail. Surface 6b diagnostics to user. |
 | Transient failure retry (network/5xx) | 3 | Emit `llm-unavailable` diagnostic. Hard fail. |
+
+**Repair iteration accounting is per-file and owned by the agent.** The compiler is stateless across invocations: each `glyph compile` invocation re-parses every file and emits per-file diagnostics, but the agent maintains the iteration counter for each file. The counter only increments for files that emit `repairable` diagnostics in that invocation; a file that emits zero diagnostics is "done" and is skipped on subsequent LLM repair passes even though the compiler still re-processes it. The 3-iteration hard-fail limit is therefore per-file, not per-build: if file A converges on iteration 1 and file B needs iteration 3, the build still succeeds; only file B's hypothetical iteration 4 would hard-fail.
 
 ## Phase 3b: Repair Guidance
 
@@ -105,11 +109,17 @@ The agent receives diagnostics in this shape (via `--format json`):
 }
 ```
 
+In multi-file builds, `--format json` emits **NDJSON**: one complete `{"file": ..., "diagnostics": [...], "emitted": [...]}` JSON object per line, no top-level array wrapper, line-buffered. Files appear in topological compile order — the order the compiler processes them. The agent reads stdout line by line and dispatches each file's diagnostics as soon as that line arrives, without waiting for the whole build to finish.
+
 ### Repair Patterns by Diagnostic ID
 
 Each repairable diagnostic has a specific fix pattern. The agent applies these to the source file.
 
 **Naming and placement rule:** All `generated text` and `generated block` declarations go **after** all non-generated top-level declarations in the file. If an author later writes a same-named declaration, the generated one is superseded and should be deleted.
+
+**No-overwrite rule.** Repair never silently overwrites, deletes, or renames an existing declaration — generated or otherwise — to make room for a generated one. If the LLM proposes a `generated text` or `generated block` whose name collides with any existing top-level declaration in the file, the compile hard-fails with `G::analyze::name-collision`. The author resolves the collision manually: rename one of the conflicting declarations, or explicitly delete the stale `generated` declaration themselves. Repair is also forbidden from mutating any existing declaration with the conflicting name.
+
+**Formatting hygiene for repair output.** The agent's repair output must already be formatted: 4-space indentation only (no tabs), `generated text` and `generated block` declarations appended after all non-generated top-level declarations, no double blank lines. `glyph fmt` is not re-invoked between repair iterations (see §Workflow State Machine), so the LLM's rewrite must satisfy the formatting rules itself.
 
 #### Parse-phase repairables
 
@@ -204,6 +214,12 @@ The agent reads `foo.ir.json` and rewrites the `## Instructions` section to:
 - Don't exceed 1 sentence per Constraint.
 - Don't return YAML frontmatter as part of Step 2 output.
 
+### Retry semantics on `validate-output` failure
+
+When `glyph validate-output` exits 1, the agent retries Step 2 (budget = 2 per §Iteration Budgets). Retries use **revise-with-feedback**: each retry reads the previous attempt's `foo.md` together with the structural diagnostics from `validate-output`, and the agent's prompt asks the LLM to fix the specific violations rather than regenerating from scratch off the mechanical compiler output.
+
+After exhaustion (2 failed retries), the **last failed `foo.md` is left on disk** and the `validate-output` diagnostics are surfaced to the user. The agent does not silently revert to the mechanical compiler output — the user needs to see the failed prose to diagnose the persistent structural mismatch.
+
 ### Nodes that skip Step 2
 
 If a flow node is already complete prose — an `InlineInstruction` (literal string from source) or a resolved `InstructionRef` (text reference) — it passes through as-is. Only `Call` nodes with resolved bodies, `Branch` containers, `Return` nodes, and `Constraint` nodes need LLM reshaping.
@@ -276,6 +292,18 @@ All checks are deterministic. The validator parses the Markdown structurally (he
 | `G::expand::modifier-leaked` | No `with` modifier string (from `site_modifier` fields in the IR) appears verbatim in the Markdown output. |
 | `G::expand::malformed-markdown` | Output doesn't parse as valid structural Markdown (e.g., unclosed headings, malformed list items). |
 
+### Counting Rules
+
+**Step counting under nested branches.** A top-level `Branch` contributes exactly **1** to the top-level Step count. Inside an arm, the sub-step count equals the number of direct Step-projecting children of that arm; a `Branch` nested inside another `Branch`'s arm counts as **1 sub-step** and does **not** expand into n sub-steps per its own arms — recursion stops at the first nesting level. In practice, Repair §4.9 auto-extracts nested branches into `generated block` declarations before Phase 6b runs, so the validator typically sees a `Call` to the extracted block rather than a literal nested `Branch`; this counting rule is the defensive fallback for cases where extraction did not run. The step-count formula in `expand.md` (`(Step nodes) + (Branch nodes × 1) − (Return folds)`) is consistent with this rule.
+
+**Sentence counting for content-shape checks.** `G::expand::step-too-long` and `G::expand::constraint-multi-sentence` count sentences by this deterministic, agent-implementable algorithm:
+
+1. Strip backtick code spans from the prose first (everything between matched `` ` `` pairs is removed before counting).
+2. A sentence boundary is `.`, `!`, or `?` followed by whitespace or end-of-string.
+3. No abbreviation special-casing — `e.g.`, `i.e.`, etc. count as sentence boundaries.
+
+The rule is purely lexical; no tokenizer or NLP library is required.
+
 ### Implementation Notes
 
 The Markdown parser for `validate-output` is minimal: line-by-line heading extraction (`##` / `###`), numbered-list-item counting (`1.`, `2.`, ...), bulleted-list-item counting (`- `), and `{name}` token scanning via regex. No full CommonMark parser required. Estimated ~300 LOC in `glyph-core`.
@@ -301,6 +329,10 @@ The agent skill is a plain Markdown file (e.g., `glyph-compile.skill.md`) that a
 The skill is **not** a `.glyph.md` file. It does not compile itself. Dogfooding (authoring the skill in Glyph) is a post-MVP goal.
 
 The skill references the `glyph` CLI binary and expects it to be on `PATH`. It does not import any libraries, call any APIs, or depend on any specific LLM provider.
+
+### Shipping Location
+
+For MVP, the agent skill ships **inside the `glyph` repo** at a known path (e.g., `glyph-cli/agent/glyph.skill.md`). Installation is **manual**: the user copies the file into their coding agent's skill directory. There is no `glyph install-skill` subcommand and no installer; packaging mechanics are deferred post-MVP.
 
 ## Interactions With Other Design Docs
 

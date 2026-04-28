@@ -245,7 +245,7 @@ Both stdlib primitives (`subagent`, `send`) carry the `spawns_agent` effect. The
 
 ### Propagation
 
-`spawns_agent` propagates through the call graph like all other effects (`ir-and-semantics.md`). If a block calls `subagent()` or `send()`, its inferred effect set includes `spawns_agent`. If the block explicitly declares `effects:`, the declared set must include `spawns_agent` or the compiler emits an error.
+`spawns_agent` propagates through the call graph like all other effects (`ir-and-semantics.md`). If a block calls `subagent()` or `send()`, the compiler adds `spawns_agent` to the block's **inferred** effect set — stdlib calls contribute to inferred effects via their synthetic-body projection (§Projection Model: Uniform Synthetic Body), exactly the same way user-defined block calls do. The compiler does **not** auto-propagate the effect into the block's declared `effects:` header; effects are author-declared, never compiler-inferred-into-source. The compiler diffs the inferred set against the declared set and emits `G::analyze::effects-under-declared` (error) for missing keywords or `G::analyze::effects-over-declared` (warning) for phantom ones (`ir-and-semantics.md` §Effects). Author resolution for the under-declared case is to add the missing keyword themselves; this is an explicit-by-design contract, not a hidden inference.
 
 ### Relationship to Other Effects
 
@@ -255,15 +255,19 @@ Both stdlib primitives (`subagent`, `send`) carry the `spawns_agent` effect. The
 
 ### Import Path
 
-For MVP, the stdlib is **compiler-embedded**: the three entry signatures, effects, and the `Agent` type are hardcoded in the compiler. `@glyph/std` is a namespace the compiler recognizes internally, not a file path that resolves to a `.glyph.md` file on disk. The import syntax is the same as file-based imports:
+For MVP, the stdlib is **compiler-embedded** and `@glyph/` is a **reserved virtual prefix**, not a filesystem path. The three stdlib entry signatures, their effects, and the `Agent` type are baked into `glyph-core` as in-memory synthetic definitions. There is no on-disk file, no install path, and no filesystem lookup for any `@glyph/*` import. The import syntax mirrors file-based imports:
 
 ```glyph
 import "@glyph/std" { subagent }
 ```
 
-This follows the same pattern as the `@glyph/prefs` namespace sketched in `preferences.md` and `todo.md`. The `@glyph/` prefix is reserved for compiler-shipped modules.
+Resolution behaviour for the `@glyph/` namespace:
 
-Post-MVP, when the stdlib grows beyond a handful of entries, the compiler may migrate to real `.glyph.md` files shipped at a well-known path. The import syntax stays the same — only the resolution mechanism changes.
+- `@glyph/std` resolves to the in-memory synthetic definitions for `subagent`, `send`, and `load` (the latter is compiler-internal — see §The `load` Primitive).
+- Any other `@glyph/*` path (e.g., `@glyph/foo`, `@glyph/std/extra`) fires `G::imports::unknown-stdlib-module` (error). The MVP recognises exactly one virtual module under this prefix.
+- The `@glyph/` prefix is reserved for compiler-shipped modules and never collides with filesystem paths: a real on-disk file named `@glyph` is not consulted.
+
+This follows the same pattern as the `@glyph/prefs` namespace sketched in `preferences.md` and `todo.md`. Post-MVP, when the stdlib grows beyond a handful of entries, the compiler may migrate to real `.glyph.md` files shipped at a well-known path. The import syntax stays the same — only the resolution mechanism changes.
 
 ### Explicit Import Required
 

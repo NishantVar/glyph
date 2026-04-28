@@ -77,6 +77,10 @@ Sub-sections within a declaration body use a colon-terminated keyword. MVP sub-s
 
 `inputs:`, `outputs:`, and `when_to_use:` are deferred from MVP (see [todo.md](todo.md)). Header parameters cover input definition; `return` in `flow:` covers output; `description:` covers routing.
 
+**Sub-section ordering is permissive.** Inside a `skill`, `block`, or `export block` body, the parser accepts `description:`, `effects:`, `flow:`, `constraints:`, and body-level constraint markers (`require`/`avoid`/`must`) in **any order**. Order is not semantically significant: a `flow:` written above `description:` produces the same IR as the conventional ordering. The only structural rule still enforced is the duplicate-subsection check (`G::parse::duplicate-subsection`, repairable) — each named sub-section may appear at most once per body.
+
+Authors do not need to memorise a canonical layout to write valid source. `glyph fmt` rewrites every body to a canonical order so reviewable source on disk stays consistent across a codebase; see [cli.md](cli.md) §`glyph fmt` for the canonical sequence.
+
 Two forms are allowed:
 
 **Long form** -- keyword on its own line, indented body below:
@@ -434,7 +438,7 @@ Source instructions need not carry compiler-shaped keywords everywhere. A bare n
 
 The closed MVP role set ([ir-and-semantics.md](ir-and-semantics.md)): `InputContract`, `Step`, `Constraint`, `OutputContract`. (`Context` is deferred — see [todo.md](todo.md).) Obligations and prohibitions are `Constraint` nodes with strength (`soft`/`hard`) and polarity (`require`/`avoid`) attributes. **Constraint markers** — three keywords (`require`, `avoid`, `must`) composing into four forms (`require`, `avoid`, `must`, `must avoid`) — set role, strength, and polarity directly. For the complete marker-to-IR mapping, see [ir-and-semantics.md](ir-and-semantics.md).
 
-**Constraint marker placement.** Constraint markers are legal in three positions: (1) inside a `constraints:` sub-section, (2) at declaration body level (the compiler normalizes these into a `constraints:` section as a source-to-source rewrite — `ir-and-semantics.md` §Body-Level Constraint Normalization), and (3) as a flow statement inside `flow:`, including inside `if`/`elif`/`else` branch bodies. Flow-top-level markers are hoisted into the enclosing declaration's constraint list at IR-level by Lower; branch-scoped markers remain inline and render as part of the conditional Step prose (`ir-and-semantics.md` §Flow-Level Constraint Markers, `compiled-output.md` §Constraint Rendering).
+**Constraint marker placement.** Constraint markers are legal in three positions: (1) inside a `constraints:` sub-section, (2) at declaration body level, and (3) as a flow statement inside `flow:`, including inside `if`/`elif`/`else` branch bodies. Unconditional markers (positions 1, 2, and flow-top-level in position 3) are normalized into the `constraints:` section via two complementary mechanisms: `glyph fmt` (Phase 3a) performs a source-to-source rewrite for source clarity; Phase 4 (Lower) hoists them at IR level regardless of whether fmt ran (`ir-and-semantics.md` §Body-Level Constraint Normalization, §Flow-Level Constraint Markers). Branch-scoped markers remain inline and render as part of the conditional Step prose (`compiled-output.md` §Constraint Rendering).
 
 Inference uses: position in the skill, metadata from bindings/imports/standard-library, natural meaning of expanded text, and explicit keywords. If inference succeeds, repair adds the smallest explicit marker back into source. Compound names like `avoid_unrelated_edits` are valid identifiers — they are not forcibly split into marker-plus-concept form. The compiler uses the name prefix as evidence for role/polarity inference alongside the resolved text content. `must` is inferred only from hard-strength wording. When inference fails, the compiler emits a diagnostic.
 

@@ -52,7 +52,7 @@ effects: [<effect-keyword>, <effect-keyword>, ...]
 
 - `name` — the skill identifier, taken from the `skill` declaration name. Machine-readable, used for skill selection and referencing.
 - `description` — a concise statement of when and why an agent should use this skill. Primary trigger for coding agents that select skills from frontmatter. Sourced from the `description:` sub-section (see [ir-and-semantics.md](ir-and-semantics.md)). If the source omits `description:`, Repair (Phase 3) generates one from the skill name and body and adds it to the source as a `description:` sub-section.
-- `effects` — YAML flow-sequence list of the skill's full inferred effect set. Omitted entirely (the field is not emitted) when the skill has no meaningful effects or is explicitly `effects: none`. Effects live in frontmatter so selectors and routing tools can read them without parsing the body; they are not repeated in the prose.
+- `effects` — YAML flow-sequence list of the skill's full inferred effect set. **Omitted unconditionally when the effect set is empty** — that is, when the skill has no meaningful effects or is explicitly `effects: none`. The compiler never emits `effects: none`, `effects: []`, or any other "no effects" placeholder; the field is simply absent. An absent `effects` key and `effects: none` are operationally identical for the consuming agent, and omitting is one fewer surface and one fewer ambiguity. Effects live in frontmatter so selectors and routing tools can read them without parsing the body; they are not repeated in the prose.
 
 The compiled file does not emit a `# <Skill Name>` heading. The frontmatter `name` is the authoritative title.
 
@@ -139,6 +139,8 @@ Size alone does **not** trigger Tier 3. A 600-word block that is unconditional a
 
 Word counts are checked in Expand Step 1 after the callee's prose is resolved — that is the earliest point where the actual expanded text is available. Promotion is one-directional: Tier 1 → Tier 2 → Tier 3, never downward. A block initially assigned Tier 1 by statement count but exceeding 150 words is promoted to Tier 2.
 
+**Cross-file word-count sourcing.** When the call site is in a downstream skill and the callee is an imported `export block`, the consumer's Step 1 cannot recompute the callee's word count from scratch — it does not own the callee's resolved expanded prose. Instead, it reads the **derived `resolved_word_count` field** that the library file's own Phase 6 Step 1 attached to the imported `ExportBlock` node when the library compiled (`ir-schema.md` §Top-Level Compilation Units). This field is populated once per export block during the library's compilation and propagated in-memory via the import-resolution mechanism. It is not part of the IR JSON serialization (`ir-json-schema.md`); the consumer relies on the multi-file build seeing the imported library's in-memory IR (`pipeline.md` §Multi-File Compilation Order — strictly serial topological order guarantees that a library's Phase 6 Step 1 has run before any consumer needs the field). For same-file callees, Step 1 computes the count directly from the local resolved prose; no derived field is needed.
+
 **Word counting rule.** A "word" is a whitespace-separated token in the Step 1 projection prose. Backticked code spans count as 1 word each (one ident-blob = one unit of cognitive load). Markdown formatting markers (`**`, list bullets, headings) do not count. Comments are stripped before counting.
 
 **Configurability.** The 150-word threshold is hard-coded for MVP — not exposed via project config. The load-bearing properties are determinism and documentation; the exact value is tunable post-MVP from real-corpus telemetry. See `todo.md`.
@@ -176,7 +178,7 @@ Do not introduce new abstractions during review.
 
 **Format rules:**
 
-- H3 heading: `### Procedure: <callee-name>` (kebab-case of the block name).
+- H3 heading: `### Procedure: <callee-name>`. The callee name in the heading is the **kebab-case** form derived from the source `snake_case` identifier — replace each `_` with `-` and apply no other transformation. For an `export block summarize_section`, the heading is `### Procedure: summarize-section`.
 - Optional preamble paragraph: the callee's scoped constraints, rendered as prose sentences (not bulleted — they are contextual to this procedure, not top-level skill constraints).
 - Numbered list: the callee's flow statements, expanded by Step 2 the same way skill-level Steps are.
 - Return folding: if the callee has a `return`, it folds into the last numbered item of the procedure (same rule as skill-level return).
@@ -222,7 +224,7 @@ effects: [reads_files]
 - Do not introduce new abstractions during the review.
 ```
 
-**File output path:** Procedure files are placed in a subdirectory named after the source file. E.g., `review_tools.glyph.md` containing `export block review_code(...)` produces `review_tools/review-code.md`.
+**File output path:** Procedure files are placed in a subdirectory named after the source file. The procedure filename is the **kebab-case** form of the export block's `snake_case` identifier (each `_` → `-`, no other transformation). E.g., `review_tools.glyph.md` containing `export block review_code(...)` produces `review_tools/review-code.md`. The `.glyph` infix from the source filename is dropped for compiled artifacts: source files are `*.glyph.md`, compiled outputs (top-level skills and procedure files alike) are `*.md`. The same kebab-case rule governs both the on-disk filename and the H3 heading inside same-file procedure sections (see §Same-File Procedure Sections), so a given block always renders under a single canonical name regardless of projection tier.
 
 **Referencing from Steps:** The referencing Step includes a file path — e.g., "load and follow the procedure in `review_tools/review-code.md`." When inside a conditional branch, the load instruction is part of the conditional Step prose:
 

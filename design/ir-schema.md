@@ -37,6 +37,8 @@ ExportBlock {
 }
 ```
 
+**Derived field on `ExportBlock` (post-Phase-6-Step-1, in-memory only).** After a library file's Phase 6 Step 1 runs, each `ExportBlock` node additionally carries a `resolved_word_count: Int` field — the word count of the export block's resolved expanded prose, computed once during the library's own compilation. When a downstream skill compiles, its Phase 6 Step 1 reads this derived field from the imported `ExportBlock` to make the per-call-site projection-tier decision (inline vs. same-file procedure vs. external file). The field propagates via the import-resolution mechanism only; it is **not** part of the JSON serialization defined in `ir-json-schema.md` and does not appear in `--emit-ir` output. It is an implementation detail of in-memory IR nodes during a single multi-file build, not part of the public IR contract. See `pipeline.md` §Multi-File Compilation Order and `compiled-output.md` §Three-Tier Block Projection.
+
 ## Parameters
 
 ```

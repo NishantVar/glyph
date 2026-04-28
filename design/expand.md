@@ -139,7 +139,7 @@ For the Markdown returned by Step 2:
     - (1 if the flow ends with a Return that folds into the last Step)
     ```
     Each top-level `Branch` node contributes exactly **1** to the top-level count, regardless of how many arms it has or how many statements each arm contains. `Return` folds into the preceding Step and does not produce its own numbered item.
-  - **Per-Branch sub-step count.** Each `Branch` projects to a single numbered Step with lettered sub-steps per arm (`compiled-output.md` §Constraint Rendering). For each arm, the count of lettered sub-steps (`a.`, `b.`, `c.`, resetting per arm) equals the count of Step-projecting nodes in that arm's body. `Constraint` nodes inside an arm do **not** receive their own letter — they inline into adjacent sub-step prose. Nested `Branch` nodes inside an arm also do not receive their own sub-step structure — they flatten into prose within their parent sub-step (only one level of structured sub-steps is supported).
+  - **Per-Branch sub-step count.** Each `Branch` projects to a single numbered Step with lettered sub-steps per arm (`compiled-output.md` §Constraint Rendering). For each arm, the count of lettered sub-steps (`a.`, `b.`, `c.`, resetting per arm) equals the count of Step-projecting nodes in that arm's body. `Constraint` nodes inside an arm do **not** receive their own letter — they inline into adjacent sub-step prose. **Nested `Branch` recursion stops at one level.** A `Branch` nested inside an outer `Branch`'s arm contributes exactly **1** to that arm's sub-step count (it does not re-expand into n sub-steps per its own arms) and flattens into prose within its parent sub-step. In practice, Repair §4.9 auto-extracts nested branches into `generated block` declarations before Phase 6b, so the validator typically sees a `Call` to the extracted block rather than a literal nested `Branch`; this counting rule is defensive for cases where extraction does not run. The `### Steps` count formula at the top of this section — `(Step nodes) + (Branch nodes × 1) − (Return folds)` — is consistent with this rule. The agent-side counter described in `agent-skill.md` §`validate-output` uses the same rule.
   - The number of bulleted items under `### Constraints` equals the count of **top-level** `Constraint` IR nodes — i.e., entries in `Skill.constraints` / `Block.constraints` / `ExportBlock.constraints` after Lower's flow-top-level hoisting (`ir-and-semantics.md` §Flow-Level Constraint Markers). Two categories are excluded from this count and instead projected into Step prose: (a) **scoped constraints** carried on `Call` nodes (§3.2), and (b) **branch-scoped `Constraint` flow nodes** that remain inside `Branch` bodies after Lower (these inline into the conditional Step's sub-step prose, per `compiled-output.md` §Constraint Rendering).
   - Ordering under `### Steps` matches the IR's `flow:` order.
 
@@ -173,6 +173,13 @@ For the Markdown returned by Step 2:
   - Each lettered sub-step within a conditional Step (Branch projection) is at most three sentences.
   - Each `### Constraints` item is a single sentence.
   - Markdown parses cleanly.
+
+  **Sentence-counting rule.** The sentence count for an item is computed deterministically, without a tokenizer:
+  1. **Strip backtick code spans** from the prose first (any text between matched single backticks). This prevents `.` inside an inline code span from being counted as a boundary.
+  2. **A sentence boundary is `.`, `!`, or `?` followed by whitespace or end-of-string.**
+  3. **No abbreviation special-casing.** "e.g." counts as a sentence boundary. Authors who do not want this should rewrite the sentence to avoid the abbreviation.
+
+  This rule is agent-implementable in a few lines of code and matches the algorithm specified in `agent-skill.md` §`validate-output`. It is the authoritative sentence-counting algorithm for both the agent-side validator and any future compiler-side implementation of Phase 6b.
 
 - **Frontmatter non-interference.** If Step 2 returned anything resembling YAML frontmatter (a `---` block at the top), 6b rejects the output. Frontmatter assembly is Emit's job.
 
@@ -240,7 +247,7 @@ If both retries also fail, emit the specific 6b structural diagnostic that fired
 
 ### 5.3 Phase 6b Validation Failure (structural rejection)
 
-Up to **two retries** with the same info-rich feedback model as §5.2. Each retry's prompt includes:
+Up to **two retries** with the same info-rich feedback model as §5.2 — explicitly **revise-with-feedback**, not clean-slate regeneration. Each retry reads the previous attempt's `foo.md` and fixes the specific 6b violations rather than re-projecting the IR from scratch. Each retry's prompt includes:
 
 1. **The original prompt.**
 2. **The model's previous failed output** — verbatim.
@@ -249,7 +256,7 @@ Up to **two retries** with the same info-rich feedback model as §5.2. Each retr
    - "the previous attempt invented a `{ctx}` reference in Step 4; `ctx` is not declared in the skill's `InputContract`."
 4. **An edit directive** — "Edit your previous output to fix these violations rather than starting from scratch."
 
-If both retries also fail 6b, emit the specific 6b diagnostic that fired (the catalog in §4.2) and abort. No `.md` file is written.
+If both retries also fail 6b, emit the specific 6b diagnostic that fired (the catalog in §4.2) and abort. **The last failed `foo.md` is left on disk** so the user can read the failed prose to diagnose; the agent does not silently revert to the mechanical compiler-emitted `foo.md`. The 6b diagnostics are surfaced on stderr.
 
 **Determinism of retries.** Because each retry's prompt differs from the original (it includes the previous failed output and the violation report), retries are inherently non-idempotent across runs — even at temperature 0, the trajectory diverges. This does not change §7's existing non-idempotence claim; it just makes the source of divergence on the failure path explicit.
 

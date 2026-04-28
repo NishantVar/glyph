@@ -13,6 +13,7 @@ Run the compiler's deterministic phases: Parse (1), Analyze (2), Lower (4), Vali
 The compiler does **not** run Phase 3 (Repair) or Phase 6 Step 2 (Expand reshaping). Those are the agent's responsibility. If Phase 2 produces `repairable` diagnostics, the compiler stops after Phase 2 and exits with code 2. The agent performs LLM repair on the source and re-invokes. If Phase 2 is clean, the compiler continues through the remaining deterministic phases to produce output.
 
 - `<path>` is a file (`*.glyph.md`) or directory. Directory mode globs `**/*.glyph.md` recursively.
+- **Directory mode compiles every file in scope, unconditionally.** There is no reachability filter: a library file with no in-scope consumer still compiles (and may produce zero emitted artifacts, exit 0). Reachability-based pruning is post-MVP.
 - Transitive dependencies are auto-discovered via DAG closure: if `a.glyph.md` imports `b.glyph.md`, the compiler processes `b` even if the user only named `a`. Already-valid cached dependencies may be skipped.
 - Library files (zero `skill` declarations) that produce no `.md` output succeed silently (exit 0, info-level log at `-v`).
 
@@ -38,13 +39,30 @@ Accepts `--format` flag (same as `compile`/`check`) for diagnostic output format
 
 ### `glyph fmt <path>`
 
-Run Phase 3a (deterministic source rewrites) only. No LLM, no IR construction, no compiled output. Rewrites the `.glyph.md` source files in place:
+Run Phase 3a (deterministic source rewrites) only. No LLM, no IR construction, no compiled output. Rewrites the `.glyph.md` source files in place.
 
-- Tab → 4-space conversion
-- Mixed indentation fix
-- Duplicate import merging
-- Unused import removal
-- Source section reordering to convention
+`fmt` runs in **two strata** to maximise the work it can do on imperfect source:
+
+1. **Pre-Parse text-level rewrites.** Operate on raw source text without an AST and run first, so they may turn a previously-rejecting source into one Phase 1 can accept.
+   - Tab → 4-space conversion
+   - Mixed indentation fix
+2. **Post-Parse AST-level rewrites.** Require a successful Phase 1.
+   - Unconditional constraint hoisting (body-level and flow-top-level)
+   - Duplicate import merging
+   - Unused import removal
+   - Source section reordering to convention
+
+If Phase 1 succeeds (after the pre-Parse pass), both strata run and the file is rewritten. If Phase 1 fails after the pre-Parse pass, `fmt` emits the parse diagnostic and writes only the pre-Parse text fixes (if any); it does not perform the AST-level rewrites. This partial-success behaviour is intentional — pre-Parse fixes are often the prerequisite for the next `glyph compile` to even produce structured diagnostics.
+
+**Canonical sub-section order.** Inside every `skill`, `block`, and `export block` body, `fmt` rewrites the sub-sections (and any body-level constraint markers it picks up) to a fixed order:
+
+1. `description:`
+2. Body-level constraint markers (`require` / `avoid` / `must`) — present only briefly; the unconditional-constraint hoisting step in stratum 2 moves them into the `constraints:` section in the same `fmt` invocation.
+3. `effects:`
+4. `constraints:` (post-hoist form, after marker hoisting has folded body-level and flow-top-level markers in)
+5. `flow:` (always last)
+
+This canonical layout is what reviewers and downstream tooling can rely on. The parser itself remains permissive (see `language-surface.md` §2.5): unformatted source with sub-sections in any order still parses, so authors are never blocked by ordering. `fmt` is the single source of truth for on-disk layout.
 
 Analogous to `rustfmt` / `gofmt`. Fast, offline, idempotent.
 
@@ -138,6 +156,8 @@ The JSON uses a **nested tree** shape (children inlined under parents) rather th
 
 The agent reads the IR JSON, performs LLM reshaping (Step 2) with full structural context — including `with` modifiers, roles, constraint attributes — and writes the final polished `.md`.
 
+**Library files produce no IR JSON.** The IR JSON envelope is rooted in `Skill` per `ir-json-schema.md`, and a library file (zero `skill` declarations, only blocks/text/imports) has no Skill to root the envelope on. `--emit-ir` is therefore a silent no-op for IR on library files: the compiler does not write `foo.ir.json`, and the stdout NDJSON wrapper still emits a `{"file": ..., "diagnostics": [], "emitted": [...]}` line listing any procedure `.md` artifacts produced. Library IR caching is deferred until incremental compilation exists; until then it would be dead bytes with no consumer.
+
 **Not available on `check`.** `check` runs only Phases 1-2 and does not reach Expand Step 1, so it cannot produce the resolved IR shape.
 
 ## Diagnostic Output
@@ -168,29 +188,18 @@ error[G::analyze::undefined-call]: unresolved call `inspect_failure`
 
 ### JSON format shape
 
-Per-file wrapper, line-buffered to stdout:
+Output uses **NDJSON** (newline-delimited JSON): one complete JSON object per line, no top-level array wrapper, line-buffered to stdout. Files emit in **topological compile order**, matching the order the compiler processes them in (per `pipeline.md` §Multi-File Compilation Order). The agent reads stdout incrementally without waiting for build completion.
 
-```json
-{
-  "file": "skills/fix_bug.glyph.md",
-  "diagnostics": [
-    {
-      "id": "G::analyze::undefined-call",
-      "classification": "repairable",
-      "message": "unresolved call `inspect_failure`",
-      "span": {
-        "file": "skills/fix_bug.glyph.md",
-        "start": { "line": 6, "col": 9 },
-        "end": { "line": 6, "col": 23 }
-      },
-      "related": [],
-      "hints": ["repair will generate a definition for this call"]
-    }
-  ]
-}
+Each line is a complete `{"file": ..., "diagnostics": [...], "emitted": [...]}` object:
+
+```jsonl
+{"file":"skills/lib/util.glyph.md","diagnostics":[],"emitted":["skills/lib/util.md"]}
+{"file":"skills/fix_bug.glyph.md","diagnostics":[{"id":"G::analyze::undefined-call","classification":"repairable","message":"unresolved call `inspect_failure`","span":{"file":"skills/fix_bug.glyph.md","start":{"line":6,"col":9},"end":{"line":6,"col":23}},"related":[],"hints":["repair will generate a definition for this call"]}],"emitted":[]}
 ```
 
-This matches the `Diagnostic` shape defined in `diagnostics.md`. Each file's diagnostics are grouped into a single JSON object so consuming tools know when a file's set is complete.
+The `diagnostics` array matches the `Diagnostic` shape defined in `diagnostics.md`. The `emitted` array lists output paths produced for that file (compiled `.md`, `.ir.json` if `--emit-ir`, procedure `.md` files); it is empty when the file did not progress past Phase 2.
+
+Each file's diagnostics are grouped into a single JSON object on a single line so consuming tools know when a file's set is complete: the line terminator is the boundary marker.
 
 ## Multi-File Behavior
 
@@ -205,6 +214,10 @@ When `<path>` is a directory or when named files have imports:
 ## Pipeline Stop Behavior
 
 The compiler stops after Phase 2 (Analyze) if repairable diagnostics exist. It does **not** continue to Lower/Validate/Emit on a dirty AST. Each re-invocation after agent repair runs the full pipeline from scratch. This guarantees that diagnostics are always accurate — later phases never see broken input from earlier phases.
+
+## On-Failure Disk State Guarantee
+
+`compile` uses an **atomic-rename pattern** for both compiled `.md` and emitted `.ir.json`. Phase 7 writes outputs to `foo.md.tmp` and `foo.ir.json.tmp` first, then renames to the final paths only after the entire pipeline succeeds for that file. On hard-fail (exit `1`) or repairable-stop (exit `2`), tmp files are deleted and any prior successful outputs from a previous build are left untouched. The user never observes a half-written `.md` or a stale `.ir.json` paired with a fresh `.md`. See `pipeline.md` §Phase 7 Emit for the full contract.
 
 ## Stdin
 

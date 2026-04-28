@@ -6,7 +6,13 @@ MVP Tier 3. Builds on import syntax from `language-surface.md` (Tier 1) and qual
 
 ## 1. Path Resolution
 
-Import paths are relative only in the MVP (foundations: MVP imports are local-path). No absolute paths, no bare module names. The base directory for resolution is the importing file's directory. Both `"./sibling.glyph.md"` and `"../shared/lib.glyph.md"` resolve from there. Parent-directory traversal (`../`) is allowed.
+Import paths are relative only in the MVP (foundations: MVP imports are local-path). No absolute paths, no bare module names. **The base directory for resolution is always the importing file's directory — never the process current working directory (CWD).** Both `"./sibling.glyph.md"` and `"../shared/lib.glyph.md"` resolve from there. Parent-directory traversal (`../`) is allowed.
+
+Concretely, `glyph compile foo.glyph.md` and `cd subdir && glyph compile ../foo.glyph.md` resolve `foo.glyph.md`'s imports identically: in both invocations, an `import "./bar.glyph.md"` inside `foo.glyph.md` looks up `bar.glyph.md` in the same directory as `foo.glyph.md`. CWD is irrelevant to import resolution. This makes builds reproducible across different shell working directories and matches how other tools (e.g., Rust's `mod` declarations, Node's `require("./...")`) treat relative imports.
+
+### `@glyph/` Reserved Virtual Namespace
+
+Paths beginning with `@glyph/` are not filesystem paths. The `@glyph/` prefix is reserved for compiler-shipped modules and bypasses filesystem resolution entirely — the compiler resolves these in-memory. The MVP recognises exactly one such module: `@glyph/std` (see `stdlib.md` §Distribution and Resolution). Any other `@glyph/*` path fires `G::imports::unknown-stdlib-module` (error). A real on-disk file or directory named `@glyph` is never consulted, even if one exists in the importing file's directory tree.
 
 ### Extension Auto-Resolution
 
@@ -74,6 +80,12 @@ circular import: A.glyph.md -> B.glyph.md -> A.glyph.md
 ```
 
 No lazy-loading or forward-declaration workaround in MVP. If a cycle exists, the author refactors shared content into a third file.
+
+### Transitive Imports
+
+A library may import another library, which may import another, and so on. There is **no depth limit** on the import chain. The DAG closure that the compiler builds during multi-file resolution (`pipeline.md` §Multi-File Compilation Order) naturally walks every reachable file, so a chain like `consumer.glyph.md` → `lib_a.glyph.md` → `lib_b.glyph.md` → `lib_c.glyph.md` resolves identically to a single direct import: each file is parsed once and topologically ordered before its consumers.
+
+Cycle detection (`G::analyze::circular-import`) is the only depth-related constraint. Any acyclic chain — regardless of length — is permitted. Re-export of a transitive name is still forbidden by §4: even when `lib_a` imports a name from `lib_b`, the consumer cannot reach that name through `lib_a` and must import directly from `lib_b`.
 
 ## 6. Duplicate Imports
 

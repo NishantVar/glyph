@@ -170,6 +170,7 @@ When a file contains both `error` and `repairable` diagnostics, exit code is `1`
 | `bad_param_slot.glyph.md` | `G::analyze::unknown-param-slot` |
 | `closure_leak.glyph.md` | `G::analyze::closure-violation` |
 | `library_no_exports.glyph.md` | `G::analyze::no-exports-in-library` |
+| `import_unknown_stdlib.glyph.md` | `G::imports::unknown-stdlib-module` |
 
 
 ## 3. Multi-File Acceptance Project
@@ -366,6 +367,12 @@ Every diagnostic below is emitted by the deterministic compiler (Phases 1, 2, 4,
 | `G::analyze::missing-param-default` | error |
 | `G::analyze::missing-description` | repairable |
 
+**Imports phase (1):**
+
+| ID | Classification |
+|----|---------------|
+| `G::imports::unknown-stdlib-module` | error |
+
 **Validate phase (5):**
 
 | ID | Classification |
@@ -413,7 +420,7 @@ Phase 6b structural validation, implemented in `glyph validate-output`. These di
 | `G::expand::procedure-duplicate` | error |
 | `G::expand::procedure-order` | error |
 
-**Total: 67 compiler-scope diagnostic IDs** (15 Parse + 22 Analyze + 5 Validate + 1 Build + 24 Validate-output).
+**Total: 68 compiler-scope diagnostic IDs** (15 Parse + 22 Analyze + 1 Imports + 5 Validate + 1 Build + 24 Validate-output).
 
 ### 4.2 Agent-scope diagnostics (not in compiler)
 
@@ -454,7 +461,7 @@ Phases 1 (Parse), 2 (Analyze), 4 (Lower), 5 (Validate), 6-Step 1 (deterministic 
 
 ### Bar 2: Deterministic output
 
-Every file in `tests/corpus/valid/` and `tests/corpus/multi-file/` produces byte-identical `.md` output on every run. (The compiler is fully deterministic — no LLM, no randomness. This bar is trivially satisfied once the phases work but guards against accidental non-determinism from hash maps, file ordering, etc.)
+Every file in `tests/corpus/valid/` and `tests/corpus/multi-file/` produces byte-identical `.md` output, byte-identical `.ir.json` output (when `--emit-ir` is set), and byte-identical diagnostic JSON output (under `--format=json`) on every run. The compiler is fully deterministic — no LLM, no randomness — but byte-stability across the JSON outputs is **not** trivial: it depends on the JSON-determinism invariant in `build-foundation.md` §JSON Determinism (`BTreeMap` for any map-shaped JSON, plus diagnostic arrays sorted by `(file, span.start.byte, id)`). This bar guards against accidental non-determinism from hash maps, file ordering, and unsorted diagnostic emission.
 
 ### Bar 3: Multi-file project compiles
 
@@ -473,7 +480,7 @@ The 5-skill project in `tests/corpus/multi-file/` (§3) compiles successfully:
 
 ### Bar 5: Diagnostic coverage
 
-Every compiler-scope diagnostic ID (§4.1, 67 total) has at least one triggering test:
+Every compiler-scope diagnostic ID (§4.1, 68 total) has at least one triggering test:
 - Parse and Analyze diagnostics: triggered by corpus files in `invalid/` (exit 1) and `repairable/` (exit 2)
 - Validate diagnostics: triggered by unit tests with hand-crafted invalid IR (§4.4)
 - Validate-output diagnostics (24 Phase 6b): triggered by unit tests feeding crafted `.ir.json` + `.md` pairs to `glyph validate-output`

@@ -29,7 +29,7 @@ Glyph's grammar has three properties that fight parser generators:
 
 1. **Indentation significance.** 4-space units determine nesting. Grammar-based parsers need synthetic INDENT/DEDENT tokens — an extra layer for no gain.
 2. **Context-sensitive keywords.** `require`, `avoid`, `must` are constraint markers in some positions and bare names in others. `flow:`, `description:`, etc. are sub-section headers only in specific contexts. Hand-rolled state handles this naturally.
-3. **Error recovery and span tracking.** The spec demands rich diagnostics with precise spans. Hand-rolled parsers give full control over error recovery and can continue after errors to collect multiple diagnostics per pass.
+3. **Span tracking.** The spec demands rich diagnostics with precise spans. Hand-rolled parsers give full control over span emission. The MVP parser bails at the first parse error per `pipeline.md` §Phase 1; recovery and multi-diagnostic collection are deferred.
 
 ### Tokenizer Design
 
@@ -134,6 +134,15 @@ The JSON uses a **nested tree** shape (children inlined under parents) rather th
 
 The agent reads the IR JSON, performs LLM reshaping (Step 2) with full structural context — including `with` modifiers, roles, constraint attributes — and writes the final polished `.md`.
 
+### JSON Determinism (Project-Wide Invariant)
+
+Any JSON the compiler writes — IR JSON (`.ir.json`) and diagnostic JSON on stdout — must be byte-stable across runs over identical input. Two rules implement this and apply to every map- or list-shaped JSON output anywhere in the compiler:
+
+1. **Map-shaped output uses `BTreeMap`** (or an equivalent sorted-keys serialization). `HashMap` is forbidden in any type whose `Serialize` impl is reachable from a CLI output path. This covers IR node fields, parameter sets, effect sets recorded as maps, and any future map-shaped diagnostic field.
+2. **Diagnostic arrays are sorted by `(file, span.start.byte, id)`**, in that lexicographic order. This is the canonical ordering used by both pretty-printed stderr output and the NDJSON stdout stream. Files within a multi-file build are emitted in topological compile order (per `pipeline.md` §Multi-File Compilation Order); the per-file diagnostic array is sorted internally.
+
+These two rules together are what makes Bar 2 in `mvp-acceptance.md` (byte-identical output across runs) achievable for `.ir.json` and diagnostic JSON, not just `.md`.
+
 ### Rationale
 
 The spec requires stable node IDs for Phase 5 validation errors, Phase 6b retry feedback, and diagnostics. With arena allocation, the ID *is* the storage index — zero bookkeeping. Owned trees would require a separate ID assignment and mapping layer.
@@ -147,6 +156,8 @@ No `id-arena` because the spec defines a single `n<int>` namespace across all no
 No `tokio`, no `async-std`, no async runtime. Standard library `std::fs` for file I/O, `std::io` for stdout/stderr.
 
 The compiler is a short-lived process: read source files, run deterministic phases, write output files. There is no I/O concurrency, no HTTP calls, no parallelism. Every phase is a pure function from its input to its output plus diagnostics.
+
+**Multi-file builds are strictly serial.** A `glyph compile dir/` invocation compiles each `.glyph.md` file one at a time, in topological order over the import DAG. There is no threadpool, no `rayon`, no async fan-out across files. This is a direct consequence of the sync-only decision: independent files in the DAG are not parallelised. See `pipeline.md` §Multi-File Compilation Order for the topological ordering contract that this serial execution model satisfies. Parallelism across files is a post-MVP optimisation.
 
 ### Rationale
 

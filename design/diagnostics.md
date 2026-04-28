@@ -53,6 +53,7 @@ G::<phase>::<name>
 
 - `G::parse::*` — Phase 1 (Parse)
 - `G::analyze::*` — Phase 2 (Analyze)
+- `G::imports::*` — Phase 2 import resolution (subset of Analyze with its own namespace because import resolution is logically distinct from name/role/effect analysis)
 - `G::repair::*` — Phase 3 notifications (e.g. "generated a definition") and Phase 3 execution failures (e.g. LLM unavailable)
 - `G::validate::*` — Phase 5 (Validate)
 - `G::expand::*` — Phase 6 (Expand): Step 2 execution failures (agent-scope) and Phase 6b structural validation (compiler-scope, implemented in `glyph validate-output`)
@@ -118,6 +119,7 @@ Representative diagnostics implied by the current design.
 | `G::analyze::missing-return` | repairable | Export block lacks `return` on a code path (`language-surface.md` §3.3) |
 | `G::analyze::closure-violation` | error | Export block depends on hidden caller context (`data-flow.md`) |
 | `G::analyze::stdlib-missing-import` | repairable | `subagent()` used without importing `@glyph/std` (`stdlib.md`) |
+| `G::imports::unknown-stdlib-module` | error | An import path under the reserved `@glyph/` virtual namespace does not resolve to a known compiler-embedded stdlib module. The MVP recognises only `@glyph/std`; any other `@glyph/*` path fires this diagnostic (`stdlib.md`, `imports.md`). |
 | `G::analyze::unknown-param-slot` | error | A `{name}` slot in an instruction-bearing string does not resolve to a parameter or local binding in scope at the slot's source position (`values-and-names.md`) |
 | `G::analyze::nested-branch` | repairable | A `Branch` appears inside another `Branch`'s arm body; Repair will auto-extract it into a `generated block` (`repair.md` §4.9) |
 | `G::analyze::empty-skill-body` | error | A `skill` declaration has no `description:`, no `flow:`, no `constraints:`, no `effects:` — there is nothing to project. A skill must have at least one of `flow:` (with statements) or `constraints:` (with markers); a constraint-only skill is legal (`compiled-output.md`) |

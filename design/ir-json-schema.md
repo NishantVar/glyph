@@ -33,6 +33,8 @@ Both subcommands must agree on this schema. A change to the IR JSON shape requir
 | `source_file` | string | Relative path to the `.glyph.md` source file that produced this IR. |
 | `skill` | object | The root `Skill` node (see §Skill below). Always exactly one. |
 
+**The envelope is per-skill.** A `.glyph.md` source file produces at most one `foo.ir.json` file, rooted in its single `Skill` node (recall: MVP allows exactly one `skill` per file — `G::parse::multiple-skills`). **Library files (zero `skill` declarations) produce no IR JSON output.** A library has no Skill to root the envelope on, so `--emit-ir` is a silent no-op for IR on libraries: no `foo.ir.json` is written. The CLI's stdout NDJSON wrapper still emits a normal `{"file": ..., "diagnostics": [], "emitted": [...]}` line for the library file, listing any procedure `.md` artifacts produced (per `cli.md` §Diagnostic Output). Library IR caching is deferred until incremental compilation exists; until then, emitting library IR would be dead bytes with no consumer. See `cli.md` §IR JSON Output for the corresponding CLI contract.
+
 **Agent behavior on `ir_version`:** If `ir_version > KNOWN_MAX`, warn and attempt to proceed (ignore unknown fields). If `ir_version` introduces a shape the agent cannot parse, hard fail with a clear message naming the version mismatch.
 
 ## Node ID Convention
