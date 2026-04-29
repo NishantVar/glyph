@@ -135,7 +135,7 @@ Each repairable diagnostic has a specific fix pattern. The agent applies these t
 
 | Diagnostic ID | Fix |
 |---|---|
-| `G::analyze::undefined-name` | Add a `generated text <name> = "<one-sentence content>"` declaration at the bottom of the file (after all non-generated declarations). Infer the content from the name and its usage context in the flow. |
+| `G::analyze::undefined-name` | Add a `generated text <name> = "<single-string content>"` declaration at the bottom of the file (after all non-generated declarations). Infer the content from the name and its usage context in the flow. |
 | `G::analyze::undefined-call` | Add a `generated block <name>(<inferred-params>)` with a single-string body. Infer parameter names from the call arguments. The body should be a single instruction string describing what the block does. Place after all non-generated declarations. |
 | `G::analyze::duplicate-import` | Remove the duplicate `import` line, keeping the first occurrence. |
 | `G::analyze::unused-import` | Remove the `import` line for the unused name. |
@@ -144,8 +144,8 @@ Each repairable diagnostic has a specific fix pattern. The agent applies these t
 | `G::analyze::missing-return` | Add a `return` statement as the last line of the `flow:` body. Infer the return expression from the block's purpose. |
 | `G::analyze::stdlib-missing-import` | Add `import "@glyph/std" (subagent)` (or whichever stdlib name is used) at the top of the file, after any existing imports. |
 | `G::analyze::nested-branch` | Extract the inner branch into a `generated block` declaration. Replace the inner branch with a call to the new block. The generated block's body should be a single instruction string summarizing the extracted branch logic. |
-| `G::analyze::missing-description` | Add a `description:` sub-section to the `skill` declaration with a one-sentence summary of when and why to use this skill. Infer the description from the skill name, parameters, effects, constraints, and flow body. The description should focus on the skill's trigger condition (when an agent should select it), not its implementation steps. |
-| `G::analyze::applies-on-undescribed-block` | Add a `description:` sub-section to the **block** named in the diagnostic, with a one-sentence summary of **when this block applies** — i.e. the user-intent or runtime condition under which the calling `if`/`elif` arm should fire. Infer the trigger from the block name, the body of the arm that uses `BLOCKNAME.applies()`, and any sibling arms. Phrase as a condition (e.g. "When the user asks to fork a terminal pre-loaded with a plan."), not as an implementation summary. Repairable only when the block is defined in the same file under compilation; if the block is imported, this diagnostic is an error and the author must edit the source library directly. |
+| `G::analyze::missing-description` | Add a `description:` sub-section to the `skill` declaration with a single-string summary of when and why to use this skill. Infer the description from the skill name, parameters, effects, constraints, and flow body. The description should focus on the skill's trigger condition (when an agent should select it), not its implementation steps. |
+| `G::analyze::applies-on-undescribed-block` | Add a `description:` sub-section to the **block** named in the diagnostic, with a single-string summary of **when this block applies** — i.e. the user-intent or runtime condition under which the calling `if`/`elif` arm should fire. Infer the trigger from the block name, the body of the arm that uses `BLOCKNAME.applies()`, and any sibling arms. Phrase as a condition (e.g. "When the user asks to fork a terminal pre-loaded with a plan."), not as an implementation summary. Repairable only when the block is defined in the same file under compilation; if the block is imported, this diagnostic is an error and the author must edit the source library directly. |
 
 ### Repair Principles
 

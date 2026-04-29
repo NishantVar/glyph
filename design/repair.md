@@ -6,7 +6,7 @@ This document is the single authoritative reference for the LLM repair pass and 
 
 The repair pass is a source-to-source pass that turns invalid or under-specified Glyph source into valid, still-readable Glyph source before deterministic IR compilation.
 
-Repair is not just a safety net for experienced authors — it is the **primary content generation mechanism for novice authors**. A novice using only the kernel surface (`skill`, `require`/`avoid`, `flow:`, quoted strings, calls with parens, `with` modifier) writes source that contains many undefined bare names and parens-calls. Repair materializes these as `generated text` and `generated block` declarations so the source compiles; those generated definitions are the novice's effective "library" until they promote entries to hand-written `text` or `block`. This is why repair emits **one-sentence** generated bodies — short enough to minimize drift from author intent, reviewable at a glance, and easy to promote.
+Repair is not just a safety net for experienced authors — it is the **primary content generation mechanism for novice authors**. A novice using only the kernel surface (`skill`, `require`/`avoid`, `flow:`, quoted strings, calls with parens, `with` modifier) writes source that contains many undefined bare names and parens-calls. Repair materializes these as `generated text` and `generated block` declarations so the source compiles; those generated definitions are the novice's effective "library" until they promote entries to hand-written `text` or `block`. This is why repair emits **single-string** generated bodies — short enough to minimize drift from author intent, reviewable at a glance, and easy to promote.
 
 ```text
 loose or invalid Glyph source
@@ -411,7 +411,7 @@ The repair pass may add:
 - stable `generated block` definitions for undefined parens-calls (single-string bodies);
 - missing imports when the referenced library is obvious from available context (deferred from MVP — see `todo.md`);
 - missing `effects:` on any declaration (skill, block, or export block) whose inferred set is non-empty — Phase 3a deterministically inserts an `effects:` sub-section with the inferred set into the source, triggered by `G::analyze::missing-effects`, and emits `G::repair::inferred-effects` (warning, informational) so the author knows what was added (see `ir-and-semantics.md` §3 and `diagnostics.md`);
-- missing `description:` on a `skill` — Phase 3b generates a one-sentence description from the skill name, parameters, and body, and adds it as a `description:` sub-section, triggered by `G::analyze::missing-description` (see `ir-and-semantics.md` §4 and `diagnostics.md`);
+- missing `description:` on a `skill` — Phase 3b generates a single-string description from the skill name, parameters, and body, and adds it as a `description:` sub-section, triggered by `G::analyze::missing-description` (see `ir-and-semantics.md` §4 and `diagnostics.md`);
 - `export` on a block only when an importability diagnostic makes the author's intent clear;
 - missing block delimiters or indentation fixes;
 - explicit section headers when the source already implies the section;
