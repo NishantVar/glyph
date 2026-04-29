@@ -6,8 +6,8 @@
 
 use crate::ast::{BlockDecl, ConstraintMarkerKind, ContextEntry, Decl, FlowStmt, Skill, SourceFile};
 use crate::ir::{
-    IrArena, IrConstraint, IrContext, IrInlineInstruction, IrNode, IrParam, IrSkill, NodeId,
-    Polarity, Role, Strength,
+    IrArena, IrBlock, IrCall, IrConstraint, IrContext, IrInlineInstruction, IrNode, IrParam,
+    IrSkill, NodeId, Polarity, Role, Strength,
 };
 use std::collections::BTreeMap;
 
@@ -96,6 +96,32 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
         constraints: Vec::new(),
     }));
 
+    // Lower block declarations to IrBlock nodes.
+    for d in &file.decls {
+        if let Decl::Block(b) = d {
+            let block = &b.node;
+            let body_text = resolve_block_body_text(block, &texts)?;
+            // Collect outgoing call targets from the block's flow.
+            let outgoing_calls: Vec<String> = block
+                .flow
+                .iter()
+                .filter_map(|stmt| match stmt {
+                    FlowStmt::Call { target, .. } => Some(target.clone()),
+                    _ => None,
+                })
+                .collect();
+            let next = NodeId(arena.len() as u32);
+            arena.push(IrNode::Block(IrBlock {
+                node_id: next,
+                name: block.name.clone(),
+                description: block.description.clone(),
+                body_text,
+                resolved_word_count: None,
+                outgoing_calls,
+            }));
+        }
+    }
+
     // Lower flow → Step nodes. Constraint/context markers at flow top-level
     // are hoisted into the declaration's constraint/context lists (Phase 4 Lower
     // per pipeline.md). BareName flow statements are skipped (they are caught
@@ -145,19 +171,22 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
                 }));
                 flow_hoisted_context_ids.push(id);
             }
-            FlowStmt::Call { target, .. } => {
-                // Tier 1 inline expansion: resolve callee body and inline as Step.
-                if let Some(block) = blocks.get(target.as_str()) {
+            FlowStmt::Call { target, args } => {
+                // Create an IrCall node. Resolve callee body if block exists.
+                let resolved_body = if let Some(block) = blocks.get(target.as_str()) {
                     let body_text = resolve_block_body_text(block, &texts)?;
-                    let next = NodeId(arena.len() as u32);
-                    let id = arena.push(IrNode::InlineInstruction(IrInlineInstruction {
-                        node_id: next,
-                        text: body_text,
-                        role: Role::Step,
-                    }));
-                    step_ids.push(id);
-                }
-                // If block not found, Analyze already flagged it.
+                    Some(body_text)
+                } else {
+                    None // Analyze already flagged undefined-call.
+                };
+                let next = NodeId(arena.len() as u32);
+                let id = arena.push(IrNode::Call(IrCall {
+                    node_id: next,
+                    target: target.clone(),
+                    args: args.clone(),
+                    resolved_body,
+                }));
+                step_ids.push(id);
             }
             FlowStmt::BareName(_) => {
                 // BareName in flow is caught by Analyze before Lower runs.

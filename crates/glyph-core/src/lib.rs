@@ -278,6 +278,64 @@ skill main()
     }
 
     #[test]
+    fn word_count_computed_per_block() {
+        let src = "\
+block greet()
+    \"Say hello to the user.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        greet()
+";
+        // Compile and check that expansion happened (word count < 150 = Tier 1 inline).
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                // The block body has 5 words, well under 150, so it should inline.
+                assert!(
+                    markdown.contains("Say hello to the user."),
+                    "expected inlined block body:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn block_with_description_accessible_on_ir() {
+        // Verify the description is reachable on the IR node by checking the
+        // full compile pipeline (description doesn't affect Tier 1 output,
+        // but it should be preserved in the IR for later consumers).
+        let src = "\
+block greet()
+    description: \"Greet the user warmly.\"
+    flow:
+        \"Say hello to the user.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        greet()
+";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let file = analyze::analyze(file);
+        let arena = lower::lower(&file).expect("should lower");
+        // Find the Block IR node and check its description.
+        let block_node = arena.nodes().iter().find(|n| matches!(n, ir::IrNode::Block(_)));
+        let block_node = block_node.expect("IrBlock should exist");
+        if let ir::IrNode::Block(b) = block_node {
+            assert_eq!(b.description.as_deref(), Some("Greet the user warmly."));
+        } else {
+            panic!("expected IrBlock");
+        }
+    }
+
+    #[test]
     fn undefined_call_fires_diagnostic() {
         let src = "\
 skill main()

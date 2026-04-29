@@ -69,7 +69,14 @@ pub fn emit(arena: &IrArena) -> String {
         for (idx, step_id) in skill.steps.iter().enumerate() {
             let text = match arena.get(*step_id) {
                 IrNode::InlineInstruction(i) => i.text.clone(),
-                _ => panic!("Step node was not an InlineInstruction"),
+                IrNode::Call(c) => {
+                    // Tier 1 inline should have converted calls to InlineInstruction
+                    // in expand. If we reach here, use the resolved body as fallback.
+                    c.resolved_body.clone().unwrap_or_else(|| {
+                        format!("(unresolved call to {})", c.target)
+                    })
+                }
+                _ => panic!("Step node was not an InlineInstruction or Call"),
             };
             out.push_str(&format!("{}. {}\n", idx + 1, text));
         }
