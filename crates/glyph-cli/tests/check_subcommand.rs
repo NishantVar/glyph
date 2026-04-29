@@ -79,12 +79,23 @@ fn check_valid_exits_zero_and_writes_no_md() {
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr),
     );
+    // Warnings (e.g., over-declared effects) may appear on stdout in JSON mode
+    // and are acceptable alongside exit 0. Only errors/repairables would be a
+    // problem (but those change the exit code to 1 or 2).
     let stdout = String::from_utf8_lossy(&result.stdout);
-    assert!(
-        stdout.trim().is_empty(),
-        "json mode on a clean file should emit nothing on stdout, got: {:?}",
-        stdout
-    );
+    for line in stdout.trim().lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(line).expect("each NDJSON line must parse as JSON");
+        let cls = v.get("classification").and_then(|x| x.as_str()).unwrap_or("");
+        assert_eq!(
+            cls, "warning",
+            "json mode on a valid file should emit only warnings on stdout, got classification {:?} in: {}",
+            cls, line,
+        );
+    }
 }
 
 #[test]

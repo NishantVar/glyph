@@ -390,6 +390,302 @@ skill main()
     }
 
     #[test]
+    fn effects_none_with_other_effects_rejected() {
+        // `effects: none, reads_files` must produce G::parse::none-with-effects (error).
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    effects: none, reads_files
+    flow:
+        \"Do something.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::none-with-effects"),
+            "expected G::parse::none-with-effects, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 1, "none-with-effects should be a hard error");
+    }
+
+    #[test]
+    fn effects_under_declared_produces_error() {
+        // Skill declares `effects: reads_files` but calls a block that has
+        // `effects: writes_files`. The inferred set is {reads_files, writes_files}
+        // which is a superset of declared {reads_files} → under-declared error.
+        let src = "\
+block writer()
+    effects: writes_files
+    \"Write some files.\"
+
+skill main()
+    description: \"Main skill.\"
+    effects: reads_files
+    flow:
+        writer()
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::effects-under-declared"),
+            "expected effects-under-declared, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 1, "under-declared should be a hard error");
+    }
+
+    #[test]
+    fn effects_over_declared_produces_warning_exit_zero() {
+        // Skill declares `effects: reads_files, writes_files` but its call graph
+        // only infers `reads_files`. The extra `writes_files` is over-declared → warning.
+        let src = "\
+block reader()
+    effects: reads_files
+    \"Read some files.\"
+
+skill main()
+    description: \"Main skill.\"
+    effects: reads_files, writes_files
+    flow:
+        reader()
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::effects-over-declared"),
+            "expected effects-over-declared warning, got: {:?}",
+            ids
+        );
+        // Warning only → exit code 0.
+        assert_eq!(bag.exit_code(), 0, "over-declared should exit 0 (warning only)");
+        // Classification should be Warning.
+        let diag = bag.iter().find(|d| d.id == "G::analyze::effects-over-declared").unwrap();
+        assert_eq!(diag.classification, diagnostic::Classification::Warning);
+    }
+
+    #[test]
+    fn effects_missing_declaration_is_repairable() {
+        // Skill omits `effects:` entirely but calls a block with effects.
+        // This should fire G::analyze::missing-effects (repairable).
+        let src = "\
+block writer()
+    effects: writes_files
+    \"Write some files.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        writer()
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::missing-effects"),
+            "expected missing-effects diagnostic, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 2, "missing-effects should be repairable (exit 2)");
+        let diag = bag.iter().find(|d| d.id == "G::analyze::missing-effects").unwrap();
+        assert_eq!(diag.classification, diagnostic::Classification::Repairable);
+    }
+
+    #[test]
+    fn frontmatter_effects_in_canonical_order() {
+        // Declared effects should appear in canonical (alphabetical) order in
+        // the compiled frontmatter, regardless of source declaration order.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    effects: writes_files, reads_files
+    flow:
+        \"Do something.\"
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                assert!(
+                    markdown.contains("effects: [reads_files, writes_files]"),
+                    "effects should be alphabetically sorted in frontmatter:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn frontmatter_omits_effects_when_empty() {
+        // When the inferred/declared effects set is empty, the frontmatter should
+        // not include an `effects:` field at all.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        \"Do something.\"
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                assert!(
+                    !markdown.contains("effects:"),
+                    "effects field should be omitted when empty:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn effects_inferred_from_call_graph_appear_in_frontmatter() {
+        // Skill declares effects matching what the call graph infers.
+        // The frontmatter should show the effects.
+        let src = "\
+block reader()
+    effects: reads_files
+    \"Read files.\"
+
+block writer()
+    effects: writes_files
+    \"Write files.\"
+
+skill main()
+    description: \"Main skill.\"
+    effects: reads_files, writes_files
+    flow:
+        reader()
+        writer()
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                assert!(
+                    markdown.contains("effects: [reads_files, writes_files]"),
+                    "expected inferred effects in frontmatter:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn effects_transitive_inference_through_call_chain() {
+        // Block A calls Block B. Block B has effects: writes_files.
+        // Block A has effects: reads_files.
+        // Skill calls A, so inferred = {reads_files, writes_files}.
+        let src = "\
+block inner()
+    effects: writes_files
+    \"Write files.\"
+
+block outer()
+    effects: reads_files
+    flow:
+        inner()
+
+skill main()
+    description: \"Main skill.\"
+    effects: reads_files, writes_files
+    flow:
+        outer()
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        // No errors or repairables — declared matches inferred exactly.
+        assert!(
+            !bag.has_error(),
+            "should not have errors: {:?}",
+            bag.iter().map(|d| &d.id).collect::<Vec<_>>()
+        );
+        assert!(
+            !bag.has_repairable(),
+            "should not have repairables: {:?}",
+            bag.iter().map(|d| &d.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn effects_none_assertion_with_inferred_effects_is_error() {
+        // Skill declares `effects: none` but calls a block with effects.
+        // This should be a contradiction — under-declared error.
+        let src = "\
+block writer()
+    effects: writes_files
+    \"Write some files.\"
+
+skill main()
+    description: \"Main skill.\"
+    effects: none
+    flow:
+        writer()
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::effects-under-declared"),
+            "expected effects-under-declared for none-vs-inferred, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 1);
+    }
+
+    #[test]
+    fn effects_none_alone_is_valid_when_no_effects_inferred() {
+        // Skill declares `effects: none` and calls no blocks with effects.
+        // This is valid — no error.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    effects: none
+    flow:
+        \"Do something.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        assert!(
+            !bag.has_error(),
+            "effects: none with empty inferred set should be valid, got: {:?}",
+            bag.iter().map(|d| &d.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn effects_none_omitted_from_frontmatter() {
+        // `effects: none` means no effects. The frontmatter should omit
+        // the effects field entirely.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    effects: none
+    flow:
+        \"Do something.\"
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                assert!(
+                    !markdown.contains("effects:"),
+                    "effects: none should not appear in frontmatter:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
     fn check_source_flags_tab_indent_as_repairable() {
         // Tab-indented source surfaces a `repairable` diagnostic, not an error.
         let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";
