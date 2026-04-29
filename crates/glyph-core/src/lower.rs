@@ -4,10 +4,10 @@
 //! Per `design/build-foundation.md` §A4, IDs are allocated in pre-order source
 //! traversal starting at `n0`.
 
-use crate::ast::{ConstraintMarkerKind, Decl, FlowStmt, Skill, SourceFile};
+use crate::ast::{ConstraintMarkerKind, ContextEntry, Decl, FlowStmt, Skill, SourceFile};
 use crate::ir::{
-    IrArena, IrConstraint, IrInlineInstruction, IrNode, IrParam, IrSkill, NodeId, Polarity, Role,
-    Strength,
+    IrArena, IrConstraint, IrContext, IrInlineInstruction, IrNode, IrParam, IrSkill, NodeId,
+    Polarity, Role, Strength,
 };
 use std::collections::BTreeMap;
 
@@ -15,6 +15,20 @@ use std::collections::BTreeMap;
 pub enum LowerError {
     NoSkill,
     UndefinedConstraintRef(String),
+    UndefinedContextRef(String),
+}
+
+fn resolve_context_entry(
+    entry: &ContextEntry,
+    texts: &BTreeMap<String, String>,
+) -> Result<String, LowerError> {
+    match entry {
+        ContextEntry::InlineString(s) => Ok(s.clone()),
+        ContextEntry::NameRef(name) => texts
+            .get(name)
+            .cloned()
+            .ok_or_else(|| LowerError::UndefinedContextRef(name.clone())),
+    }
 }
 
 pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
@@ -54,11 +68,17 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
         effects: skill.effects.clone(),
         params,
         steps: Vec::new(),
+        context: Vec::new(),
         constraints: Vec::new(),
     }));
 
-    // Lower flow → Step nodes.
+    // Lower flow → Step nodes. Constraint/context markers at flow top-level
+    // are hoisted into the declaration's constraint/context lists (Phase 4 Lower
+    // per pipeline.md). BareName flow statements are skipped (they are caught
+    // by Analyze as G::analyze::text-in-flow before reaching Lower).
     let mut step_ids: Vec<NodeId> = Vec::new();
+    let mut flow_hoisted_constraint_ids: Vec<NodeId> = Vec::new();
+    let mut flow_hoisted_context_ids: Vec<NodeId> = Vec::new();
     for stmt in &skill.flow {
         match stmt {
             FlowStmt::InlineString(text) => {
@@ -69,6 +89,42 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
                     role: Role::Step,
                 }));
                 step_ids.push(id);
+            }
+            FlowStmt::ConstraintMarker(marker) => {
+                // Flow-top-level constraint → hoist to declaration's constraints list.
+                let resolved = texts
+                    .get(&marker.name)
+                    .cloned()
+                    .ok_or_else(|| LowerError::UndefinedConstraintRef(marker.name.clone()))?;
+                let (strength, polarity) = match marker.marker {
+                    ConstraintMarkerKind::Require => (Strength::Soft, Polarity::Require),
+                    ConstraintMarkerKind::Avoid => (Strength::Soft, Polarity::Avoid),
+                    ConstraintMarkerKind::Must => (Strength::Hard, Polarity::Require),
+                    ConstraintMarkerKind::MustAvoid => (Strength::Hard, Polarity::Avoid),
+                };
+                let next = NodeId(arena.len() as u32);
+                let id = arena.push(IrNode::Constraint(IrConstraint {
+                    node_id: next,
+                    text: resolved,
+                    strength,
+                    polarity,
+                }));
+                flow_hoisted_constraint_ids.push(id);
+            }
+            FlowStmt::ContextMarker(entry) => {
+                // Flow-top-level context → hoist to declaration's context list.
+                let resolved = resolve_context_entry(entry, &texts)?;
+                let next = NodeId(arena.len() as u32);
+                let id = arena.push(IrNode::Context(IrContext {
+                    node_id: next,
+                    text: resolved,
+                }));
+                flow_hoisted_context_ids.push(id);
+            }
+            FlowStmt::BareName(_) => {
+                // BareName in flow is caught by Analyze before Lower runs.
+                // If we somehow reach here, skip silently — the diagnostic
+                // was already emitted.
             }
         }
     }
@@ -96,11 +152,59 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
         constraint_ids.push(id);
     }
 
-    // Patch the skill node now that step/constraint IDs are known.
+    // Append flow-hoisted constraints (deduped by canonical text + strength + polarity).
+    for id in flow_hoisted_constraint_ids {
+        if let IrNode::Constraint(c) = arena.get(id) {
+            let dominated = constraint_ids.iter().any(|existing_id| {
+                if let IrNode::Constraint(e) = arena.get(*existing_id) {
+                    e.text == c.text && e.strength == c.strength && e.polarity == c.polarity
+                } else {
+                    false
+                }
+            });
+            if !dominated {
+                constraint_ids.push(id);
+            }
+        }
+    }
+
+    // Lower context entries (from context: section + body-level markers).
+    let mut context_ids: Vec<NodeId> = Vec::new();
+    let mut seen_context_texts: Vec<String> = Vec::new();
+
+    let all_context_entries = skill
+        .context_section
+        .iter()
+        .chain(skill.body_context.iter());
+    for entry in all_context_entries {
+        let resolved = resolve_context_entry(entry, &texts)?;
+        if !seen_context_texts.contains(&resolved) {
+            seen_context_texts.push(resolved.clone());
+            let next = NodeId(arena.len() as u32);
+            let id = arena.push(IrNode::Context(IrContext {
+                node_id: next,
+                text: resolved,
+            }));
+            context_ids.push(id);
+        }
+    }
+
+    // Append flow-hoisted context (deduped by canonical text).
+    for id in flow_hoisted_context_ids {
+        if let IrNode::Context(c) = arena.get(id) {
+            if !seen_context_texts.contains(&c.text) {
+                seen_context_texts.push(c.text.clone());
+                context_ids.push(id);
+            }
+        }
+    }
+
+    // Patch the skill node now that step/context/constraint IDs are known.
     {
         let nodes = arena.nodes_mut();
         if let IrNode::Skill(s) = &mut nodes[skill_id.0 as usize] {
             s.steps = step_ids;
+            s.context = context_ids;
             s.constraints = constraint_ids;
         }
     }

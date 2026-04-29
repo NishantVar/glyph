@@ -132,3 +132,54 @@ fn body_level_avoid_hoists_to_constraints_section() {
         md
     );
 }
+
+// --- Acceptance criterion 4: context: sub-section emits ### Context before ### Steps ---
+
+#[test]
+fn context_section_emits_before_steps() {
+    let src = fixture("valid", "with_context.glyph.md");
+    let out = src.with_file_name("with_context.md");
+    let _ = std::fs::remove_file(&out);
+
+    let result = run_compile(src, "json");
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "expected exit 0; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+
+    let md = std::fs::read_to_string(&out).expect("compiled .md file is missing");
+    let context_idx = md.find("### Context").expect("expected ### Context section");
+    let steps_idx = md.find("### Steps").expect("expected ### Steps section");
+    assert!(
+        context_idx < steps_idx,
+        "### Context must appear before ### Steps; got:\n{}",
+        md
+    );
+}
+
+// --- Acceptance criterion 7: text name referenced from context: resolves ---
+
+#[test]
+fn text_in_context_resolves_to_string() {
+    let src = fixture("valid", "with_context.glyph.md");
+    let out = src.with_file_name("with_context.md");
+    let _ = std::fs::remove_file(&out);
+
+    let result = run_compile(src, "json");
+    assert_eq!(result.status.code(), Some(0));
+
+    let md = std::fs::read_to_string(&out).expect("compiled .md file is missing");
+    assert!(
+        md.contains("This codebase uses a monorepo layout with per-crate Cargo.toml files."),
+        "expected resolved text in ### Context; got:\n{}",
+        md
+    );
+    assert!(
+        md.contains("The bug is assumed to be reproducible locally."),
+        "expected inline string in ### Context; got:\n{}",
+        md
+    );
+}
