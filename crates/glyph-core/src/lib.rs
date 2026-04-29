@@ -659,6 +659,33 @@ skill main()
     }
 
     #[test]
+    fn effects_none_omitted_from_frontmatter() {
+        // `effects: none` means no effects. The frontmatter should omit
+        // the effects field entirely.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    effects: none
+    flow:
+        \"Do something.\"
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                assert!(
+                    !markdown.contains("effects:"),
+                    "effects: none should not appear in frontmatter:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
     fn check_source_flags_tab_indent_as_repairable() {
         // Tab-indented source surfaces a `repairable` diagnostic, not an error.
         let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";

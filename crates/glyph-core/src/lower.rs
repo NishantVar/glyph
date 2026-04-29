@@ -89,7 +89,7 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
         node_id: NodeId(0),
         name: skill.name.clone(),
         description: skill.description.clone().unwrap_or_default(),
-        effects: skill.effects.clone(),
+        effects: skill.effects.iter().filter(|e| e.as_str() != "none").cloned().collect(),
         params,
         steps: Vec::new(),
         context: Vec::new(),
