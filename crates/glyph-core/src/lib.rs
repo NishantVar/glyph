@@ -827,17 +827,29 @@ skill main()
     }
 
     #[test]
-    fn return_in_branch_diagnostic_id_exists() {
-        // AC3: G::parse::return-in-branch — verify the diagnostic ID string is
-        // correct. Since Glyph doesn't have if/elif/else parsing yet, we verify
-        // at the unit level that the diagnostic ID is defined and would fire.
-        // This test ensures the ID "G::parse::return-in-branch" is a known
-        // string that the codebase recognizes for future branch support.
-        let expected_id = "G::parse::return-in-branch";
+    fn return_in_branch_fires_diagnostic() {
+        // AC3: G::parse::return-in-branch — `return` inside a branch context
+        // should emit this diagnostic. Since Glyph doesn't have if/elif/else
+        // syntax yet, we call check_return_rules directly with in_branch=true.
+        use parse::check_return_rules;
+        use ast::{FlowStmt, ReturnExpr};
+        use span::Span;
+
+        let source = "return none\n";
+        let line_index = LineIndex::new(source);
+        let sp = Span::new(0, 0, source.len() as u32);
+        let flow = vec![FlowStmt::Return(ReturnExpr::None)];
+        let mut bag = DiagBag::new();
+
+        check_return_rules(&flow, sp, "test.glyph.md", &line_index, &mut bag, true);
+
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
-            expected_id.starts_with("G::parse::"),
-            "diagnostic ID should follow G::parse:: convention"
+            ids.contains(&"G::parse::return-in-branch"),
+            "expected G::parse::return-in-branch, got: {:?}",
+            ids
         );
+        assert_eq!(bag.exit_code(), 1);
     }
 
     #[test]

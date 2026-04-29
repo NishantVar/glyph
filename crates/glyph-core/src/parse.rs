@@ -171,11 +171,11 @@ pub fn parse_with_diagnostics(
         }
         // Check return-related diagnostics for skills.
         if let Decl::Skill(spanned_skill) = decl {
-            check_return_rules(&spanned_skill.node.flow, spanned_skill.span, file_label, line_index, bag);
+            check_return_rules(&spanned_skill.node.flow, spanned_skill.span, file_label, line_index, bag, false);
         }
         // Check return-related diagnostics for blocks.
         if let Decl::Block(spanned_block) = decl {
-            check_return_rules(&spanned_block.node.flow, spanned_block.span, file_label, line_index, bag);
+            check_return_rules(&spanned_block.node.flow, spanned_block.span, file_label, line_index, bag, false);
         }
     }
     if bag.has_error() || bag.has_repairable() {
@@ -1141,12 +1141,14 @@ impl<'a> Parser<'a> {
 ///
 /// - `G::parse::return-not-terminal` — `return` is not the last statement.
 /// - `G::parse::multiple-returns` — more than one `return`.
-fn check_return_rules(
+/// - `G::parse::return-in-branch` — `return` inside a branch body (when `in_branch` is true).
+pub(crate) fn check_return_rules(
     flow: &[FlowStmt],
     span: Span,
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
+    in_branch: bool,
 ) {
     let return_positions: Vec<usize> = flow
         .iter()
@@ -1156,6 +1158,19 @@ fn check_return_rules(
 
     if return_positions.is_empty() {
         return;
+    }
+
+    // G::parse::return-in-branch — return inside a branch body.
+    if in_branch {
+        bag.push(
+            Diagnostic::error(
+                "G::parse::return-in-branch",
+                "`return` is not allowed inside an `if`/`elif`/`else` branch",
+                SourceSpan::from_byte_span(file_label, span, line_index),
+            ),
+            span,
+        );
+        return; // Don't fire other return diagnostics for in-branch returns.
     }
 
     // G::parse::multiple-returns — more than one return.
