@@ -1356,6 +1356,40 @@ skill main()
     }
 
     #[test]
+    fn applies_outside_branch_condition_is_parse_error() {
+        // AC5: applies() is rejected outside branch-condition position.
+        // Writing `my_block.applies()` as a flow statement should fail parse.
+        let src = "\
+block my_block()
+    description: \"Test.\"
+    flow:
+        \"Do something.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        my_block.applies()
+";
+        // This should fail to parse since `.` is not valid in flow statements
+        // outside of branch conditions.
+        let _bag = check_source(src, 0, "test.glyph.md");
+        // It should either fail to parse or produce a diagnostic — it should
+        // NOT silently compile.
+        // The parser sees `my_block` as a bare name, then `.` causes an error
+        // on the next flow line (since BareName consumes only the ident).
+        // Either way, this file should not produce valid compiled output.
+        let outcome = compile_source(src, 0, "test.glyph.md");
+        match outcome {
+            Ok(CompileOutcome::Compiled { .. }) => {
+                panic!("applies() outside branch condition should not compile successfully");
+            }
+            _ => {
+                // Expected — either diagnostics or parse error.
+            }
+        }
+    }
+
+    #[test]
     fn check_source_flags_tab_indent_as_repairable() {
         // Tab-indented source surfaces a `repairable` diagnostic, not an error.
         let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";
