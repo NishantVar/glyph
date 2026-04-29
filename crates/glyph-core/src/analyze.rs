@@ -199,8 +199,35 @@ fn analyze_skill(
                 // Return statements are validated structurally by the parser
                 // (check_return_rules). No analyze-phase checks needed.
             }
-            FlowStmt::Branch { .. } => {
-                // Branch analysis handled below.
+            FlowStmt::Branch { condition, then_body, elif_branches, else_body } => {
+                // Check for nested branches.
+                check_nested_branches(then_body, spanned.span, file_label, line_index, bag);
+                for elif in elif_branches {
+                    check_nested_branches(&elif.body, spanned.span, file_label, line_index, bag);
+                }
+                if let Some(eb) = else_body {
+                    check_nested_branches(eb, spanned.span, file_label, line_index, bag);
+                }
+                // Check applies() calls in condition.
+                check_applies_in_condition(
+                    condition, spanned.span, file_id, file_label, line_index, bag,
+                    &text_names, &block_names, &block_decls,
+                );
+                // Check elif conditions too.
+                for elif in elif_branches {
+                    check_applies_in_condition(
+                        &elif.condition, spanned.span, file_id, file_label, line_index, bag,
+                        &text_names, &block_names, &block_decls,
+                    );
+                }
+                // Check flow statements inside branch bodies for name resolution.
+                check_branch_body_names(then_body, spanned.span, file_label, line_index, bag, &text_names, &block_names);
+                for elif in elif_branches {
+                    check_branch_body_names(&elif.body, spanned.span, file_label, line_index, bag, &text_names, &block_names);
+                }
+                if let Some(eb) = else_body {
+                    check_branch_body_names(eb, spanned.span, file_label, line_index, bag, &text_names, &block_names);
+                }
             }
         }
     }
@@ -427,6 +454,157 @@ fn check_context_entry_name(
                 ),
                 span,
             );
+        }
+    }
+}
+
+/// Check for nested branches — a Branch inside another Branch's body.
+fn check_nested_branches(
+    body: &[FlowStmt],
+    span: crate::span::Span,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    for stmt in body {
+        if let FlowStmt::Branch { .. } = stmt {
+            bag.push(
+                Diagnostic {
+                    id: "G::analyze::nested-branch".into(),
+                    classification: Classification::Repairable,
+                    message: "nested `if`/`elif`/`else` inside a branch body; only one level of branching is supported in compiled output".into(),
+                    span: SourceSpan::from_byte_span(file_label, span, line_index),
+                    related: Vec::new(),
+                    hints: vec![
+                        "extract the inner branch into a separate `block` declaration".into(),
+                    ],
+                },
+                span,
+            );
+        }
+    }
+}
+
+/// Check applies() calls in a branch condition string.
+/// Validates: applies-on-non-block, applies-on-undescribed-block.
+fn check_applies_in_condition(
+    condition: &str,
+    span: crate::span::Span,
+    _file_id: u32,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+    text_names: &HashSet<&str>,
+    block_names: &HashSet<&str>,
+    block_decls: &HashMap<&str, &BlockDecl>,
+) {
+    // Find all `NAME.applies()` patterns in the condition.
+    // Simple string scanning — condition is a reconstructed string.
+    let applies_suffix = ".applies()";
+    let mut search_from = 0;
+    while let Some(pos) = condition[search_from..].find(applies_suffix) {
+        let abs_pos = search_from + pos;
+        // Extract the receiver name (word before the dot).
+        let receiver = &condition[..abs_pos];
+        let receiver_name = receiver.rsplit(|c: char| !c.is_alphanumeric() && c != '_').next().unwrap_or("");
+        if !receiver_name.is_empty() {
+            if text_names.contains(receiver_name) {
+                // Receiver is a text declaration — not a block.
+                bag.push(
+                    Diagnostic::error(
+                        "G::analyze::applies-on-non-block",
+                        format!("`{}.applies()` — receiver `{}` is a `text` declaration, not a `block`", receiver_name, receiver_name),
+                        SourceSpan::from_byte_span(file_label, span, line_index),
+                    ),
+                    span,
+                );
+            } else if block_names.contains(receiver_name) {
+                // Check if the block has a description.
+                if let Some(block) = block_decls.get(receiver_name) {
+                    if block.description.is_none() {
+                        bag.push(
+                            Diagnostic {
+                                id: "G::analyze::applies-on-undescribed-block".into(),
+                                classification: Classification::Repairable,
+                                message: format!(
+                                    "`{}.applies()` but `block {}` has no `description:` sub-section",
+                                    receiver_name, receiver_name
+                                ),
+                                span: SourceSpan::from_byte_span(file_label, span, line_index),
+                                related: Vec::new(),
+                                hints: vec![
+                                    format!("add `description:` to `block {}`", receiver_name),
+                                ],
+                            },
+                            span,
+                        );
+                    }
+                }
+                // If not in block_decls (could be imported), that's ok for now.
+            } else {
+                // Not a block, not a text — unknown name or parameter.
+                bag.push(
+                    Diagnostic::error(
+                        "G::analyze::applies-on-non-block",
+                        format!("`{}.applies()` — receiver `{}` does not resolve to a `block`", receiver_name, receiver_name),
+                        SourceSpan::from_byte_span(file_label, span, line_index),
+                    ),
+                    span,
+                );
+            }
+        }
+        search_from = abs_pos + applies_suffix.len();
+    }
+}
+
+/// Check flow statements inside branch bodies for name resolution.
+fn check_branch_body_names(
+    body: &[FlowStmt],
+    span: crate::span::Span,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+    text_names: &HashSet<&str>,
+    block_names: &HashSet<&str>,
+) {
+    for stmt in body {
+        match stmt {
+            FlowStmt::Call { target, .. } => {
+                if !block_names.contains(target.as_str()) {
+                    bag.push(
+                        Diagnostic {
+                            id: "G::analyze::undefined-call".into(),
+                            classification: Classification::Repairable,
+                            message: format!(
+                                "call to `{}()` but no `block {}` is declared in this file",
+                                target, target
+                            ),
+                            span: SourceSpan::from_byte_span(file_label, span, line_index),
+                            related: Vec::new(),
+                            hints: vec![
+                                format!("declare `block {}()` or check the name for typos", target),
+                            ],
+                        },
+                        span,
+                    );
+                }
+            }
+            FlowStmt::ConstraintMarker(marker) => {
+                if !text_names.contains(marker.name.as_str()) {
+                    bag.push(
+                        Diagnostic::error(
+                            "G::analyze::undefined-name",
+                            format!("`{}` is not a declared `text` in this file", marker.name),
+                            SourceSpan::from_byte_span(file_label, span, line_index),
+                        ),
+                        span,
+                    );
+                }
+            }
+            FlowStmt::ContextMarker(entry) => {
+                check_context_entry_name(entry, text_names, span, file_label, line_index, bag);
+            }
+            _ => {}
         }
     }
 }

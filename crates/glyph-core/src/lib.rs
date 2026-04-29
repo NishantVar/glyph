@@ -1012,6 +1012,26 @@ skill main()
     }
 
     #[test]
+    fn nested_branch_fires_diagnostic() {
+        // AC3: `nested-branch` fires when a branch is nested inside a branch.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if mode == \"fast\"
+            if level == \"high\"
+                \"Do the high-fast thing.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::nested-branch"),
+            "expected G::analyze::nested-branch, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
     fn branch_condition_equals_does_not_trigger_operator_in_expression() {
         // AC2: `==` in `if` condition does NOT trigger `operator-in-expression`.
         let src = "\
