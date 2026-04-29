@@ -465,6 +465,32 @@ skill main()
     }
 
     #[test]
+    fn effects_missing_declaration_is_repairable() {
+        // Skill omits `effects:` entirely but calls a block with effects.
+        // This should fire G::analyze::missing-effects (repairable).
+        let src = "\
+block writer()
+    effects: writes_files
+    \"Write some files.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        writer()
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::missing-effects"),
+            "expected missing-effects diagnostic, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 2, "missing-effects should be repairable (exit 2)");
+        let diag = bag.iter().find(|d| d.id == "G::analyze::missing-effects").unwrap();
+        assert_eq!(diag.classification, diagnostic::Classification::Repairable);
+    }
+
+    #[test]
     fn check_source_flags_tab_indent_as_repairable() {
         // Tab-indented source surfaces a `repairable` diagnostic, not an error.
         let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";
