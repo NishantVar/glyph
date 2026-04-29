@@ -4,3 +4,7 @@ tmp
 research
 graphify-out
 target/
+
+# Compiler output emitted next to .glyph.md sources during tests
+crates/glyph-cli/tests/corpus/**/*.md
+!crates/glyph-cli/tests/corpus/**/*.glyph.md
