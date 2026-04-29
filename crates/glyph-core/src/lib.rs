@@ -1123,6 +1123,83 @@ skill main()
     }
 
     #[test]
+    fn context_in_branch_stays_inline() {
+        // AC9: context marker inside a branch body stays inline, does not surface in ### Context.
+        let src = "\
+text project_info = \"This is a monorepo project.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if mode == \"debug\"
+            context project_info
+            \"Run debug checks.\"
+        else
+            \"Run normal checks.\"
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                // context should NOT appear as a top-level ### Context section.
+                // The branch-scoped context inlines into the sub-step prose.
+                assert!(
+                    !markdown.contains("### Context"),
+                    "branch-scoped context should not surface in ### Context:\n{}",
+                    markdown
+                );
+                // The context text should appear inline in the branch sub-steps.
+                assert!(
+                    markdown.contains("Note: This is a monorepo project."),
+                    "branch-scoped context should be inline:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn constraint_in_branch_stays_inline() {
+        // AC9-parallel: constraint marker inside a branch body stays inline.
+        let src = "\
+text no_breaking_changes = \"Do not break backwards compatibility.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if scope == \"public\"
+            require no_breaking_changes
+            \"Update the public API docs.\"
+        else
+            \"Update internal docs.\"
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                // Constraint should NOT appear in ### Constraints.
+                assert!(
+                    !markdown.contains("### Constraints"),
+                    "branch-scoped constraint should not surface in ### Constraints:\n{}",
+                    markdown
+                );
+                // The constraint text should appear inline in the branch sub-steps.
+                assert!(
+                    markdown.contains("Do not break backwards compatibility."),
+                    "branch-scoped constraint should be inline:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
     fn applies_descriptions_populated_in_expand() {
         // AC6: applies_descriptions side-map is populated post-Step-1.
         let src = "\
