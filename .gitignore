@@ -4,6 +4,7 @@ tmp
 research
 graphify-out
 target/
+__pycache__
 
 # Compiler output emitted next to .glyph.md sources during tests
 crates/glyph-cli/tests/corpus/**/*.md
