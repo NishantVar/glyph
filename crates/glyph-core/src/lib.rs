@@ -436,6 +436,35 @@ skill main()
     }
 
     #[test]
+    fn effects_over_declared_produces_warning_exit_zero() {
+        // Skill declares `effects: reads_files, writes_files` but its call graph
+        // only infers `reads_files`. The extra `writes_files` is over-declared → warning.
+        let src = "\
+block reader()
+    effects: reads_files
+    \"Read some files.\"
+
+skill main()
+    description: \"Main skill.\"
+    effects: reads_files, writes_files
+    flow:
+        reader()
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::effects-over-declared"),
+            "expected effects-over-declared warning, got: {:?}",
+            ids
+        );
+        // Warning only → exit code 0.
+        assert_eq!(bag.exit_code(), 0, "over-declared should exit 0 (warning only)");
+        // Classification should be Warning.
+        let diag = bag.iter().find(|d| d.id == "G::analyze::effects-over-declared").unwrap();
+        assert_eq!(diag.classification, diagnostic::Classification::Warning);
+    }
+
+    #[test]
     fn check_source_flags_tab_indent_as_repairable() {
         // Tab-indented source surfaces a `repairable` diagnostic, not an error.
         let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";
