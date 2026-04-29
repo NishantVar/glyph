@@ -257,7 +257,7 @@ Four colon-terminated headers are available inside `skill`, `block`, and `export
 
 **Singular.** `description:` is set-like neither in source nor in IR — exactly one description per skill. A second `description:` sub-section in the same `skill` body emits `G::parse::duplicate-subsection`, classified **repairable**: Phase 3 Repair merges compatible duplicates into one combined description (and emits a hard error if they contradict). After repair re-parses, only one `description:` is accepted.
 
-**Availability.** `description:` is available only on `skill` declarations — N/A for `block`, `export block`, and value-binding declarations.
+**Availability.** `description:` is available on `skill`, `block`, and `export block` declarations. It remains N/A for value-binding declarations (`text`, `int`, `float` and their `export`/`generated` variants). On a `skill`, the description compiles to frontmatter and is read by the outer agent that picks the skill. On a `block` or `export block`, the description is the natural-language predicate consulted by `BLOCKNAME.applies()` (see §Block Trigger Predicate below); it does not surface in frontmatter.
 
 ```glyph
 skill fix_bug(scope = ".")
@@ -267,11 +267,44 @@ skill fix_bug(scope = ".")
         ...
 ```
 
-If `description:` is omitted, the compiler generates a description from the skill name and body during the LLM repair pass (Phase 3), adding it as a `description:` sub-section in the source. Authors should prefer explicit descriptions for predictable skill routing.
+If `description:` is omitted on a `skill`, the compiler generates one from the skill name and body during the LLM repair pass (Phase 3), adding it as a `description:` sub-section in the source. Authors should prefer explicit descriptions for predictable skill routing.
+
+On a `block` / `export block`, `description:` is **optional**. It is required only when the block is referenced via `BLOCKNAME.applies()` somewhere in the build. See §Block Trigger Predicate for required-when-consulted semantics and the cross-file repair limitation.
+
+### Block Trigger Predicate
+
+`BLOCKNAME.applies()` is a special syntactic form for description-driven dispatch inside a flow. It evaluates to a `Bool` that the receiving coding agent computes by matching the referenced block's `description:` against current context.
+
+**Surface form.** The receiver must be a same-file `block` / `export block` name, an imported `export block` name, or a single-level qualified callee (`module_alias.block_name`). The method name `applies` and the empty argument list are fixed: `applies(arg)` is a parse error (`G::parse::applies-with-args`); omitting the parens is a parse error (`G::parse::applies-no-parens`). `applies` is reserved in this method-call position and is not a UFCS dispatch — blocks are not first-class values, and there is no `applies(b: Block)` stdlib function.
+
+**Where it is valid.** Only inside an `if` / `elif` condition (directly, or composed with `and` / `or` / `not` per `data-flow.md` §Condition Expressions). It is not a value expression and cannot bind to a variable, appear in `return`, or appear as a call argument in MVP. Authors who need to reuse a predicate factor it as a separate `if` arm, not a binding.
+
+**Required-when-consulted.** A block referenced by `.applies()` must declare `description:`. Resolution behavior:
+
+- **Local block** (declared in the same file as the `.applies()` call) without `description:` → emits `G::analyze::applies-on-undescribed-block` (repairable). Phase 3 Repair generates a description from the block's name, parameters, effects, and flow body, focused on *when this block applies* (the trigger condition), and adds it as a `description:` sub-section.
+- **Imported `export block`** without `description:` → emits `G::analyze::applies-on-undescribed-block` as a hard error. Repair only edits the file under compilation; it does not cross file boundaries (`repair.md` §9, `todo.md` §Repair). The author must add `description:` in the foreign source manually.
+- **Receiver does not resolve to a block** (e.g., a skill name, parameter, value binding, or unknown name in method position) → emits `G::analyze::applies-on-non-block` (error).
+
+**Optionality otherwise.** A block never consulted via `.applies()` may omit `description:` entirely. Repair does not generate descriptions speculatively for blocks; the metadata is materialized only when a `.applies()` call requires it.
+
+**Metadata, not gate.** A block carrying `description:` remains directly callable by name without consulting its description. `applies()` is opt-in at the call site; the dispatch decision lives in source where the reader can see it.
+
+**Effects.** A `BLOCKNAME.applies()` evaluation contributes no effects to the enclosing declaration. The referenced block's declared effects propagate only via `Call` nodes (i.e., when the block is actually invoked, typically inside an arm body of the same `if`).
+
+**IR representation.** `Branch.condition` remains a String (`ir-schema.md` §Branch). The literal source `block_x.applies()` survives unchanged into the condition text — no new `Expression` variant is introduced. Phase 4 (Lower) recognizes the form during condition tokenization and validates the shape; Expand Step 1 resolves each `block_x.applies()` invocation by reading `block_x`'s `description:` and populating a side map `applies_descriptions: {block_name: resolved_description}` on the Branch node (`ir-schema.md` §Resolved IR). Expand Step 2 reads both the condition string and the side map to render the conditional Step prose (see `compiled-output.md` §Description-Driven Branch Projection).
+
+**Body grammar inheritance.** The body grammar of `description:` on a block is identical to a skill's: exactly one quoted string literal (`"..."` or `"""..."""`), or a bare-name reference to a same-file `text` / `export text` declaration. The same parameter-slot rule (`G::parse::param-slot-in-non-instruction-string`) and singularity rule (`G::parse::duplicate-subsection`) apply.
+
+**Style relief — extract long descriptions.** When a block's `description:` grows long (e.g., trigger phrases, multi-clause "use when" guidance), the bare-name reference form is the recommended pattern: declare a `text` constant and reference it from `description:`. Block declarations stay tight; trigger prose lives next to other constants as data. Length-based linter nudges are a post-MVP `glyph fmt` / `glyph check` concern (see `todo.md`).
+
+**Composition with regular booleans.** `applies()` calls compose with the existing condition operators (`and`, `or`, `not`, parenthesization). For a condition that is *purely* one or more `applies()` calls combined by `or` (or a chain of `if`/`elif` arms each guarded by a single `applies()` call), Expand Step 2 emits the "decide which applies" prose form. For mixed conditions (e.g., `block_x.applies() and not is_dry_run`), the description inlines into the larger condition prose: "If the user wants a structured plan and this is not a dry run, ...". See `compiled-output.md` §Description-Driven Branch Projection.
 
 ### Section Content Rules
 
-**`description:`** — a concise one-line summary of when and why to use this skill. Compiles to frontmatter `description`. If omitted, Repair (Phase 3) generates one from the skill name and body and adds it to the source. Available only on `skill` declarations.
+**`description:`** — a concise one-line summary. Available on `skill`, `block`, and `export block` declarations.
+
+- On a `skill`, the description summarizes when and why to use this skill, and compiles to frontmatter `description`. If omitted, Repair (Phase 3) generates one from the skill name and body and adds it to the source.
+- On a `block` or `export block`, the description names the user-intent or runtime condition under which the block applies. It is consulted only by the trigger predicate `BLOCKNAME.applies()` (see §Block Trigger Predicate); it does **not** appear in compiled output otherwise. **Required when `BLOCKNAME.applies()` is called somewhere reachable**; otherwise optional and treated as documentation only. When the consulting call site is in the same file as the block, a missing description is repairable (`G::analyze::applies-on-undescribed-block` repairable); when the block is imported, a missing description is an error and must be added in the source library directly.
 
 **`effects:`** — declared effect keywords (see section 3). Compiles to frontmatter `effects` as a YAML list. Validated against the inferred effect set.
 
@@ -283,7 +316,7 @@ If `description:` is omitted, the compiler generates a description from the skil
 
 | Section | `skill` | `block` | `export block` |
 |---------|---------|---------|----------------|
-| `description:` | Optional (generated if omitted) | N/A | N/A |
+| `description:` | Optional (generated if omitted) | Optional (Required when consulted via `.applies()`) | Optional (Required when consulted via `.applies()`) |
 | `effects:` | Optional | Optional | Optional (validated against inference) |
 | `constraints:` | Optional | Optional | Optional |
 | `flow:` | Required (unless instruction-only) | Optional | Expected (needs explicit `return`) |

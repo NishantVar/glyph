@@ -259,6 +259,26 @@ effects: [reads_files]
 
 - **Branch-scoped constraints.** A `require`/`avoid`/`must` marker that appears inside an `if`/`elif`/`else` branch in `flow:` is **inlined into the prose of an adjacent sub-step**, not surfaced in `### Constraints` and not given its own lettered sub-step. The inlined wording makes the conditional applicability explicit (e.g., a sub-step like "Run the migration, never dropping existing columns."). Only flow-top-level constraint markers (and body-level constraints declared above `flow:`) hoist to `Skill.constraints` and render in `### Constraints`. See [ir-and-semantics.md](ir-and-semantics.md) §Body-Level Constraint Normalization and [pipeline.md](pipeline.md) Phase 4 (Lower) for the hoisting rules.
 
+### Description-Driven Branch Projection
+
+A `Branch` whose conditions invoke the block trigger predicate `BLOCKNAME.applies()` (see [ir-and-semantics.md](ir-and-semantics.md) §Block Trigger Predicate) is rendered using the resolved block descriptions carried on the IR Branch's `applies_descriptions` side-map (`ir-schema.md` §Resolved IR `ResolvedBranch`, `ir-json-schema.md` §Branch). The compiled-output rule chooses one of two prose forms based on the shape of the conditions:
+
+- **Pure-applies form ("decide which applies").** When every arm's condition is *purely* one or more `applies()` calls combined by `or` — or each `if`/`elif` arm is guarded by a single `applies()` call with no other operators — Step 2 emits a single numbered Step that introduces the choice ("Decide which of the following applies and follow only that path:") and renders each arm as a lettered sub-step keyed by the resolved description rather than by a code-like condition expression. Example:
+
+  ```md
+  3. Decide which of the following applies and follow only that path:
+     a. When the user asks to fork a terminal pre-loaded with a plan: identify the plan content, save it to disk, and fork the agentic tool with delayed input.
+     b. When the user asks to fork a terminal with a conversation-history summary: read the summary template, fill it in memory, and pass it as the delayed input.
+     Otherwise:
+     c. Understand the user's request and route to the appropriate launcher.
+  ```
+
+  The condition headers are written as user-intent / runtime conditions rather than as boolean expressions. The arms remain mutually evaluated by the consuming LLM in source order — the prose simply foregrounds the trigger description over the call-graph mechanic.
+
+- **Mixed-condition form (inline description).** When an arm's condition combines an `applies()` call with regular boolean operators or other predicate calls (e.g., `block_x.applies() and not is_dry_run`), the resolved description inlines into the larger condition prose using the standard `If <condition>:` arm header. Example: an arm with condition `fork_with_plan.applies() and not is_dry_run` produces the header "If the user wants a structured plan and this is not a dry run:". Sub-steps inside the arm follow the lettered convention from §Constraint Rendering above.
+
+The two forms compose: a Branch with one pure-applies arm and one mixed-condition arm uses the pure-applies header for the first arm and the mixed-condition header for the second, all under a single numbered Step. The `applies_descriptions` side-map provides the resolved description text for both forms; Step 2 never reads block bodies or rewrites descriptions.
+
 ### Parameter References In Steps
 
 Parameters are **not** resolved at compile time. Steps and Constraints may reference parameters by name using `{param}` syntax. The consuming LLM substitutes the actual values at runtime based on user context and the `## Parameters` section.

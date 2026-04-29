@@ -165,6 +165,7 @@ Both UFCS and qualified callees use dot syntax. The compiler disambiguates in An
 
 - If the name before the dot resolves to a **whole-module import alias** → qualified callee (`repo_tools.inspect_repo(scope)`).
 - If it resolves to a **value binding, parameter, or other value expression** → UFCS method call (`researcher.send(msg)`).
+- If it resolves to a **`block` or `export block` declaration** (or a `module_alias.block_name` form), the method name is `applies`, the call has zero arguments, and the call appears in an `if` / `elif` condition position → block trigger predicate (not UFCS, not a qualified callee — see §Condition Expressions and `ir-and-semantics.md` §Block Trigger Predicate). The form is preserved as a special syntactic shape on the Branch's `condition` string and is not desugared.
 - If it resolves to neither → diagnostic (unresolved name).
 
 This check is unambiguous because import aliases and value bindings occupy distinct namespaces and cannot collide (per `values-and-names.md` no-shadowing rules).
@@ -310,6 +311,9 @@ Condition expressions inside `if` and `elif` are intentionally minimal in the MV
 | `and` | `if risk == "high" and ctx.has_tests:` |
 | `or` | `if a or b:` |
 | Parenthesized grouping | `if (a or b) and c:` |
+| Block trigger predicate | `if fork_with_plan.applies():` |
+
+The block-trigger form `BLOCKNAME.applies()` is a special syntactic shape (not UFCS) for description-driven dispatch. Receiver must resolve to a `block` / `export block` (or `module_alias.block_name`) carrying `description:`; `applies` takes zero arguments; parens are required. See `ir-and-semantics.md` §Block Trigger Predicate for full semantics, required-when-consulted rule, and resolution behavior. It composes with `and`/`or`/`not` like any other Boolean.
 
 Standard Python precedence: `not` binds tightest, then `and`, then `or`. Parentheses override precedence.
 

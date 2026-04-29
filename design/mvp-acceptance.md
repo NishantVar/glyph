@@ -320,7 +320,7 @@ Same as the walking skeleton (§1). Tests standalone compilation with no imports
 
 Every diagnostic below is emitted by the deterministic compiler (Phases 1, 2, 4, 5, 7) and must have at least one triggering test.
 
-**Parse phase (15):**
+**Parse phase (17):**
 
 | ID | Classification |
 |----|---------------|
@@ -339,8 +339,10 @@ Every diagnostic below is emitted by the deterministic compiler (Phases 1, 2, 4,
 | `G::parse::empty-file` | error |
 | `G::parse::empty-flow` | error |
 | `G::parse::multiple-skills` | error |
+| `G::parse::applies-no-parens` | error |
+| `G::parse::applies-with-args` | error |
 
-**Analyze phase (22):**
+**Analyze phase (24):**
 
 | ID | Classification |
 |----|---------------|
@@ -366,6 +368,8 @@ Every diagnostic below is emitted by the deterministic compiler (Phases 1, 2, 4,
 | `G::analyze::no-exports-in-library` | error |
 | `G::analyze::missing-param-default` | error |
 | `G::analyze::missing-description` | repairable |
+| `G::analyze::applies-on-non-block` | error |
+| `G::analyze::applies-on-undescribed-block` | repairable |
 
 **Imports phase (1):**
 
@@ -420,7 +424,7 @@ Phase 6b structural validation, implemented in `glyph validate-output`. These di
 | `G::expand::procedure-duplicate` | error |
 | `G::expand::procedure-order` | error |
 
-**Total: 68 compiler-scope diagnostic IDs** (15 Parse + 22 Analyze + 1 Imports + 5 Validate + 1 Build + 24 Validate-output).
+**Total: 72 compiler-scope diagnostic IDs** (17 Parse + 24 Analyze + 1 Imports + 5 Validate + 1 Build + 24 Validate-output).
 
 ### 4.2 Agent-scope diagnostics (not in compiler)
 
@@ -480,7 +484,7 @@ The 5-skill project in `tests/corpus/multi-file/` (§3) compiles successfully:
 
 ### Bar 5: Diagnostic coverage
 
-Every compiler-scope diagnostic ID (§4.1, 68 total) has at least one triggering test:
+Every compiler-scope diagnostic ID (§4.1, 72 total) has at least one triggering test:
 - Parse and Analyze diagnostics: triggered by corpus files in `invalid/` (exit 1) and `repairable/` (exit 2)
 - Validate diagnostics: triggered by unit tests with hand-crafted invalid IR (§4.4)
 - Validate-output diagnostics (24 Phase 6b): triggered by unit tests feeding crafted `.ir.json` + `.md` pairs to `glyph validate-output`
