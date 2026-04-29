@@ -33,7 +33,10 @@ Strings are opaque instruction text. There is no source-time interpolation synta
 
 This follows foundations: not a prompt template system and foundations: text reuse is not prompt templating, plus the maintenance rule against ad hoc string concatenation.
 
-**Parameter slot exception (`{name}`).** A `{name}` slot — a strict identifier (`[a-zA-Z_][a-zA-Z0-9_]*`) inside single curly braces — is **not** source-time interpolation. It is a *runtime parameter slot* preserved verbatim into the compiled Markdown for the consuming LLM to fill at execution time (`compiled-output.md` §Parameter References In Steps). The compiler never substitutes the slot's value.
+**Name slot exception (`{name}`).** A `{name}` slot — a strict identifier (`[a-zA-Z_][a-zA-Z0-9_]*`) inside single curly braces — is **not** source-time interpolation. It is a *name reference* that can resolve to a declared parameter or a local binding in scope. The two kinds compile differently:
+
+- **Parameter references** (`{name}` resolves to a declared parameter) are preserved verbatim as runtime slots in the compiled Markdown for the consuming LLM to fill from user context at runtime (`compiled-output.md` §Parameter References In Steps). The compiler never substitutes the slot's value.
+- **Local binding references** (`{name}` resolves to a local binding from an assignment like `diagnosis = analyze_error(...)`) are resolved by the Expand pass (Step 2) into natural-language cross-references in the compiled prose. They do **not** survive as literal `{name}` slots — the consuming LLM already produced the referenced value in a prior step and does not need a placeholder for its own output. For example, `"Apply the fix based on {diagnosis}"` might compile to "Apply the fix based on the diagnosis from your earlier analysis."
 
 Slots are legal **only inside instruction-bearing string positions**: `text` / `generated text` bodies, `generated block` body strings, inline instruction strings inside `flow:`, constraint texts, and string arguments to stdlib calls whose body becomes a compiled instruction (`subagent`, `send`). A `{name}` token in any other string position (a parameter default value, a `description:` field, etc.) emits `G::parse::param-slot-in-non-instruction-string` (repairable: the braces are stripped and the content is treated as literal).
 

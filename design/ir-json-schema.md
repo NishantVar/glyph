@@ -108,6 +108,7 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
   "role": "step",
   "scoped_constraints": [],
   "resolved_body_text": "Inspect the failure in {scope} and identify what is failing.",
+  "local_refs": [],
   "projection_mode": "inline",
   "callee_flow": null,
   "callee_constraints": null,
@@ -127,11 +128,43 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
 | `site_modifier` | string or null | yes | `with` modifier text, or `null`. |
 | `role` | string | yes | Role enum value. |
 | `scoped_constraints` | array of Constraint | yes | Callee's constraints scoped to this call. May be empty. |
-| `resolved_body_text` | string | yes | Callee body with `{param}` slots preserved. Post-Step-1. |
+| `resolved_body_text` | string | yes | Callee body with `{param}` and `{local}` slots preserved as literal `{name}` tokens. Readers cross-reference `local_refs` to distinguish local-binding slots from parameter slots. Post-Step-1. |
+| `local_refs` | array of LocalRef | yes | One entry per local-binding `{name}` slot in `resolved_body_text`. Empty array when the body has no local-binding references. Each entry: `{ "name": "<binding>", "node_id": "<producer>" }`. Step 2 must resolve every entry into natural-language prose; Phase 6b checks via `G::expand::unresolved-local-ref`. |
 | `projection_mode` | string | yes | `"inline"`, `"same_file_procedure"`, or `"external_file"`. |
 | `callee_flow` | array of FlowNode or null | yes | Present only when `projection_mode != "inline"`. |
 | `callee_constraints` | array of Constraint or null | yes | Present only when `projection_mode != "inline"`. |
 | `procedure_path` | string or null | yes | Relative file path. Present only when `projection_mode == "external_file"`. |
+
+**Worked example — Call with `local_refs`:**
+
+Given source `diagnosis = analyze_error(scope)` followed by a call whose body references `{diagnosis}`:
+
+```json
+{
+  "node_id": "n8",
+  "kind": "call",
+  "target": "propose_fix",
+  "args": {
+    "scope": { "node_id": "n9", "kind": "binding_ref", "name": "scope" }
+  },
+  "output": null,
+  "return_type": null,
+  "effects": [],
+  "site_modifier": null,
+  "role": "step",
+  "scoped_constraints": [],
+  "resolved_body_text": "Propose a fix based on {diagnosis} within {scope}.",
+  "local_refs": [
+    { "name": "diagnosis", "node_id": "n7" }
+  ],
+  "projection_mode": "inline",
+  "callee_flow": null,
+  "callee_constraints": null,
+  "procedure_path": null
+}
+```
+
+Here `{scope}` is a parameter slot (not in `local_refs`) and `{diagnosis}` is a local-binding slot (listed in `local_refs` with the producing node `n7`). Step 2 must resolve `{diagnosis}` into prose; `{scope}` passes through to compiled output.
 
 ### InlineInstruction
 

@@ -90,7 +90,7 @@ The skill encodes this state machine. The agent follows it top-to-bottom.
 
 ## Phase 3b: Repair Guidance
 
-When `glyph compile` exits with code 2, stdout contains a JSON array of diagnostics. The agent reads these and edits the source `.glyph.md` file to fix them, then re-invokes the compiler.
+When `glyph compile` exits with code 2, stdout contains NDJSON — one JSON object per file per line, each with a `diagnostics` array. The agent reads these and edits the source `.glyph.md` file to fix them, then re-invokes the compiler.
 
 The agent receives diagnostics in this shape (via `--format json`):
 
@@ -136,14 +136,14 @@ Each repairable diagnostic has a specific fix pattern. The agent applies these t
 | Diagnostic ID | Fix |
 |---|---|
 | `G::analyze::undefined-name` | Add a `generated text <name> = "<one-sentence content>"` declaration at the bottom of the file (after all non-generated declarations). Infer the content from the name and its usage context in the flow. |
-| `G::analyze::undefined-call` | Add a `generated block <name>(<inferred-params>)` with a one-sentence body. Infer parameter names from the call arguments. The body should be a single instruction string describing what the block does. Place after all non-generated declarations. |
+| `G::analyze::undefined-call` | Add a `generated block <name>(<inferred-params>)` with a single-string body. Infer parameter names from the call arguments. The body should be a single instruction string describing what the block does. Place after all non-generated declarations. |
 | `G::analyze::duplicate-import` | Remove the duplicate `import` line, keeping the first occurrence. |
 | `G::analyze::unused-import` | Remove the `import` line for the unused name. |
 | `G::analyze::ambiguous-role` | Add an explicit role marker. If the statement is meant as a constraint, prefix with `require` or `avoid`. If it's meant as a step, ensure it's an instruction string or call. |
-| `G::analyze::missing-export-effects` | Add an `effects:` sub-section to the `export block` declaration listing the inferred effects. Read the block's body to determine which effects apply (e.g., if it reads files, add `reads_files`). |
+| `G::analyze::missing-effects` | Phase 3a handles this deterministically — no LLM action needed. The compiler auto-adds an `effects:` sub-section with the inferred effects and emits `G::repair::inferred-effects`. If this diagnostic appears in the 3b residual set, it is a compiler bug. |
 | `G::analyze::missing-return` | Add a `return` statement as the last line of the `flow:` body. Infer the return expression from the block's purpose. |
 | `G::analyze::stdlib-missing-import` | Add `import "@glyph/std" (subagent)` (or whichever stdlib name is used) at the top of the file, after any existing imports. |
-| `G::analyze::nested-branch` | Extract the inner branch into a `generated block` declaration. Replace the inner branch with a call to the new block. The generated block's flow should contain the extracted branch logic. |
+| `G::analyze::nested-branch` | Extract the inner branch into a `generated block` declaration. Replace the inner branch with a call to the new block. The generated block's body should be a single instruction string summarizing the extracted branch logic. |
 | `G::analyze::missing-description` | Add a `description:` sub-section to the `skill` declaration with a one-sentence summary of when and why to use this skill. Infer the description from the skill name, parameters, effects, constraints, and flow body. The description should focus on the skill's trigger condition (when an agent should select it), not its implementation steps. |
 | `G::analyze::applies-on-undescribed-block` | Add a `description:` sub-section to the **block** named in the diagnostic, with a one-sentence summary of **when this block applies** — i.e. the user-intent or runtime condition under which the calling `if`/`elif` arm should fire. Infer the trigger from the block name, the body of the arm that uses `BLOCKNAME.applies()`, and any sibling arms. Phrase as a condition (e.g. "When the user asks to fork a terminal pre-loaded with a plan."), not as an implementation summary. Repairable only when the block is defined in the same file under compilation; if the block is imported, this diagnostic is an error and the author must edit the source library directly. |
 
@@ -152,7 +152,7 @@ Each repairable diagnostic has a specific fix pattern. The agent applies these t
 - **Fix all diagnostics in one pass.** Apply all fixes to the source file before re-invoking the compiler. Don't fix one at a time.
 - **Preserve author intent.** Don't rename things, reorder unrelated code, or add features. Fix only what the diagnostics flag.
 - **Generated content is minimal.** `generated text` bodies are one sentence. `generated block` bodies are one instruction string. Don't over-elaborate.
-- **Infer from context.** When generating content for `undefined-name` or `undefined-call`, read the name itself and its usage in the surrounding flow to write a reasonable one-sentence body. E.g., `preserve_existing_patterns` → `"Follow the repository's existing patterns before introducing new abstractions."`
+- **Infer from context.** When generating content for `undefined-name` or `undefined-call`, read the name itself and its usage in the surrounding flow to write a reasonable single-string body. E.g., `preserve_existing_patterns` → `"Follow the repository's existing patterns before introducing new abstractions."`
 - **Don't export generated declarations.** `export generated text` and `export generated block` are invalid syntax.
 
 ## Phase 3c: Constraint Conflict Scan
@@ -175,10 +175,10 @@ If the agent's conflict assessment is malformed (can't parse its own output as t
 ## Phase 6 Step 2: Prose Reshaping
 
 After `glyph compile` exits 0, the compiler has written:
-- `foo.md` — mechanical Markdown (Phase 7 output). Frontmatter is final. `## Parameters` is final. `## Instructions` contains mechanically expanded prose.
+- `foo.md` — mechanical Markdown (Phase 7 output). Frontmatter is final. `## Parameters` contains the parameter list skeleton (names, types, and either a default value or a `(required)` marker per parameter) but descriptions are placeholder prose. `## Instructions` contains mechanically expanded prose.
 - `foo.ir.json` — the full resolved IR (post-Step-1) as JSON.
 
-The agent's job: **rewrite the `## Instructions` section** of `foo.md` using the IR as a guide, producing human-quality prose. The frontmatter and `## Parameters` section are **not touched** — they are already final from the compiler.
+The agent's job: **rewrite the `## Parameters` descriptions and the `## Instructions` section** of `foo.md` using the IR as a guide, producing human-quality prose. The frontmatter is **not touched** — it is already final from the compiler. For `## Parameters`, Step 2 generates a brief description for each parameter from the parameter's name, type, usage context, and default value (if any); it must not add, remove, or rename parameters (the parameter list skeleton is compiler-owned).
 
 ### What the agent rewrites
 
@@ -205,10 +205,12 @@ The agent reads `foo.ir.json` and rewrites the `## Instructions` section to:
 
 7. **Preserve `{param}` references exactly.** Parameter slots like `{scope}` pass through unchanged. Don't invent new ones. Don't drop existing ones.
 
+8. **Resolve `local_ref` slots into prose.** Local binding references like `{diagnosis}` (where `diagnosis` is from an assignment, not a declared parameter) must be resolved into natural-language cross-references — e.g., "the diagnosis from your earlier analysis." They must **not** survive as literal `{name}` tokens in the output.
+
 ### What the agent does NOT do
 
 - Don't touch the frontmatter (name, description, effects).
-- Don't touch `## Parameters`.
+- Don't add, remove, or rename parameters in `## Parameters` — only generate their descriptions.
 - Don't add sections beyond `### Steps`, `### Constraints`, `### Procedure: <name>`.
 - Don't add code blocks, tables, or HTML to the instructions.
 - Don't exceed 3 sentences per Step (non-conditional) or per sub-step.
@@ -240,7 +242,7 @@ glyph validate-output <ir-json-path> <md-path> [--format pretty|json]
 - **Exit 1:** Structural violations found. Diagnostics on stderr (pretty) or stdout (JSON).
 - **Exit 3:** Invocation error (missing file, bad path, IO failure).
 
-### Validation Checks (24 diagnostic IDs)
+### Validation Checks (25 diagnostic IDs)
 
 All checks are deterministic. The validator parses the Markdown structurally (heading extraction, list-item counting) and cross-references against the IR JSON.
 
@@ -279,6 +281,7 @@ All checks are deterministic. The validator parses the Markdown structurally (he
 |---|---|
 | `G::expand::invented-param-ref` | Every `{name}` token in the Markdown must match a declared parameter name in the IR. |
 | `G::expand::dropped-param-ref` | Every parameter referenced in IR node bodies must appear at least once in the Markdown. |
+| `G::expand::unresolved-local-ref` | Every `local_ref` slot must be resolved into prose — no literal `{name}` tokens for local bindings may survive. |
 | `G::expand::params-section-mismatch` | Item count in `## Parameters` must equal the IR's parameter count. |
 | `G::expand::params-section-missing` | If the IR has parameters, `## Parameters` must be present. |
 | `G::expand::params-section-spurious` | If the IR has no parameters, `## Parameters` must be absent. |
@@ -340,6 +343,6 @@ For MVP, the agent skill ships **inside the `glyph` repo** at a known path (e.g.
 - **`cli.md`** — exit code 3 added for invocation errors (previously overloaded on exit 2). `validate-output` subcommand added.
 - **`build-foundation.md`** — exit code contract is 0/1/2/3, matching `cli.md`.
 - **`diagnostics.md`** — 24 `G::expand::*` diagnostic IDs are compiler-scope (implemented in `validate-output`), not agent-scope.
-- **`mvp-acceptance.md`** — the 24 agent-scope 6b diagnostics move to compiler-scope under `validate-output`. Agent-scope diagnostic count is 10 (4 repair notifications + 5 repair execution failures + 1 expand `llm-unavailable`). Compiler-scope is 72 (17 Parse + 24 Analyze + 1 Imports + 5 Validate + 1 Build + 24 Validate-output).
+- **`mvp-acceptance.md`** — the 25 agent-scope 6b diagnostics move to compiler-scope under `validate-output`. Agent-scope diagnostic count is 11 (5 repair notifications + 5 repair execution failures + 1 expand `llm-unavailable`). Compiler-scope is 75 (17 Parse + 26 Analyze + 1 Imports + 5 Validate + 1 Build + 25 Validate-output).
 - **`ir-schema.md`** — JSON serialization shapes defined here are the `serde_json` projection of the Rust IR types from `ir-schema.md`.
 - **`compiled-output.md`** — constraint wording exemplars in §Step 2 are the authoritative patterns for the open question in `compiled-output.md` §Open Questions.
