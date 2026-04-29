@@ -77,7 +77,7 @@ effects: [reads_files, writes_files]
 | 4 Lower | Inline strings become `InlineInstruction` nodes with `role: Step`. Constraint markers + resolved text become `Constraint` nodes with strength/polarity. Node IDs assigned. |
 | 5 Validate | All checks pass: node IDs unique, no unresolved callees, no cycles, no empty steps. |
 | 6 Step 1 | `text` refs on constraints already resolved to strings. Inline strings pass through. No `Call` nodes → no projection tier decisions. |
-| 7 Emit | Assembles frontmatter (name, description, effects), `## Instructions` with `### Steps` (4 items) and `### Constraints` (2 items). No `## Parameters`. Writes `update_docs.md`. |
+| 7 Emit | Assembles frontmatter (name, description, effects), `## Instructions` with `### Steps` (4 items) and `### Constraints` (2 items). No `## Parameters`, no `### Context`. Writes `update_docs.md`. |
 
 ### CLI test
 

@@ -136,7 +136,7 @@ Each repairable diagnostic has a specific fix pattern. The agent applies these t
 | Diagnostic ID | Fix |
 |---|---|
 | `G::analyze::undefined-name` | Add a `generated text <name> = "<single-string content>"` declaration at the bottom of the file (after all non-generated declarations). Infer the content from the name and its usage context in the flow. |
-| `G::analyze::undefined-call` | Add a `generated block <name>(<inferred-params>)` with a single-string body. Infer parameter names from the call arguments. The body should be a single instruction string describing what the block does. Place after all non-generated declarations. |
+| `G::analyze::undefined-call` | Add a `generated block <name>(<inferred-params>)` with a single-string body (the `flow:`-omitted shorthand per `language-surface.md` §3.2). Infer parameter names from the call arguments. The body should be a single instruction string describing what the block does. Place after all non-generated declarations. |
 | `G::analyze::duplicate-import` | Remove the duplicate `import` line, keeping the first occurrence. |
 | `G::analyze::unused-import` | Remove the `import` line for the unused name. |
 | `G::analyze::ambiguous-role` | Add an explicit role marker. If the statement is meant as a constraint, prefix with `require` or `avoid`. If it's meant as a step, ensure it's an instruction string or call. |
@@ -211,7 +211,7 @@ The agent reads `foo.ir.json` and rewrites the `## Instructions` section to:
 
 - Don't touch the frontmatter (name, description, effects).
 - Don't add, remove, or rename parameters in `## Parameters` — only generate their descriptions.
-- Don't add sections beyond `### Steps`, `### Constraints`, `### Procedure: <name>`.
+- Don't add sections beyond `### Context`, `### Steps`, `### Constraints`, `### Procedure: <name>`.
 - Don't add code blocks, tables, or HTML to the instructions.
 - Don't exceed 3 sentences per Step (non-conditional) or per sub-step.
 - Don't exceed 1 sentence per Constraint.
@@ -252,7 +252,7 @@ All checks are deterministic. The validator parses the Markdown structurally (he
 |---|---|
 | `G::expand::extra-h2` | Only `## Parameters` and `## Instructions` allowed as H2 headings. |
 | `G::expand::missing-instructions` | `## Instructions` must be present. |
-| `G::expand::extra-h3` | Only `### Steps`, `### Constraints`, `### Procedure: <name>` allowed as H3 headings. |
+| `G::expand::extra-h3` | Only `### Context`, `### Steps`, `### Constraints`, `### Procedure: <name>` allowed as H3 headings. |
 
 #### Role preservation (1-to-1 count matching against IR)
 
@@ -321,7 +321,7 @@ The `--emit-ir` flag causes `glyph compile` to write `foo.ir.json` alongside `fo
 Key points for the agent:
 
 - **Envelope:** `{"ir_version": 1, "compiler": "glyph 0.1.0", "source_file": "...", "skill": {...}}`.
-- **All enums are lowercase snake_case.** Role values are `"input_contract"`, `"step"`, `"constraint"`, `"output_contract"`. TypeTag built-ins are `"string"`, `"int"`, etc. Domain types are `{"domain_type": "<name>"}`.
+- **All enums are lowercase snake_case.** Role values are `"input_contract"`, `"step"`, `"constraint"`, `"context"`, `"output_contract"`. TypeTag built-ins are `"string"`, `"int"`, etc. Domain types are `{"domain_type": "<name>"}`.
 - **Every node carries `node_id`** (string, e.g. `"n0"`), including Param and Expr sub-nodes.
 - **Expression and Value unions use a `kind` discriminator.** See `ir-json-schema.md` §Expression Union and §Value Union.
 - **Version check:** If `ir_version > KNOWN_MAX`, warn and attempt to proceed. Ignore unknown fields.

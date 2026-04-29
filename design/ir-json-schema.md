@@ -13,7 +13,7 @@ Both subcommands must agree on this schema. A change to the IR JSON shape requir
 
 **Scope.** `--emit-ir` operates on **skill files only** (files containing exactly one `skill` declaration). Library files (zero `skill` declarations) do not produce `.ir.json` output — the agent never runs Step 2 on a library file, and `validate-output` has no use for library IR. If a future visualizer needs library IR, a separate flag or subcommand can be added.
 
-**Node kinds in the JSON.** The JSON output contains `Skill` as the root and flow-level nodes (`Call`, `InlineInstruction`, `InstructionRef`, `Branch`, `Return`, `Constraint`) plus `Param`, `ElifBranch`, and `Expr` sub-nodes. `Block` and `ExportBlock` compilation units from `ir-schema.md` do **not** appear as separate nodes in the JSON — their content is inlined into `Call` nodes via the resolved fields (`resolved_body_text`, `callee_flow`, `callee_constraints`). The JSON `"call"` kind represents a **resolved call** (post-Step-1), carrying both the base `Call` fields from `ir-schema.md` and the resolved fields from `ir-schema.md` §Resolved IR (`ResolvedCall`).
+**Node kinds in the JSON.** The JSON output contains `Skill` as the root and flow-level nodes (`Call`, `InlineInstruction`, `InstructionRef`, `Branch`, `Return`, `Constraint`, `ContextNode`) plus `Param`, `ElifBranch`, and `Expr` sub-nodes. `Block` and `ExportBlock` compilation units from `ir-schema.md` do **not** appear as separate nodes in the JSON — their content is inlined into `Call` nodes via the resolved fields (`resolved_body_text`, `callee_flow`, `callee_context`, `callee_constraints`). The JSON `"call"` kind represents a **resolved call** (post-Step-1), carrying both the base `Call` fields from `ir-schema.md` and the resolved fields from `ir-schema.md` §Resolved IR (`ResolvedCall`).
 
 ## Top-Level Envelope
 
@@ -55,6 +55,7 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
   "description": "Debug and fix a bug with minimal changes.",
   "params": [ ... ],
   "effects": ["reads_files", "writes_files"],
+  "context": [ ... ],
   "constraints": [ ... ],
   "flow": [ ... ]
 }
@@ -68,6 +69,7 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
 | `description` | string | yes | Always present after Repair. |
 | `params` | array of Param | yes | May be empty. |
 | `effects` | array of string | yes | Inferred effect set. Empty array when `none`. |
+| `context` | array of ContextNode | yes | Top-level declared context entries. May be empty. |
 | `constraints` | array of Constraint | yes | Top-level declared constraints only. May be empty. |
 | `flow` | array of FlowNode | yes | Ordered flow nodes. |
 
@@ -111,6 +113,7 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
   "local_refs": [],
   "projection_mode": "inline",
   "callee_flow": null,
+  "callee_context": null,
   "callee_constraints": null,
   "procedure_path": null
 }
@@ -132,6 +135,7 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
 | `local_refs` | array of LocalRef | yes | One entry per local-binding `{name}` slot in `resolved_body_text`. Empty array when the body has no local-binding references. Each entry: `{ "name": "<binding>", "node_id": "<producer>" }`. Step 2 must resolve every entry into natural-language prose; Phase 6b checks via `G::expand::unresolved-local-ref`. |
 | `projection_mode` | string | yes | `"inline"`, `"same_file_procedure"`, or `"external_file"`. |
 | `callee_flow` | array of FlowNode or null | yes | Present only when `projection_mode != "inline"`. |
+| `callee_context` | array of ContextNode or null | yes | Present only when `projection_mode != "inline"`. |
 | `callee_constraints` | array of Constraint or null | yes | Present only when `projection_mode != "inline"`. |
 | `procedure_path` | string or null | yes | Relative file path. Present only when `projection_mode == "external_file"`. |
 
@@ -159,6 +163,7 @@ Given source `diagnosis = analyze_error(scope)` followed by a call whose body re
   ],
   "projection_mode": "inline",
   "callee_flow": null,
+  "callee_context": null,
   "callee_constraints": null,
   "procedure_path": null
 }
@@ -319,6 +324,22 @@ Here `{scope}` is a parameter slot (not in `local_refs`) and `{diagnosis}` is a 
 
 Constraints in `scoped_constraints` on a Call node use the same shape.
 
+### ContextNode
+
+```json
+{
+  "node_id": "n14",
+  "kind": "context",
+  "text": "This codebase follows a monorepo layout."
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `node_id` | string | yes | |
+| `kind` | string | yes | Always `"context"`. |
+| `text` | string | yes | Resolved context text. |
+
 ## Expression Union
 
 Expressions appear as values in Call `args`, Return `value`, and Param `default`. Every Expression carries a `node_id` and a `kind` discriminator.
@@ -373,7 +394,7 @@ All enums serialize as **lowercase snake_case strings**. One convention, no exce
 
 | Enum | JSON values |
 |---|---|
-| Role | `"input_contract"`, `"step"`, `"constraint"`, `"output_contract"` |
+| Role | `"input_contract"`, `"step"`, `"constraint"`, `"context"`, `"output_contract"` |
 | Strength | `"soft"`, `"hard"` |
 | Polarity | `"require"`, `"avoid"` |
 | EffectKeyword | `"none"`, `"reads_files"`, `"reads_env"`, `"writes_files"`, `"runs_commands"`, `"uses_network"`, `"asks_user"`, `"creates_artifacts"`, `"spawns_agent"` |
@@ -429,16 +450,23 @@ A complete `fix_bug.ir.json` for the `fix_bug` skill from `expand.md` §8.
       }
     ],
     "effects": ["reads_files", "writes_files", "runs_commands"],
-    "constraints": [
+    "context": [
       {
         "node_id": "n2",
+        "kind": "context",
+        "text": "This skill assumes the bug is reproducible in the local environment."
+      }
+    ],
+    "constraints": [
+      {
+        "node_id": "n3",
         "kind": "constraint",
         "text": "Making changes outside {scope}.",
         "strength": "soft",
         "polarity": "avoid"
       },
       {
-        "node_id": "n3",
+        "node_id": "n4",
         "kind": "constraint",
         "text": "Follow the repository's existing patterns before introducing new abstractions.",
         "strength": "soft",
@@ -447,11 +475,11 @@ A complete `fix_bug.ir.json` for the `fix_bug` skill from `expand.md` §8.
     ],
     "flow": [
       {
-        "node_id": "n4",
+        "node_id": "n5",
         "kind": "call",
         "target": "inspect_failure",
         "args": {
-          "area": { "node_id": "n5", "kind": "binding_ref", "name": "scope" }
+          "area": { "node_id": "n6", "kind": "binding_ref", "name": "scope" }
         },
         "output": null,
         "return_type": null,
@@ -462,11 +490,12 @@ A complete `fix_bug.ir.json` for the `fix_bug` skill from `expand.md` §8.
         "resolved_body_text": "Inspect the failure in {scope} and identify what is failing.",
         "projection_mode": "inline",
         "callee_flow": null,
+        "callee_context": null,
         "callee_constraints": null,
         "procedure_path": null
       },
       {
-        "node_id": "n6",
+        "node_id": "n7",
         "kind": "call",
         "target": "identify_root_cause",
         "args": {},
@@ -479,17 +508,18 @@ A complete `fix_bug.ir.json` for the `fix_bug` skill from `expand.md` §8.
         "resolved_body_text": "Identify the root cause of the issue.",
         "projection_mode": "inline",
         "callee_flow": null,
+        "callee_context": null,
         "callee_constraints": null,
         "procedure_path": null
       },
       {
-        "node_id": "n7",
+        "node_id": "n8",
         "kind": "inline_instruction",
         "text": "Don't propose a fix until you've confirmed the root cause.",
         "role": "step"
       },
       {
-        "node_id": "n8",
+        "node_id": "n9",
         "kind": "call",
         "target": "patch_minimally",
         "args": {},
@@ -502,11 +532,12 @@ A complete `fix_bug.ir.json` for the `fix_bug` skill from `expand.md` §8.
         "resolved_body_text": "Apply the smallest change that fixes the issue.",
         "projection_mode": "inline",
         "callee_flow": null,
+        "callee_context": null,
         "callee_constraints": null,
         "procedure_path": null
       },
       {
-        "node_id": "n9",
+        "node_id": "n10",
         "kind": "instruction_ref",
         "name": "validate_before_success",
         "resolved_text": "Validate that the fix works before reporting success.",
@@ -514,10 +545,10 @@ A complete `fix_bug.ir.json` for the `fix_bug` skill from `expand.md` §8.
         "constraint_attrs": null
       },
       {
-        "node_id": "n10",
+        "node_id": "n11",
         "kind": "return",
         "value": {
-          "node_id": "n11",
+          "node_id": "n12",
           "kind": "call_expr",
           "target": "summarize_changes",
           "args": {}

@@ -260,11 +260,11 @@ It does **not** scan across scopes — a callee's scoped constraints (carried as
 
 ## 5. Generated Definitions
 
-Repair materializes two kinds of generated declarations: `generated text` for undefined bare names, and `generated block` for undefined parens-calls. Both follow the same stability, placement, promotion, and idempotence rules.
+Repair materializes two kinds of generated declarations: `generated text` for undefined bare names used with keyword prefixes, and `generated block` for undefined parens-calls and undefined bare names in `flow:`. Both follow the same stability, placement, promotion, and idempotence rules. The choice mirrors the text/block distinction (`language-surface.md` §1): `text` declarations are named string constants with no callable interface; `block` declarations are callable and encapsulate instructions. Repair preserves this distinction — a bare name used with a keyword prefix (`require`/`avoid`/`must`/`context`) materializes as `generated text`; a parens-call materializes as `generated block`. A bare name in `flow:` without a keyword prefix is a compile error (`G::analyze::text-in-flow`); Repair adds parentheses and materializes as `generated block`.
 
 ### 5.1 Syntax
 
-**`generated text`** — for undefined bare names (no parens at the use site):
+**`generated text`** — for undefined bare names used with keyword prefixes (`require`/`avoid`/`must`/`context`):
 
 ```
 generated text <name> = <string-literal>
@@ -280,7 +280,7 @@ generated text root_cause_before_fix = """
 generated text validate_before_success = "Run the full validation suite and confirm all checks pass before reporting success."
 ```
 
-**`generated block`** — for undefined parens-calls (the use site has parentheses, with or without arguments):
+**`generated block`** — for undefined parens-calls (the use site has parentheses, with or without arguments), and for undefined bare names in `flow:` without a keyword prefix (Repair adds parens to fix `G::analyze::text-in-flow`):
 
 ```
 generated block <name>(<params>)
@@ -301,7 +301,7 @@ Rules common to both:
 
 - `generated` is already reserved (`values-and-names.md`, Reserved Words section). No new reserved words.
 - String literals follow `values-and-names.md`: inline `"..."` or block `"""..."""`, no interpolation.
-- The repair pass picks the kind from the use site: parens-call → `generated block`; bare name → `generated text`. Never both for the same name.
+- The repair pass picks the kind from the use site: parens-call → `generated block`; bare name with keyword prefix (`require`/`avoid`/`must`/`context`) → `generated text`; bare name in `flow:` without keyword prefix → Repair adds parens (fixing `G::analyze::text-in-flow`) and materializes as `generated block`. Never both for the same name.
 
 Rules specific to `generated text`:
 
@@ -311,7 +311,7 @@ Rules specific to `generated text`:
 Rules specific to `generated block`:
 
 - Minimal `block` shape with a `generated` prefix. Parameters are allowed (inferred from the use site); the generated form has no explicit return type annotation.
-- The body is exactly one inline or block string — a single instruction string. This is the **single-string rule**: generated bodies stay close to the name's meaning and leave room for the `with` modifier and downstream passes to shape the final instruction. The string may contain compound sentences (e.g. describing both branches of an extracted conditional), but the body is always one string literal, never a `flow:` with multiple statements. If the name implies a multi-step workflow, repair emits one summarizing instruction string and optionally leaves a diagnostic suggesting the author promote it to a hand-written `block` with a `flow:`.
+- The body uses the single-string shorthand available to all simple blocks (`language-surface.md` §3.2): one inline or block string with no `flow:` header and no other sub-sections. The string is always an instruction (`Step`) — never context or background. Compound sentences are allowed; multi-statement `flow:` bodies are not. This keeps the machine-generated definition close to the name's meaning and leaves room for the `with` modifier and downstream passes to shape the final instruction. If the name implies a multi-step workflow, repair emits one summarizing instruction string and inserts a `//` comment immediately above the generated declaration suggesting the author promote it to a hand-written `block` with a full `flow:` body (e.g., `// Promote to a hand-written block with flow: if this needs multiple steps`). This is editorial guidance in source, not a structured diagnostic.
 - The body may reference parameters by name (e.g. `"{area}"`); the expand pass substitutes them with concrete values. No other interpolation semantics in MVP.
 
 ### 5.2 Repair-Only Authorship
@@ -407,8 +407,8 @@ The repair pass may add:
 - `generated text` definitions for unresolved compound names (e.g. `avoid_unrelated_edits`), with full semantics baked into the text body;
 - missing type annotations;
 - local declarations for author-defined shorthand;
-- stable `generated text` definitions for undefined bare names;
-- stable `generated block` definitions for undefined parens-calls (single-string bodies);
+- stable `generated text` definitions for undefined bare names used with keyword prefixes (`require`/`avoid`/`must`/`context`);
+- stable `generated block` definitions for undefined parens-calls and undefined bare names in `flow:` (single-string bodies);
 - missing imports when the referenced library is obvious from available context (deferred from MVP — see `todo.md`);
 - missing `effects:` on any declaration (skill, block, or export block) whose inferred set is non-empty — Phase 3a deterministically inserts an `effects:` sub-section with the inferred set into the source, triggered by `G::analyze::missing-effects`, and emits `G::repair::inferred-effects` (warning, informational) so the author knows what was added (see `ir-and-semantics.md` §3 and `diagnostics.md`);
 - missing `description:` on a `skill` — Phase 3b generates a single-string description from the skill name, parameters, and body, and adds it as a `description:` sub-section, triggered by `G::analyze::missing-description` (see `ir-and-semantics.md` §4 and `diagnostics.md`);

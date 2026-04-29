@@ -23,7 +23,7 @@ Step 2 must not:
 - repair invalid source or add missing definitions (that is Phase 3 Repair, `repair.md`);
 - introduce new IR nodes, new calls, new constraints, or new steps;
 - reinterpret or reorder the skill's workflow;
-- invent sections beyond `## Instructions` with its `### Steps` and `### Constraints` sub-sections (see `compiled-output.md`);
+- invent sections beyond `## Instructions` with its `### Context`, `### Steps`, and `### Constraints` sub-sections (see `compiled-output.md`);
 - invent new `{param}` references that do not correspond to declared parameters (declared parameter references must be preserved), or fail to resolve `local_ref` slots into natural-language prose;
 - change effects, types, or the call graph;
 - re-materialize content that was already prose after Step 1 (inline strings and resolved `text` references pass through untouched);
@@ -100,7 +100,7 @@ Step 2 must return **Markdown only** — specifically, the body of the compiled 
 The output must preserve the following structural invariants:
 
 1. **Exactly one `## Instructions` H2.** No other H2 sections.
-2. **H3 sub-sections under `## Instructions`** are limited to: `### Steps`, `### Constraints`, and zero or more `### Procedure: <name>` sections. `### Constraints` is omitted when the IR has no constraints. `### Steps` is omitted only for pure constraint-only skills. `### Procedure:` sections appear only for calls with `same_file_procedure` projection.
+2. **H3 sub-sections under `## Instructions`** are limited to: `### Context`, `### Steps`, `### Constraints`, and zero or more `### Procedure: <name>` sections. `### Context` is omitted when the IR has no context. `### Constraints` is omitted when the IR has no constraints. `### Steps` is omitted only for pure constraint-only skills. `### Procedure:` sections appear only for calls with `same_file_procedure` projection.
 3. **Role preservation** (1-to-1):
    - Every top-level `Step` node (and every top-level `Call`, `InlineInstruction`, `InstructionRef` that projects to a Step per `compiled-output.md`) must produce exactly one top-level numbered list item under `### Steps`, in the same order as the IR.
    - Every top-level `Branch` node must produce exactly one top-level numbered list item under `### Steps`, containing lettered sub-steps per arm (see `compiled-output.md` §Constraint Rendering). Each arm is introduced by a condition header (`If <condition>:` for `if`/`elif`, `Otherwise:` for `else`), and each Step-projecting node inside the arm produces a lettered sub-step (`a.`, `b.`, `c.`). Letters reset per arm.
@@ -128,9 +128,9 @@ For the Markdown returned by Step 2:
 - **Section shape.**
   - At most two H2 sections: `## Parameters` (conditional) and `## Instructions` (always present).
   - No other H2 sections exist.
-  - H3 sections under `## Instructions` are limited to: `### Steps`, `### Constraints`, and zero or more `### Procedure: <name>` sections. No other H3s.
+  - H3 sections under `## Instructions` are limited to: `### Context`, `### Steps`, `### Constraints`, and zero or more `### Procedure: <name>` sections. No other H3s.
   - At least one of `### Steps` or `### Constraints` is present (per `compiled-output.md`).
-  - H3 ordering: `### Steps` first, then `### Constraints` (if present), then `### Procedure:` sections (if any) in order of first reference from `### Steps`.
+  - H3 ordering: `### Context` first (if present), then `### Steps`, then `### Constraints` (if present), then `### Procedure:` sections (if any) in order of first reference from `### Steps`.
 
 - **Role preservation (1-to-1 count).**
   - **Top-level Step count.** The number of top-level numbered items under `### Steps` equals:
@@ -152,7 +152,7 @@ For the Markdown returned by Step 2:
   - Every Step that references a procedure uses the procedure's name in its prose.
   - Reference count: the number of Steps referencing procedure X matches the number of Call nodes targeting X with `same_file_procedure` projection.
   - No duplicate procedure names.
-  - Procedure sections appear after `### Steps` and `### Constraints`, ordered by first reference.
+  - Procedure sections appear after `### Context`, `### Steps`, and `### Constraints`, ordered by first reference.
 
 - **External file reference validation** (for `external_file` projections).
   - Every Call node with `projection_mode: external_file` produces a Step whose prose includes the procedure file path from `procedure_path`.
@@ -193,7 +193,7 @@ For the Markdown returned by Step 2:
 |---|---|---|
 | `G::expand::extra-h2` | error | Step 2 emitted an H2 other than `## Instructions` |
 | `G::expand::missing-instructions` | error | Step 2 did not emit `## Instructions` |
-| `G::expand::extra-h3` | error | Step 2 emitted an H3 not matching `### Steps`, `### Constraints`, or `### Procedure: <name>` |
+| `G::expand::extra-h3` | error | Step 2 emitted an H3 not matching `### Context`, `### Steps`, `### Constraints`, or `### Procedure: <name>` |
 | `G::expand::step-count-mismatch` | error | Number of top-level `### Steps` items does not match expected top-level Step count (see §4.1 count formula) |
 | `G::expand::substep-count-mismatch` | error | Number of lettered sub-steps in a Branch's arm does not match the count of Step-projecting nodes in that arm's IR body |
 | `G::expand::constraint-count-mismatch` | error | Number of `### Constraints` items does not match `Constraint` node count |
@@ -398,7 +398,7 @@ Constraints (unordered):
 
 Rules:
   - Emit `## Parameters` with one bulleted item per parameter (name, description, and either `(default: <value>)` or `(required)` per `compiled-output.md` §`## Parameters`).
-  - Emit `## Instructions` with `### Steps` and `### Constraints`.
+  - Emit `## Instructions` with `### Context` (if any), `### Steps`, and `### Constraints`.
   - Every flow item -> exactly one numbered Step, in order.
   - Every constraint -> exactly one bulleted Constraint.
   - The final Step must end with a sentence summarizing the return value.
@@ -435,7 +435,7 @@ Rules:
 6b walks the output against the IR:
 
 - Parameters section: skill has 1 parameter (`scope`) → `## Parameters` has 1 bulleted item. Pass.
-- Section shape: one `## Parameters`, one `## Instructions`, two H3s (`### Steps`, `### Constraints`). Pass.
+- Section shape: one `## Parameters`, one `## Instructions`, H3s (`### Context`, `### Steps`, `### Constraints`). Pass.
 - Step count: 6 IR flow nodes → 6 numbered items. Pass.
 - Step order: matches IR flow order. Pass.
 - Return folding: the 6th Step ends with "and return that as your result." Pass.
@@ -451,7 +451,7 @@ Rules:
 
 - **Pipeline** (`pipeline.md` §Phase 6): canonical description of Expand's two-step model. This document refines Step 2 and adds Phase 6b.
 - **Repair** (`repair.md`): contrast — Repair is source-to-source, idempotent, and driven by diagnostics; Step 2 is IR-to-Markdown, not idempotent, and driven by the resolved IR itself.
-- **IR and semantics** (`ir-and-semantics.md`): the node shapes Step 2 consumes (`InputContract`, `Step`, `Constraint`, `OutputContract`), strength/polarity model, effect vocabulary.
-- **Compiled output** (`compiled-output.md`): the output shape Step 2 must produce — `## Parameters` (conditional), `## Instructions` with `### Steps` + `### Constraints`, formatting rules. YAML frontmatter is assembled by Emit.
+- **IR and semantics** (`ir-and-semantics.md`): the node shapes Step 2 consumes (`InputContract`, `Step`, `Constraint`, `Context`, `OutputContract`), strength/polarity model, effect vocabulary.
+- **Compiled output** (`compiled-output.md`): the output shape Step 2 must produce — `## Parameters` (conditional), `## Instructions` with `### Context` + `### Steps` + `### Constraints`, formatting rules. YAML frontmatter is assembled by Emit.
 - **Diagnostics** (`diagnostics.md`): the diagnostic schema and ID convention used by Phase 6b.
 - **Foundations** (`foundations.md`): #18 (deterministic passes own correctness — the Safety Sandwich), #33 (novice learnability — motivates `with` modifier as the only call-site specialization mechanism, which in turn motivates the no-fallback posture in §5).

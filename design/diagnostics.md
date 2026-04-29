@@ -159,7 +159,7 @@ Phase 6b structural validation, implemented in the `glyph validate-output` subco
 |---|---|---|
 | `G::expand::extra-h2` | error | Step 2 emitted an H2 other than `## Instructions` |
 | `G::expand::missing-instructions` | error | Step 2 did not emit `## Instructions` |
-| `G::expand::extra-h3` | error | Step 2 emitted an H3 not matching `### Steps`, `### Constraints`, or `### Procedure: <name>` |
+| `G::expand::extra-h3` | error | Step 2 emitted an H3 not matching `### Context`, `### Steps`, `### Constraints`, or `### Procedure: <name>` |
 | `G::expand::step-count-mismatch` | error | Number of top-level `### Steps` items does not match expected count |
 | `G::expand::substep-count-mismatch` | error | Number of lettered sub-steps in a Branch arm does not match Step-projecting node count |
 | `G::expand::constraint-count-mismatch` | error | Number of `### Constraints` items does not match top-level `Constraint` node count |
