@@ -1152,6 +1152,46 @@ impl<'a> Parser<'a> {
                                 target: kw_val,
                                 args,
                             })
+                        } else if matches!(self.peek().kind, TokenKind::Dot) {
+                            // Detect `name.applies()` used outside a branch condition.
+                            let dot_span = self.peek().span;
+                            self.pos += 1; // consume `.`
+                            if let TokenKind::Ident(method) = &self.peek().kind {
+                                if method == "applies" {
+                                    // Skip the rest of the `.applies(...)` tokens.
+                                    self.pos += 1; // consume `applies`
+                                    if matches!(self.peek().kind, TokenKind::Lparen) {
+                                        self.pos += 1; // consume `(`
+                                        // Skip args until `)`.
+                                        while !matches!(self.peek().kind, TokenKind::Rparen | TokenKind::Eof | TokenKind::LineStart { .. }) {
+                                            self.pos += 1;
+                                        }
+                                        if matches!(self.peek().kind, TokenKind::Rparen) {
+                                            self.pos += 1;
+                                        }
+                                    }
+                                    self.bag.push(
+                                        Diagnostic::error(
+                                            "G::parse::applies-outside-condition",
+                                            format!("`{}.applies()` can only be used inside an `if`/`elif` condition", kw_val),
+                                            SourceSpan::from_byte_span(self.file_label, dot_span, self.line_index),
+                                        ),
+                                        dot_span,
+                                    );
+                                    // Return a BareName so parsing can continue.
+                                    Ok(FlowStmt::BareName(kw_val))
+                                } else {
+                                    Err(ParseError::Unexpected {
+                                        span: dot_span,
+                                        message: format!("unexpected `.{}` after `{}`", method, kw_val),
+                                    })
+                                }
+                            } else {
+                                Err(ParseError::Unexpected {
+                                    span: dot_span,
+                                    message: "unexpected `.` in flow statement".into(),
+                                })
+                            }
                         } else {
                             Ok(FlowStmt::BareName(kw_val))
                         }

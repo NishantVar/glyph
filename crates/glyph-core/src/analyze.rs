@@ -539,8 +539,24 @@ fn check_applies_in_condition(
                             span,
                         );
                     }
+                } else {
+                    // Block is known by name but not in block_decls — imported
+                    // block without accessible declaration. Treat as hard error
+                    // per ir-and-semantics.md §Block Trigger Predicate: imported
+                    // export blocks without description are not repairable
+                    // (Repair is single-file).
+                    bag.push(
+                        Diagnostic::error(
+                            "G::analyze::applies-on-undescribed-block",
+                            format!(
+                                "`{}.applies()` but imported block `{}` has no accessible `description:`; add `description:` in the source file",
+                                receiver_name, receiver_name
+                            ),
+                            SourceSpan::from_byte_span(file_label, span, line_index),
+                        ),
+                        span,
+                    );
                 }
-                // If not in block_decls (could be imported), that's ok for now.
             } else {
                 // Not a block, not a text — unknown name or parameter.
                 bag.push(
@@ -650,6 +666,52 @@ fn analyze_export_block(
                 ],
             },
             span,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imported_block_without_description_fires_error() {
+        // AC6: When a block name is in block_names but not in block_decls
+        // (simulating an imported block), applies-on-undescribed-block fires
+        // as a hard error (not repairable).
+        let mut bag = DiagBag::new();
+        let source = "imported_block.applies()";
+        let line_index = LineIndex::new(source);
+        let span = Span::new(0, 0, source.len() as u32);
+        let text_names: HashSet<&str> = HashSet::new();
+        let mut block_names: HashSet<&str> = HashSet::new();
+        block_names.insert("imported_block");
+        let block_decls: HashMap<&str, &BlockDecl> = HashMap::new(); // not in decls = imported
+
+        check_applies_in_condition(
+            source,
+            span,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &text_names,
+            &block_names,
+            &block_decls,
+        );
+
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::applies-on-undescribed-block"),
+            "expected applies-on-undescribed-block for imported block, got: {:?}",
+            ids
+        );
+        // Should be a hard error, not repairable.
+        let diag = bag.iter().find(|d| d.id == "G::analyze::applies-on-undescribed-block").unwrap();
+        assert_eq!(
+            diag.classification,
+            Classification::Error,
+            "imported block applies-on-undescribed-block should be Error, not Repairable"
         );
     }
 }

@@ -1358,7 +1358,8 @@ skill main()
     #[test]
     fn applies_outside_branch_condition_is_parse_error() {
         // AC5: applies() is rejected outside branch-condition position.
-        // Writing `my_block.applies()` as a flow statement should fail parse.
+        // Writing `my_block.applies()` as a flow statement should produce
+        // the specific `G::parse::applies-outside-condition` diagnostic.
         let src = "\
 block my_block()
     description: \"Test.\"
@@ -1370,21 +1371,21 @@ skill main()
     flow:
         my_block.applies()
 ";
-        // This should fail to parse since `.` is not valid in flow statements
-        // outside of branch conditions.
-        let _bag = check_source(src, 0, "test.glyph.md");
-        // It should either fail to parse or produce a diagnostic — it should
-        // NOT silently compile.
-        // The parser sees `my_block` as a bare name, then `.` causes an error
-        // on the next flow line (since BareName consumes only the ident).
-        // Either way, this file should not produce valid compiled output.
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::applies-outside-condition"),
+            "expected G::parse::applies-outside-condition, got: {:?}",
+            ids
+        );
+        // It should NOT compile successfully.
         let outcome = compile_source(src, 0, "test.glyph.md");
         match outcome {
             Ok(CompileOutcome::Compiled { .. }) => {
                 panic!("applies() outside branch condition should not compile successfully");
             }
             _ => {
-                // Expected — either diagnostics or parse error.
+                // Expected — diagnostics block compilation.
             }
         }
     }
