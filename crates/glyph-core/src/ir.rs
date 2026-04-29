@@ -33,6 +33,10 @@ pub struct IrSkill {
     pub context: Vec<NodeId>,
     /// Top-level constraint nodes.
     pub constraints: Vec<NodeId>,
+    /// Return expression text, if any. Populated from `return <expr>` in flow.
+    /// `None` means no explicit return (implicit `none`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_text: Option<String>,
 }
 
 /// Resolved parameter metadata threaded through Phase 6 Step 1 into the

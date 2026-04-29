@@ -137,6 +137,7 @@ mod tests {
             steps: vec![NodeId(1)],
             context: vec![],
             constraints: vec![],
+            return_text: None,
         }));
         arena.push(IrNode::InlineInstruction(IrInlineInstruction {
             node_id: NodeId(1),
@@ -159,6 +160,7 @@ mod tests {
             steps: vec![],
             context: vec![],
             constraints: vec![],
+            return_text: None,
         }));
         arena.set_root_skill(NodeId(0));
         // Manually push a node with the same ID.
@@ -200,6 +202,7 @@ mod tests {
             steps: vec![NodeId(1)],
             context: vec![],
             constraints: vec![],
+            return_text: None,
         }));
         arena.push(IrNode::Call(IrCall {
             node_id: NodeId(1),
@@ -225,6 +228,7 @@ mod tests {
             steps: vec![NodeId(1)],
             context: vec![],
             constraints: vec![],
+            return_text: None,
         }));
         arena.push(IrNode::Call(IrCall {
             node_id: NodeId(1),
@@ -261,6 +265,7 @@ mod tests {
             steps: vec![NodeId(1)],
             context: vec![],
             constraints: vec![],
+            return_text: None,
         }));
         arena.push(IrNode::Call(IrCall {
             node_id: NodeId(1),

@@ -94,6 +94,33 @@ pub fn expand_step1(mut arena: IrArena) -> IrArena {
         }
     }
 
+    // Phase 3: Return folding (Phase 6 Step 1).
+    // If the skill has a return_text, append it to the final step's text.
+    if let Some(root_id) = arena.root_skill() {
+        let return_text = if let IrNode::Skill(s) = arena.get(root_id) {
+            s.return_text.clone()
+        } else {
+            None
+        };
+        if let Some(ref ret) = return_text {
+            let last_step_id = if let IrNode::Skill(s) = arena.get(root_id) {
+                s.steps.last().copied()
+            } else {
+                None
+            };
+            if let Some(step_id) = last_step_id {
+                let nodes = arena.nodes_mut();
+                if let IrNode::InlineInstruction(inst) = &mut nodes[step_id.0 as usize] {
+                    inst.text = format!(
+                        "{} Return the result of {}.",
+                        inst.text.trim_end_matches('.').trim(),
+                        ret
+                    );
+                }
+            }
+        }
+    }
+
     arena
 }
 
