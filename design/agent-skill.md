@@ -145,6 +145,7 @@ Each repairable diagnostic has a specific fix pattern. The agent applies these t
 | `G::analyze::stdlib-missing-import` | Add `import "@glyph/std" (subagent)` (or whichever stdlib name is used) at the top of the file, after any existing imports. |
 | `G::analyze::nested-branch` | Extract the inner branch into a `generated block` declaration. Replace the inner branch with a call to the new block. The generated block's flow should contain the extracted branch logic. |
 | `G::analyze::missing-description` | Add a `description:` sub-section to the `skill` declaration with a one-sentence summary of when and why to use this skill. Infer the description from the skill name, parameters, effects, constraints, and flow body. The description should focus on the skill's trigger condition (when an agent should select it), not its implementation steps. |
+| `G::analyze::applies-on-undescribed-block` | Add a `description:` sub-section to the **block** named in the diagnostic, with a one-sentence summary of **when this block applies** — i.e. the user-intent or runtime condition under which the calling `if`/`elif` arm should fire. Infer the trigger from the block name, the body of the arm that uses `BLOCKNAME.applies()`, and any sibling arms. Phrase as a condition (e.g. "When the user asks to fork a terminal pre-loaded with a plan."), not as an implementation summary. Repairable only when the block is defined in the same file under compilation; if the block is imported, this diagnostic is an error and the author must edit the source library directly. |
 
 ### Repair Principles
 
@@ -339,6 +340,6 @@ For MVP, the agent skill ships **inside the `glyph` repo** at a known path (e.g.
 - **`cli.md`** — exit code 3 added for invocation errors (previously overloaded on exit 2). `validate-output` subcommand added.
 - **`build-foundation.md`** — exit code contract is 0/1/2/3, matching `cli.md`.
 - **`diagnostics.md`** — 24 `G::expand::*` diagnostic IDs are compiler-scope (implemented in `validate-output`), not agent-scope.
-- **`mvp-acceptance.md`** — the 24 agent-scope 6b diagnostics move to compiler-scope under `validate-output`. Agent-scope diagnostic count is 10 (4 repair notifications + 5 repair execution failures + 1 expand `llm-unavailable`). Compiler-scope is 67 (15 Parse + 22 Analyze + 5 Validate + 1 Build + 24 Validate-output).
+- **`mvp-acceptance.md`** — the 24 agent-scope 6b diagnostics move to compiler-scope under `validate-output`. Agent-scope diagnostic count is 10 (4 repair notifications + 5 repair execution failures + 1 expand `llm-unavailable`). Compiler-scope is 72 (17 Parse + 24 Analyze + 1 Imports + 5 Validate + 1 Build + 24 Validate-output).
 - **`ir-schema.md`** — JSON serialization shapes defined here are the `serde_json` projection of the Rust IR types from `ir-schema.md`.
 - **`compiled-output.md`** — constraint wording exemplars in §Step 2 are the authoritative patterns for the open question in `compiled-output.md` §Open Questions.

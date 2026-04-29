@@ -96,6 +96,8 @@ Representative diagnostics implied by the current design.
 | `G::parse::empty-file` | error | The source file is empty or contains only whitespace and comments — no declarations to compile (`language-surface.md` §File-Level Rules) |
 | `G::parse::empty-flow` | error | A `flow:` sub-section is present but its body contains zero statements; either remove the `flow:` header (for a constraint-only skill) or add at least one statement (`data-flow.md`) |
 | `G::parse::multiple-skills` | error | A `.glyph.md` file contains more than one `skill` declaration; MVP requires exactly one skill per file because compiled output is named after the skill (`language-surface.md` §File-Level Rules) |
+| `G::parse::applies-no-parens` | error | `BLOCKNAME.applies` appears without `()`; the trigger predicate form requires explicit parentheses (`ir-and-semantics.md` §Block Trigger Predicate) |
+| `G::parse::applies-with-args` | error | `BLOCKNAME.applies(...)` is called with arguments; the trigger predicate is zero-arity (`ir-and-semantics.md` §Block Trigger Predicate) |
 
 ### Analyze phase
 
@@ -126,6 +128,8 @@ Representative diagnostics implied by the current design.
 | `G::analyze::no-exports-in-library` | error | A library file (zero `skill` declarations) has zero `export` declarations — it has no consumer-visible contribution. Add at least one `export block`, `export text`, `export int`, or `export float` (`language-surface.md` §File-Level Rules) |
 | `G::analyze::missing-param-default` | error | A `skill` or `export block` parameter lacks a default value; all parameters on declarations that compile to `.md` files must have defaults (`language-surface.md` §3.10). Author must add an explicit default; the compiler does not synthesize defaults. |
 | `G::analyze::missing-description` | repairable | A `skill` declaration omits `description:`; Repair generates one from the skill name and body and adds it as a `description:` sub-section in the source (`ir-and-semantics.md` §4, `compiled-output.md` §Frontmatter) |
+| `G::analyze::applies-on-non-block` | error | `NAME.applies()` was called where `NAME` resolves to something other than a `block` or `export block` declaration (e.g., a `text`, an `import` alias, a parameter). The trigger predicate is defined only on blocks (`ir-and-semantics.md` §Block Trigger Predicate) |
+| `G::analyze::applies-on-undescribed-block` | repairable / error | `BLOCKNAME.applies()` is called on a block that lacks a `description:` sub-section. **Repairable** when the block is defined in the same file under compilation; Repair adds a trigger-shaped `description:` to the block. **Error** when the block is imported from another file; the author must edit the source library directly because Repair is single-file (`ir-and-semantics.md` §Block Trigger Predicate, `repair.md` §9) |
 
 ### Validate phase
 

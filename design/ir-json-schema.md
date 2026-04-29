@@ -189,7 +189,8 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
       "body": [ ... ]
     }
   ],
-  "else_body": [ ... ]
+  "else_body": [ ... ],
+  "applies_descriptions": null
 }
 ```
 
@@ -201,8 +202,33 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
 | `then_body` | array of FlowNode | yes | Flow nodes for the `if` arm. |
 | `elif_branches` | array of ElifBranch | yes | May be empty. |
 | `else_body` | array of FlowNode or null | yes | `null` when no `else` clause. |
+| `applies_descriptions` | object or null | yes | Map of `{block_name: resolved_description}` for every block referenced via `BLOCKNAME.applies()` in this Branch's own `condition` or any `elif_branches[*].condition`. `null` when no condition uses `.applies()`. Populated by Expand Step 1. See `ir-and-semantics.md` §Block Trigger Predicate. |
 
 `Branch` is a container node. It carries no `role` — its children carry their own roles.
+
+**Example with `.applies()`:**
+
+```json
+{
+  "node_id": "n7",
+  "kind": "branch",
+  "condition": "fork_with_plan.applies()",
+  "then_body": [ ... ],
+  "elif_branches": [
+    {
+      "node_id": "n9",
+      "kind": "elif_branch",
+      "condition": "fork_with_summary.applies()",
+      "body": [ ... ]
+    }
+  ],
+  "else_body": [ ... ],
+  "applies_descriptions": {
+    "fork_with_plan": "Fork a terminal pre-loaded with the current plan.",
+    "fork_with_summary": "Fork a terminal with a conversation-history summary as the prompt for the new agent."
+  }
+}
+```
 
 ### ElifBranch
 

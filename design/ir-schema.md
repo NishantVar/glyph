@@ -20,6 +20,7 @@ Skill {
 
 Block {
   name:              String
+  description:       String?               // present iff `BLOCKNAME.applies()` is consulted somewhere reachable; see `ir-and-semantics.md` §Block Trigger Predicate
   params:            [Param]
   return_type:       TypeTag?
   effects:           [EffectKeyword]
@@ -29,6 +30,7 @@ Block {
 
 ExportBlock {
   name:              String
+  description:       String?               // present iff `BLOCKNAME.applies()` is consulted somewhere reachable; see `ir-and-semantics.md` §Block Trigger Predicate
   params:            [Param]
   return_type:       TypeTag               // mandatory on export block
   effects:           [EffectKeyword]       // declared must be superset of inferred
@@ -271,6 +273,15 @@ ResolvedConstraint {
 ResolvedInstructionRef {
   ...InstructionRef fields...
   // resolved_text already contains resolved content
+}
+
+ResolvedBranch {
+  ...Branch fields...
+  applies_descriptions: {String: String}?  // present when any condition (top-level, elif) uses `BLOCKNAME.applies()`;
+                                           // map key is the block name as it appears in source, value is the
+                                           // resolved `description:` string of that block. See
+                                           // `ir-and-semantics.md` §Block Trigger Predicate. Step 2 reads this
+                                           // side-map to render description-driven prose; Step 1 populates it.
 }
 ```
 
