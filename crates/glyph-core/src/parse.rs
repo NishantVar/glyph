@@ -6,6 +6,7 @@
 use crate::ast::{
     ConstraintMarker, ConstraintMarkerKind, Decl, FlowStmt, Skill, SourceFile, TextDecl,
 };
+use crate::diagnostic::{DiagBag, Diagnostic, SourceSpan};
 use crate::span::{LineIndex, Span, Spanned};
 use crate::tokenize::{tokenize, Token, TokenKind, TokenizeError};
 
@@ -27,6 +28,97 @@ pub fn parse(source: &str, file_id: u32) -> Result<(SourceFile, LineIndex), Pars
     let mut p = Parser { tokens: &tokens, pos: 0 };
     let file = p.parse_file()?;
     Ok((file, line_index))
+}
+
+/// Diagnostic-aware Phase 1 entry point.
+///
+/// Runs the parser; if the resulting AST violates a structural rule that maps to
+/// a structured diagnostic ID (`G::parse::empty-file`, `G::parse::empty-flow`),
+/// pushes the corresponding `Diagnostic` onto `bag` and returns `None`. On a
+/// successful parse with no structural issues, returns `Some(SourceFile)`.
+///
+/// `ParseError` (e.g., `Tokenize`, `Unexpected`, `Eof` from the recursive descent
+/// itself) is converted into a generic placeholder error diagnostic that uses
+/// the `G::parse::empty-file` ID only when the parse failure is the trivial
+/// "no top-level declaration found in an otherwise-empty file" case. Other parse
+/// errors continue to bubble up via the legacy `parse(...)` entry point until
+/// later slices grow per-error structured diagnostics.
+pub fn parse_with_diagnostics(
+    source: &str,
+    file_id: u32,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) -> Option<SourceFile> {
+    // Tokenize. Tokenize errors are not yet wired to structured diagnostics in
+    // this slice; they fall through and the caller treats the parse as failed.
+    let tokens = match tokenize(source, file_id) {
+        Ok((toks, _)) => toks,
+        Err(_) => {
+            // Future slices will map each TokenizeError to a structured
+            // diagnostic ID (G::parse::tab-indent, ...). For now, we leave
+            // tokenize errors unconverted; the caller can fall back to
+            // `parse(...)` semantics if it wants the legacy behavior.
+            return None;
+        }
+    };
+
+    // Detect `G::parse::empty-file`: a file with no significant tokens beyond
+    // `Eof` (the tokenizer skips blank and comment-only lines). Per
+    // `diagnostics.md` §Span Semantics, this is the canonical synthetic-fallback
+    // option (3) — "diagnostics whose provenance is genuinely the file as a
+    // whole" — so the reported span is `(1, 1) .. (1, 1)`.
+    if tokens.len() == 1 && matches!(tokens[0].kind, TokenKind::Eof) {
+        let span = Span::new(file_id, 0, 0);
+        bag.push(
+            Diagnostic::error(
+                "G::parse::empty-file",
+                "source file has no declarations",
+                SourceSpan::from_byte_span(file_label, span, line_index),
+            ),
+            span,
+        );
+        return None;
+    }
+
+    let mut p = Parser { tokens: &tokens, pos: 0 };
+    let file = match p.parse_file() {
+        Ok(f) => f,
+        Err(_e) => {
+            // Other parse errors are not yet wired to structured diagnostic IDs
+            // in this slice. The caller (compile_source) handles `None` by
+            // surfacing the bag — which will be empty — and returning a
+            // CompileError::Parse via the legacy path. For slice 2 we only
+            // need empty-file and empty-flow to flow through the bag.
+            return None;
+        }
+    };
+
+    // Detect `G::parse::empty-flow`: a skill whose `flow:` sub-section is
+    // syntactically present (parser already consumed it; not detectable here)
+    // but contains zero statements. The parser tracks `flow:` presence via
+    // `Skill.flow_present`, set when the `flow:` keyword is seen.
+    for decl in &file.decls {
+        if let Decl::Skill(spanned_skill) = decl {
+            let s = &spanned_skill.node;
+            if s.flow_present && s.flow.is_empty() {
+                let span = spanned_skill.span;
+                bag.push(
+                    Diagnostic::error(
+                        "G::parse::empty-flow",
+                        "`flow:` sub-section is present but contains zero statements",
+                        SourceSpan::from_byte_span(file_label, span, line_index),
+                    ),
+                    span,
+                );
+            }
+        }
+    }
+    if bag.has_error() || bag.has_repairable() {
+        return None;
+    }
+
+    Some(file)
 }
 
 struct Parser<'a> {
@@ -161,6 +253,7 @@ impl<'a> Parser<'a> {
         let mut body_constraints: Vec<ConstraintMarker> = Vec::new();
         let mut effects: Vec<String> = Vec::new();
         let mut flow: Vec<FlowStmt> = Vec::new();
+        let mut flow_present = false;
 
         // Parse body lines at indent 1.
         loop {
@@ -171,6 +264,7 @@ impl<'a> Parser<'a> {
                         &mut body_constraints,
                         &mut effects,
                         &mut flow,
+                        &mut flow_present,
                     )?;
                 }
                 _ => break,
@@ -185,7 +279,14 @@ impl<'a> Parser<'a> {
         let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
 
         Ok(Spanned::new(
-            Skill { name, description, body_constraints, effects, flow },
+            Skill {
+                name,
+                description,
+                body_constraints,
+                effects,
+                flow,
+                flow_present,
+            },
             span,
         ))
     }
@@ -196,6 +297,7 @@ impl<'a> Parser<'a> {
         body_constraints: &mut Vec<ConstraintMarker>,
         effects: &mut Vec<String>,
         flow: &mut Vec<FlowStmt>,
+        flow_present: &mut bool,
     ) -> Result<(), ParseError> {
         // Already at LineStart with indent 1.
         self.expect_line_start()?;
@@ -263,6 +365,7 @@ impl<'a> Parser<'a> {
             "flow" => {
                 self.pos += 1;
                 self.expect(&TokenKind::Colon)?;
+                *flow_present = true;
                 // Body at indent 2.
                 loop {
                     match self.current_line_indent() {

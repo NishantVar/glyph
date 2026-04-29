@@ -6,6 +6,7 @@
 
 pub mod analyze;
 pub mod ast;
+pub mod diagnostic;
 pub mod emit;
 pub mod expand;
 pub mod ir;
@@ -17,6 +18,9 @@ pub mod validate;
 
 use std::path::Path;
 
+use crate::diagnostic::DiagBag;
+use crate::span::LineIndex;
+
 #[derive(Debug)]
 pub enum CompileError {
     Read { path: String, source: std::io::Error },
@@ -26,31 +30,88 @@ pub enum CompileError {
     Write { path: String, source: std::io::Error },
 }
 
-/// Run all walking-skeleton phases and return the compiled Markdown.
+/// Outcome of compiling a single source file.
+///
+/// Either:
+/// - `Compiled { markdown, diagnostics }` — Phases 1–7 ran clean; `diagnostics`
+///   carries any non-blocking warnings.
+/// - `Diagnostics(diag_bag)` — diagnostics-only result (errors or repairables).
+///   The pipeline halted; no Markdown was produced.
+///
+/// The CLI maps this onto exit codes via `DiagBag::exit_code()` and the `1`-wins-over-`2`
+/// rule in `design/build-foundation.md` §A6.
+#[derive(Debug)]
+pub enum CompileOutcome {
+    Compiled { markdown: String, diagnostics: DiagBag },
+    Diagnostics(DiagBag),
+}
+
+/// Run all walking-skeleton phases and return either the compiled Markdown or
+/// a `DiagBag` of structured diagnostics.
+///
+/// `file_label` is recorded into every emitted `Diagnostic.span.file` so JSON
+/// output is meaningful regardless of where the source string came from.
 ///
 /// Phases: 1 (Parse) → 2 (Analyze) → 4 (Lower) → 5 (Validate) → 6-Step1 (Expand) → 7 (Emit).
-pub fn compile_source(source: &str, file_id: u32) -> Result<String, CompileError> {
-    let (file, _line_index) = parse::parse(source, file_id).map_err(CompileError::Parse)?;
+pub fn compile_source(
+    source: &str,
+    file_id: u32,
+    file_label: &str,
+) -> Result<CompileOutcome, CompileError> {
+    let mut bag = DiagBag::new();
+
+    // Build a line index up front for diagnostic span conversion. The parser
+    // builds its own when there is no diagnostic; on the diagnostic path we
+    // recompute here to avoid plumbing an extra return value out of `parse`.
+    let line_index = LineIndex::new(source);
+
+    let parsed = parse::parse_with_diagnostics(source, file_id, file_label, &line_index, &mut bag);
+    if !bag.is_empty() && (bag.has_error() || bag.has_repairable()) {
+        // Diagnostics block compilation. Surface and stop.
+        return Ok(CompileOutcome::Diagnostics(bag));
+    }
+
+    let file = match parsed {
+        Some(file) => file,
+        None => {
+            // Defensive: parse_with_diagnostics returned None without producing a
+            // blocking diagnostic. Treat as error (should not happen with current
+            // implementation; a missing AST without diagnostics is a compiler bug).
+            return Err(CompileError::Parse(parse::ParseError::Eof {
+                message: "parser returned no AST and no diagnostics".into(),
+            }));
+        }
+    };
+
     let file = analyze::analyze(file);
     let arena = lower::lower(&file).map_err(CompileError::Lower)?;
     validate::validate(&arena).map_err(CompileError::Validate)?;
     let arena = expand::expand_step1(arena);
-    Ok(emit::emit(&arena))
+    let markdown = emit::emit(&arena);
+    Ok(CompileOutcome::Compiled { markdown, diagnostics: bag })
 }
 
-/// End-to-end file-driven compile: read `<name>.glyph.md`, write `<name>.md` next to it.
-pub fn compile_file(path: &Path) -> Result<std::path::PathBuf, CompileError> {
+/// End-to-end file-driven compile.
+///
+/// Reads `<name>.glyph.md`, runs the pipeline, and (on the success path) writes
+/// `<name>.md` next to the source file. The returned `CompileOutcome` carries
+/// either the compiled output or a `DiagBag`; the CLI is responsible for
+/// rendering and exit-code mapping.
+pub fn compile_file(path: &Path) -> Result<CompileOutcome, CompileError> {
     let source = std::fs::read_to_string(path).map_err(|e| CompileError::Read {
         path: path.display().to_string(),
         source: e,
     })?;
-    let compiled = compile_source(&source, 0)?;
-    let out_path = compiled_output_path(path);
-    std::fs::write(&out_path, &compiled).map_err(|e| CompileError::Write {
-        path: out_path.display().to_string(),
-        source: e,
-    })?;
-    Ok(out_path)
+    let label = path.display().to_string();
+    let outcome = compile_source(&source, 0, &label)?;
+    if let CompileOutcome::Compiled { ref markdown, .. } = outcome {
+        let out_path = compiled_output_path(path);
+        std::fs::write(&out_path, markdown).map_err(|e| CompileError::Write {
+            path: out_path.display().to_string(),
+            source: e,
+        })?;
+    }
+    Ok(outcome)
 }
 
 /// Map `foo.glyph.md` → `foo.md` next to the source file.
