@@ -410,6 +410,32 @@ skill main()
     }
 
     #[test]
+    fn effects_under_declared_produces_error() {
+        // Skill declares `effects: reads_files` but calls a block that has
+        // `effects: writes_files`. The inferred set is {reads_files, writes_files}
+        // which is a superset of declared {reads_files} → under-declared error.
+        let src = "\
+block writer()
+    effects: writes_files
+    \"Write some files.\"
+
+skill main()
+    description: \"Main skill.\"
+    effects: reads_files
+    flow:
+        writer()
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::effects-under-declared"),
+            "expected effects-under-declared, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 1, "under-declared should be a hard error");
+    }
+
+    #[test]
     fn check_source_flags_tab_indent_as_repairable() {
         // Tab-indented source surfaces a `repairable` diagnostic, not an error.
         let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";

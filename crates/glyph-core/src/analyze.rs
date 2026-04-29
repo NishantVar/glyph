@@ -14,10 +14,10 @@
 //! Both diagnostics fire from the parsed AST, before lowering, so they surface
 //! through `glyph check` as well as `glyph compile`.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
-use crate::ast::{ContextEntry, Decl, FlowStmt, SourceFile};
-use crate::diagnostic::{DiagBag, Diagnostic, SourceSpan};
+use crate::ast::{BlockDecl, ContextEntry, Decl, FlowStmt, SourceFile};
+use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::slot::scan_slots;
 use crate::span::{LineIndex, Span, Spanned};
 
@@ -62,10 +62,20 @@ pub fn analyze_with_diagnostics(
         })
         .collect();
 
+    // Collect block declarations for effect inference.
+    let block_decls: HashMap<&str, &BlockDecl> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Block(b) => Some((b.node.name.as_str(), &b.node)),
+            _ => None,
+        })
+        .collect();
+
     for decl in &file.decls {
         match decl {
             Decl::Skill(spanned) => {
-                analyze_skill(spanned, file_id, file_label, line_index, bag, &text_names, &block_names)
+                analyze_skill(spanned, file_id, file_label, line_index, bag, &text_names, &block_names, &block_decls)
             }
             Decl::ExportBlock(spanned) => {
                 analyze_export_block(spanned, file_label, line_index, bag);
@@ -85,6 +95,7 @@ fn analyze_skill(
     bag: &mut DiagBag,
     text_names: &HashSet<&str>,
     block_names: &HashSet<&str>,
+    block_decls: &HashMap<&str, &BlockDecl>,
 ) {
     let skill = &spanned.node;
     let declared: HashSet<&str> = skill.params.iter().map(|p| p.name.as_str()).collect();
@@ -257,6 +268,121 @@ fn analyze_skill(
             span,
         );
     }
+
+    // --- Effect inference and validation ---
+    // Infer effects by walking the call graph (local-transitive for same-file blocks).
+    let inferred = infer_effects_for_skill(skill, block_decls);
+
+    let declared_set: BTreeSet<&str> = skill.effects.iter().map(|s| s.as_str()).collect();
+
+    // Skip validation if `effects: none` was declared (author assertion of no effects).
+    let has_effects_declaration = !skill.effects.is_empty();
+    let declared_none = skill.effects.iter().any(|e| e == "none");
+
+    if has_effects_declaration && !declared_none {
+        // Check under-declared: inferred effects not in declared set.
+        let missing: BTreeSet<&str> = inferred.iter().map(|s| s.as_str()).filter(|e| !declared_set.contains(e)).collect();
+        if !missing.is_empty() {
+            let span = spanned.span;
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::effects-under-declared",
+                    format!(
+                        "declared effects are missing inferred effects: {}",
+                        missing.iter().copied().collect::<Vec<_>>().join(", ")
+                    ),
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+        }
+
+        // Check over-declared: declared effects not in inferred set.
+        let extra: BTreeSet<&str> = declared_set.iter().filter(|e| !inferred.contains(**e)).copied().collect();
+        if !extra.is_empty() {
+            let span = spanned.span;
+            bag.push(
+                Diagnostic {
+                    id: "G::analyze::effects-over-declared".into(),
+                    classification: Classification::Warning,
+                    message: format!(
+                        "declared effects not inferred from call graph: {}",
+                        extra.iter().copied().collect::<Vec<_>>().join(", ")
+                    ),
+                    span: SourceSpan::from_byte_span(file_label, span, line_index),
+                    related: Vec::new(),
+                    hints: vec![
+                        "remove unused effects or verify they are needed".into(),
+                    ],
+                },
+                span,
+            );
+        }
+    } else if !has_effects_declaration && !inferred.is_empty() {
+        // No `effects:` declared and inferred set is non-empty → repairable.
+        let span = spanned.span;
+        bag.push(
+            Diagnostic {
+                id: "G::analyze::missing-effects".into(),
+                classification: Classification::Repairable,
+                message: format!(
+                    "`skill {}` has no `effects:` declaration; inferred: {}",
+                    skill.name,
+                    inferred.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                ),
+                span: SourceSpan::from_byte_span(file_label, span, line_index),
+                related: Vec::new(),
+                hints: vec![
+                    "add `effects:` or let `glyph fmt` (Phase 3a) auto-add inferred effects".into(),
+                ],
+            },
+            span,
+        );
+    }
+}
+
+/// Infer effects for a skill by walking its call graph transitively.
+///
+/// Returns the union of all effects declared on blocks reachable from
+/// the skill's flow via call expressions.
+fn infer_effects_for_skill(
+    skill: &crate::ast::Skill,
+    block_decls: &HashMap<&str, &BlockDecl>,
+) -> BTreeSet<String> {
+    let mut inferred = BTreeSet::new();
+    let mut visited: HashSet<String> = HashSet::new();
+
+    // Collect all call targets from the skill's flow.
+    let mut worklist: Vec<String> = skill
+        .flow
+        .iter()
+        .filter_map(|stmt| match stmt {
+            FlowStmt::Call { target, .. } => Some(target.clone()),
+            _ => None,
+        })
+        .collect();
+
+    while let Some(target) = worklist.pop() {
+        if !visited.insert(target.clone()) {
+            continue; // already visited
+        }
+        if let Some(block) = block_decls.get(target.as_str()) {
+            // Add this block's declared effects.
+            for eff in &block.effects {
+                if eff != "none" {
+                    inferred.insert(eff.clone());
+                }
+            }
+            // Add transitive calls from this block.
+            for stmt in &block.flow {
+                if let FlowStmt::Call { target: inner, .. } = stmt {
+                    worklist.push(inner.clone());
+                }
+            }
+        }
+    }
+
+    inferred
 }
 
 fn check_context_entry_name(

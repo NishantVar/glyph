@@ -417,6 +417,7 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Rparen)?;
 
         let mut description: Option<String> = None;
+        let mut effects: Vec<String> = Vec::new();
         let mut flow: Vec<FlowStmt> = Vec::new();
 
         // Parse body lines at indent 1.
@@ -435,6 +436,32 @@ impl<'a> Parser<'a> {
                                     self.expect(&TokenKind::Colon)?;
                                     let s = self.consume_string_after_colon()?;
                                     description = Some(s);
+                                }
+                                "effects" => {
+                                    self.pos += 1;
+                                    let colon_span = self.expect(&TokenKind::Colon)?;
+                                    loop {
+                                        let (eff, _) = self.expect_ident(None)?;
+                                        effects.push(eff);
+                                        match &self.peek().kind {
+                                            TokenKind::Comma => {
+                                                self.pos += 1;
+                                            }
+                                            _ => break,
+                                        }
+                                    }
+                                    // Validate `none` exclusivity for blocks too.
+                                    if effects.contains(&"none".to_string()) && effects.len() > 1 {
+                                        let span = Span::new(self.file_id, colon_span.start, colon_span.end);
+                                        self.bag.push(
+                                            Diagnostic::error(
+                                                "G::parse::none-with-effects",
+                                                "`effects: none` must not appear alongside other effect keywords",
+                                                SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                            ),
+                                            span,
+                                        );
+                                    }
                                 }
                                 "flow" => {
                                     self.pos += 1;
@@ -494,6 +521,7 @@ impl<'a> Parser<'a> {
                 name,
                 description,
                 params,
+                effects,
                 flow,
             },
             span,

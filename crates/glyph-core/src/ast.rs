@@ -126,6 +126,8 @@ pub struct BlockDecl {
     /// Optional `description:` sub-section.
     pub description: Option<String>,
     pub params: Vec<Param>,
+    /// Inline `effects:` keyword list (same syntax as skill effects).
+    pub effects: Vec<String>,
     /// Flow statements — inline strings, calls, etc.
     pub flow: Vec<FlowStmt>,
 }
