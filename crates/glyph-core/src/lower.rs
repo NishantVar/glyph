@@ -6,7 +6,8 @@
 
 use crate::ast::{ConstraintMarkerKind, Decl, FlowStmt, Skill, SourceFile};
 use crate::ir::{
-    IrArena, IrConstraint, IrInlineInstruction, IrNode, IrSkill, NodeId, Polarity, Role, Strength,
+    IrArena, IrConstraint, IrInlineInstruction, IrNode, IrParam, IrSkill, NodeId, Polarity, Role,
+    Strength,
 };
 use std::collections::BTreeMap;
 
@@ -38,11 +39,20 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
     let mut arena = IrArena::new();
 
     // Reserve n0 for the skill (pre-order: container before children).
+    let params: Vec<IrParam> = skill
+        .params
+        .iter()
+        .map(|p| IrParam {
+            name: p.name.clone(),
+            default: p.default.clone(),
+        })
+        .collect();
     let skill_id = arena.push(IrNode::Skill(IrSkill {
         node_id: NodeId(0),
         name: skill.name.clone(),
         description: skill.description.clone().unwrap_or_default(),
         effects: skill.effects.clone(),
+        params,
         steps: Vec::new(),
         constraints: Vec::new(),
     }));

@@ -19,10 +19,26 @@ pub struct IrSkill {
     pub name: String,
     pub description: String,
     pub effects: Vec<String>,
+    /// Header parameters in source order. Empty for parameterless skills (the
+    /// walking-skeleton case); the emitter omits the `## Parameters` section
+    /// when this is empty per `design/compiled-output.md` §`## Parameters`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<IrParam>,
     /// Step nodes (in source order).
     pub steps: Vec<NodeId>,
     /// Top-level constraint nodes.
     pub constraints: Vec<NodeId>,
+}
+
+/// Resolved parameter metadata threaded through Phase 6 Step 1 into the
+/// emitter. The emitter renders this as the bulleted entries under
+/// `## Parameters` per `design/compiled-output.md`.
+#[derive(Clone, Debug, Serialize)]
+pub struct IrParam {
+    pub name: String,
+    /// Pre-rendered default value (e.g., `"."` including quotes for strings).
+    /// `None` indicates a runtime-required skill parameter.
+    pub default: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -4,9 +4,11 @@
 //! `update_docs.glyph.md` per `design/mvp-acceptance.md` §1.
 
 use crate::ast::{
-    ConstraintMarker, ConstraintMarkerKind, Decl, FlowStmt, Skill, SourceFile, TextDecl,
+    ConstraintMarker, ConstraintMarkerKind, Decl, ExportBlockDecl, FlowStmt, Param, Skill,
+    SourceFile, TextDecl,
 };
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
+use crate::slot::scan_slots;
 use crate::span::{LineIndex, Span, Spanned};
 use crate::tokenize::{tokenize, Token, TokenKind, TokenizeError};
 
@@ -25,7 +27,19 @@ impl From<TokenizeError> for ParseError {
 
 pub fn parse(source: &str, file_id: u32) -> Result<(SourceFile, LineIndex), ParseError> {
     let (tokens, line_index) = tokenize(source, file_id)?;
-    let mut p = Parser { tokens: &tokens, pos: 0 };
+    // Build a throw-away diagnostic context for callers that don't need
+    // structured diagnostics — the parser only writes to the bag for the
+    // parameter/description slot rules; legacy callers don't exercise those
+    // code paths since they were added in slice 4.
+    let mut sink = DiagBag::new();
+    let mut p = Parser {
+        tokens: &tokens,
+        pos: 0,
+        file_id,
+        file_label: "<source>",
+        line_index: &line_index,
+        bag: &mut sink,
+    };
     let file = p.parse_file()?;
     Ok((file, line_index))
 }
@@ -116,7 +130,14 @@ pub fn parse_with_diagnostics(
         return None;
     }
 
-    let mut p = Parser { tokens: &tokens, pos: 0 };
+    let mut p = Parser {
+        tokens: &tokens,
+        pos: 0,
+        file_id,
+        file_label,
+        line_index,
+        bag,
+    };
     let file = match p.parse_file() {
         Ok(f) => f,
         Err(_e) => {
@@ -159,6 +180,10 @@ pub fn parse_with_diagnostics(
 struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
+    file_id: u32,
+    file_label: &'a str,
+    line_index: &'a LineIndex,
+    bag: &'a mut DiagBag,
 }
 
 impl<'a> Parser<'a> {
@@ -266,6 +291,12 @@ impl<'a> Parser<'a> {
                     let d = self.parse_text_decl()?;
                     decls.push(Decl::Text(d));
                 }
+                "export" => {
+                    // Slice 4 supports `export block <name>(<params>)` headers only.
+                    // Body is skipped — full lowering ships in a later slice.
+                    let d = self.parse_export_block()?;
+                    decls.push(Decl::ExportBlock(d));
+                }
                 other => {
                     return Err(ParseError::Unexpected {
                         span: self.peek().span,
@@ -281,7 +312,7 @@ impl<'a> Parser<'a> {
         let (_, kw_span) = self.expect_ident(Some("skill"))?;
         let (name, _) = self.expect_ident(None)?;
         self.expect(&TokenKind::Lparen)?;
-        // Walking skeleton: parameterless only.
+        let params = self.parse_param_list()?;
         self.expect(&TokenKind::Rparen)?;
 
         let mut description: Option<String> = None;
@@ -317,6 +348,7 @@ impl<'a> Parser<'a> {
             Skill {
                 name,
                 description,
+                params,
                 body_constraints,
                 effects,
                 flow,
@@ -324,6 +356,117 @@ impl<'a> Parser<'a> {
             },
             span,
         ))
+    }
+
+    /// Parse `export block <name>(<params>)` header only (slice 4 placeholder).
+    /// Body lines (any indent > 0) are consumed but not stored — full
+    /// `export block` lowering ships in a later slice.
+    fn parse_export_block(&mut self) -> Result<Spanned<ExportBlockDecl>, ParseError> {
+        let (_, kw_span) = self.expect_ident(Some("export"))?;
+        let (_, _) = self.expect_ident(Some("block"))?;
+        let (name, _) = self.expect_ident(None)?;
+        self.expect(&TokenKind::Lparen)?;
+        let params = self.parse_param_list()?;
+        self.expect(&TokenKind::Rparen)?;
+
+        // Skip body — every line whose LineStart indent is > 0.
+        loop {
+            match self.current_line_indent() {
+                Some(n) if n > 0 => {
+                    // Drop the LineStart and every token until the next LineStart or Eof.
+                    self.pos += 1;
+                    while !self.at_eof()
+                        && !matches!(self.peek().kind, TokenKind::LineStart { .. })
+                    {
+                        self.pos += 1;
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        let end_span = if self.pos > 0 {
+            self.tokens[self.pos - 1].span
+        } else {
+            kw_span
+        };
+        let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
+        Ok(Spanned::new(ExportBlockDecl { name, params }, span))
+    }
+
+    /// Parse a (possibly empty) comma-separated parameter list between the
+    /// opening and closing parens of a header. Walking-skeleton scope: untyped,
+    /// optional default of the form `= "literal"` (string only). Type
+    /// annotations and non-string defaults are deferred to later slices.
+    fn parse_param_list(&mut self) -> Result<Vec<Param>, ParseError> {
+        let mut params: Vec<Param> = Vec::new();
+        // Empty list?
+        if matches!(self.peek().kind, TokenKind::Rparen) {
+            return Ok(params);
+        }
+        loop {
+            let (pname, name_span) = self.expect_ident(None)?;
+            let mut default: Option<String> = None;
+            let mut end_span = name_span;
+            if matches!(self.peek().kind, TokenKind::Equals) {
+                self.pos += 1;
+                // Slice 4: only string-literal defaults are supported.
+                match &self.peek().kind {
+                    TokenKind::StringLit(s) => {
+                        let raw = s.clone();
+                        let lit_span = self.peek().span;
+                        // Reject `{name}` slots inside parameter defaults
+                        // (`G::parse::param-slot-in-non-instruction-string`,
+                        // repairable per `design/diagnostics.md`).
+                        if let Some(off) = crate::slot::first_slot_offset(&raw) {
+                            // Map the in-content offset back to a source byte
+                            // span. The literal starts with `"` so add 1 for the
+                            // opening quote; only meaningful for ASCII content
+                            // in the walking skeleton.
+                            let span_start = lit_span.start + 1 + off as u32;
+                            let span = Span::new(
+                                self.file_id,
+                                span_start,
+                                span_start + 1,
+                            );
+                            self.bag.push(
+                                Diagnostic {
+                                    id: "G::parse::param-slot-in-non-instruction-string".into(),
+                                    classification: Classification::Repairable,
+                                    message: "parameter default is not an instruction-bearing string; `{name}` slots are not allowed here".into(),
+                                    span: SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                    related: Vec::new(),
+                                    hints: vec![
+                                        "remove the braces or move the slot into an instruction string".into(),
+                                    ],
+                                },
+                                span,
+                            );
+                        }
+                        // Pre-render the default with surrounding quotes — see
+                        // `Param.default` doc-comment.
+                        default = Some(format!("\"{}\"", raw));
+                        end_span = lit_span;
+                        self.pos += 1;
+                    }
+                    _ => {
+                        return Err(ParseError::Unexpected {
+                            span: self.peek().span,
+                            message: "parameter default must be a string literal in slice 4".into(),
+                        });
+                    }
+                }
+            }
+            let span = Span::new(self.file_id, name_span.start, end_span.end);
+            params.push(Param { name: pname, default, span });
+            match &self.peek().kind {
+                TokenKind::Comma => {
+                    self.pos += 1;
+                }
+                _ => break,
+            }
+        }
+        Ok(params)
     }
 
     fn parse_skill_body_line(
@@ -350,7 +493,32 @@ impl<'a> Parser<'a> {
             "description" => {
                 self.pos += 1;
                 self.expect(&TokenKind::Colon)?;
+                // Capture the literal token span before consuming so we can
+                // attribute a slot diagnostic to the offending position.
+                let lit_span = self.peek().span;
                 let s = self.consume_string_after_colon()?;
+                // `description:` is a non-instruction-bearing string. Any
+                // `{name}` slots inside fire `G::parse::param-slot-in-non-instruction-string`.
+                for slot in scan_slots(&s) {
+                    let span_start = lit_span.start + 1 + slot.start_in_content as u32;
+                    let span = Span::new(self.file_id, span_start, span_start + 1);
+                    self.bag.push(
+                        Diagnostic {
+                            id: "G::parse::param-slot-in-non-instruction-string".into(),
+                            classification: Classification::Repairable,
+                            message: format!(
+                                "`{{{}}}` slot is not allowed in `description:` — descriptions are not instruction-bearing strings",
+                                slot.name
+                            ),
+                            span: SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                            related: Vec::new(),
+                            hints: vec![
+                                "remove the braces or move the slot into an instruction string".into(),
+                            ],
+                        },
+                        span,
+                    );
+                }
                 if description.is_some() {
                     return Err(ParseError::Unexpected {
                         span: kw_span,

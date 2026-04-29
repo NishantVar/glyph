@@ -12,6 +12,7 @@ pub mod expand;
 pub mod ir;
 pub mod lower;
 pub mod parse;
+pub mod slot;
 pub mod span;
 pub mod tokenize;
 pub mod validate;
@@ -83,7 +84,10 @@ pub fn compile_source(
         }
     };
 
-    let file = analyze::analyze(file);
+    let file = analyze::analyze_with_diagnostics(file, file_id, file_label, &line_index, &mut bag);
+    if bag.has_error() || bag.has_repairable() {
+        return Ok(CompileOutcome::Diagnostics(bag));
+    }
     let arena = lower::lower(&file).map_err(CompileError::Lower)?;
     validate::validate(&arena).map_err(CompileError::Validate)?;
     let arena = expand::expand_step1(arena);
@@ -105,11 +109,10 @@ pub fn check_source(source: &str, file_id: u32, file_label: &str) -> DiagBag {
 
     let parsed = parse::parse_with_diagnostics(source, file_id, file_label, &line_index, &mut bag);
 
-    // Phase 2 (Analyze) is currently a structural pass-through (`analyze.rs`).
-    // We still call it on a successful parse so the surface matches the full
-    // pipeline; later slices add real Phase 2 diagnostics that surface here.
+    // Phase 2 (Analyze) — slice 4 adds the parameter-related diagnostics
+    // (`G::analyze::unknown-param-slot`, `G::analyze::missing-param-default`).
     if let Some(file) = parsed {
-        let _ = analyze::analyze(file);
+        let _ = analyze::analyze_with_diagnostics(file, file_id, file_label, &line_index, &mut bag);
     }
 
     bag

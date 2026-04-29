@@ -26,6 +26,27 @@ pub fn emit(arena: &IrArena) -> String {
     }
     out.push_str("---\n\n");
 
+    // ----- ## Parameters (conditional) -----
+    // Per `design/compiled-output.md` §`## Parameters`, the section is emitted
+    // only when the skill declares one or more parameters. Each entry renders
+    // as a bulleted item with either `(default: <value>)` or `(required)`. The
+    // walking-skeleton emitter does not generate descriptions yet (Step 2 LLM
+    // work in a later slice), so we omit the description fragment.
+    if !skill.params.is_empty() {
+        out.push_str("## Parameters\n\n");
+        for p in &skill.params {
+            match &p.default {
+                Some(v) => {
+                    out.push_str(&format!("- **{}** (default: {})\n", p.name, v));
+                }
+                None => {
+                    out.push_str(&format!("- **{}** (required)\n", p.name));
+                }
+            }
+        }
+        out.push('\n');
+    }
+
     // ----- ## Instructions -----
     out.push_str("## Instructions\n\n");
 
