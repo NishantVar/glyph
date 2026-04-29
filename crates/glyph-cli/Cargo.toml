@@ -12,3 +12,6 @@ path = "src/main.rs"
 glyph-core = { workspace = true }
 clap = { workspace = true }
 codespan-reporting = { workspace = true }
+
+[dev-dependencies]
+insta = "1"
