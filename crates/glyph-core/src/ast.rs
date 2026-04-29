@@ -44,6 +44,10 @@ pub struct Skill {
     /// empty). Used to distinguish a constraint-only skill (legal) from a skill
     /// with an explicitly empty `flow:` (illegal — `G::parse::empty-flow`).
     pub flow_present: bool,
+    /// Bare names at body level (indent 1) that don't match any recognized
+    /// keyword. Used by analyze to fire `G::analyze::ambiguous-role` when
+    /// the name resolves to a `text` declaration.
+    pub body_bare_names: Vec<String>,
 }
 
 /// Minimal `export block` declaration — slice 4 captures the header shape only.

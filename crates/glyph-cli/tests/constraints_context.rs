@@ -329,3 +329,26 @@ fn missing_description_fires_repairable_diagnostic() {
     let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
     assert_has_diagnostic_id(&stdout, "G::analyze::missing-description");
 }
+
+// --- Acceptance criterion 6: branch-scoped context marker stays inline ---
+// NOTE: Branches (`if`/`elif`/`else`) are not yet in the AST. This test is
+// deferred until branch support lands. When branches are implemented, add a
+// test that verifies a `context` marker inside an `if` branch does NOT appear
+// in `### Context` but instead renders inline within the branch's step prose.
+
+// --- Reviewer feedback item 1: G::analyze::ambiguous-role diagnostic ---
+
+#[test]
+fn bare_text_name_at_body_level_fires_ambiguous_role() {
+    let src = fixture("repairable", "ambiguous_role.glyph.md");
+    let result = run_check(src, "json");
+    assert_eq!(
+        result.status.code(),
+        Some(2),
+        "expected exit 2 (repairable); stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_has_diagnostic_id(&stdout, "G::analyze::ambiguous-role");
+}

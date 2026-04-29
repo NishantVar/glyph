@@ -322,6 +322,7 @@ impl<'a> Parser<'a> {
         let mut effects: Vec<String> = Vec::new();
         let mut flow: Vec<FlowStmt> = Vec::new();
         let mut flow_present = false;
+        let mut body_bare_names: Vec<String> = Vec::new();
 
         // Parse body lines at indent 1.
         loop {
@@ -335,6 +336,7 @@ impl<'a> Parser<'a> {
                         &mut effects,
                         &mut flow,
                         &mut flow_present,
+                        &mut body_bare_names,
                     )?;
                 }
                 _ => break,
@@ -359,6 +361,7 @@ impl<'a> Parser<'a> {
                 effects,
                 flow,
                 flow_present,
+                body_bare_names,
             },
             span,
         ))
@@ -484,6 +487,7 @@ impl<'a> Parser<'a> {
         effects: &mut Vec<String>,
         flow: &mut Vec<FlowStmt>,
         flow_present: &mut bool,
+        body_bare_names: &mut Vec<String>,
     ) -> Result<(), ParseError> {
         // Already at LineStart with indent 1.
         self.expect_line_start()?;
@@ -830,11 +834,11 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            other => {
-                return Err(ParseError::Unexpected {
-                    span: kw_span,
-                    message: format!("unsupported skill body keyword `{}`", other),
-                });
+            _other => {
+                // Bare name at body level — not a recognized keyword.
+                // Store it for analyze to check `G::analyze::ambiguous-role`.
+                self.pos += 1;
+                body_bare_names.push(kw.clone());
             }
         }
         Ok(())

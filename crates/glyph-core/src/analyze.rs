@@ -181,6 +181,31 @@ fn analyze_skill(
         check_context_entry_name(entry, text_names, spanned.span, file_label, line_index, bag);
     }
 
+    // Check body-level bare names against text declarations.
+    // A bare text name at body level (no keyword prefix) is ambiguous — the
+    // compiler doesn't know if the author meant constraint, context, or step.
+    for name in &skill.body_bare_names {
+        if text_names.contains(name.as_str()) {
+            let span = spanned.span;
+            bag.push(
+                crate::diagnostic::Diagnostic {
+                    id: "G::analyze::ambiguous-role".into(),
+                    classification: crate::diagnostic::Classification::Repairable,
+                    message: format!(
+                        "bare name `{}` at body level is ambiguous — add a keyword prefix (`require`/`avoid`/`must`/`context`) to clarify intent",
+                        name
+                    ),
+                    span: SourceSpan::from_byte_span(file_label, span, line_index),
+                    related: Vec::new(),
+                    hints: vec![
+                        "use `require <name>` for a constraint, `context <name>` for context, or move it into `flow:` for a step".into(),
+                    ],
+                },
+                span,
+            );
+        }
+    }
+
     // Check missing description — repairable (Phase 3 Repair generates one).
     if skill.description.is_none() {
         let span = spanned.span;
