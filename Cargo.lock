@@ -192,6 +192,7 @@ dependencies = [
  "codespan-reporting",
  "glyph-core",
  "insta",
+ "serde_json",
 ]
 
 [[package]]

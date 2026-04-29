@@ -28,6 +28,10 @@ pub struct Skill {
     pub effects: Vec<String>,
     /// Flow statements — inline strings only in the skeleton.
     pub flow: Vec<FlowStmt>,
+    /// True iff the source declared a `flow:` sub-section (even if its body was
+    /// empty). Used to distinguish a constraint-only skill (legal) from a skill
+    /// with an explicitly empty `flow:` (illegal — `G::parse::empty-flow`).
+    pub flow_present: bool,
 }
 
 #[derive(Clone, Debug)]
