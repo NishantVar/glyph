@@ -22,6 +22,10 @@ pub enum TokenKind {
     Colon,
     Comma,
     Equals,
+    /// `.` — dot separator (e.g., `block_name.applies()`).
+    Dot,
+    /// `==` — branch condition equality (not a value-level operator).
+    DoubleEquals,
     /// End of file.
     Eof,
 }
@@ -140,9 +144,21 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
                     span: Span::new(file_id, p as u32, (p + 1) as u32),
                 });
                 p += 1;
+            } else if b == b'=' && p + 1 < content_end && bytes[p + 1] == b'=' {
+                tokens.push(Token {
+                    kind: TokenKind::DoubleEquals,
+                    span: Span::new(file_id, p as u32, (p + 2) as u32),
+                });
+                p += 2;
             } else if b == b'=' {
                 tokens.push(Token {
                     kind: TokenKind::Equals,
+                    span: Span::new(file_id, p as u32, (p + 1) as u32),
+                });
+                p += 1;
+            } else if b == b'.' {
+                tokens.push(Token {
+                    kind: TokenKind::Dot,
                     span: Span::new(file_id, p as u32, (p + 1) as u32),
                 });
                 p += 1;
@@ -263,6 +279,26 @@ mod tests {
         assert!(matches!(&toks[1].kind, TokenKind::Ident(s) if s == "description"));
         assert_eq!(toks[2].kind, TokenKind::Colon);
         assert!(matches!(&toks[3].kind, TokenKind::StringLit(s) if s == "hello"));
+    }
+
+    #[test]
+    fn tokenize_double_equals() {
+        let src = "        if mode == \"fast\"\n";
+        let (toks, _) = tokenize(src, 0).unwrap();
+        assert!(matches!(toks[0].kind, TokenKind::LineStart { indent: 2 }));
+        assert!(matches!(&toks[1].kind, TokenKind::Ident(s) if s == "if"));
+        assert!(matches!(&toks[2].kind, TokenKind::Ident(s) if s == "mode"));
+        assert_eq!(toks[3].kind, TokenKind::DoubleEquals);
+        assert!(matches!(&toks[4].kind, TokenKind::StringLit(s) if s == "fast"));
+    }
+
+    #[test]
+    fn tokenize_dot() {
+        let src = "        if my_block.applies()\n";
+        let (toks, _) = tokenize(src, 0).unwrap();
+        assert!(matches!(&toks[2].kind, TokenKind::Ident(s) if s == "my_block"));
+        assert_eq!(toks[3].kind, TokenKind::Dot);
+        assert!(matches!(&toks[4].kind, TokenKind::Ident(s) if s == "applies"));
     }
 
     #[test]
