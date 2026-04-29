@@ -195,6 +195,10 @@ fn analyze_skill(
             FlowStmt::ContextMarker(entry) => {
                 check_context_entry_name(entry, text_names, spanned.span, file_label, line_index, bag);
             }
+            FlowStmt::Return(_) => {
+                // Return statements are validated structurally by the parser
+                // (check_return_rules). No analyze-phase checks needed.
+            }
         }
     }
 
@@ -446,5 +450,25 @@ fn analyze_export_block(
                 span,
             );
         }
+    }
+    // G::analyze::missing-return — export block must have an explicit return.
+    if !decl.has_return {
+        let span = spanned.span;
+        bag.push(
+            Diagnostic {
+                id: "G::analyze::missing-return".into(),
+                classification: Classification::Repairable,
+                message: format!(
+                    "`export block {}` requires an explicit `return` statement",
+                    decl.name
+                ),
+                span: SourceSpan::from_byte_span(file_label, span, line_index),
+                related: Vec::new(),
+                hints: vec![
+                    "add a `return` statement at the end of the `flow:` section".into(),
+                ],
+            },
+            span,
+        );
     }
 }

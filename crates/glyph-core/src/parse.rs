@@ -5,7 +5,7 @@
 
 use crate::ast::{
     BlockDecl, ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl, ExportBlockDecl,
-    FlowStmt, Param, Skill, SourceFile, TextDecl,
+    FlowStmt, Param, ReturnExpr, Skill, SourceFile, TextDecl,
 };
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::slot::scan_slots;
@@ -168,6 +168,14 @@ pub fn parse_with_diagnostics(
                     span,
                 );
             }
+        }
+        // Check return-related diagnostics for skills.
+        if let Decl::Skill(spanned_skill) = decl {
+            check_return_rules(&spanned_skill.node.flow, spanned_skill.span, file_label, line_index, bag, false);
+        }
+        // Check return-related diagnostics for blocks.
+        if let Decl::Block(spanned_block) = decl {
+            check_return_rules(&spanned_block.node.flow, spanned_block.span, file_label, line_index, bag, false);
         }
     }
     if bag.has_error() || bag.has_repairable() {
@@ -383,11 +391,19 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Rparen)?;
 
         // Skip body — every line whose LineStart indent is > 0.
+        // Scan for `return` keyword to set has_return flag.
+        let mut has_return = false;
         loop {
             match self.current_line_indent() {
                 Some(n) if n > 0 => {
                     // Drop the LineStart and every token until the next LineStart or Eof.
                     self.pos += 1;
+                    // Check if line starts with `return`.
+                    if let TokenKind::Ident(kw) = &self.peek().kind {
+                        if kw == "return" {
+                            has_return = true;
+                        }
+                    }
                     while !self.at_eof()
                         && !matches!(self.peek().kind, TokenKind::LineStart { .. })
                     {
@@ -404,7 +420,7 @@ impl<'a> Parser<'a> {
             kw_span
         };
         let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
-        Ok(Spanned::new(ExportBlockDecl { name, params }, span))
+        Ok(Spanned::new(ExportBlockDecl { name, params, has_return }, span))
     }
 
     /// Parse `block <name>(<params>)` with optional body (description, flow,
@@ -954,6 +970,64 @@ impl<'a> Parser<'a> {
                             name,
                         }))
                     }
+                    "return" => {
+                        self.pos += 1;
+                        // Parse the return expression.
+                        let expr = match &self.peek().kind {
+                            TokenKind::LineStart { .. } | TokenKind::Eof => {
+                                // Bare `return` with no expression = return none.
+                                ReturnExpr::None
+                            }
+                            TokenKind::Ident(name) if name == "none" => {
+                                self.pos += 1;
+                                ReturnExpr::None
+                            }
+                            TokenKind::Ident(name) => {
+                                let name = name.clone();
+                                self.pos += 1;
+                                // Check if it's a call: name(args).
+                                if matches!(self.peek().kind, TokenKind::Lparen) {
+                                    self.pos += 1; // consume `(`
+                                    let mut args: Vec<String> = Vec::new();
+                                    if !matches!(self.peek().kind, TokenKind::Rparen) {
+                                        loop {
+                                            match &self.peek().kind {
+                                                TokenKind::Ident(a) => {
+                                                    args.push(a.clone());
+                                                    self.pos += 1;
+                                                }
+                                                TokenKind::StringLit(a) => {
+                                                    args.push(a.clone());
+                                                    self.pos += 1;
+                                                }
+                                                _ => {
+                                                    return Err(ParseError::Unexpected {
+                                                        span: self.peek().span,
+                                                        message: "expected argument in return call".into(),
+                                                    });
+                                                }
+                                            }
+                                            match &self.peek().kind {
+                                                TokenKind::Comma => { self.pos += 1; }
+                                                _ => break,
+                                            }
+                                        }
+                                    }
+                                    self.expect(&TokenKind::Rparen)?;
+                                    ReturnExpr::Call { target: name, args }
+                                } else {
+                                    ReturnExpr::Name(name)
+                                }
+                            }
+                            _ => {
+                                return Err(ParseError::Unexpected {
+                                    span: self.peek().span,
+                                    message: "expected identifier, call, or `none` after `return`".into(),
+                                });
+                            }
+                        };
+                        Ok(FlowStmt::Return(expr))
+                    }
                     "context" => {
                         self.pos += 1;
                         match &self.peek().kind {
@@ -1060,5 +1134,68 @@ impl<'a> Parser<'a> {
         let end_span = self.tokens[self.pos - 1].span;
         let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
         Ok(Spanned::new(TextDecl { name, value }, span))
+    }
+}
+
+/// Check return-related structural rules on a flow statement list.
+///
+/// - `G::parse::return-not-terminal` — `return` is not the last statement.
+/// - `G::parse::multiple-returns` — more than one `return`.
+/// - `G::parse::return-in-branch` — `return` inside a branch body (when `in_branch` is true).
+pub(crate) fn check_return_rules(
+    flow: &[FlowStmt],
+    span: Span,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+    in_branch: bool,
+) {
+    let return_positions: Vec<usize> = flow
+        .iter()
+        .enumerate()
+        .filter_map(|(i, stmt)| matches!(stmt, FlowStmt::Return(_)).then_some(i))
+        .collect();
+
+    if return_positions.is_empty() {
+        return;
+    }
+
+    // G::parse::return-in-branch — return inside a branch body.
+    if in_branch {
+        bag.push(
+            Diagnostic::error(
+                "G::parse::return-in-branch",
+                "`return` is not allowed inside an `if`/`elif`/`else` branch",
+                SourceSpan::from_byte_span(file_label, span, line_index),
+            ),
+            span,
+        );
+        return; // Don't fire other return diagnostics for in-branch returns.
+    }
+
+    // G::parse::multiple-returns — more than one return.
+    if return_positions.len() > 1 {
+        bag.push(
+            Diagnostic::error(
+                "G::parse::multiple-returns",
+                "more than one `return` statement in `flow:`",
+                SourceSpan::from_byte_span(file_label, span, line_index),
+            ),
+            span,
+        );
+        return; // Don't also fire return-not-terminal for multi-return.
+    }
+
+    // G::parse::return-not-terminal — single return not at the end.
+    let pos = return_positions[0];
+    if pos != flow.len() - 1 {
+        bag.push(
+            Diagnostic::error(
+                "G::parse::return-not-terminal",
+                "`return` must be the last statement in `flow:`",
+                SourceSpan::from_byte_span(file_label, span, line_index),
+            ),
+            span,
+        );
     }
 }

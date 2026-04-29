@@ -4,7 +4,7 @@
 //! Per `design/build-foundation.md` §A4, IDs are allocated in pre-order source
 //! traversal starting at `n0`.
 
-use crate::ast::{BlockDecl, ConstraintMarkerKind, ContextEntry, Decl, FlowStmt, Skill, SourceFile};
+use crate::ast::{BlockDecl, ConstraintMarkerKind, ContextEntry, Decl, FlowStmt, ReturnExpr, Skill, SourceFile};
 use crate::ir::{
     IrArena, IrBlock, IrCall, IrConstraint, IrContext, IrInlineInstruction, IrNode, IrParam,
     IrSkill, NodeId, Polarity, Role, Strength,
@@ -94,6 +94,7 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
         steps: Vec::new(),
         context: Vec::new(),
         constraints: Vec::new(),
+        return_text: None,
     }));
 
     // Lower block declarations to IrBlock nodes.
@@ -129,6 +130,7 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
     let mut step_ids: Vec<NodeId> = Vec::new();
     let mut flow_hoisted_constraint_ids: Vec<NodeId> = Vec::new();
     let mut flow_hoisted_context_ids: Vec<NodeId> = Vec::new();
+    let mut return_text: Option<String> = None;
     for stmt in &skill.flow {
         match stmt {
             FlowStmt::InlineString(text) => {
@@ -187,6 +189,21 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
                     resolved_body,
                 }));
                 step_ids.push(id);
+            }
+            FlowStmt::Return(expr) => {
+                // Capture the return expression text for return folding in Expand.
+                let text = match expr {
+                    ReturnExpr::None => None,
+                    ReturnExpr::Call { target, args } => {
+                        if args.is_empty() {
+                            Some(format!("{}()", target))
+                        } else {
+                            Some(format!("{}({})", target, args.join(", ")))
+                        }
+                    }
+                    ReturnExpr::Name(name) => Some(name.clone()),
+                };
+                return_text = text;
             }
             FlowStmt::BareName(_) => {
                 // BareName in flow is caught by Analyze before Lower runs.
@@ -273,6 +290,7 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
             s.steps = step_ids;
             s.context = context_ids;
             s.constraints = constraint_ids;
+            s.return_text = return_text;
         }
     }
     arena.set_root_skill(skill_id);

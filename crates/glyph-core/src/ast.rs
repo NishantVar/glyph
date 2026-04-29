@@ -57,6 +57,9 @@ pub struct Skill {
 pub struct ExportBlockDecl {
     pub name: String,
     pub params: Vec<Param>,
+    /// Whether the body contains an explicit `return` statement.
+    /// Slice 8 needs this to fire `G::analyze::missing-return`.
+    pub has_return: bool,
 }
 
 /// A header parameter on `skill`, `block`, or `export block`.
@@ -107,6 +110,19 @@ pub enum FlowStmt {
     BareName(String),
     /// A call expression: `name()` or `name(arg1, arg2)`.
     Call { target: String, args: Vec<String> },
+    /// `return <expr>` — terminal-only at flow root.
+    Return(ReturnExpr),
+}
+
+/// The expression following `return`.
+#[derive(Clone, Debug)]
+pub enum ReturnExpr {
+    /// `return none` or bare `return` (no expression).
+    None,
+    /// `return some_call()`.
+    Call { target: String, args: Vec<String> },
+    /// `return some_name` (binding reference).
+    Name(String),
 }
 
 /// An entry inside the `context:` sub-section or a body-level `context` marker.

@@ -686,6 +686,260 @@ skill main()
     }
 
     #[test]
+    fn return_call_folds_into_final_step() {
+        // AC1: `return summarize_changes()` becomes the last sentence of the
+        // final numbered step.
+        let src = "\
+block summarize_changes()
+    \"Summarize what was changed and why.\"
+
+skill update_docs()
+    description: \"Update documentation.\"
+    flow:
+        \"Read the repository changes.\"
+        return summarize_changes()
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                // The final step should contain the return folding text.
+                assert!(
+                    markdown.contains("Return the result of summarize_changes()."),
+                    "expected return folding in final step:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn private_block_may_omit_return() {
+        // AC2: Private blocks may omit `return`; no diagnostic fires.
+        let src = "\
+block helper()
+    \"Do something helpful.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        helper()
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::missing-return"),
+            "private block should not require return, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn export_block_requires_return() {
+        // AC2: export blocks require explicit `return`.
+        // AC3: G::analyze::missing-return fires when export block has no return.
+        let src = "\
+export block shared_util(x = \"default\")
+    flow:
+        \"Do something.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        \"Do something.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::missing-return"),
+            "expected G::analyze::missing-return for export block without return, got: {:?}",
+            ids
+        );
+        // Should be repairable.
+        let diag = bag.iter().find(|d| d.id == "G::analyze::missing-return").unwrap();
+        assert_eq!(diag.classification, diagnostic::Classification::Repairable);
+    }
+
+    #[test]
+    fn export_block_with_return_no_diagnostic() {
+        // Export block with explicit return should not fire missing-return.
+        let src = "\
+export block shared_util(x = \"default\")
+    flow:
+        \"Do something.\"
+        return x
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        \"Do something.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::missing-return"),
+            "export block with return should not fire missing-return, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn return_not_terminal_fires_diagnostic() {
+        // AC3: G::parse::return-not-terminal — return before the last statement.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        return none
+        \"Do something after return.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::return-not-terminal"),
+            "expected G::parse::return-not-terminal, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 1);
+    }
+
+    #[test]
+    fn multiple_returns_fires_diagnostic() {
+        // AC3: G::parse::multiple-returns — more than one return.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        return none
+        return none
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::multiple-returns"),
+            "expected G::parse::multiple-returns, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 1);
+    }
+
+    #[test]
+    fn return_in_branch_fires_diagnostic() {
+        // AC3: G::parse::return-in-branch — `return` inside a branch context
+        // should emit this diagnostic. Since Glyph doesn't have if/elif/else
+        // syntax yet, we call check_return_rules directly with in_branch=true.
+        use parse::check_return_rules;
+        use ast::{FlowStmt, ReturnExpr};
+        use span::Span;
+
+        let source = "return none\n";
+        let line_index = LineIndex::new(source);
+        let sp = Span::new(0, 0, source.len() as u32);
+        let flow = vec![FlowStmt::Return(ReturnExpr::None)];
+        let mut bag = DiagBag::new();
+
+        check_return_rules(&flow, sp, "test.glyph.md", &line_index, &mut bag, true);
+
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::return-in-branch"),
+            "expected G::parse::return-in-branch, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 1);
+    }
+
+    #[test]
+    fn return_none_implicit_no_folding() {
+        // `return none` should not append anything to the final step.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        \"Do something.\"
+        return none
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                assert!(
+                    !markdown.contains("Return the result of"),
+                    "return none should not fold into step:\n{}",
+                    markdown
+                );
+                assert!(
+                    markdown.contains("1. Do something."),
+                    "step should be preserved:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn return_bare_name_folds_into_final_step() {
+        // `return result` with a bare name should fold.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        \"Compute the result.\"
+        return result
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                assert!(
+                    markdown.contains("Return the result of result."),
+                    "expected return folding for bare name:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn skill_without_return_compiles_normally() {
+        // Skills without return should compile as before (no regression).
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        \"Do something.\"
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                assert!(
+                    markdown.contains("1. Do something."),
+                    "step should be preserved:\n{}",
+                    markdown
+                );
+                assert!(
+                    !markdown.contains("Return"),
+                    "no return text should appear:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
     fn check_source_flags_tab_indent_as_repairable() {
         // Tab-indented source surfaces a `repairable` diagnostic, not an error.
         let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";
