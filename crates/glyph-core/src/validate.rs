@@ -14,6 +14,19 @@ pub enum ValidateError {
     EmptyStep(u32),
 }
 
+impl ValidateError {
+    /// Canonical `G::validate::*` diagnostic string ID.
+    pub fn diagnostic_id(&self) -> &'static str {
+        match self {
+            ValidateError::NoRootSkill => "G::validate::no-root-skill",
+            ValidateError::DuplicateNodeId(_) => "G::validate::duplicate-node-id",
+            ValidateError::UnresolvedCallee(_) => "G::validate::unresolved-callee",
+            ValidateError::RecursiveCall(_) => "G::validate::recursive-call",
+            ValidateError::EmptyStep(_) => "G::validate::empty-step",
+        }
+    }
+}
+
 pub fn validate(arena: &IrArena) -> Result<(), ValidateError> {
     if arena.root_skill().is_none() {
         return Err(ValidateError::NoRootSkill);
@@ -46,11 +59,50 @@ pub fn validate(arena: &IrArena) -> Result<(), ValidateError> {
         }
     }
 
-    // Check for recursive calls (direct self-recursion via outgoing_calls).
-    for n in arena.nodes() {
-        if let IrNode::Block(b) = n {
-            if b.outgoing_calls.contains(&b.name) {
-                return Err(ValidateError::RecursiveCall(b.name.clone()));
+    // Check for recursive calls — full cycle detection in the block call graph.
+    // Build adjacency map, then DFS for cycles.
+    {
+        let mut adjacency: std::collections::HashMap<&str, &[String]> = std::collections::HashMap::new();
+        for n in arena.nodes() {
+            if let IrNode::Block(b) = n {
+                adjacency.insert(&b.name, &b.outgoing_calls);
+            }
+        }
+        // DFS cycle detection using coloring: White (unvisited), Gray (in stack), Black (done).
+        let mut color: std::collections::HashMap<&str, u8> = std::collections::HashMap::new(); // 0=white, 1=gray, 2=black
+        for &name in adjacency.keys() {
+            color.insert(name, 0);
+        }
+        fn dfs<'a>(
+            node: &'a str,
+            adjacency: &std::collections::HashMap<&'a str, &'a [String]>,
+            color: &mut std::collections::HashMap<&'a str, u8>,
+        ) -> Option<String> {
+            color.insert(node, 1); // gray
+            if let Some(neighbors) = adjacency.get(node) {
+                for neighbor in *neighbors {
+                    match color.get(neighbor.as_str()).copied() {
+                        Some(1) => return Some(neighbor.clone()), // back edge = cycle
+                        Some(0) => {
+                            if let Some(cyclic) = dfs(neighbor, adjacency, color) {
+                                return Some(cyclic);
+                            }
+                        }
+                        _ => {} // black or unknown (non-block target) — skip
+                    }
+                }
+            }
+            color.insert(node, 2); // black
+            None
+        }
+        // Sort keys for deterministic error reporting.
+        let mut names: Vec<&str> = adjacency.keys().copied().collect();
+        names.sort();
+        for name in names {
+            if color.get(name).copied() == Some(0) {
+                if let Some(cyclic) = dfs(name, &adjacency, &mut color) {
+                    return Err(ValidateError::RecursiveCall(cyclic));
+                }
             }
         }
     }
@@ -117,6 +169,7 @@ mod tests {
         }));
         let err = validate(&arena).unwrap_err();
         assert_eq!(err, ValidateError::DuplicateNodeId(0));
+        assert_eq!(err.diagnostic_id(), "G::validate::duplicate-node-id");
     }
 
     #[test]
@@ -124,6 +177,7 @@ mod tests {
         let arena = make_skill_arena_with_step("");
         let err = validate(&arena).unwrap_err();
         assert_eq!(err, ValidateError::EmptyStep(1));
+        assert_eq!(err.diagnostic_id(), "G::validate::empty-step");
     }
 
     #[test]
@@ -131,6 +185,7 @@ mod tests {
         let arena = make_skill_arena_with_step("   ");
         let err = validate(&arena).unwrap_err();
         assert_eq!(err, ValidateError::EmptyStep(1));
+        assert_eq!(err.diagnostic_id(), "G::validate::empty-step");
     }
 
     #[test]
@@ -155,6 +210,7 @@ mod tests {
         arena.set_root_skill(skill_id);
         let err = validate(&arena).unwrap_err();
         assert_eq!(err, ValidateError::UnresolvedCallee("missing_block".into()));
+        assert_eq!(err.diagnostic_id(), "G::validate::unresolved-callee");
     }
 
     #[test]
@@ -189,5 +245,61 @@ mod tests {
 
         let err = validate(&arena).unwrap_err();
         assert_eq!(err, ValidateError::RecursiveCall("foo".into()));
+        assert_eq!(err.diagnostic_id(), "G::validate::recursive-call");
+    }
+
+    #[test]
+    fn validate_indirect_recursive_call() {
+        // A calls B, B calls A — indirect cycle detection.
+        let mut arena = IrArena::new();
+        arena.push(IrNode::Skill(IrSkill {
+            node_id: NodeId(0),
+            name: "test".into(),
+            description: "test".into(),
+            effects: vec![],
+            params: vec![],
+            steps: vec![NodeId(1)],
+            context: vec![],
+            constraints: vec![],
+        }));
+        arena.push(IrNode::Call(IrCall {
+            node_id: NodeId(1),
+            target: "foo".into(),
+            args: vec![],
+            resolved_body: Some("Do something.".into()),
+        }));
+        // Block "foo" calls "bar".
+        arena.push(IrNode::Block(IrBlock {
+            node_id: NodeId(2),
+            name: "foo".into(),
+            description: None,
+            body_text: "Do something.".into(),
+            resolved_word_count: None,
+            outgoing_calls: vec!["bar".into()],
+        }));
+        // Block "bar" calls "foo" — completing the cycle.
+        arena.push(IrNode::Block(IrBlock {
+            node_id: NodeId(3),
+            name: "bar".into(),
+            description: None,
+            body_text: "Do something else.".into(),
+            resolved_word_count: None,
+            outgoing_calls: vec!["foo".into()],
+        }));
+        arena.set_root_skill(NodeId(0));
+
+        let err = validate(&arena).unwrap_err();
+        // Should detect the cycle involving either "foo" or "bar".
+        match &err {
+            ValidateError::RecursiveCall(name) => {
+                assert!(
+                    name == "foo" || name == "bar",
+                    "expected cycle participant, got: {}",
+                    name
+                );
+            }
+            other => panic!("expected RecursiveCall, got: {:?}", other),
+        }
+        assert_eq!(err.diagnostic_id(), "G::validate::recursive-call");
     }
 }

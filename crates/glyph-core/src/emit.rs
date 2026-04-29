@@ -70,11 +70,13 @@ pub fn emit(arena: &IrArena) -> String {
             let text = match arena.get(*step_id) {
                 IrNode::InlineInstruction(i) => i.text.clone(),
                 IrNode::Call(c) => {
-                    // Tier 1 inline should have converted calls to InlineInstruction
-                    // in expand. If we reach here, use the resolved body as fallback.
-                    c.resolved_body.clone().unwrap_or_else(|| {
-                        format!("(unresolved call to {})", c.target)
-                    })
+                    // After Tier 1 expansion, all calls should have been inlined as
+                    // InlineInstruction nodes. Reaching here means validate failed to
+                    // catch an unresolved callee — this is a compiler bug.
+                    panic!(
+                        "IrNode::Call to `{}` survived past expand; validate should have caught this",
+                        c.target
+                    );
                 }
                 _ => panic!("Step node was not an InlineInstruction or Call"),
             };
