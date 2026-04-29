@@ -12,6 +12,7 @@ pub enum ValidateError {
     UnresolvedCallee(String),
     RecursiveCall(String),
     EmptyStep(u32),
+    MalformedBranch(u32),
 }
 
 impl ValidateError {
@@ -23,6 +24,7 @@ impl ValidateError {
             ValidateError::UnresolvedCallee(_) => "G::validate::unresolved-callee",
             ValidateError::RecursiveCall(_) => "G::validate::recursive-call",
             ValidateError::EmptyStep(_) => "G::validate::empty-step",
+            ValidateError::MalformedBranch(_) => "G::validate::malformed-branch",
         }
     }
 }
@@ -46,6 +48,25 @@ pub fn validate(arena: &IrArena) -> Result<(), ValidateError> {
         if let IrNode::InlineInstruction(i) = n {
             if i.text.trim().is_empty() {
                 return Err(ValidateError::EmptyStep(i.node_id.0));
+            }
+        }
+    }
+
+    // Check for malformed branches (empty then_body or empty condition).
+    for n in arena.nodes() {
+        if let IrNode::Branch(br) = n {
+            if br.condition.trim().is_empty() || br.then_body.is_empty() {
+                return Err(ValidateError::MalformedBranch(br.node_id.0));
+            }
+            for elif in &br.elif_branches {
+                if elif.condition.trim().is_empty() || elif.body.is_empty() {
+                    return Err(ValidateError::MalformedBranch(br.node_id.0));
+                }
+            }
+            if let Some(eb) = &br.else_body {
+                if eb.is_empty() {
+                    return Err(ValidateError::MalformedBranch(br.node_id.0));
+                }
             }
         }
     }
@@ -118,6 +139,7 @@ fn node_id(n: &IrNode) -> u32 {
         IrNode::Context(ctx) => ctx.node_id.0,
         IrNode::Block(b) => b.node_id.0,
         IrNode::Call(c) => c.node_id.0,
+        IrNode::Branch(br) => br.node_id.0,
     }
 }
 
@@ -250,6 +272,34 @@ mod tests {
         let err = validate(&arena).unwrap_err();
         assert_eq!(err, ValidateError::RecursiveCall("foo".into()));
         assert_eq!(err.diagnostic_id(), "G::validate::recursive-call");
+    }
+
+    #[test]
+    fn validate_malformed_branch_empty_then_body() {
+        let mut arena = IrArena::new();
+        arena.push(IrNode::Skill(IrSkill {
+            node_id: NodeId(0),
+            name: "test".into(),
+            description: "test".into(),
+            effects: vec![],
+            params: vec![],
+            steps: vec![NodeId(1)],
+            context: vec![],
+            constraints: vec![],
+            return_text: None,
+        }));
+        arena.push(IrNode::Branch(crate::ir::IrBranch {
+            node_id: NodeId(1),
+            condition: "x == 1".into(),
+            then_body: vec![], // empty — malformed!
+            elif_branches: vec![],
+            else_body: None,
+            applies_descriptions: None,
+        }));
+        arena.set_root_skill(NodeId(0));
+        let err = validate(&arena).unwrap_err();
+        assert_eq!(err, ValidateError::MalformedBranch(1));
+        assert_eq!(err.diagnostic_id(), "G::validate::malformed-branch");
     }
 
     #[test]

@@ -973,6 +973,45 @@ skill main()
     }
 
     #[test]
+    fn branch_compiles_with_lettered_substeps() {
+        // AC1: branching compiles; output uses lettered sub-steps per arm.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        \"Prepare the environment.\"
+        if mode == \"fast\"
+            \"Do the fast thing.\"
+            \"Log performance metrics.\"
+        elif mode == \"slow\"
+            \"Do the slow thing.\"
+        else
+            \"Do the default thing.\"
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                // Step 1 should be the prepare step.
+                assert!(markdown.contains("1. Prepare the environment."), "markdown:\n{}", markdown);
+                // Step 2 should be the branch with lettered sub-steps.
+                assert!(markdown.contains("2. If mode == \"fast\":"), "markdown:\n{}", markdown);
+                assert!(markdown.contains("   a. Do the fast thing."), "markdown:\n{}", markdown);
+                assert!(markdown.contains("   b. Log performance metrics."), "markdown:\n{}", markdown);
+                // elif arm
+                assert!(markdown.contains("   If mode == \"slow\":"), "markdown:\n{}", markdown);
+                assert!(markdown.contains("   a. Do the slow thing."), "markdown:\n{}", markdown);
+                // else arm
+                assert!(markdown.contains("   Otherwise:"), "markdown:\n{}", markdown);
+                assert!(markdown.contains("   a. Do the default thing."), "markdown:\n{}", markdown);
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
     fn branch_condition_equals_does_not_trigger_operator_in_expression() {
         // AC2: `==` in `if` condition does NOT trigger `operator-in-expression`.
         let src = "\

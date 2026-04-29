@@ -1,6 +1,7 @@
 //! IR node schema (walking-skeleton subset) and arena per `design/build-foundation.md` §A4.
 
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct NodeId(pub u32);
@@ -14,6 +15,7 @@ pub enum IrNode {
     Context(IrContext),
     Block(IrBlock),
     Call(IrCall),
+    Branch(IrBranch),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -96,6 +98,28 @@ pub struct IrCall {
     /// Resolved callee body text for Tier 1 inline expansion.
     /// Populated during Lower; None if callee not found.
     pub resolved_body: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct IrBranch {
+    pub node_id: NodeId,
+    pub condition: String,
+    /// Flow nodes in the `if` body.
+    pub then_body: Vec<NodeId>,
+    /// `elif` arms.
+    pub elif_branches: Vec<IrElifBranch>,
+    /// Optional `else` body.
+    pub else_body: Option<Vec<NodeId>>,
+    /// Maps block names to their resolved `description:` text for
+    /// `BLOCKNAME.applies()` calls in conditions. Populated by Expand Step 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applies_descriptions: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct IrElifBranch {
+    pub condition: String,
+    pub body: Vec<NodeId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
