@@ -342,7 +342,7 @@ For MVP, the agent skill ships **inside the `glyph` repo** at a known path (e.g.
 
 - **`cli.md`** — exit code 3 added for invocation errors (previously overloaded on exit 2). `validate-output` subcommand added.
 - **`build-foundation.md`** — exit code contract is 0/1/2/3, matching `cli.md`.
-- **`diagnostics.md`** — 24 `G::expand::*` diagnostic IDs are compiler-scope (implemented in `validate-output`), not agent-scope.
-- **`mvp-acceptance.md`** — the 25 agent-scope 6b diagnostics move to compiler-scope under `validate-output`. Agent-scope diagnostic count is 11 (5 repair notifications + 5 repair execution failures + 1 expand `llm-unavailable`). Compiler-scope is 75 (17 Parse + 26 Analyze + 1 Imports + 5 Validate + 1 Build + 25 Validate-output).
+- **`diagnostics.md`** — 26 `G::expand::*` diagnostic IDs are compiler-scope (implemented in `validate-output`), not agent-scope.
+- **`mvp-acceptance.md`** — the 26 agent-scope 6b diagnostics move to compiler-scope under `validate-output`. Agent-scope diagnostic count is 11 (5 repair notifications + 5 repair execution failures + 1 expand `llm-unavailable`). Compiler-scope is 77 (17 Parse + 27 Analyze + 1 Imports + 5 Validate + 1 Build + 26 Validate-output).
 - **`ir-schema.md`** — JSON serialization shapes defined here are the `serde_json` projection of the Rust IR types from `ir-schema.md`.
 - **`compiled-output.md`** — constraint wording exemplars in §Step 2 are the authoritative patterns for the open question in `compiled-output.md` §Open Questions.

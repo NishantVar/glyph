@@ -8,6 +8,7 @@ This folder is the working source of truth for Glyph system design. The reposito
 
 ### Foundations
 - [foundations.md](foundations.md) — stable design principles and hard conceptual boundaries (reference card)
+- [primitives.md](primitives.md) — five semantic primitives that all Glyph source forms decompose into: instruction, constraint, context, interface, and binding
 
 ### Language
 - [language-surface.md](language-surface.md) — source syntax: declarations (`skill`, `block`, `export block`, `text`, `int`, `float`, `import` and their `export`/`generated` variants), header grammar, indentation, sub-section syntax, authoring model, source-to-IR pipeline
@@ -45,7 +46,7 @@ This folder is the working source of truth for Glyph system design. The reposito
 
 ### MVP
 - [build-foundation.md](build-foundation.md) — **Rust implementation foundation**: two-crate workspace, hand-rolled parser, span/arena types, sync-only architecture, error/diagnostic channels, CLI contract, agent workflow, dependency inventory
-- [mvp-acceptance.md](mvp-acceptance.md) — walking skeleton (`update_docs.glyph.md`), test corpus structure, 5-skill multi-file acceptance project, 75 compiler-scope + 11 agent-scope diagnostic IDs, exit criteria
+- [mvp-acceptance.md](mvp-acceptance.md) — walking skeleton (`update_docs.glyph.md`), test corpus structure, 5-skill multi-file acceptance project, 77 compiler-scope + 11 agent-scope diagnostic IDs, exit criteria
 
 ## Reading Order
 

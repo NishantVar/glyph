@@ -342,7 +342,7 @@ Every diagnostic below is emitted by the deterministic compiler (Phases 1, 2, 4,
 | `G::parse::applies-no-parens` | error |
 | `G::parse::applies-with-args` | error |
 
-**Analyze phase (26):**
+**Analyze phase (27):**
 
 | ID | Classification |
 |----|---------------|
@@ -370,6 +370,7 @@ Every diagnostic below is emitted by the deterministic compiler (Phases 1, 2, 4,
 | `G::analyze::no-exports-in-library` | error |
 | `G::analyze::missing-param-default` | error |
 | `G::analyze::missing-description` | repairable |
+| `G::analyze::text-in-flow` | repairable |
 | `G::analyze::applies-on-non-block` | error |
 | `G::analyze::applies-on-undescribed-block` | repairable |
 
@@ -395,7 +396,7 @@ Every diagnostic below is emitted by the deterministic compiler (Phases 1, 2, 4,
 |----|---------------|
 | `G::build::skipped-due-to-failed-import` | warning |
 
-**Validate-output phase (25):**
+**Validate-output phase (26):**
 
 Phase 6b structural validation, implemented in `glyph validate-output`. These diagnostics check that Step 2's Markdown output faithfully projects the input IR. All are classification `error`. Full catalog in `expand.md` §4.2, cross-referenced in `agent-skill.md` §`glyph validate-output`.
 
@@ -407,6 +408,7 @@ Phase 6b structural validation, implemented in `glyph validate-output`. These di
 | `G::expand::step-count-mismatch` | error |
 | `G::expand::substep-count-mismatch` | error |
 | `G::expand::constraint-count-mismatch` | error |
+| `G::expand::context-count-mismatch` | error |
 | `G::expand::step-order-mismatch` | error |
 | `G::expand::invented-param-ref` | error |
 | `G::expand::dropped-param-ref` | error |
@@ -427,7 +429,7 @@ Phase 6b structural validation, implemented in `glyph validate-output`. These di
 | `G::expand::procedure-duplicate` | error |
 | `G::expand::procedure-order` | error |
 
-**Total: 75 compiler-scope diagnostic IDs** (17 Parse + 26 Analyze + 1 Imports + 5 Validate + 1 Build + 25 Validate-output).
+**Total: 77 compiler-scope diagnostic IDs** (17 Parse + 27 Analyze + 1 Imports + 5 Validate + 1 Build + 26 Validate-output).
 
 ### 4.2 Agent-scope diagnostics (not in compiler)
 

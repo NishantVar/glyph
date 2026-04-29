@@ -197,6 +197,7 @@ For the Markdown returned by Step 2:
 | `G::expand::step-count-mismatch` | error | Number of top-level `### Steps` items does not match expected top-level Step count (see §4.1 count formula) |
 | `G::expand::substep-count-mismatch` | error | Number of lettered sub-steps in a Branch's arm does not match the count of Step-projecting nodes in that arm's IR body |
 | `G::expand::constraint-count-mismatch` | error | Number of `### Constraints` items does not match `Constraint` node count |
+| `G::expand::context-count-mismatch` | error | Number of `### Context` items does not match the IR's top-level `context` array length on the skill/block |
 | `G::expand::step-order-mismatch` | error | Step order diverges from `flow:` order |
 | `G::expand::invented-param-ref` | error | `{...}` reference does not match any declared parameter |
 | `G::expand::dropped-param-ref` | error | A parameter reference from Step 1 output was silently removed by Step 2 |
