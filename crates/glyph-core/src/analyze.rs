@@ -199,6 +199,9 @@ fn analyze_skill(
                 // Return statements are validated structurally by the parser
                 // (check_return_rules). No analyze-phase checks needed.
             }
+            FlowStmt::Branch { .. } => {
+                // Branch analysis handled below.
+            }
         }
     }
 

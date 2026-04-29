@@ -210,6 +210,9 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
                 // If we somehow reach here, skip silently — the diagnostic
                 // was already emitted.
             }
+            FlowStmt::Branch { .. } => {
+                // Branch lowering — handled in a later step in this implementation.
+            }
         }
     }
 

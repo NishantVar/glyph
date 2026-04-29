@@ -940,6 +940,58 @@ skill main()
     }
 
     #[test]
+    fn branch_parses_if_elif_else() {
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if mode == \"fast\"
+            \"Do the fast thing.\"
+        elif mode == \"slow\"
+            \"Do the slow thing.\"
+        else
+            \"Do the default thing.\"
+";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let skill = file.decls.iter().find_map(|d| match d {
+            ast::Decl::Skill(s) => Some(&s.node),
+            _ => None,
+        }).unwrap();
+        assert_eq!(skill.flow.len(), 1);
+        match &skill.flow[0] {
+            ast::FlowStmt::Branch { condition, then_body, elif_branches, else_body } => {
+                assert_eq!(condition, "mode == \"fast\"");
+                assert_eq!(then_body.len(), 1);
+                assert_eq!(elif_branches.len(), 1);
+                assert_eq!(elif_branches[0].condition, "mode == \"slow\"");
+                assert_eq!(elif_branches[0].body.len(), 1);
+                assert!(else_body.is_some());
+                assert_eq!(else_body.as_ref().unwrap().len(), 1);
+            }
+            other => panic!("expected Branch, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn branch_condition_equals_does_not_trigger_operator_in_expression() {
+        // AC2: `==` in `if` condition does NOT trigger `operator-in-expression`.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if mode == \"fast\"
+            \"Do the fast thing.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::parse::operator-in-expression"),
+            "== in branch condition should not trigger operator-in-expression, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
     fn check_source_flags_tab_indent_as_repairable() {
         // Tab-indented source surfaces a `repairable` diagnostic, not an error.
         let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";
