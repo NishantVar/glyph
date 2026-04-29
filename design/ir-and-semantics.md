@@ -4,7 +4,7 @@ This document is the single authoritative source for Glyph's MVP IR structure, c
 
 ## 1. IR Roles
 
-The MVP instruction role set is **closed** to four roles:
+The MVP instruction role set is **closed** to five roles:
 
 | Role | Meaning |
 |------|---------|
@@ -12,8 +12,9 @@ The MVP instruction role set is **closed** to four roles:
 | `Step` | An ordered action in the workflow. Inside `flow:`, bare calls default to `Step`. A step may carry effect annotations, but effects are not roles. |
 | `Constraint` | A behavioral rule governing how work is performed. Positive rules, prohibitions, and their soft/hard variants are all constraints with different strength/polarity attributes — they do not become separate roles. |
 | `OutputContract` | What the final result, return value, or report should contain or satisfy. Describes the result boundary, not a workflow action (`Step`) or a process rule (`Constraint`). |
+| `Context` | Non-normative informational framing. Background the agent should understand while executing, without directing action or bounding behavior. |
 
-`Context` (non-normative informational framing) is **deferred from MVP** — see [todo.md](todo.md). With `## Inputs` removed from compiled output there is no clean projection target, and any genuine context can be authored as a Step, a Constraint, or a leading inline sentence inside `flow:`. The `context` keyword stays reserved for this future restoration.
+`Context` carries no strength or polarity attributes (unlike `Constraint`). It is purely informational — it frames the agent's understanding without imposing obligations or prohibitions.
 
 Activation/routing rules, preconditions, failure policies, and effects are **not** MVP instruction roles. They are either separate IR structures or deferred design areas.
 
@@ -34,6 +35,7 @@ Activation/routing rules, preconditions, failure policies, and effects are **not
 Projection from IR to compiled Markdown is target-specific. MVP projection produces YAML frontmatter, a conditional `## Parameters` section, and `## Instructions` (see [compiled-output.md](compiled-output.md)):
 
 - `Step` → numbered list items under `### Steps`. Parameters carried by the step appear as `{param}` references in the compiled prose, resolved by the consuming LLM at runtime.
+- `Context` → bulleted items under `### Context`, before `### Steps`. Passive informational text — no strength/polarity wording.
 - `Constraint` → bulleted items under `### Constraints`. Strength (`soft`/`hard`) and polarity (`require`/`avoid`) influence wording and prominence.
 - `InputContract` → projected into the `## Parameters` section of compiled output (names, descriptions, and either a default value or a `(required)` marker per parameter; see `compiled-output.md` §`## Parameters`). Parameters appear as `{param}` references in Step and Constraint prose, resolved by the consuming LLM at runtime.
 - `OutputContract` → folded into the final `Step`. The `return` expression becomes the closing sentence of the last numbered step. No dedicated compiled section in MVP.
@@ -82,8 +84,9 @@ Other source markers:
 | Marker | IR mapping |
 |--------|------------|
 | `flow` | contains `Step` nodes |
+| `context` | contains `Context` nodes |
 
-`input`, `output`, and `context` markers are deferred from MVP alongside the `inputs:` / `outputs:` sub-sections and the `Context` role (see [todo.md](todo.md)). Header parameters cover input definition; `return` covers output.
+`input` and `output` markers are deferred from MVP alongside the `inputs:` / `outputs:` sub-sections. Header parameters cover input definition; `return` covers output.
 
 ### Marker-Plus-Concept Form
 
@@ -114,23 +117,48 @@ The compiler normalizes body-level markers into a `constraints:` section via two
 
 #### Flow-Level Constraint Markers
 
-Constraint markers (`require`/`avoid`/`must`/`must avoid`) are also legal as flow statements inside `flow:`, including inside `if`/`elif`/`else` branch bodies. The IR represents them as `Constraint` nodes admissible in the `FlowNode` union (`ir-schema.md` §Flow Nodes). Lower (Phase 4) splits them by location:
+Constraint markers (`require`/`avoid`/`must`/`must avoid`) are also legal as flow statements inside `flow:`, including inside `if`/`elif`/`else` branch bodies. The IR represents them as `Constraint` nodes admissible in the `FlowNode` union (`ir-schema.md` §Flow Nodes). `Context` markers (via the `context` keyword) are similarly admissible as flow nodes, following the same hoisting/branch-scoping rules (see §Body-Level and Flow-Level Context Markers). Lower (Phase 4) splits them by location:
 
 - **Flow top-level** — a constraint marker at the top level of `flow:` (not inside a branch) is **hoisted** out of the flow and appended to the enclosing declaration's `constraints` list, deduplicated against existing entries by canonical text + polarity + strength. Two complementary mechanisms handle this: `glyph fmt` (Phase 3a) performs a source-to-source rewrite, moving flow-top-level constraints into the `constraints:` section for source clarity; Phase 4 (Lower) hoists any remaining flow-top-level `Constraint` nodes at IR level. After hoisting it renders in `### Constraints` like any other top-level constraint.
 - **Branch-scoped** — a constraint marker inside an `if`/`elif`/`else` branch body **stays inline** in that branch. Expand renders it as part of the conditional Step prose so the consuming LLM sees that the constraint applies only when that branch is taken (e.g., "If the change touches public APIs, do not break backwards compatibility."). It does not appear in `### Constraints`. See `compiled-output.md` §Constraint Rendering.
 
 By the time Lower completes, all unconditional constraints — whether originally in a `constraints:` section, at body level, or at flow top-level — reside in the declaration's `constraints` list. If `glyph fmt` ran first, the source already reflects this; if not, Lower's IR-level hoisting produces the same result. Branch-scoped markers are the only constraints that remain inside the flow.
 
+### Body-Level and Flow-Level Context Markers
+
+Authors may write `context` markers directly at body level without a `context:` wrapper:
+
+```glyph
+skill fix_bug(scope = ".")
+    context project_conventions
+    context "This codebase uses a monorepo layout."
+    flow:
+        ...
+```
+
+The compiler normalizes body-level `context` markers into the `context:` section via two complementary mechanisms: (1) `glyph fmt` (Phase 3a) performs a source-to-source rewrite, moving them into a `context:` sub-section for source clarity; (2) Phase 4 (Lower) hoists any remaining body-level `context` AST nodes into the declaration's `context` list at IR level, ensuring correct compilation regardless of whether `glyph fmt` was run. Both forms produce identical IR. The canonical source form always uses the `context:` section.
+
+#### Flow-Level Context Markers
+
+`context` markers are also legal as flow statements inside `flow:`, including inside `if`/`elif`/`else` branch bodies. The IR represents them as `Context` nodes admissible in the `FlowNode` union (alongside `Constraint` nodes — see `ir-schema.md` §Flow Nodes). Lower (Phase 4) splits them by location:
+
+- **Flow top-level** — a `context` marker at the top level of `flow:` (not inside a branch) is **hoisted** out of the flow and appended to the enclosing declaration's `context` list, deduplicated against existing entries by canonical text. Two complementary mechanisms handle this: `glyph fmt` (Phase 3a) performs a source-to-source rewrite, moving flow-top-level context markers into the `context:` section for source clarity; Phase 4 (Lower) hoists any remaining flow-top-level `Context` nodes at IR level. After hoisting it renders in `### Context` like any other top-level context entry.
+- **Branch-scoped** — a `context` marker inside an `if`/`elif`/`else` branch body **stays inline** in that branch. Expand renders it as part of the conditional Step prose so the consuming LLM sees that the context applies only when that branch is taken. It does not appear in `### Context`.
+
+By the time Lower completes, all unconditional context — whether originally in a `context:` section, at body level, or at flow top-level — resides in the declaration's `context` list. If `glyph fmt` ran first, the source already reflects this; if not, Lower's IR-level hoisting produces the same result. Branch-scoped markers are the only context entries that remain inside the flow.
+
 ### Inference And Repair
 
 Authors should be able to write terse source. The compiler infers role, strength, and polarity where possible, and the repair pass materializes the minimal explicit marker back into source when confidence is high.
+
+**Note:** Some forms have fixed roles assigned by grammar — no inference step is involved. Bare calls inside `flow:` are definitionally `Step`. A bare string as a block body shorthand (omitting `flow:`, per `language-surface.md` §3.2) is definitionally `Step`. Content inside `description:` carries no instruction role — it is context metadata. The evidence table below applies only to forms that are genuinely ambiguous.
 
 Evidence order:
 
 1. Explicit marker in source.
 2. Metadata from same-file `text` or block declarations.
 3. Metadata from imported or standard-library declarations.
-4. Position and structure (e.g., `flow:` implies `Step`).
+4. Position and structure (e.g., inside `flow:` or as a bare block-body string using the single-string shorthand implies `Step`; inside `description:` is context metadata and carries no instruction role).
 5. Compound-name cues (`avoid_*`, `must_*`, `never_*`, `must_never_*`) — used as evidence for role/polarity inference; no forced splitting.
 6. LLM repair-generated definitions.
 7. Diagnostic if role, strength, or polarity remains ambiguous.
@@ -231,14 +259,15 @@ A role classifies author intent. An effect classifies capabilities or side effec
 
 ## 4. Section Vocabulary
 
-### The Four MVP Sub-Section Headers
+### The Five MVP Sub-Section Headers
 
-Four colon-terminated headers are available inside `skill`, `block`, and `export block` bodies:
+Five colon-terminated headers are available inside `skill`, `block`, and `export block` bodies:
 
 | Section | Spelling | Content |
 |---------|----------|---------|
 | `description:` | singular | One-line summary of when/why to use this skill; compiles to frontmatter `description`. Body is a single quoted string literal (`"..."` or `"""..."""`) or a bare-name reference to a `text` / `export text` declaration |
 | `effects:` | plural | Effect keywords (see section 3); compiles to frontmatter `effects` |
+| `context:` | singular | Background information the agent should understand while executing. Body contains bare-name references to `text`/`export text` declarations, inline string literals, or `context`-prefixed markers |
 | `constraints:` | plural | Constraint markers: `require`, `avoid`, `must` + concept |
 | `flow:` | singular | Ordered steps: calls, bindings, `return`, `if`, bare names, inline strings |
 
@@ -269,6 +298,30 @@ skill fix_bug(scope = ".")
 If `description:` is omitted on a `skill`, the compiler generates one from the skill name and body during the LLM repair pass (Phase 3), adding it as a `description:` sub-section in the source. Authors should prefer explicit descriptions for predictable skill routing.
 
 On a `block` / `export block`, `description:` is **optional**. It is required only when the block is referenced via `BLOCKNAME.applies()` somewhere in the build. See §Block Trigger Predicate for required-when-consulted semantics and the cross-file repair limitation.
+
+### `context:` Section
+
+`context:` provides background information the agent should understand during execution — factual framing, domain knowledge, environmental assumptions, or other non-normative content that neither directs action nor bounds behavior.
+
+**Compilation target.** `context:` compiles to `### Context` under `## Instructions` in compiled output, before `### Steps` (see `compiled-output.md`).
+
+**Body grammar.** The body contains **bare-name references** to same-file `text` / `export text` declarations, **inline quoted strings** (`"..."` or `"""..."""`), or **`context`-prefixed markers** that resolve to declarations. Multiple entries are permitted (unlike `description:`, which is singular). Both the short form (content on the same line) and the long form (keyword alone, indented body below) are accepted, per the generic sub-section rule in `language-surface.md` §2.5.
+
+**Parameter slots.** `{name}` parameter references inside `context:` body content are **illegal** and emit `G::parse::param-slot-in-non-instruction-string` (same restriction as `description:`). Context is informational framing, not parameterized instruction prose.
+
+**Availability.** `context:` is available on `skill`, `block`, and `export block` declarations. It remains N/A for value-binding declarations (`text`, `int`, `float` and their `export`/`generated` variants).
+
+**Optional on all declaration kinds.** `context:` is never required. Omitting it simply means the compiled output has no `### Context` section.
+
+```glyph
+skill fix_bug(scope = ".")
+    description: "Debug and fix a bug in the codebase with minimal, targeted changes."
+    context:
+        project_conventions
+        "This codebase uses a monorepo layout with per-crate Cargo.toml files."
+    flow:
+        ...
+```
 
 ### Block Trigger Predicate
 
@@ -307,9 +360,11 @@ On a `block` / `export block`, `description:` is **optional**. It is required on
 
 **`effects:`** — declared effect keywords (see section 3). Compiles to frontmatter `effects` as a YAML list. Validated against the inferred effect set.
 
+**`context:`** — background information the agent should understand. Available on `skill`, `block`, and `export block`. Compiles to `### Context` under `## Instructions`, before `### Steps`. Informational framing only — no strength, polarity, or behavioral directives.
+
 **`constraints:`** — constraint markers using the three keywords (`require`, `avoid`, `must`) in four composed forms. Projects to `### Constraints` under `## Instructions`.
 
-**`flow:`** — the ordered workflow section. All content defaults to the `Step` IR role unless explicit syntax or resolved metadata says otherwise. The only section that contains ordered, sequential content. Projects to `### Steps` under `## Instructions`; `return` folds into the final Step.
+**`flow:`** — the ordered workflow section. All content defaults to the `Step` IR role unless explicit syntax or resolved metadata says otherwise. The only section that contains ordered, sequential content. Projects to `### Steps` under `## Instructions`; `return` folds into the final Step. A bare string appearing as a block body shorthand (omitting `flow:`, per `language-surface.md` §3.2) is treated identically and resolves to `Step` — the `flow:` header is not required for the compiler to assign the instruction role.
 
 ### Mandatory / Optional Per Declaration Kind
 
@@ -317,6 +372,7 @@ On a `block` / `export block`, `description:` is **optional**. It is required on
 |---------|---------|---------|----------------|
 | `description:` | Optional (generated if omitted) | Optional (Required when consulted via `.applies()`) | Optional (Required when consulted via `.applies()`) |
 | `effects:` | Optional | Optional | Optional (validated against inference) |
+| `context:` | Optional | Optional | Optional |
 | `constraints:` | Optional | Optional | Optional |
 | `flow:` | Required (unless instruction-only) | Optional | Expected (needs explicit `return`) |
 
@@ -328,11 +384,12 @@ Source order is free — the compiler reorders to the fixed compiled-output orde
 
 1. `description:` (if used)
 2. `effects:`
-3. `constraints:`
-4. `flow:`
+3. `context:`
+4. `constraints:`
+5. `flow:`
 
 The compiler's source normalization pass enforces this order when rewriting.
 
 ## Open Questions
 
-- `context:` as a future section header if inline context proves insufficient.
+(None remaining — `context:` has been promoted to a full MVP section header.)

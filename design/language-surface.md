@@ -8,7 +8,13 @@ A `.glyph.md` file is a Glyph source module. It is either a **skill file** (cont
 
 A skill file contains one `skill` declaration plus supporting imports, value-binding declarations (`text`, `int`, `float`), blocks, and exported blocks. A library file contains only imports, value-binding declarations, and blocks (some exported) — no skill. Both file types compile through the same 7-phase pipeline. The MVP base declaration kinds are `skill`, `block`, `text`, `int`, and `float`, with `export` as visibility modifier on value-binding and block kinds, and `generated` as repair-authorship modifier on both `text` and `block`.
 
-**Novice kernel.** A new author only needs a small subset to write useful skills: `skill`, `require`/`avoid`, `flow:`, quoted inline strings, calls with parentheses, and the `with` modifier on calls (see [data-flow.md](data-flow.md)). Blocks, named text, types, effects, and imports are discoverable later; repair materializes `generated text` and `generated block` definitions for undefined names so novice skills compile without those constructs present in source.
+The conceptual distinction between `text` and `block` is deliberate and load-bearing:
+
+- **`text`** — a named passive string constant with no callable interface. Referenced by bare name (e.g., `avoid unrelated_edits`). Carries no instructions of its own; it is a value, not a procedure. May serve as constraint content (in `constraints:`) or context content (in `context:`). A bare `text` name is **not** legal as an instruction step in `flow:` — for instructions, use `block`.
+- **`block`** — callable. Has parentheses, is invoked at call sites, and its body directs the agent to perform actions.
+- **A string in a block body (with or without an explicit `flow:` header) is always an instruction (`Step`) — never context or background.** For context or metadata about the block itself, use `description:`. For named string constants that are not instructions, use `text`.
+
+**Novice kernel.** A new author only needs a small subset to write useful skills: `skill`, `require`/`avoid`, `flow:`, quoted inline strings, calls with parentheses, and the `with` modifier on calls (see [data-flow.md](data-flow.md)). Blocks, named text, types, effects, and imports are discoverable later; repair materializes `generated block` definitions for undefined names so novice skills compile without those constructs present in source.
 
 Glyph source optimizes for easy readability, easy maintenance, and forgiving authoring. The source surface may be duck-typed and partially inferred; the compiler is responsible for turning that into a strict IR. The split is: source can be ergonomic; IR and compiled output must be explicit.
 
@@ -73,11 +79,11 @@ Top-level declarations introduce their body by indentation alone. They do not us
 
 Sub-sections within a declaration body use a colon-terminated keyword. MVP sub-section keywords:
 
-`description:`, `flow:`, `effects:`, `constraints:`
+`constraints:`, `context:`, `description:`, `effects:`, `flow:`
 
 `inputs:`, `outputs:`, and `when_to_use:` are deferred from MVP (see [todo.md](todo.md)). Header parameters cover input definition; `return` in `flow:` covers output; `description:` covers routing.
 
-**Sub-section ordering is permissive.** Inside a `skill`, `block`, or `export block` body, the parser accepts `description:`, `effects:`, `flow:`, `constraints:`, and body-level constraint markers (`require`/`avoid`/`must`) in **any order**. Order is not semantically significant: a `flow:` written above `description:` produces the same IR as the conventional ordering. The only structural rule still enforced is the duplicate-subsection check (`G::parse::duplicate-subsection`, repairable) — each named sub-section may appear at most once per body.
+**Sub-section ordering is permissive.** Inside a `skill`, `block`, or `export block` body, the parser accepts `context:`, `constraints:`, `description:`, `effects:`, `flow:`, and body-level constraint markers (`require`/`avoid`/`must`) in **any order**. Order is not semantically significant: a `flow:` written above `description:` produces the same IR as the conventional ordering. The only structural rule still enforced is the duplicate-subsection check (`G::parse::duplicate-subsection`, repairable) — each named sub-section may appear at most once per body.
 
 Authors do not need to memorise a canonical layout to write valid source. `glyph fmt` rewrites every body to a canonical order so reviewable source on disk stays consistent across a codebase; see [cli.md](cli.md) §`glyph fmt` for the canonical sequence.
 
@@ -176,6 +182,15 @@ block make_plan(ctx, risk = "medium") -> Plan
         return draft_plan(ctx, risk)
 ```
 
+**Single-string shorthand.** When a block body contains only a single instruction string and no `effects:`, `constraints:`, or other sub-sections, the `flow:` header may be omitted:
+
+```glyph
+block summarize_changes()
+    "Summarize what was changed and why."
+```
+
+The bare string is always treated as an instruction (`Step`). It is not context or background information — for that, use `description:`. For named string constants that are not instructions, use `text`.
+
 **Rules:**
 
 - Private blocks may rely on enclosing skill context in the MVP.
@@ -212,10 +227,11 @@ export block inspect_failure(scope) -> FailureReport
 - Every `export block` must end in an explicit `return`. Instruction-only exported blocks should still return `none`.
 - `effects:` appears in the body, not on the header line.
 - MVP effects: `none`, `reads_files`, `reads_env`, `writes_files`, `runs_commands`, `uses_network`, `asks_user`, `creates_artifacts`, `spawns_agent`.
+- The single-string shorthand (omitting `flow:`) is available on `export block` under the same conditions as `block`: one instruction string, no other sub-sections. When the shorthand form is used, Lower implicitly supplies `return none` — the author does not need to write it, and `G::analyze::missing-return` is suppressed for this form. The `-> None` return type on the header is still required (it is part of the export contract). The shorthand therefore only applies to instruction-only export blocks that return `none`; blocks that return a meaningful value must use the full `flow:` form with an explicit `return` expression.
 
 ### 3.4 `text` / `export text`
 
-Named instruction text. `text` is file-private; `export text` is importable.
+Named passive text. `text` is file-private; `export text` is importable.
 
 **Grammar:**
 
@@ -243,11 +259,12 @@ Never execute destructive operations without confirmation.
 
 **Rules:**
 
-- No parameters, no return type. A `text` declaration is a named constant, not a callable.
+- No parameters, no return type. A `text` declaration is a named constant, not a callable. See §1 for the full text/block distinction and when to choose one over the other.
+- `text` declarations are not legal in `flow:` as bare-name instruction steps. A bare `text` name in `flow:` without a keyword prefix (`context`, `require`, `avoid`, `must`) is a compile error (`G::analyze::text-in-flow`). For instruction steps, use `block`. `text` declarations may be referenced in `constraints:` (as constraint content) or `context:` (as context content); the role is determined by sub-section placement.
 - The `=` is required and separates the name from its value.
 - String literals follow `values-and-names.md`: inline `"..."` or block `"""..."""`.
 - The RHS may be a string literal or a static reference to another `text` / `export text` (same-file bare name or imported via whole-module alias). Lower resolves the reference at compile time and inlines the underlying string content into the IR; the binding is not re-resolved at runtime. References to non-`text` declarations, parameters, locals, or anything that produces a value at flow time are rejected (a `text` body is fixed at compile time, not computed).
-- These bindings are not arbitrary string interpolation. The compiler treats them as named instruction resources resolved into IR nodes.
+- These bindings are not arbitrary string interpolation. The compiler treats them as named constant resources resolved into IR nodes.
 
 ### 3.5 `int` / `export int`
 
@@ -403,8 +420,8 @@ generated block summarize_changes()
 **Rules:**
 
 - Same header shape as `block` (parameters allowed, no return type in the generated form).
-- Body is a single inline or block string — the **single-string rule**. Compound sentences are allowed; multi-statement `flow:` bodies are not. This keeps the machine-generated definition close to the name's meaning and minimizes drift from author intent.
-- Used for undefined parens-calls. Bare names without parens still materialize as `generated text`.
+- Body is a single inline or block string, using the same single-string shorthand available to hand-authored simple blocks (§3.2 above). Compound sentences are allowed; multi-statement `flow:` bodies are not. This keeps the machine-generated definition close to the name's meaning and minimizes drift from author intent.
+- Used for undefined names in `flow:`. Both parens-calls and bare names without parens materialize as `generated block` (bare text names in flow are a compile error, so undefined bare names in flow are treated as intended callable instructions).
 - Not exportable. `export generated block` is invalid. To share, promote to `block` or `export block`.
 - All `generated block` declarations must appear after all non-generated top-level declarations, alongside `generated text`.
 - Full rules for authorship, the single-string constraint, placement, promotion, and the no-shadowing interaction are in [repair.md](repair.md).
@@ -437,15 +454,17 @@ A `flow` becomes an ordered sequence and a `return` becomes an output contract i
 
 Source instructions need not carry compiler-shaped keywords everywhere. A bare name or inline string compiles into an inferred IR role depending on context and metadata.
 
-The closed MVP role set ([ir-and-semantics.md](ir-and-semantics.md)): `InputContract`, `Step`, `Constraint`, `OutputContract`. (`Context` is deferred — see [todo.md](todo.md).) Obligations and prohibitions are `Constraint` nodes with strength (`soft`/`hard`) and polarity (`require`/`avoid`) attributes. **Constraint markers** — three keywords (`require`, `avoid`, `must`) composing into four forms (`require`, `avoid`, `must`, `must avoid`) — set role, strength, and polarity directly. For the complete marker-to-IR mapping, see [ir-and-semantics.md](ir-and-semantics.md).
+The closed MVP role set ([ir-and-semantics.md](ir-and-semantics.md)): `InputContract`, `Step`, `Constraint`, `Context`, `OutputContract`. Obligations and prohibitions are `Constraint` nodes with strength (`soft`/`hard`) and polarity (`require`/`avoid`) attributes. **Constraint markers** — three keywords (`require`, `avoid`, `must`) composing into four forms (`require`, `avoid`, `must`, `must avoid`) — set role, strength, and polarity directly. The `context` keyword in `flow:` or at body level assigns the `Context` role directly (no inference needed), parallel to how constraint markers assign the `Constraint` role. For the complete marker-to-IR mapping, see [ir-and-semantics.md](ir-and-semantics.md).
 
 **Constraint marker placement.** Constraint markers are legal in three positions: (1) inside a `constraints:` sub-section, (2) at declaration body level, and (3) as a flow statement inside `flow:`, including inside `if`/`elif`/`else` branch bodies. Unconditional markers (positions 1, 2, and flow-top-level in position 3) are normalized into the `constraints:` section via two complementary mechanisms: `glyph fmt` (Phase 3a) performs a source-to-source rewrite for source clarity; Phase 4 (Lower) hoists them at IR level regardless of whether fmt ran (`ir-and-semantics.md` §Body-Level Constraint Normalization, §Flow-Level Constraint Markers). Branch-scoped markers remain inline and render as part of the conditional Step prose (`compiled-output.md` §Constraint Rendering).
+
+**Context marker placement.** `context` markers follow the same placement rules as constraint markers: (1) inside a `context:` sub-section, (2) at declaration body level, and (3) as a flow statement inside `flow:`, including inside branch bodies. Unconditional `context` markers are hoisted into the `context:` section by the same normalization mechanisms. Branch-scoped `context` markers remain inline and render as part of the conditional Step prose.
 
 Inference uses: position in the skill, metadata from bindings/imports/standard-library, natural meaning of expanded text, and explicit keywords. If inference succeeds, repair adds the smallest explicit marker back into source. Compound names like `avoid_unrelated_edits` are valid identifiers — they are not forcibly split into marker-plus-concept form. The compiler uses the name prefix as evidence for role/polarity inference alongside the resolved text content. `must` is inferred only from hard-strength wording. When inference fails, the compiler emits a diagnostic.
 
 ### 4.3 Bare Names and Generated Definitions
 
-Bare instruction names are allowed. Resolution order: (1) same-file binding, (2) explicit import, (3) standard library vocabulary, (4) MVP repair materializes a stable generated definition when context is clear. Generated definitions are cached in source, reviewable, and validated before compilation continues. Expansion happens during repair, not at runtime.
+Bare instruction names are allowed. Resolution order: (1) same-file binding, (2) explicit import, (3) standard library vocabulary, (4) MVP repair materializes a stable generated definition when context is clear. Bare names in `flow:` without parentheses that are undefined generate `generated block` (with parentheses), not `generated text` — bare text names in flow are a compile error, so an undefined bare name in flow must be intended as a callable instruction. Generated definitions are cached in source, reviewable, and validated before compilation continues. Expansion happens during repair, not at runtime.
 
 ### 4.4 Semantic Shortcuts
 
@@ -453,8 +472,8 @@ Authors can write small function-like or identifier-like instructions directly w
 
 ```glyph
 skill debug_failure(scope = ".")
-    root_cause_before_fix
-    reproduce_before_patch
+    require root_cause_before_fix
+    require reproduce_before_patch
     root_cause_trace()
 ```
 
@@ -472,7 +491,7 @@ skill update_docs(scope = ".")
         "Mention any docs you could not verify locally."
 ```
 
-If the same text appears repeatedly, promote it to a `text` block or imported library entry.
+If the same text appears repeatedly, promote it to a `text` declaration for use in `constraints:` or `context:`, or to a `block` declaration for use in `flow:`.
 
 ## 5. Source-to-IR Pipeline
 

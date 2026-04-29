@@ -19,7 +19,7 @@ Items deferred from MVP decisions that should be revisited in future tiers.
 
 ## Compiled Output Sections (Deferred From MVP)
 
-MVP compiled output contains YAML frontmatter (`name`, `description`, `effects`), a conditional `## Parameters` section, and `## Instructions` (with `### Steps` and `### Constraints`). The following sections were removed from MVP but may be restored post-MVP if author or agent-consumption needs emerge:
+MVP compiled output contains YAML frontmatter (`name`, `description`, `effects`), a conditional `## Parameters` section, and `## Instructions` (with `### Context`, `### Steps`, and `### Constraints`). The following sections were removed from MVP but may be restored post-MVP if author or agent-consumption needs emerge:
 
 - **`## Inputs` section.** Removed in favor of the `## Parameters` section, which lists parameter names, descriptions, and optional defaults. Parameters appear as `{param}` references in Steps and Constraints, resolved by the consuming LLM at runtime. The `inputs:` source sub-section header remains deferred; parameter declarations in the skill header are sufficient for MVP.
 - **`## Output` section.** Removed because `return` folds into the final Step. Restore if output contracts become rich enough (typed return shapes, post-conditions) that folding them into prose loses information. Also revisit the `outputs:` source sub-section header.
@@ -32,7 +32,7 @@ MVP compiled output contains YAML frontmatter (`name`, `description`, `effects`)
 
 ## IR Roles
 
-- **`Context` role.** MVP closes the role set to four: `InputContract`, `Step`, `Constraint`, `OutputContract`. `Context` (non-normative informational framing) was dropped because with `## Inputs` gone there is no section for it to project into, and any genuine context can be authored as a Step, a Constraint, or a leading inline sentence in `flow:`. Restore post-MVP if authors consistently produce framing text that doesn't fit the four roles. Reserved keyword `context` stays reserved for this restoration.
+- ~~**`Context` role.**~~ **Done.** `Context` is now an MVP role. See `ir-and-semantics.md` §1 (IR Roles) and §4 (`context:` Section).
 
 ## Control Flow
 
@@ -68,7 +68,7 @@ MVP compiled output contains YAML frontmatter (`name`, `description`, `effects`)
 - ~~**Canonicalize the compiler pipeline.**~~ **Done.** `pipeline.md` is the canonical 7-phase reference. README, `language-surface.md` §5, and `foundations.md` #18 now defer to it. See the reconciliation table in `pipeline.md`.
 - ~~**Foundations drift: `foundations.md` vs `foundations-first-principles.md`.**~~ **Resolved.** `foundations-first-principles.md` archived. `foundations.md` remains canonical (33 principles). A proper first-principles document — defining the axiomatic bedrock from which the 33 principles derive — should be written as a separate effort, not a reduction of the existing list.
 - **First principles document.** Write a proper `foundations-first-principles.md` that defines the small set of upstream axioms from which `foundations.md` derives. The archived version was a candidate reduction of existing principles; the real version should be written ground-up as genuine axioms, with explicit derivation links to the 33 principles. Should own its status (not "candidate"), and both files should cross-reference each other.
-- **`context` disambiguator syntax.** `context` is a reserved keyword and available as an "author-facing disambiguator" per `ir-and-semantics.md`, but no document shows its source syntax or placement. Define how authors explicitly mark something as `Context` role, or explicitly defer it.
+- ~~**`context` disambiguator syntax.**~~ **Done.** `context` is now a full source marker and `context:` is an MVP sub-section header. See `ir-and-semantics.md` §2 (Source Marker Table) and §4 (`context:` Section).
 
 ## Inheritance & Specialization
 

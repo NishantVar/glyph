@@ -14,6 +14,7 @@ Skill {
   description:       String                // always present after Repair
   params:            [Param]
   effects:           [EffectKeyword]       // full inferred set (union of all callees)
+  context:           [ContextNode]         // top-level declared context only
   constraints:       [Constraint]          // top-level declared constraints only
   flow:              [FlowNode]            // ordered
 }
@@ -24,6 +25,7 @@ Block {
   params:            [Param]
   return_type:       TypeTag?
   effects:           [EffectKeyword]
+  context:           [ContextNode]         // top-level declared context only
   constraints:       [Constraint]
   flow:              [FlowNode]
 }
@@ -34,6 +36,7 @@ ExportBlock {
   params:            [Param]
   return_type:       TypeTag               // mandatory on export block
   effects:           [EffectKeyword]       // declared must be superset of inferred
+  context:           [ContextNode]         // top-level declared context only
   constraints:       [Constraint]
   flow:              [FlowNode]
 }
@@ -56,13 +59,18 @@ Param {
 `FlowNode` is the union of all node types that can appear inside `flow:`.
 
 ```
-FlowNode = Call | InlineInstruction | InstructionRef | Branch | Return | Constraint
+FlowNode = Call | InlineInstruction | InstructionRef | Branch | Return | Constraint | ContextNode
 ```
 
 A `Constraint` is admissible as a flow node so authors can write `require`/`avoid`/`must` markers directly inside `flow:` (including inside `if`/`elif`/`else` bodies). Lower (`pipeline.md` Phase 4) post-processes flow-resident constraints:
 
 - A `Constraint` at flow top-level is **hoisted** out of the flow into the enclosing declaration's `constraints` list (deduplicated against existing entries by canonical text+polarity+strength).
 - A `Constraint` inside a `Branch` body (`then_body`, `elif_branches[*].body`, or `else_body`) **stays inline** in that branch and is rendered as part of the conditional Step prose by Expand. It does not surface in `### Constraints`. See `compiled-output.md` §Constraint Rendering and `ir-and-semantics.md` §Body-Level Constraint Normalization.
+
+A `ContextNode` is admissible as a flow node so authors can write `context` markers directly inside `flow:` (including inside `if`/`elif`/`else` bodies). Lower (`pipeline.md` Phase 4) post-processes flow-resident context nodes:
+
+- A `ContextNode` at flow top-level is **hoisted** out of the flow into the enclosing declaration's `context` list.
+- A `ContextNode` inside a `Branch` body (`then_body`, `elif_branches[*].body`, or `else_body`) **stays inline** in that branch and is rendered as part of the conditional Step prose by Expand.
 
 ### Call
 
@@ -140,6 +148,14 @@ ConstraintAttrs {
 }
 ```
 
+## ContextNode
+
+```
+ContextNode {
+  text:              String                // resolved context text
+}
+```
+
 ## Expressions
 
 `Expr` is the union of value expressions that can appear in call arguments, bindings, return values, and conditions.
@@ -171,7 +187,7 @@ NoneExpr {}
 ## Enums
 
 ```
-Role = InputContract | Step | Constraint | OutputContract
+Role = InputContract | Step | Constraint | Context | OutputContract
 
 Strength = soft | hard
 
@@ -212,9 +228,10 @@ Lower assigns IDs in **pre-order source traversal**: container nodes (`Skill`, `
 
 - Every top-level compilation unit (`Skill`, `Block`, `ExportBlock`).
 - Every `Param` on a declaration.
-- Every node in the `FlowNode` union (`Call`, `InlineInstruction`, `InstructionRef`, `Branch`, `Return`, `Constraint`).
+- Every node in the `FlowNode` union (`Call`, `InlineInstruction`, `InstructionRef`, `Branch`, `Return`, `Constraint`, `ContextNode`).
 - Every `ElifBranch` inside a `Branch`.
 - Every `Constraint` in a declaration's `constraints` list or a Call's `scoped_constraints`.
+- Every `ContextNode` in a declaration's `context` list or inside a `Branch` body.
 - Every `Expr` sub-node (`CallExpr`, `BindingRef`, `Literal`, `PropertyAccess`, `NoneExpr`) — including those nested inside Call `args` maps and Return `value`.
 
 ### Scope
@@ -266,6 +283,7 @@ ResolvedCall {
                                            // empty when the body has no local-binding references
   projection_mode:     ProjectionMode      // inline | same_file_procedure | external_file
   callee_flow:         [ResolvedFlowNode]? // present only when projection_mode != inline
+  callee_context:      [ContextNode]?      // present only when projection_mode != inline
   callee_constraints:  [Constraint]?       // present only when projection_mode != inline
   procedure_path:      String?             // relative file path; present only when external_file
 }
@@ -277,6 +295,12 @@ LocalRef {
 
 ResolvedConstraint {
   ...Constraint fields...
+  // text field already contains resolved content; {param} slots preserved,
+  // {local} slots tagged as local_ref
+}
+
+ResolvedContextNode {
+  ...ContextNode fields...
   // text field already contains resolved content; {param} slots preserved,
   // {local} slots tagged as local_ref
 }
@@ -312,7 +336,7 @@ Step 2 (LLM reshaping) receives the resolved IR. See `expand.md` §3.1 for the f
 ## Cross-References
 
 - **IR JSON serialization** (`ir-json-schema.md`): the JSON projection of this schema, used by `--emit-ir` and `validate-output`. Specifies envelope, per-node JSON shapes, enum casing, versioning.
-- **IR roles and semantics** (`ir-and-semantics.md`): defines the four MVP roles, constraint model, effect vocabulary, and section-to-IR mapping. This schema is the structural companion to that document.
+- **IR roles and semantics** (`ir-and-semantics.md`): defines the five MVP roles, constraint model, effect vocabulary, and section-to-IR mapping. This schema is the structural companion to that document.
 - **Pipeline** (`pipeline.md` §Phase 4): Lower produces nodes conforming to this schema.
 - **Expand** (`expand.md` §3.1): Step 2 input contract references node fields defined here.
 - **Data flow** (`data-flow.md` §IR Call-Node Normalization): the `Call` normalization described there must produce nodes matching the `Call` shape above.

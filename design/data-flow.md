@@ -247,7 +247,7 @@ The LLM repair pass may add minimal syntax when call-site data flow cannot compi
 
 ### Statement Forms Inside `flow:`
 
-Eight statement forms are allowed inside `flow:` blocks. All content defaults to the `Step` IR role unless explicit syntax or resolved metadata says otherwise.
+Nine statement forms are allowed inside `flow:` blocks. All content defaults to the `Step` IR role unless explicit syntax or resolved metadata says otherwise.
 
 | Form | Example | IR Role |
 |------|---------|---------|
@@ -257,12 +257,15 @@ Eight statement forms are allowed inside `flow:` blocks. All content defaults to
 | Bare name | `validate_before_success` | `Step`, resolved via name resolution |
 | Inline string | `"Mention any issues found."` | `Step` |
 | Constraint marker | `avoid unrelated_edits` | `Constraint` (hoisted or inlined; see below) |
+| Context marker | `context project_conventions` | `Context` (hoisted to `context:` or inlined in branch prose) |
 | Return | `return summarize(plan)` | `OutputContract` |
 | If/elif/else | `if <cond>:` block | `Branch` container |
 
 A call without a binding is a statement call -- the return value, if any, is discarded. Both binding and bare-call forms occupy one line each unless the argument list wraps inside parentheses.
 
 A **constraint marker** (`require <name>`, `avoid <name>`, `must <name>`, `must avoid <name>`, or any of those forms with an inline string in place of the bare name) parses to a `Constraint` IR node admitted in the flow's `FlowNode` union (`ir-schema.md` §Flow Nodes). Lower (`pipeline.md` Phase 4) splits these by location: a constraint marker at flow top-level is hoisted into the enclosing declaration's `constraints` list; a constraint marker inside an `if`/`elif`/`else` branch body stays inline and is rendered as part of the conditional Step prose by Expand. See `ir-and-semantics.md` §Flow-Level Constraint Markers and `compiled-output.md` §Constraint Rendering for the projection rules.
+
+A **context marker** (`context <name>` or `context "<inline string>"`) parses to a `ContextNode` IR node, also admitted in the `FlowNode` union. The same hoisting rules apply: a context marker at flow top-level is hoisted into the declaration's `context` list; a context marker inside a branch body stays inline. See `ir-and-semantics.md` for full context marker rules.
 
 ### Branching: `if`/`elif`/`else`
 

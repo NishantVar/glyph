@@ -34,6 +34,7 @@ Every source form maps to exactly one compiled location. This is the authoritati
 | `flow:` steps (non-`return`) | `### Steps` under `## Instructions` |
 | `return <expr>` in flow | Closing sentence of the final `### Steps` item |
 | `constraints:` content + body-level markers | `### Constraints` under `## Instructions` |
+| `context:` content | `### Context` under `## Instructions` (before `### Steps`) |
 | Header parameters + defaults | `## Parameters` section (names, descriptions, defaults or `(required)` marker) |
 
 Constraint strength (`soft`/`hard`) and polarity (`require`/`avoid`) affect compiled wording and prominence per [ir-and-semantics.md](ir-and-semantics.md).
@@ -84,14 +85,19 @@ The consuming LLM reads this section before executing the Steps. For optional pa
 
 Always emitted. Contains the compiled workflow and behavioral rules via H3 sub-sections:
 
+- **`### Context`** — bulleted list of background information. Passive framing the agent should understand during execution.
 - **`### Steps`** — numbered list (order matters). Each item is one instruction. The `return` expression from the source folds into the final item rather than producing a separate section.
 - **`### Constraints`** — bulleted list (order usually does not matter). Each item is one `Constraint` node. Strength (`soft`/`hard`) and polarity (`require`/`avoid`) affect wording, not placement in MVP.
 - **`### Procedure: <name>`** — zero or more procedure sections for blocks projected at Tier 2 (same-file procedure). Each contains a numbered list of the callee's expanded flow, with an optional constraint preamble. See §Three-Tier Block Projection for format and ordering rules.
 
-`### Steps` and `### Constraints` are conditional: `### Constraints` is omitted when there are no explicit constraints; `### Steps` may be omitted only for pure instruction-only skills (all content is constraints). At least one of `### Steps` or `### Constraints` must be present. `### Procedure:` sections are conditional on the projection tier selected for each callee.
+`### Context`, `### Steps`, and `### Constraints` are conditional: `### Context` is omitted when no `context:` is declared; `### Constraints` is omitted when there are no explicit constraints; `### Steps` may be omitted only for pure instruction-only skills (all content is constraints). At least one of `### Steps` or `### Constraints` must be present — `### Context` alone is not sufficient for a valid skill. `### Procedure:` sections are conditional on the projection tier selected for each callee.
 
 ```md
 ## Instructions
+
+### Context
+
+- This codebase follows a monorepo layout with shared internal packages.
 
 ### Steps
 
@@ -114,6 +120,7 @@ Compiled output projects from the typed IR role model defined in [ir-and-semanti
 | Skill name | Frontmatter `name` | String |
 | Skill description | Frontmatter `description` | String |
 | Effect set | Frontmatter `effects` | YAML list; field omitted if effect set is empty or `none` |
+| `Context` | `### Context` | Bulleted list, passive informational text — no strength/polarity wording |
 | `Step` | `### Steps` | Numbered list, one concrete instruction per item |
 | `Constraint` | `### Constraints` | Bulleted list, wording shaped by constraint keyword (`require`/`avoid`/`must`/`must avoid`) |
 | `InputContract` + parameters | `## Parameters` section (names, descriptions, defaults or `(required)` marker) | Bulleted list |
@@ -157,7 +164,7 @@ Conditions are checked top-to-bottom; the first `referenced` or `external` trigg
 
 #### Same-File Procedure Sections
 
-A `### Procedure: <name>` H3 section appears under `## Instructions`, after `### Steps` and `### Constraints`:
+A `### Procedure: <name>` H3 section appears under `## Instructions`, after `### Context`, `### Steps`, and `### Constraints`:
 
 ```md
 ## Instructions
@@ -185,10 +192,10 @@ Do not introduce new abstractions during review.
 **Format rules:**
 
 - H3 heading: `### Procedure: <callee-name>`. The callee name in the heading is the **kebab-case** form derived from the source `snake_case` identifier — replace each `_` with `-` and apply no other transformation. For an `export block summarize_section`, the heading is `### Procedure: summarize-section`.
-- Optional preamble paragraph: the callee's scoped constraints, rendered as prose sentences (not bulleted — they are contextual to this procedure, not top-level skill constraints).
+- Optional preamble paragraph: the callee's scoped constraints and context, rendered as prose sentences (not bulleted — they are contextual to this procedure, not top-level skill constraints). If the callee declares its own `context:`, the context items appear in the preamble alongside any scoped constraints.
 - Numbered list: the callee's flow statements, expanded by Step 2 the same way skill-level Steps are.
 - Return folding: if the callee has a `return`, it folds into the last numbered item of the procedure (same rule as skill-level return).
-- Ordering: procedure sections appear after `### Steps` and `### Constraints`, in the order of first reference from `### Steps`.
+- Ordering: procedure sections appear after `### Context`, `### Steps`, and `### Constraints`, in the order of first reference from `### Steps`.
 
 **Referencing from Steps:** The referencing Step includes a parenthetical cross-reference — e.g., "(follow the review-code procedure below)" or "(see the review-code procedure above)." Step 2 chooses natural phrasing. The reference must include the procedure name so Phase 6b can verify the link.
 
@@ -203,7 +210,7 @@ Do not introduce new abstractions during review.
 
 When the compiler selects the external-file tier, the imported `export block` compiles to a standalone `.md` procedure file. The referencing skill's Step directs the consuming agent to load the file at runtime.
 
-**Procedure file format:** Identical to a skill's compiled format — YAML frontmatter, optional `## Parameters`, `## Instructions` with `### Steps` and `### Constraints`. The frontmatter carries `kind: procedure` to distinguish from top-level skills:
+**Procedure file format:** Identical to a skill's compiled format — YAML frontmatter, optional `## Parameters`, `## Instructions` with `### Context`, `### Steps`, and `### Constraints`. The frontmatter carries `kind: procedure` to distinguish from top-level skills:
 
 ```md
 ---
@@ -265,6 +272,8 @@ effects: [reads_files]
 
 - **Branch-scoped constraints.** A `require`/`avoid`/`must` marker that appears inside an `if`/`elif`/`else` branch in `flow:` is **inlined into the prose of an adjacent sub-step**, not surfaced in `### Constraints` and not given its own lettered sub-step. The inlined wording makes the conditional applicability explicit (e.g., a sub-step like "Run the migration, never dropping existing columns."). Only flow-top-level constraint markers (and body-level constraints declared above `flow:`) hoist to `Skill.constraints` and render in `### Constraints`. See [ir-and-semantics.md](ir-and-semantics.md) §Body-Level Constraint Normalization and [pipeline.md](pipeline.md) Phase 4 (Lower) for the hoisting rules.
 
+- **Branch-scoped context.** A `context:` declaration inside an `if`/`elif`/`else` branch in `flow:` follows the same pattern as branch-scoped constraints: it is **inlined into the prose of an adjacent sub-step** (e.g., "Note: this module handles authentication only."), not surfaced in `### Context`. Only skill-level `context:` declarations render in the `### Context` section.
+
 ### Description-Driven Branch Projection
 
 A `Branch` whose conditions invoke the block trigger predicate `BLOCKNAME.applies()` (see [ir-and-semantics.md](ir-and-semantics.md) §Block Trigger Predicate) is rendered using the resolved block descriptions carried on the IR Branch's `applies_descriptions` side-map (`ir-schema.md` §Resolved IR `ResolvedBranch`, `ir-json-schema.md` §Branch). The compiled-output rule chooses one of two prose forms based on the shape of the conditions:
@@ -323,7 +332,7 @@ Only imports actually used by the skill are inlined; unused imports are dead cod
 ## Formatting Rules
 
 1. **One instruction per list item.** No run-on multi-sentence bullets — except the final Step, which may include the return-summary sentence.
-2. **Numbered lists for Steps, bulleted lists for Constraints.**
+2. **Numbered lists for Steps, bulleted lists for Context and Constraints.**
 3. **No hard line-wrapping mid-sentence.** Each list item is a single unwrapped line.
 4. **Single blank line between sections.** No double blank lines, no trailing whitespace.
 5. **No inline HTML or special formatting.** Standard Markdown only: headings, lists, bold, code spans.
@@ -336,6 +345,8 @@ Source (`fix_bug.glyph.md`) — novice-kernel form, most definitions will be mat
 skill fix_bug(scope = ".")
     avoid unrelated_edits
     require preserve_existing_patterns
+
+    context: "This skill assumes the bug is reproducible in the local environment."
 
     flow:
         inspect_failure(scope) with "focus on auth boundaries"
@@ -353,6 +364,8 @@ skill fix_bug(scope = ".")
     avoid unrelated_edits
     require preserve_existing_patterns
 
+    context: "This skill assumes the bug is reproducible in the local environment."
+
     effects: reads_files, writes_files, runs_commands
 
     flow:
@@ -360,12 +373,14 @@ skill fix_bug(scope = ".")
         identify_root_cause()
         "Don't propose a fix until you've confirmed the root cause."
         patch_minimally()
-        validate_before_success
+        validate_before_success()
         return summarize_changes()
 
 generated text unrelated_edits = "Making changes outside the requested scope."
 generated text preserve_existing_patterns = "Follow the repository's existing patterns before introducing new abstractions."
-generated text validate_before_success = "Validate that the fix works before reporting success."
+
+generated block validate_before_success()
+    "Validate that the fix works before reporting success."
 
 generated block inspect_failure(area)
     "Inspect the failure in {area} and identify what is failing."
@@ -394,6 +409,10 @@ effects: [reads_files, writes_files, runs_commands]
 
 ## Instructions
 
+### Context
+
+- This skill assumes the bug is reproducible in the local environment.
+
 ### Steps
 
 1. Inspect the failure in {scope}, focusing on auth boundaries and permission checks. Identify what is failing and whether any auth-related logic is involved.
@@ -411,6 +430,7 @@ effects: [reads_files, writes_files, runs_commands]
 
 Notes on the example:
 
+- The `context:` declaration compiles into `### Context` as a bulleted item, appearing before `### Steps`. It provides passive background the agent should keep in mind.
 - `scope` appears in the `## Parameters` section and is referenced as `{scope}` in Steps 1 and the first Constraint. The consuming LLM resolves `{scope}` from the user's request context at runtime.
 - The `with "focus on auth boundaries"` modifier shaped Step 1's wording to mention auth boundaries and permission checks. The modifier string itself does not survive.
 - The final flow item `return summarize_changes()` folds into Step 6 as "…and return that as your result." — no `## Output` section.

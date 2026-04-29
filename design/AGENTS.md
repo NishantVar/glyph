@@ -17,14 +17,14 @@ This folder is the working source of truth for Glyph system design. The reposito
 - [preferences.md](preferences.md) — preferences as ordinary exported constants (`export text`/`export int`/`export float`), no `pref(...)` call, no special effect, compile-time resolution
 
 ### IR and Semantics
-- [ir-and-semantics.md](ir-and-semantics.md) — IR roles (`InputContract`, `Step`, `Constraint`, `OutputContract`), constraint keywords (`require`/`avoid`/`must`, 4-form model with `soft`/`hard` strength), effects (9 keywords, propagation, validation), section vocabulary
+- [ir-and-semantics.md](ir-and-semantics.md) — IR roles (`InputContract`, `Step`, `Constraint`, `Context`, `OutputContract`), constraint keywords (`require`/`avoid`/`must`, 4-form model with `soft`/`hard` strength), `context` marker, effects (9 keywords, propagation, validation), section vocabulary
 
 ### Modules
 - [imports.md](imports.md) — path-based import resolution, importable vs. private declarations, cycle rejection, effect propagation across boundaries
 - [stdlib.md](stdlib.md) — standard library: MVP contains three entries (`subagent`, `send`, `load`), the `Agent` compiler-known type, UFCS method-call syntax, the `spawns_agent` effect, and the uniform synthetic-body projection model
 
 ### IR
-- [ir-schema.md](ir-schema.md) — **canonical IR node schema**: every node type (`Skill`, `Block`, `ExportBlock`, `Call`, `Constraint`, `InlineInstruction`, `InstructionRef`, `Branch`, `Return`), enums (`Role`, `Strength`, `Polarity`, `EffectKeyword`, `TypeTag`, `Value`), resolved IR shape, node identifier spec
+- [ir-schema.md](ir-schema.md) — **canonical IR node schema**: every node type (`Skill`, `Block`, `ExportBlock`, `Call`, `Constraint`, `ContextNode`, `InlineInstruction`, `InstructionRef`, `Branch`, `Return`), enums (`Role`, `Strength`, `Polarity`, `EffectKeyword`, `TypeTag`, `Value`), resolved IR shape, node identifier spec
 - [ir-json-schema.md](ir-json-schema.md) — **canonical IR JSON serialization**: top-level envelope, per-node-kind JSON shapes, enum casing (all snake_case), Expression/Value unions, versioning policy, worked example. Contract for both `--emit-ir` (produces) and `validate-output` (consumes).
 
 ### Compilation
@@ -32,7 +32,7 @@ This folder is the working source of truth for Glyph system design. The reposito
 - [diagnostics.md](diagnostics.md) — structured diagnostic shape, classification tiers (`error`/`repairable`/`warning`), ID scheme, representative catalog
 - [repair.md](repair.md) — LLM repair pass, generated definitions (text and block), comment syntax, intent potency, idempotence
 - [expand.md](expand.md) — Expand pass Step 2 (LLM reshaping) and Phase 6b validation gate: input schema, output contract, role-preservation check, retry / deterministic-fallback / hard-fail policy, non-idempotence
-- [compiled-output.md](compiled-output.md) — compiled Markdown shape: YAML frontmatter, `## Parameters` (conditional), `## Instructions` (`### Steps` + `### Constraints`), parameterless compilation model
+- [compiled-output.md](compiled-output.md) — compiled Markdown shape: YAML frontmatter, `## Parameters` (conditional), `## Instructions` (`### Context` + `### Steps` + `### Constraints`), parameterless compilation model
 
 ### CLI
 - [cli.md](cli.md) — **v0 CLI surface**: subcommands (`compile`, `check`, `fmt`, `validate-output`), flags (`--emit-ir`, `--out-dir`, `--format`), exit codes (0/1/2/3 agent-oriented), diagnostic channel discipline, multi-file behavior, deferred features

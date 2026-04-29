@@ -77,7 +77,7 @@ Analyze tries to understand the source as deeply as it can using deterministic r
 
 - **Block trigger predicate resolution.** For every `BLOCKNAME.applies()` invocation in a Branch condition (top-level or `elif`), Analyze resolves `BLOCKNAME` against the same name-resolution chain as ordinary call targets and validates the kind: a non-block target (e.g., a `text`, parameter, or alias) emits `G::analyze::applies-on-non-block` (error); a block target without a `description:` sub-section emits `G::analyze::applies-on-undescribed-block`, classified `repairable` when the block is in the same file under compilation and `error` when the block is imported (matching `repair.md` §9 single-file scope). Resolution succeeds without rewriting the condition string — the side-map population happens at Expand Step 1.
 
-- **Role inference.** For every instruction, determines its IR role (`InputContract`, `Step`, `Constraint`, `OutputContract` — the four MVP roles per `ir-and-semantics.md`). Uses the evidence chain: explicit marker → metadata from declarations → metadata from imports/stdlib → position (e.g., inside `flow:` implies `Step`) → compound-name cues (`avoid_*` implies Constraint). Emits a repairable diagnostic when role is ambiguous.
+- **Role inference.** For every instruction, determines its IR role (`InputContract`, `Step`, `Constraint`, `Context`, `OutputContract` — the five MVP roles per `ir-and-semantics.md`). Uses the evidence chain: explicit marker → metadata from declarations → metadata from imports/stdlib → position (e.g., inside `flow:` implies `Step`) → compound-name cues (`avoid_*` implies Constraint). Emits a repairable diagnostic when role is ambiguous.
 
 - **Constraint attribute inference.** For instructions identified as constraints, determines strength (`soft`, `hard`) and polarity (`require`, `avoid`) per the marker table in `ir-and-semantics.md` §2. Emits a diagnostic when ambiguous.
 
@@ -109,6 +109,7 @@ Repair has three sub-steps:
 Mechanical transformations where the correct fix is unambiguous:
 
 - Unconditional constraint hoisting: constraint markers (`require`/`avoid`/`must`/`must avoid`) that appear at **body level** (directly under a declaration, outside any sub-section) or at **flow top-level** (directly inside `flow:`, not inside a `Branch`) are moved into a `constraints:` section (creating it if needed). This is a source-to-source rewrite — it normalizes the source so that all unconditional constraints are visually grouped in `constraints:`. Constraint markers inside `if`/`elif`/`else` branch bodies are **not** source-rewritten — they are conditional, remain as flow statements, and are handled at IR level by Phase 4 (Lower). See `ir-and-semantics.md` §Body-Level Constraint Normalization and §Flow-Level Constraint Markers. Note: when Phase 3b (LLM repair) adds a constraint marker to resolve an ambiguous role (`G::analyze::ambiguous-role`), the next iteration's 3a pass picks up the newly-marked constraint and hoists it — this is the expected two-iteration cascade.
+- Unconditional context hoisting: `context` markers that appear at **body level** or at **flow top-level** are moved into a `context:` section (creating it if needed), parallel to constraint hoisting. Context markers inside `if`/`elif`/`else` branch bodies are not source-rewritten. See `ir-and-semantics.md`.
 - Duplicate import merging: two imports from the same file merge into one statement (per `imports.md` §6).
 - Unused import removal: imported names not referenced anywhere in the file are removed (per `imports.md` §7).
 - Source section reordering: sections within a declaration body are reordered to the recommended convention (per `ir-and-semantics.md` §4).
@@ -185,10 +186,12 @@ Lower converts the human-friendly source AST into the strict IR. Every shortcut 
   - `InstructionRef { name, resolved_text, role, constraint_attrs }`
   - `InlineInstruction { text, role }`
   - `Return { value }`
+  - `ContextNode { name, resolved_text, role }`
   - `Branch { condition, then_body, elif_branches, else_body }`
   - `PropertyAccess { object, property }`
-- **Section assignment.** Every IR node is assigned to its output location based on its role: `Step` → Steps, `Constraint` → Constraints, `InputContract` → folded into Steps at expand time, `OutputContract` → folded into final Step.
+- **Section assignment.** Every IR node is assigned to its output location based on its role: `Step` → Steps, `Constraint` → Constraints, `Context` → Context section, `InputContract` → folded into Steps at expand time, `OutputContract` → folded into final Step.
 - **Body-level and flow-level constraint hoisting.** Constraint markers that appear at body level (outside any sub-section) or as flow statements (per `ir-schema.md` §Flow Nodes) are split by location: a Constraint at body level or flow top-level is hoisted out and appended to the enclosing declaration's `constraints` list (deduplicated by canonical text + polarity + strength); a Constraint inside any `Branch` body (`then_body`, `elif_branches[*].body`, or `else_body`) stays inline in that branch and renders as part of the conditional Step prose at Expand time. This IR-level hoisting is the compiler's internal normalization and runs regardless of whether `glyph fmt` (Phase 3a) already performed the equivalent source-to-source rewrite. See `ir-and-semantics.md` §Body-Level Constraint Normalization, §Flow-Level Constraint Markers, and `compiled-output.md` §Constraint Rendering.
+- **Body-level and flow-level context hoisting.** The same hoisting applies to `context` markers: body-level and flow-top-level context markers are hoisted into the declaration's `context` list; branch-scoped context markers stay inline. See `ir-and-semantics.md` for full rules.
 - **Stable IR node IDs.** Lower assigns each IR node a stable identifier (e.g., `n0`, `n1`, …) used for Phase 6b structural validation and diagnostic messages. The format, allocation order, scope, stability guarantees, and synthetic-node policy are defined in `ir-schema.md` §Node Identifiers (canonical spec). The ID is opaque, file-local, and never appears in compiled output.
 
 **What Lower does not do:** Does not generate prose. Does not validate correctness (that is Phase 5). Does not touch the source file. One-way transformation from source world to IR world.
@@ -406,16 +409,17 @@ Emit is pure formatting. The IR has all the content; Emit arranges it into the f
 - **`## Parameters`** — emitted when the skill declares parameters. Contains a bulleted list of parameter names, descriptions (generated by Step 2), and either a default value or a `(required)` marker per parameter (see `compiled-output.md` §`## Parameters`). Omitted for parameterless skills.
 
 - **`## Instructions`** — always emitted. Contains:
+  - `### Context` — bulleted list, one background item per bullet. Passive framing the agent should understand during execution. Conditional: omitted when no context is declared.
   - `### Steps` — numbered list, one expanded instruction per item. Order matters. The final item includes the return-summary sentence. Conditional: omitted only for pure constraint-only skills.
   - `### Constraints` — bulleted list, one expanded constraint per item. Order usually does not matter. Conditional: omitted when there are no constraints.
   - `### Procedure: <name>` — zero or more procedure sections for blocks projected at the same-file procedure tier. Each contains the callee's expanded flow as a numbered list with an optional constraint preamble. See `compiled-output.md` §Three-Tier Block Projection.
-  - At least one of `### Steps` or `### Constraints` must be present.
+  - At least one of `### Steps` or `### Constraints` must be present. `### Context` is supplementary and does not satisfy this requirement alone.
 
 - **Authoring construct erasure.** All imports, text references, `generated text`/`generated block` markers, comments, module paths, `with` modifiers — everything from the authoring world is gone. Parameter names survive only as `{param}` references in Steps/Constraints and as entries in the `## Parameters` section. The compiled file is self-contained for Tier 1/2 projections; Tier 3 projections retain procedure file paths as runtime references (per `compiled-output.md` §Three-Tier Block Projection).
 
 - **Formatting rules** (per `compiled-output.md`):
   1. One instruction per list item (except the final Step, which may include the return sentence).
-  2. Numbered lists for Steps, bulleted lists for Constraints.
+  2. Numbered lists for Steps, bulleted lists for Context and Constraints.
   3. No hard line-wrapping mid-sentence.
   4. Single blank line between sections.
   5. Standard Markdown only.
@@ -505,6 +509,7 @@ Key clarifications this reconciliation makes:
 | Transform | Phase | Touches `.glyph.md`? |
 |---|---|---|
 | Unconditional constraint → `constraints:` section (body-level + flow-top-level) | 3a | Yes |
+| Unconditional context → `context:` section (body-level + flow-top-level) | 3a | Yes |
 | Unused import removal | 3a | Yes |
 | Duplicate import merging | 3a | Yes |
 | Section reorder to convention | 3a | Yes |
@@ -548,7 +553,7 @@ Incremental compilation and build caching are **deferred** from MVP (per `todo.m
 
 - **Foundations:** `foundations.md` — #18 (deterministic passes own correctness), #33 (novice learnability).
 - **Source syntax:** `language-surface.md` — declaration forms, indentation, sub-sections. §5 lists the 9-step pipeline that this document supersedes.
-- **IR and roles:** `ir-and-semantics.md` — four MVP roles, constraint model, effects, section vocabulary.
+- **IR and roles:** `ir-and-semantics.md` — five MVP roles, constraint model, effects, section vocabulary.
 - **Repair:** `repair.md` — full repair rules, generated definitions (text and block), single-string rule, idempotence, intent potency.
 - **Data flow:** `data-flow.md` — parameters, calls, `with` modifier, control flow, return semantics, closure.
 - **Compiled output:** `compiled-output.md` — frontmatter shape, `## Parameters` section, `## Instructions` structure, projection rules, parameterless compilation model.

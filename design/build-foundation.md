@@ -118,7 +118,7 @@ pub struct IrArena {
 }
 ```
 
-`IrNode` is an enum over all node types from `ir-schema.md` — `Call`, `InlineInstruction`, `InstructionRef`, `Branch`, `Return`, `Constraint`, etc. Children are referenced by `NodeId`. All IR types derive `serde::Serialize` for the `--emit-ir` JSON output.
+`IrNode` is an enum over all node types from `ir-schema.md` — `Call`, `InlineInstruction`, `InstructionRef`, `Branch`, `Return`, `Constraint`, `ContextNode`, etc. Children are referenced by `NodeId`. All IR types derive `serde::Serialize` for the `--emit-ir` JSON output.
 
 **Arena is IR-only.** The AST (Phases 1–2) uses plain owned trees (`Vec<Decl>` with nested `Vec<Stmt>`). The arena is built during Lower (Phase 4) with pre-order source-traversal allocation, exactly as `ir-schema.md` §Node Identifiers specifies.
 
