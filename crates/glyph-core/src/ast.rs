@@ -32,6 +32,10 @@ pub struct Skill {
     pub params: Vec<Param>,
     /// Body-level constraint markers (e.g., `require accuracy`, `avoid stale_references`).
     pub body_constraints: Vec<ConstraintMarker>,
+    /// Body-level context markers (e.g., `context project_conventions`).
+    pub body_context: Vec<ContextEntry>,
+    /// Entries from the `context:` sub-section.
+    pub context_section: Vec<ContextEntry>,
     /// Inline `effects:` keyword list.
     pub effects: Vec<String>,
     /// Flow statements — inline strings only in the skeleton.
@@ -40,6 +44,10 @@ pub struct Skill {
     /// empty). Used to distinguish a constraint-only skill (legal) from a skill
     /// with an explicitly empty `flow:` (illegal — `G::parse::empty-flow`).
     pub flow_present: bool,
+    /// Bare names at body level (indent 1) that don't match any recognized
+    /// keyword. Used by analyze to fire `G::analyze::ambiguous-role` when
+    /// the name resolves to a `text` declaration.
+    pub body_bare_names: Vec<String>,
 }
 
 /// Minimal `export block` declaration — slice 4 captures the header shape only.
@@ -88,6 +96,23 @@ pub enum ConstraintMarkerKind {
 
 #[derive(Clone, Debug)]
 pub enum FlowStmt {
+    InlineString(String),
+    /// A constraint marker inside `flow:` (e.g., `require X`, `avoid Y`).
+    ConstraintMarker(ConstraintMarker),
+    /// A `context` marker inside `flow:` (e.g., `context project_conventions`).
+    ContextMarker(ContextEntry),
+    /// A bare name in `flow:` that is not preceded by a keyword prefix.
+    /// Detected during analyze as `G::analyze::text-in-flow`.
+    BareName(String),
+}
+
+/// An entry inside the `context:` sub-section or a body-level `context` marker.
+/// Can be a bare-name reference to a `text` declaration or an inline string.
+#[derive(Clone, Debug)]
+pub enum ContextEntry {
+    /// Bare name reference (e.g., `project_conventions`).
+    NameRef(String),
+    /// Inline string literal (e.g., `"The bug is reproducible locally."`).
     InlineString(String),
 }
 

@@ -4,8 +4,8 @@
 //! `update_docs.glyph.md` per `design/mvp-acceptance.md` §1.
 
 use crate::ast::{
-    ConstraintMarker, ConstraintMarkerKind, Decl, ExportBlockDecl, FlowStmt, Param, Skill,
-    SourceFile, TextDecl,
+    ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl, ExportBlockDecl, FlowStmt, Param,
+    Skill, SourceFile, TextDecl,
 };
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::slot::scan_slots;
@@ -317,9 +317,12 @@ impl<'a> Parser<'a> {
 
         let mut description: Option<String> = None;
         let mut body_constraints: Vec<ConstraintMarker> = Vec::new();
+        let mut body_context: Vec<ContextEntry> = Vec::new();
+        let mut context_section: Vec<ContextEntry> = Vec::new();
         let mut effects: Vec<String> = Vec::new();
         let mut flow: Vec<FlowStmt> = Vec::new();
         let mut flow_present = false;
+        let mut body_bare_names: Vec<String> = Vec::new();
 
         // Parse body lines at indent 1.
         loop {
@@ -328,9 +331,12 @@ impl<'a> Parser<'a> {
                     self.parse_skill_body_line(
                         &mut description,
                         &mut body_constraints,
+                        &mut body_context,
+                        &mut context_section,
                         &mut effects,
                         &mut flow,
                         &mut flow_present,
+                        &mut body_bare_names,
                     )?;
                 }
                 _ => break,
@@ -350,9 +356,12 @@ impl<'a> Parser<'a> {
                 description,
                 params,
                 body_constraints,
+                body_context,
+                context_section,
                 effects,
                 flow,
                 flow_present,
+                body_bare_names,
             },
             span,
         ))
@@ -473,9 +482,12 @@ impl<'a> Parser<'a> {
         &mut self,
         description: &mut Option<String>,
         body_constraints: &mut Vec<ConstraintMarker>,
+        body_context: &mut Vec<ContextEntry>,
+        context_section: &mut Vec<ContextEntry>,
         effects: &mut Vec<String>,
         flow: &mut Vec<FlowStmt>,
         flow_present: &mut bool,
+        body_bare_names: &mut Vec<String>,
     ) -> Result<(), ParseError> {
         // Already at LineStart with indent 1.
         self.expect_line_start()?;
@@ -565,6 +577,182 @@ impl<'a> Parser<'a> {
                 let (name, _) = self.expect_ident(None)?;
                 body_constraints.push(ConstraintMarker { marker: kind, name });
             }
+            "context" => {
+                self.pos += 1;
+                // Two forms: `context:` (sub-section) or `context <name>` (body-level marker).
+                if matches!(self.peek().kind, TokenKind::Colon) {
+                    self.pos += 1;
+                    // `context:` sub-section — body at indent 2.
+                    // Short form: `context: "inline string"` on the same line.
+                    if matches!(self.peek().kind, TokenKind::StringLit(_)) {
+                        if let TokenKind::StringLit(s) = &self.peek().kind {
+                            let lit_span = self.peek().span;
+                            let v = s.clone();
+                            // Check for {param} slots in context body.
+                            for slot in scan_slots(&v) {
+                                let span_start = lit_span.start + 1 + slot.start_in_content as u32;
+                                let span = Span::new(self.file_id, span_start, span_start + 1);
+                                self.bag.push(
+                                    Diagnostic {
+                                        id: "G::parse::param-slot-in-non-instruction-string".into(),
+                                        classification: Classification::Repairable,
+                                        message: format!(
+                                            "`{{{}}}` slot is not allowed in `context:` — context is not instruction-bearing",
+                                            slot.name
+                                        ),
+                                        span: SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                        related: Vec::new(),
+                                        hints: vec![
+                                            "remove the braces or move the slot into an instruction string".into(),
+                                        ],
+                                    },
+                                    span,
+                                );
+                            }
+                            self.pos += 1;
+                            context_section.push(ContextEntry::InlineString(v));
+                        }
+                    }
+                    // Long form: indented entries at indent 2.
+                    loop {
+                        match self.current_line_indent() {
+                            Some(2) => {
+                                self.expect_line_start()?;
+                                match &self.peek().kind {
+                                    TokenKind::StringLit(s) => {
+                                        let lit_span = self.peek().span;
+                                        let v = s.clone();
+                                        for slot in scan_slots(&v) {
+                                            let span_start = lit_span.start + 1 + slot.start_in_content as u32;
+                                            let span = Span::new(self.file_id, span_start, span_start + 1);
+                                            self.bag.push(
+                                                Diagnostic {
+                                                    id: "G::parse::param-slot-in-non-instruction-string".into(),
+                                                    classification: Classification::Repairable,
+                                                    message: format!(
+                                                        "`{{{}}}` slot is not allowed in `context:` — context is not instruction-bearing",
+                                                        slot.name
+                                                    ),
+                                                    span: SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                                    related: Vec::new(),
+                                                    hints: vec![
+                                                        "remove the braces or move the slot into an instruction string".into(),
+                                                    ],
+                                                },
+                                                span,
+                                            );
+                                        }
+                                        self.pos += 1;
+                                        context_section.push(ContextEntry::InlineString(v));
+                                    }
+                                    TokenKind::Ident(name) => {
+                                        let v = name.clone();
+                                        self.pos += 1;
+                                        context_section.push(ContextEntry::NameRef(v));
+                                    }
+                                    _ => {
+                                        return Err(ParseError::Unexpected {
+                                            span: self.peek().span,
+                                            message: "expected string literal or name in `context:` body".into(),
+                                        });
+                                    }
+                                }
+                            }
+                            _ => break,
+                        }
+                    }
+                } else {
+                    // Body-level `context <name>` or `context "string"` marker.
+                    match &self.peek().kind {
+                        TokenKind::Ident(name) => {
+                            let v = name.clone();
+                            self.pos += 1;
+                            body_context.push(ContextEntry::NameRef(v));
+                        }
+                        TokenKind::StringLit(s) => {
+                            let lit_span = self.peek().span;
+                            let v = s.clone();
+                            for slot in scan_slots(&v) {
+                                let span_start = lit_span.start + 1 + slot.start_in_content as u32;
+                                let span = Span::new(self.file_id, span_start, span_start + 1);
+                                self.bag.push(
+                                    Diagnostic {
+                                        id: "G::parse::param-slot-in-non-instruction-string".into(),
+                                        classification: Classification::Repairable,
+                                        message: format!(
+                                            "`{{{}}}` slot is not allowed in `context` — context is not instruction-bearing",
+                                            slot.name
+                                        ),
+                                        span: SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                        related: Vec::new(),
+                                        hints: vec![
+                                            "remove the braces or move the slot into an instruction string".into(),
+                                        ],
+                                    },
+                                    span,
+                                );
+                            }
+                            self.pos += 1;
+                            body_context.push(ContextEntry::InlineString(v));
+                        }
+                        _ => {
+                            return Err(ParseError::Unexpected {
+                                span: self.peek().span,
+                                message: "expected name or string after `context`".into(),
+                            });
+                        }
+                    }
+                }
+            }
+            "constraints" => {
+                self.pos += 1;
+                self.expect(&TokenKind::Colon)?;
+                // `constraints:` sub-section — body at indent 2.
+                loop {
+                    match self.current_line_indent() {
+                        Some(2) => {
+                            self.expect_line_start()?;
+                            match &self.peek().kind {
+                                TokenKind::Ident(kw) => {
+                                    let kw = kw.clone();
+                                    self.pos += 1;
+                                    let kind = match kw.as_str() {
+                                        "require" => ConstraintMarkerKind::Require,
+                                        "avoid" => ConstraintMarkerKind::Avoid,
+                                        "must" => {
+                                            if let TokenKind::Ident(next) = &self.peek().kind {
+                                                if next == "avoid" {
+                                                    self.pos += 1;
+                                                    ConstraintMarkerKind::MustAvoid
+                                                } else {
+                                                    ConstraintMarkerKind::Must
+                                                }
+                                            } else {
+                                                ConstraintMarkerKind::Must
+                                            }
+                                        }
+                                        _ => {
+                                            return Err(ParseError::Unexpected {
+                                                span: self.peek().span,
+                                                message: format!("expected constraint keyword (`require`, `avoid`, `must`), found `{}`", kw),
+                                            });
+                                        }
+                                    };
+                                    let (name, _) = self.expect_ident(None)?;
+                                    body_constraints.push(ConstraintMarker { marker: kind, name });
+                                }
+                                _ => {
+                                    return Err(ParseError::Unexpected {
+                                        span: self.peek().span,
+                                        message: "expected constraint marker in `constraints:` body".into(),
+                                    });
+                                }
+                            }
+                        }
+                        _ => break,
+                    }
+                }
+            }
             "flow" => {
                 self.pos += 1;
                 self.expect(&TokenKind::Colon)?;
@@ -574,17 +762,70 @@ impl<'a> Parser<'a> {
                     match self.current_line_indent() {
                         Some(2) => {
                             self.expect_line_start()?;
-                            // Walking skeleton: each flow line is exactly one StringLit.
                             match &self.peek().kind {
                                 TokenKind::StringLit(s) => {
                                     let v = s.clone();
                                     self.pos += 1;
                                     flow.push(FlowStmt::InlineString(v));
                                 }
+                                TokenKind::Ident(kw) => {
+                                    let kw_val = kw.clone();
+                                    match kw_val.as_str() {
+                                        "require" | "avoid" | "must" => {
+                                            self.pos += 1;
+                                            let kind = match kw_val.as_str() {
+                                                "require" => ConstraintMarkerKind::Require,
+                                                "avoid" => ConstraintMarkerKind::Avoid,
+                                                "must" => {
+                                                    if let TokenKind::Ident(next) = &self.peek().kind {
+                                                        if next == "avoid" {
+                                                            self.pos += 1;
+                                                            ConstraintMarkerKind::MustAvoid
+                                                        } else {
+                                                            ConstraintMarkerKind::Must
+                                                        }
+                                                    } else {
+                                                        ConstraintMarkerKind::Must
+                                                    }
+                                                }
+                                                _ => unreachable!(),
+                                            };
+                                            let (name, _) = self.expect_ident(None)?;
+                                            flow.push(FlowStmt::ConstraintMarker(ConstraintMarker { marker: kind, name }));
+                                        }
+                                        "context" => {
+                                            self.pos += 1;
+                                            match &self.peek().kind {
+                                                TokenKind::Ident(name) => {
+                                                    let v = name.clone();
+                                                    self.pos += 1;
+                                                    flow.push(FlowStmt::ContextMarker(ContextEntry::NameRef(v)));
+                                                }
+                                                TokenKind::StringLit(s) => {
+                                                    let v = s.clone();
+                                                    self.pos += 1;
+                                                    flow.push(FlowStmt::ContextMarker(ContextEntry::InlineString(v)));
+                                                }
+                                                _ => {
+                                                    return Err(ParseError::Unexpected {
+                                                        span: self.peek().span,
+                                                        message: "expected name or string after `context` in flow".into(),
+                                                    });
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            // Bare name in flow — no keyword prefix, no parens.
+                                            let v = kw_val;
+                                            self.pos += 1;
+                                            flow.push(FlowStmt::BareName(v));
+                                        }
+                                    }
+                                }
                                 _ => {
                                     return Err(ParseError::Unexpected {
                                         span: self.peek().span,
-                                        message: "walking-skeleton flow only supports inline strings".into(),
+                                        message: "expected string, keyword, or name in flow body".into(),
                                     });
                                 }
                             }
@@ -593,11 +834,11 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            other => {
-                return Err(ParseError::Unexpected {
-                    span: kw_span,
-                    message: format!("unsupported skill body keyword `{}`", other),
-                });
+            _other => {
+                // Bare name at body level — not a recognized keyword.
+                // Store it for analyze to check `G::analyze::ambiguous-role`.
+                self.pos += 1;
+                body_bare_names.push(kw.clone());
             }
         }
         Ok(())

@@ -11,6 +11,7 @@ pub enum IrNode {
     Skill(IrSkill),
     InlineInstruction(IrInlineInstruction),
     Constraint(IrConstraint),
+    Context(IrContext),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -26,6 +27,8 @@ pub struct IrSkill {
     pub params: Vec<IrParam>,
     /// Step nodes (in source order).
     pub steps: Vec<NodeId>,
+    /// Top-level context nodes.
+    pub context: Vec<NodeId>,
     /// Top-level constraint nodes.
     pub constraints: Vec<NodeId>,
 }
@@ -56,11 +59,18 @@ pub struct IrConstraint {
     pub polarity: Polarity,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct IrContext {
+    pub node_id: NodeId,
+    pub text: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum Role {
     Step,
     Constraint,
+    Context,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

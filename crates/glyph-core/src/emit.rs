@@ -50,6 +50,19 @@ pub fn emit(arena: &IrArena) -> String {
     // ----- ## Instructions -----
     out.push_str("## Instructions\n\n");
 
+    // ### Context (bulleted list, before Steps).
+    if !skill.context.is_empty() {
+        out.push_str("### Context\n\n");
+        for ctx_id in &skill.context {
+            let text = match arena.get(*ctx_id) {
+                IrNode::Context(c) => c.text.clone(),
+                _ => panic!("Context node was not a Context"),
+            };
+            out.push_str(&format!("- {}\n", text));
+        }
+        out.push('\n');
+    }
+
     // ### Steps (numbered list).
     if !skill.steps.is_empty() {
         out.push_str("### Steps\n\n");

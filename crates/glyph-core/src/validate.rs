@@ -22,6 +22,7 @@ pub fn validate(arena: &IrArena) -> Result<(), ValidateError> {
             IrNode::Skill(s) => s.node_id.0,
             IrNode::InlineInstruction(i) => i.node_id.0,
             IrNode::Constraint(c) => c.node_id.0,
+            IrNode::Context(ctx) => ctx.node_id.0,
         };
         if !seen.insert(id) {
             return Err(ValidateError::DuplicateNodeId(id));
