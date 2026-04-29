@@ -17,7 +17,10 @@ You are spawned by the Orchestrator. The Orchestrator does **not** read your out
 **Branch:** `<branch-name>`
 **Worktree:** `<worktree-path>` (already created — `cd` here for git ops)
 **Dossier directory:** `<dossier-path>` (already created — write all logs here)
-**Execution mode:** `<execution-mode>`
+
+You are running as a **teammate** in your own tmux pane (the Orchestrator spawned you via `Agent(team_name: ..., name: "issue-agent", ...)`). This is significant: as a top-level Claude session, you have access to the `Agent` tool and can spawn Implementer/Reviewer subagents. A regular `run_in_background` subagent would not — that's why this skill spawns Issue-Agents as teammates.
+
+You communicate back to the Orchestrator via `SendMessage(to: "team-lead", ...)`. Your final message — and only that final message — must be the structured YAML packet (schema below). Do not stream progress messages to the team lead; everything goes to the dossier on disk.
 
 #### What to build (verbatim from the slice spec)
 
@@ -308,7 +311,6 @@ Always write this file before emitting the return packet, regardless of outcome.
 **Branch:** <branch-name>
 **Rounds used:** <int>
 **BLOCKED iterations in last round:** <int>
-**Execution mode:** background | teammate
 
 ## Summary
 
@@ -334,10 +336,9 @@ summary: <one-sentence>
 dossier: <dossier-path>
 rounds_used: <int>
 blocked_iterations_in_last_round: <int>
-execution_mode: background | teammate
 ```
 
-No surrounding prose. No markdown headers. Just the YAML block. The Orchestrator parses your last message looking for this shape; extra prose makes the parse fail and you'll get marked `escalated` with `last_error: "malformed packet"`.
+Send this packet via `SendMessage(to: "team-lead", message: <YAML-as-plain-text>, summary: "slice <id> <status>")`. No surrounding prose, no markdown headers — just the YAML block as the message body. The Orchestrator parses the message looking for this shape; extra prose makes the parse fail and you'll get marked `escalated` with `last_error: "malformed packet"`.
 
 ---
 

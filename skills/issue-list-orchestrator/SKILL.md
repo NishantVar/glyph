@@ -15,7 +15,7 @@ Given the slice list in `mvp-issues.md`, the Orchestrator:
 
 1. Reads queue + dependency graph from disk via `scripts/parse_issues.py`.
 2. Picks the next ready slice in topological order (lowest ID first when ties).
-3. Spawns an **Issue-Agent** (background sub-agent by default) that owns the slice end-to-end: reads design context, drives Implementer + Reviewer rounds, runs gates, opens and merges the PR.
+3. Spawns an **Issue-Agent** as a teammate in its own tmux pane that owns the slice end-to-end: reads design context, drives Implementer + Reviewer rounds, runs gates, opens and merges the PR. **Teammate spawn (not background subagent) is required** because the Issue-Agent must itself dispatch Implementer/Reviewer subagents — and only top-level Claude sessions (i.e., teammates) have the `Agent` tool. A `run_in_background` subagent does not.
 4. Receives a short structured packet on completion, prints one line, picks the next ready slice.
 5. Halts on any failure / escalation / timeout. Resumes on the user's next session via `retry` / `skip` / etc.
 
@@ -46,7 +46,7 @@ Why three layers: the Orchestrator must survive 23+ issues without hitting conte
 | Main branch | `main` |
 | Implementer skill | `/tdd` (the **local** skill at `~/.claude/skills/tdd/SKILL.md`) — **NOT** `superpowers:test-driven-development`. The Implementer prompt enforces this with explicit guard text. |
 | Reviewer skill | `codex:review` (invoked by a `general-purpose` subagent via the Skill tool — not a `subagent_type`) |
-| Default execution mode | `background` |
+| Execution mode | `teammate` (only mode — requires tmux; see "Step 0. tmux precondition") |
 | Merge strategy | `squash` (`gh pr merge --squash --auto`) |
 | PR label on escalation | `needs-review` |
 | Per-issue wall-clock timeout | 30 minutes |
@@ -66,11 +66,25 @@ The user has invoked this skill. They might say:
 | "Resume." / "Pick up where we left off." | Standard startup flow (it's the same — reconcile then dispatch) |
 | "Status." | Run startup flow steps 1–3, **stop after the table**, do not dispatch |
 | "Retry slice 3." / "Skip slice 5." / "Pause." | Run startup flow steps 1–3, then handle the explicit command per `references/resume-commands.md` |
-| "Mode teammate." / "Dispatch slice 7 --teammate." | Apply the mode change per `references/resume-commands.md` |
 
 ## Startup flow (every invocation)
 
 Walk this in order. Do not skip steps — reconciliation prevents most foot-guns.
+
+### Step 0. tmux precondition
+
+Issue-Agents are spawned as teammates and teammates need a tmux pane to run in. Before doing anything else, verify tmux is available — gate on the exit code, not just stdout:
+
+```bash
+tmux display-message -p '#S:#W.#P' >/dev/null 2>&1 && echo OK || echo FAIL
+```
+
+- If the command prints `OK` (exit code 0): tmux is available, proceed.
+- If it prints `FAIL`: **halt immediately.** Tell the user verbatim:
+
+  > This skill requires running inside a tmux session because Issue-Agents are spawned as teammates (which run in their own tmux panes). Please launch Claude Code inside tmux (`tmux new -s glyph` then `claude`) and re-invoke this skill.
+
+  Do not acquire the lockfile. Do not load state. Just exit.
 
 ### Step 1. Lockfile check
 
@@ -147,7 +161,7 @@ loop:
     continue
 ```
 
-The "wait for the Issue-Agent's notification" step relies on the runtime to wake you when a `run_in_background: true` Agent completes. You will receive a notification automatically. Do not call any sleep / polling tool in that window — work on nothing while waiting (the runtime handles delivery).
+The "wait for the Issue-Agent's notification" step relies on the runtime to wake you when the teammate sends its final message via `SendMessage`. Teammate messages are auto-delivered as new conversation turns; you do not check an inbox. The teammate will also send an idle notification at the end of each of its turns — most of those are noise; the only one you act on is the message containing the YAML packet. Do not call any sleep / polling tool while waiting.
 
 ## Per-issue dispatch
 
@@ -164,17 +178,26 @@ For the next ready issue:
 
 3. **Create the dossier folder** at `tmp/orchestrator/<slug>/` if it doesn't exist. Files inside (`qa-log.md`, `implementer.log.md`, `review.md`, `gates.md`, `final-summary.md`) are written by the Issue-Agent, not by you.
 
-4. **Spawn the Issue-Agent.** Read `references/issue-agent-prompt.md` once and fill in the slots:
+4. **Spawn the Issue-Agent as a teammate.** Read `references/issue-agent-prompt.md` once and fill in the slots:
    - `<issue-id>`, `<issue-title>`, `<branch-name>`, `<worktree-path>`, `<dossier-path>`
    - `<issue-prose>`: the slice's "What to build" text from the parser output for this slice
    - `<acceptance-criteria>`: the slice's checklist from the parser
    - `<per-issue-context-files>`: the slice's context_files list from the parser
-   - `<execution-mode>`: `background` or `teammate` per current session mode
    - `<round-1-feedback>`: empty on fresh dispatch; populated only on `retry` after manual fix
 
    Spawn:
-   - **Background (default):** `Agent(run_in_background: true, subagent_type: "general-purpose", description: "Issue-Agent slice <id>", prompt: <filled template>)`
-   - **Teammate:** see `references/resume-commands.md` "teammate spawn" section
+   ```
+   TeamCreate(team_name: "slice-<id>", description: "Issue-Agent for slice <id>")
+   Agent(
+     team_name: "slice-<id>",
+     name:      "issue-agent",
+     subagent_type: "general-purpose",
+     description: "Issue-Agent slice <id>",
+     prompt: <filled template>,
+   )
+   ```
+
+   The `team_name` parameter is what makes the spawn a *teammate* (top-level Claude in its own tmux pane with full `Agent` access) rather than a background subagent. The `name` is what the teammate uses to address itself / what you'll see in `SendMessage` traffic. Do **not** pass `run_in_background: true` — that's for subagents, not teammates.
 
 5. **Wait for the completion notification.** Do not poll. Do not read intermediate output. The Issue-Agent's prompt instructs it to emit only the structured packet as its final message.
 
@@ -199,7 +222,6 @@ summary: <one-sentence>
 dossier: <dossier-path>
 rounds_used: <int>
 blocked_iterations_in_last_round: <int>
-execution_mode: background | teammate
 ```
 
 If the packet is malformed (not YAML, missing required keys), treat the issue as `escalated` with `last_error: "malformed packet"` and halt. **Do not** try to recover by re-reading the dossier — that would pull design context into your window.
@@ -218,7 +240,17 @@ These are how you survive 23 issues. Each rule has a real reason; please underst
 
 5. **Print one line per issue completion.** Not a paragraph. Not a summary of what the Issue-Agent did. One line.
 
-6. **Spawn Issue-Agents with `run_in_background: true` in background mode.** Streaming output never reaches you. One notification per spawn.
+6. **Issue-Agents run as teammates (separate Claude sessions in their own tmux panes).** Their narrative does not propagate into your context — you only see the YAML packet they emit via `SendMessage`. Ignore intermediate teammate messages and idle notifications until the packet arrives. Teardown sequence after parsing the packet:
+
+   ```
+   SendMessage(to: "issue-agent", message: {type: "shutdown_request", reason: "slice <id> done"})
+   # wait for the shutdown_response (auto-delivered as a turn)
+   TeamDelete()
+   ```
+
+   `TeamDelete` will fail if the teammate is still alive, so the shutdown handshake must happen first. If the teammate has already exited (e.g. it crashed or the user closed its pane), `TeamDelete` may succeed directly — try it; on failure, ask the user to investigate before forcing.
+
+   **Exception — slice halted, not merged:** if the packet's status is anything other than `merged`, the user typically wants to inspect the teammate's pane and dossier before teardown. In that case, **defer the `TeamDelete` until the user's next `retry` / `skip` for that slice.** Send the `shutdown_request` only once the user has issued a follow-up command, then `TeamDelete`. This keeps the failed teammate addressable for triage.
 
 If you find yourself reaching for `Read` on something other than `state.json`, the parser's JSON output, the lockfile, or one of this skill's own reference files — stop. You're about to leak context.
 
@@ -232,8 +264,6 @@ The user can issue these at any halt. The full handler lives in `references/resu
 | `skip <id>` | Mark the issue `merged` (user merged manually); unblock dependents |
 | `pause` | Stop scheduling, persist state, release lockfile, exit cleanly |
 | `status` | Re-print table only |
-| `mode background` / `mode teammate` | Change the session-level execution mode for subsequent dispatches (persists until session ends or user changes it again) |
-| `dispatch <id> --teammate` / `--background` | One-off mode override for the next dispatch only |
 
 Resolve the command, update state.json if needed, then re-enter the dispatch loop (or stay parked if commands like `pause` were issued).
 

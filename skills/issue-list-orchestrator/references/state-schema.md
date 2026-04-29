@@ -33,8 +33,7 @@ Issue IDs are stringified integers (`"1"`, `"2"`, etc.) for deterministic JSON s
   "blocked_iterations_in_last_round": 0,
   "started_at": "2026-04-28T22:10:00Z",
   "finished_at": "2026-04-28T22:54:00Z",
-  "last_error": null,
-  "execution_mode": "background"
+  "last_error": null
 }
 ```
 
@@ -54,7 +53,6 @@ Issue IDs are stringified integers (`"1"`, `"2"`, etc.) for deterministic JSON s
 | `started_at` | ISO 8601 \| null | yes | Set on first dispatch |
 | `finished_at` | ISO 8601 \| null | yes | Set on Issue-Agent return |
 | `last_error` | string \| null | yes | One-sentence error from packet `summary`, on halt |
-| `execution_mode` | enum | yes | `background` or `teammate` |
 
 ### Status enum
 

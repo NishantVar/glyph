@@ -56,52 +56,32 @@ Print the table only. Do not dispatch.
 
 Rule of thumb: don't leak the lockfile across an end-of-session. If you're unsure whether the user is about to issue another command, prefer to release; re-acquiring on the next invocation is fast.
 
-### `mode background` / `mode teammate`
+## Teammate spawn (always — this is the only mode)
 
-Change the **session-level** execution mode for subsequent dispatches.
+Issue-Agents always run as teammates (top-level Claude sessions in their own tmux panes). This is required because the Issue-Agent must itself dispatch Implementer/Reviewer subagents via `Agent`, and only top-level sessions have `Agent` in their tool roster — not subagents spawned via `Agent(run_in_background: true)`.
 
-This persists in your in-memory state for the rest of the session (you do not write it to state.json — it's a session preference, not durable). When you next dispatch, use this mode unless overridden by `dispatch <id> --teammate` / `--background`.
-
-If the user issues this in the middle of a parked queue, acknowledge and wait for the next command. Do not auto-dispatch from a `mode` command alone.
-
-### `dispatch <issue-id> --teammate` / `--background`
-
-One-off mode override. The next dispatch (and only the next) uses this mode; subsequent dispatches revert to the session-level (or project default) mode.
-
-1. Look up the issue. It must be in `ready` state. (If it's halted, the user should `retry <id>` first.)
-2. Apply the per-dispatch mode override.
-3. Re-enter dispatch loop, which will pick up this issue next.
-
-## Mode precedence
-
-1. Per-dispatch override (`dispatch <id> --teammate`) — applies only to that one dispatch.
-2. Session-level (`mode <bg|teammate>`) — persists across dispatches in the session.
-3. Project default — `background`.
-
-The Issue-Agent's contract (what it reads, what it writes, what it returns) is identical in both modes. Only the spawn mechanism differs.
-
-## Teammate spawn (when mode is teammate)
-
-Instead of `Agent(run_in_background: true)`, spawn the Issue-Agent as a teammate so the user can watch in its own terminal:
+Spawn sequence:
 
 ```
-TeamCreate(team_name: "issue-<id>")
+TeamCreate(team_name: "slice-<id>", description: "Issue-Agent for slice <id>")
 Agent(
-  team_name: "issue-<id>",
+  team_name:     "slice-<id>",
+  name:          "issue-agent",
   subagent_type: "general-purpose",
-  description: "Issue-Agent slice <id>",
-  prompt: <filled template>,
+  description:   "Issue-Agent slice <id>",
+  prompt:        <filled template>,
 )
 ```
 
-The teammate's terminal narrative is independent of your context. The Issue-Agent's prompt instructs it to emit only the structured packet as its final message — that's what you ingest. The runtime may surface incidental teammate notifications back to you; ignore non-packet content.
+Notes:
 
-This is best-effort isolation, not airtight (per design doc §9 caveat). If you observe context bloat from teammate dispatches in practice, fall back to background mode and ask the user.
-
-When the teammate completes, do **not** auto-delete the team. Leave it so the user can inspect the terminal afterward. The user disposes the team when ready.
+- **`team_name` is what makes the spawn a teammate.** Without it, you'd get a regular subagent that lacks the `Agent` tool and cannot dispatch Implementer/Reviewer.
+- **Do not pass `run_in_background: true`** — that's the subagent path.
+- The teammate's terminal narrative does not propagate into your context. You only ingest the YAML packet it sends via `SendMessage`. Ignore intermediate messages and idle notifications.
+- After the slice completes (merged or halted) and you've parsed the packet, tear the team down with the shutdown handshake described in `SKILL.md` "Context-budget rules" item 6: send a `shutdown_request` to the `issue-agent`, wait for the `shutdown_response`, then call `TeamDelete()`. This keeps `~/.claude/teams/` and `~/.claude/tasks/` from accumulating dead per-slice directories. If the slice halted (not merged), the user may want to inspect the teammate's pane first — defer the `TeamDelete` until the user issues the next `retry`/`skip` for that slice.
 
 ## Unknown commands
 
-If the user says something that's not in the table above, ask once for clarification: "Unknown command. Did you mean `retry <id>` / `skip <id>` / `pause` / `status` / `mode <bg|teammate>` / `dispatch <id> --teammate`?"
+If the user says something that's not in the table above, ask once for clarification: "Unknown command. Did you mean `retry <id>` / `skip <id>` / `pause` / `status`?"
 
 If the user is just talking conversationally ("looks good", "thanks", etc.) — acknowledge briefly and wait for the next command.
