@@ -580,6 +580,41 @@ skill main()
     }
 
     #[test]
+    fn effects_transitive_inference_through_call_chain() {
+        // Block A calls Block B. Block B has effects: writes_files.
+        // Block A has effects: reads_files.
+        // Skill calls A, so inferred = {reads_files, writes_files}.
+        let src = "\
+block inner()
+    effects: writes_files
+    \"Write files.\"
+
+block outer()
+    effects: reads_files
+    flow:
+        inner()
+
+skill main()
+    description: \"Main skill.\"
+    effects: reads_files, writes_files
+    flow:
+        outer()
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        // No errors or repairables — declared matches inferred exactly.
+        assert!(
+            !bag.has_error(),
+            "should not have errors: {:?}",
+            bag.iter().map(|d| &d.id).collect::<Vec<_>>()
+        );
+        assert!(
+            !bag.has_repairable(),
+            "should not have repairables: {:?}",
+            bag.iter().map(|d| &d.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn check_source_flags_tab_indent_as_repairable() {
         // Tab-indented source surfaces a `repairable` diagnostic, not an error.
         let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";
