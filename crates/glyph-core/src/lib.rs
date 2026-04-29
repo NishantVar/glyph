@@ -1123,6 +1123,95 @@ skill main()
     }
 
     #[test]
+    fn applies_descriptions_populated_in_expand() {
+        // AC6: applies_descriptions side-map is populated post-Step-1.
+        let src = "\
+block fast_mode()
+    description: \"When the user wants fast processing.\"
+    flow:
+        \"Do fast processing.\"
+
+block slow_mode()
+    description: \"When the user wants thorough processing.\"
+    flow:
+        \"Do slow processing.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if fast_mode.applies()
+            fast_mode()
+        elif slow_mode.applies()
+            slow_mode()
+        else
+            \"Do default processing.\"
+";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let file = analyze::analyze(file);
+        let arena = lower::lower(&file).expect("should lower");
+        let arena = expand::expand_step1(arena);
+        // Find the Branch node.
+        let branch = arena.nodes().iter().find_map(|n| match n {
+            ir::IrNode::Branch(br) => Some(br),
+            _ => None,
+        });
+        let branch = branch.expect("should have a Branch node");
+        let descs = branch.applies_descriptions.as_ref().expect("applies_descriptions should be populated");
+        assert_eq!(descs.get("fast_mode").map(|s| s.as_str()), Some("When the user wants fast processing."));
+        assert_eq!(descs.get("slow_mode").map(|s| s.as_str()), Some("When the user wants thorough processing."));
+    }
+
+    #[test]
+    fn pure_applies_branch_renders_decide_form() {
+        // AC8: Pure-applies branch arms render via description-keyed projection.
+        let src = "\
+block fast_mode()
+    description: \"When the user wants fast processing.\"
+    flow:
+        \"Do fast processing.\"
+
+block slow_mode()
+    description: \"When the user wants thorough processing.\"
+    flow:
+        \"Do slow processing.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if fast_mode.applies()
+            fast_mode()
+        elif slow_mode.applies()
+            slow_mode()
+        else
+            \"Do default processing.\"
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                assert!(
+                    markdown.contains("Decide which of the following applies"),
+                    "expected description-driven projection:\n{}",
+                    markdown
+                );
+                assert!(
+                    markdown.contains("When the user wants fast processing."),
+                    "expected fast_mode description in output:\n{}",
+                    markdown
+                );
+                assert!(
+                    markdown.contains("When the user wants thorough processing."),
+                    "expected slow_mode description in output:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
     fn applies_no_parens_fires_diagnostic() {
         // AC7: applies-no-parens — .applies without ().
         let src = "\
