@@ -390,6 +390,26 @@ skill main()
     }
 
     #[test]
+    fn effects_none_with_other_effects_rejected() {
+        // `effects: none, reads_files` must produce G::parse::none-with-effects (error).
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    effects: none, reads_files
+    flow:
+        \"Do something.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::none-with-effects"),
+            "expected G::parse::none-with-effects, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 1, "none-with-effects should be a hard error");
+    }
+
+    #[test]
     fn check_source_flags_tab_indent_as_repairable() {
         // Tab-indented source surfaces a `repairable` diagnostic, not an error.
         let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";

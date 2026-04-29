@@ -638,8 +638,8 @@ impl<'a> Parser<'a> {
             }
             "effects" => {
                 self.pos += 1;
-                self.expect(&TokenKind::Colon)?;
-                // Walking skeleton: short form only — comma-separated idents on the same line.
+                let colon_span = self.expect(&TokenKind::Colon)?;
+                // Short form only — comma-separated idents on the same line.
                 loop {
                     let (eff, _) = self.expect_ident(None)?;
                     effects.push(eff);
@@ -649,6 +649,19 @@ impl<'a> Parser<'a> {
                         }
                         _ => break,
                     }
+                }
+                // Validate `none` exclusivity: `none` must not appear alongside
+                // other effect keywords → G::parse::none-with-effects (error).
+                if effects.contains(&"none".to_string()) && effects.len() > 1 {
+                    let span = Span::new(self.file_id, colon_span.start, colon_span.end);
+                    self.bag.push(
+                        Diagnostic::error(
+                            "G::parse::none-with-effects",
+                            "`effects: none` must not appear alongside other effect keywords",
+                            SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                        ),
+                        span,
+                    );
                 }
             }
             "require" | "avoid" | "must" => {
