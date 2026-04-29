@@ -69,7 +69,16 @@ pub fn emit(arena: &IrArena) -> String {
         for (idx, step_id) in skill.steps.iter().enumerate() {
             let text = match arena.get(*step_id) {
                 IrNode::InlineInstruction(i) => i.text.clone(),
-                _ => panic!("Step node was not an InlineInstruction"),
+                IrNode::Call(c) => {
+                    // After Tier 1 expansion, all calls should have been inlined as
+                    // InlineInstruction nodes. Reaching here means validate failed to
+                    // catch an unresolved callee — this is a compiler bug.
+                    panic!(
+                        "IrNode::Call to `{}` survived past expand; validate should have caught this",
+                        c.target
+                    );
+                }
+                _ => panic!("Step node was not an InlineInstruction or Call"),
             };
             out.push_str(&format!("{}. {}\n", idx + 1, text));
         }

@@ -4,8 +4,8 @@
 //! `update_docs.glyph.md` per `design/mvp-acceptance.md` §1.
 
 use crate::ast::{
-    ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl, ExportBlockDecl, FlowStmt, Param,
-    Skill, SourceFile, TextDecl,
+    BlockDecl, ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl, ExportBlockDecl,
+    FlowStmt, Param, Skill, SourceFile, TextDecl,
 };
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::slot::scan_slots;
@@ -291,6 +291,10 @@ impl<'a> Parser<'a> {
                     let d = self.parse_text_decl()?;
                     decls.push(Decl::Text(d));
                 }
+                "block" => {
+                    let d = self.parse_block_decl()?;
+                    decls.push(Decl::Block(d));
+                }
                 "export" => {
                     // Slice 4 supports `export block <name>(<params>)` headers only.
                     // Body is skipped — full lowering ships in a later slice.
@@ -401,6 +405,99 @@ impl<'a> Parser<'a> {
         };
         let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
         Ok(Spanned::new(ExportBlockDecl { name, params }, span))
+    }
+
+    /// Parse `block <name>(<params>)` with optional body (description, flow,
+    /// single-string shorthand).
+    fn parse_block_decl(&mut self) -> Result<Spanned<BlockDecl>, ParseError> {
+        let (_, kw_span) = self.expect_ident(Some("block"))?;
+        let (name, _) = self.expect_ident(None)?;
+        self.expect(&TokenKind::Lparen)?;
+        let params = self.parse_param_list()?;
+        self.expect(&TokenKind::Rparen)?;
+
+        let mut description: Option<String> = None;
+        let mut flow: Vec<FlowStmt> = Vec::new();
+
+        // Parse body lines at indent 1.
+        loop {
+            match self.current_line_indent() {
+                Some(1) => {
+                    // Peek at the keyword on this line.
+                    let saved_pos = self.pos;
+                    self.expect_line_start()?;
+                    match &self.peek().kind {
+                        TokenKind::Ident(kw) => {
+                            let kw = kw.clone();
+                            match kw.as_str() {
+                                "description" => {
+                                    self.pos += 1;
+                                    self.expect(&TokenKind::Colon)?;
+                                    let s = self.consume_string_after_colon()?;
+                                    description = Some(s);
+                                }
+                                "flow" => {
+                                    self.pos += 1;
+                                    self.expect(&TokenKind::Colon)?;
+                                    // Body at indent 2.
+                                    loop {
+                                        match self.current_line_indent() {
+                                            Some(2) => {
+                                                self.expect_line_start()?;
+                                                let stmt = self.parse_flow_stmt()?;
+                                                flow.push(stmt);
+                                            }
+                                            _ => break,
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    // Unknown keyword at body level — skip the rest of the line.
+                                    self.pos = saved_pos;
+                                    self.expect_line_start()?;
+                                    while !self.at_eof()
+                                        && !matches!(self.peek().kind, TokenKind::LineStart { .. })
+                                    {
+                                        self.pos += 1;
+                                    }
+                                }
+                            }
+                        }
+                        TokenKind::StringLit(s) => {
+                            // Single-string shorthand: bare string at indent 1, no flow: header.
+                            let v = s.clone();
+                            self.pos += 1;
+                            flow.push(FlowStmt::InlineString(v));
+                        }
+                        _ => {
+                            // Skip unrecognised tokens on this line.
+                            while !self.at_eof()
+                                && !matches!(self.peek().kind, TokenKind::LineStart { .. })
+                            {
+                                self.pos += 1;
+                            }
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        let end_span = if self.pos > 0 {
+            self.tokens[self.pos - 1].span
+        } else {
+            kw_span
+        };
+        let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
+        Ok(Spanned::new(
+            BlockDecl {
+                name,
+                description,
+                params,
+                flow,
+            },
+            span,
+        ))
     }
 
     /// Parse a (possibly empty) comma-separated parameter list between the
@@ -762,73 +859,8 @@ impl<'a> Parser<'a> {
                     match self.current_line_indent() {
                         Some(2) => {
                             self.expect_line_start()?;
-                            match &self.peek().kind {
-                                TokenKind::StringLit(s) => {
-                                    let v = s.clone();
-                                    self.pos += 1;
-                                    flow.push(FlowStmt::InlineString(v));
-                                }
-                                TokenKind::Ident(kw) => {
-                                    let kw_val = kw.clone();
-                                    match kw_val.as_str() {
-                                        "require" | "avoid" | "must" => {
-                                            self.pos += 1;
-                                            let kind = match kw_val.as_str() {
-                                                "require" => ConstraintMarkerKind::Require,
-                                                "avoid" => ConstraintMarkerKind::Avoid,
-                                                "must" => {
-                                                    if let TokenKind::Ident(next) = &self.peek().kind {
-                                                        if next == "avoid" {
-                                                            self.pos += 1;
-                                                            ConstraintMarkerKind::MustAvoid
-                                                        } else {
-                                                            ConstraintMarkerKind::Must
-                                                        }
-                                                    } else {
-                                                        ConstraintMarkerKind::Must
-                                                    }
-                                                }
-                                                _ => unreachable!(),
-                                            };
-                                            let (name, _) = self.expect_ident(None)?;
-                                            flow.push(FlowStmt::ConstraintMarker(ConstraintMarker { marker: kind, name }));
-                                        }
-                                        "context" => {
-                                            self.pos += 1;
-                                            match &self.peek().kind {
-                                                TokenKind::Ident(name) => {
-                                                    let v = name.clone();
-                                                    self.pos += 1;
-                                                    flow.push(FlowStmt::ContextMarker(ContextEntry::NameRef(v)));
-                                                }
-                                                TokenKind::StringLit(s) => {
-                                                    let v = s.clone();
-                                                    self.pos += 1;
-                                                    flow.push(FlowStmt::ContextMarker(ContextEntry::InlineString(v)));
-                                                }
-                                                _ => {
-                                                    return Err(ParseError::Unexpected {
-                                                        span: self.peek().span,
-                                                        message: "expected name or string after `context` in flow".into(),
-                                                    });
-                                                }
-                                            }
-                                        }
-                                        _ => {
-                                            // Bare name in flow — no keyword prefix, no parens.
-                                            let v = kw_val;
-                                            self.pos += 1;
-                                            flow.push(FlowStmt::BareName(v));
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    return Err(ParseError::Unexpected {
-                                        span: self.peek().span,
-                                        message: "expected string, keyword, or name in flow body".into(),
-                                    });
-                                }
-                            }
+                            let stmt = self.parse_flow_stmt()?;
+                            flow.push(stmt);
                         }
                         _ => break,
                     }
@@ -842,6 +874,114 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Parse a single flow statement (already past LineStart).
+    /// Handles inline strings, constraint/context markers, calls, and bare names.
+    fn parse_flow_stmt(&mut self) -> Result<FlowStmt, ParseError> {
+        match &self.peek().kind {
+            TokenKind::StringLit(s) => {
+                let v = s.clone();
+                self.pos += 1;
+                Ok(FlowStmt::InlineString(v))
+            }
+            TokenKind::Ident(kw) => {
+                let kw_val = kw.clone();
+                match kw_val.as_str() {
+                    "require" | "avoid" | "must" => {
+                        self.pos += 1;
+                        let kind = match kw_val.as_str() {
+                            "require" => ConstraintMarkerKind::Require,
+                            "avoid" => ConstraintMarkerKind::Avoid,
+                            "must" => {
+                                if let TokenKind::Ident(next) = &self.peek().kind {
+                                    if next == "avoid" {
+                                        self.pos += 1;
+                                        ConstraintMarkerKind::MustAvoid
+                                    } else {
+                                        ConstraintMarkerKind::Must
+                                    }
+                                } else {
+                                    ConstraintMarkerKind::Must
+                                }
+                            }
+                            _ => unreachable!(),
+                        };
+                        let (name, _) = self.expect_ident(None)?;
+                        Ok(FlowStmt::ConstraintMarker(ConstraintMarker {
+                            marker: kind,
+                            name,
+                        }))
+                    }
+                    "context" => {
+                        self.pos += 1;
+                        match &self.peek().kind {
+                            TokenKind::Ident(name) => {
+                                let v = name.clone();
+                                self.pos += 1;
+                                Ok(FlowStmt::ContextMarker(ContextEntry::NameRef(v)))
+                            }
+                            TokenKind::StringLit(s) => {
+                                let v = s.clone();
+                                self.pos += 1;
+                                Ok(FlowStmt::ContextMarker(ContextEntry::InlineString(v)))
+                            }
+                            _ => Err(ParseError::Unexpected {
+                                span: self.peek().span,
+                                message: "expected name or string after `context` in flow".into(),
+                            }),
+                        }
+                    }
+                    _ => {
+                        // Could be a call (name followed by `(`) or a bare name.
+                        self.pos += 1;
+                        if matches!(self.peek().kind, TokenKind::Lparen) {
+                            // Call expression: name(args)
+                            self.pos += 1; // consume `(`
+                            let mut args: Vec<String> = Vec::new();
+                            if !matches!(self.peek().kind, TokenKind::Rparen) {
+                                loop {
+                                    // Positional args: identifiers or string literals.
+                                    match &self.peek().kind {
+                                        TokenKind::Ident(a) => {
+                                            args.push(a.clone());
+                                            self.pos += 1;
+                                        }
+                                        TokenKind::StringLit(a) => {
+                                            args.push(a.clone());
+                                            self.pos += 1;
+                                        }
+                                        _ => {
+                                            return Err(ParseError::Unexpected {
+                                                span: self.peek().span,
+                                                message: "expected argument in call".into(),
+                                            });
+                                        }
+                                    }
+                                    match &self.peek().kind {
+                                        TokenKind::Comma => {
+                                            self.pos += 1;
+                                        }
+                                        _ => break,
+                                    }
+                                }
+                            }
+                            self.expect(&TokenKind::Rparen)?;
+                            Ok(FlowStmt::Call {
+                                target: kw_val,
+                                args,
+                            })
+                        } else {
+                            Ok(FlowStmt::BareName(kw_val))
+                        }
+                    }
+                }
+            }
+            _ => Err(ParseError::Unexpected {
+                span: self.peek().span,
+                message: "expected string, keyword, or name in flow body".into(),
+            }),
+        }
     }
 
     /// After a `:`, consume the rest of the line as a single string literal.

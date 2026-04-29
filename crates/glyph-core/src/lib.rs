@@ -175,6 +175,221 @@ mod tests {
     }
 
     #[test]
+    fn block_with_description_parses() {
+        let src = "\
+block greet()
+    description: \"Say hello to the user.\"
+    flow:
+        \"Hello, world!\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        greet()
+";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        // Find the block declaration.
+        let block = file.decls.iter().find_map(|d| match d {
+            ast::Decl::Block(b) => Some(&b.node),
+            _ => None,
+        });
+        let block = block.expect("block should be present");
+        assert_eq!(block.name, "greet");
+        assert_eq!(
+            block.description.as_deref(),
+            Some("Say hello to the user.")
+        );
+        assert_eq!(block.flow.len(), 1);
+    }
+
+    #[test]
+    fn block_without_description_parses() {
+        let src = "\
+block greet()
+    flow:
+        \"Hello, world!\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        greet()
+";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let block = file.decls.iter().find_map(|d| match d {
+            ast::Decl::Block(b) => Some(&b.node),
+            _ => None,
+        });
+        let block = block.expect("block should be present");
+        assert_eq!(block.name, "greet");
+        assert!(block.description.is_none());
+    }
+
+    #[test]
+    fn block_single_string_shorthand_parses() {
+        let src = "\
+block greet()
+    \"Say hello to the user.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        greet()
+";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let block = file.decls.iter().find_map(|d| match d {
+            ast::Decl::Block(b) => Some(&b.node),
+            _ => None,
+        });
+        let block = block.expect("block should be present");
+        assert_eq!(block.flow.len(), 1);
+        match &block.flow[0] {
+            ast::FlowStmt::InlineString(s) => {
+                assert_eq!(s, "Say hello to the user.");
+            }
+            _ => panic!("expected InlineString"),
+        }
+    }
+
+    #[test]
+    fn call_to_same_file_block_expands_inline() {
+        let src = "\
+block greet()
+    \"Say hello to the user.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        greet()
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                assert!(
+                    markdown.contains("1. Say hello to the user."),
+                    "expected inlined block body in Steps:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn word_count_computed_per_block() {
+        let src = "\
+block greet()
+    \"Say hello to the user.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        greet()
+";
+        // Compile and check that expansion happened (word count < 150 = Tier 1 inline).
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                // The block body has 5 words, well under 150, so it should inline.
+                assert!(
+                    markdown.contains("Say hello to the user."),
+                    "expected inlined block body:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn block_with_description_accessible_on_ir() {
+        // Verify the description is reachable on the IR node by checking the
+        // full compile pipeline (description doesn't affect Tier 1 output,
+        // but it should be preserved in the IR for later consumers).
+        let src = "\
+block greet()
+    description: \"Greet the user warmly.\"
+    flow:
+        \"Say hello to the user.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        greet()
+";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let file = analyze::analyze(file);
+        let arena = lower::lower(&file).expect("should lower");
+        // Find the Block IR node and check its description.
+        let block_node = arena.nodes().iter().find(|n| matches!(n, ir::IrNode::Block(_)));
+        let block_node = block_node.expect("IrBlock should exist");
+        if let ir::IrNode::Block(b) = block_node {
+            assert_eq!(b.description.as_deref(), Some("Greet the user warmly."));
+        } else {
+            panic!("expected IrBlock");
+        }
+    }
+
+    #[test]
+    fn block_multi_step_inlines_concatenated() {
+        let src = "\
+block setup()
+    flow:
+        \"Check the environment.\"
+        \"Install dependencies.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        setup()
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                // Multi-step block body should be concatenated with spaces for Tier 1.
+                assert!(
+                    markdown.contains("Check the environment. Install dependencies."),
+                    "expected concatenated body in Steps:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn undefined_call_fires_diagnostic() {
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        unknown_block()
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::undefined-call"),
+            "expected undefined-call diagnostic, got: {:?}",
+            ids
+        );
+        // undefined-call is repairable (Phase 3 Repair generates a block).
+        let diag = bag.iter().find(|d| d.id == "G::analyze::undefined-call").unwrap();
+        assert_eq!(
+            diag.classification,
+            diagnostic::Classification::Repairable,
+            "undefined-call should be repairable"
+        );
+    }
+
+    #[test]
     fn check_source_flags_tab_indent_as_repairable() {
         // Tab-indented source surfaces a `repairable` diagnostic, not an error.
         let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";

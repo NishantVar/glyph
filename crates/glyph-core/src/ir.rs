@@ -12,6 +12,8 @@ pub enum IrNode {
     InlineInstruction(IrInlineInstruction),
     Constraint(IrConstraint),
     Context(IrContext),
+    Block(IrBlock),
+    Call(IrCall),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -63,6 +65,33 @@ pub struct IrConstraint {
 pub struct IrContext {
     pub node_id: NodeId,
     pub text: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct IrBlock {
+    pub node_id: NodeId,
+    pub name: String,
+    pub description: Option<String>,
+    /// Resolved body text (concatenated flow inline strings).
+    pub body_text: String,
+    /// Word count of the resolved body text, computed in Expand Step 1.
+    #[serde(default)]
+    pub resolved_word_count: Option<u32>,
+    /// Names of blocks called from this block's flow (outgoing call edges).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outgoing_calls: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct IrCall {
+    pub node_id: NodeId,
+    /// Target block name.
+    pub target: String,
+    /// Positional args (identifiers or string values).
+    pub args: Vec<String>,
+    /// Resolved callee body text for Tier 1 inline expansion.
+    /// Populated during Lower; None if callee not found.
+    pub resolved_body: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
