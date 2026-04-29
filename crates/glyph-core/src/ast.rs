@@ -21,6 +21,7 @@ pub enum Decl {
     /// constraints) is parsed structurally but not lowered to IR in slice 4 —
     /// full `export block` lowering ships in slice 7/13.
     ExportBlock(Spanned<ExportBlockDecl>),
+    Block(Spanned<BlockDecl>),
 }
 
 #[derive(Clone, Debug)]
@@ -104,6 +105,8 @@ pub enum FlowStmt {
     /// A bare name in `flow:` that is not preceded by a keyword prefix.
     /// Detected during analyze as `G::analyze::text-in-flow`.
     BareName(String),
+    /// A call expression: `name()` or `name(arg1, arg2)`.
+    Call { target: String, args: Vec<String> },
 }
 
 /// An entry inside the `context:` sub-section or a body-level `context` marker.
@@ -114,6 +117,17 @@ pub enum ContextEntry {
     NameRef(String),
     /// Inline string literal (e.g., `"The bug is reproducible locally."`).
     InlineString(String),
+}
+
+/// A private `block` declaration.
+#[derive(Clone, Debug)]
+pub struct BlockDecl {
+    pub name: String,
+    /// Optional `description:` sub-section.
+    pub description: Option<String>,
+    pub params: Vec<Param>,
+    /// Flow statements — inline strings, calls, etc.
+    pub flow: Vec<FlowStmt>,
 }
 
 #[derive(Clone, Debug)]

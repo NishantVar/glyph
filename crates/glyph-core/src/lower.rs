@@ -4,7 +4,7 @@
 //! Per `design/build-foundation.md` §A4, IDs are allocated in pre-order source
 //! traversal starting at `n0`.
 
-use crate::ast::{ConstraintMarkerKind, ContextEntry, Decl, FlowStmt, Skill, SourceFile};
+use crate::ast::{BlockDecl, ConstraintMarkerKind, ContextEntry, Decl, FlowStmt, Skill, SourceFile};
 use crate::ir::{
     IrArena, IrConstraint, IrContext, IrInlineInstruction, IrNode, IrParam, IrSkill, NodeId,
     Polarity, Role, Strength,
@@ -16,6 +16,22 @@ pub enum LowerError {
     NoSkill,
     UndefinedConstraintRef(String),
     UndefinedContextRef(String),
+}
+
+/// Resolve a block's flow body into a single text string for Tier 1 inline expansion.
+/// Concatenates all inline instruction strings with spaces.
+fn resolve_block_body_text(
+    block: &BlockDecl,
+    _texts: &BTreeMap<String, String>,
+) -> Result<String, LowerError> {
+    let mut parts: Vec<String> = Vec::new();
+    for stmt in &block.flow {
+        match stmt {
+            FlowStmt::InlineString(s) => parts.push(s.clone()),
+            _ => {} // Other flow stmt types not handled for Tier 1 inline in this slice.
+        }
+    }
+    Ok(parts.join(" "))
 }
 
 fn resolve_context_entry(
@@ -37,6 +53,14 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
     for d in &file.decls {
         if let Decl::Text(t) = d {
             texts.insert(t.node.name.clone(), t.node.value.clone());
+        }
+    }
+
+    // Collect block declarations into a name → BlockDecl map.
+    let mut blocks: BTreeMap<String, &BlockDecl> = BTreeMap::new();
+    for d in &file.decls {
+        if let Decl::Block(b) = d {
+            blocks.insert(b.node.name.clone(), &b.node);
         }
     }
 
@@ -120,6 +144,20 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
                     text: resolved,
                 }));
                 flow_hoisted_context_ids.push(id);
+            }
+            FlowStmt::Call { target, .. } => {
+                // Tier 1 inline expansion: resolve callee body and inline as Step.
+                if let Some(block) = blocks.get(target.as_str()) {
+                    let body_text = resolve_block_body_text(block, &texts)?;
+                    let next = NodeId(arena.len() as u32);
+                    let id = arena.push(IrNode::InlineInstruction(IrInlineInstruction {
+                        node_id: next,
+                        text: body_text,
+                        role: Role::Step,
+                    }));
+                    step_ids.push(id);
+                }
+                // If block not found, Analyze already flagged it.
             }
             FlowStmt::BareName(_) => {
                 // BareName in flow is caught by Analyze before Lower runs.

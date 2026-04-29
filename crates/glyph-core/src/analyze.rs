@@ -52,14 +52,25 @@ pub fn analyze_with_diagnostics(
         })
         .collect();
 
+    // Collect block declaration names for call resolution.
+    let block_names: HashSet<&str> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Block(b) => Some(b.node.name.as_str()),
+            _ => None,
+        })
+        .collect();
+
     for decl in &file.decls {
         match decl {
             Decl::Skill(spanned) => {
-                analyze_skill(spanned, file_id, file_label, line_index, bag, &text_names)
+                analyze_skill(spanned, file_id, file_label, line_index, bag, &text_names, &block_names)
             }
             Decl::ExportBlock(spanned) => {
                 analyze_export_block(spanned, file_label, line_index, bag);
             }
+            Decl::Block(_) => {}
             Decl::Text(_) => {}
         }
     }
@@ -73,6 +84,7 @@ fn analyze_skill(
     line_index: &LineIndex,
     bag: &mut DiagBag,
     text_names: &HashSet<&str>,
+    block_names: &HashSet<&str>,
 ) {
     let skill = &spanned.node;
     let declared: HashSet<&str> = skill.params.iter().map(|p| p.name.as_str()).collect();
@@ -129,6 +141,28 @@ fn analyze_skill(
                     },
                     span,
                 );
+            }
+            FlowStmt::Call { target, .. } => {
+                // Check that the call target resolves to a declared block.
+                if !block_names.contains(target.as_str()) {
+                    let span = spanned.span;
+                    bag.push(
+                        crate::diagnostic::Diagnostic {
+                            id: "G::analyze::undefined-call".into(),
+                            classification: crate::diagnostic::Classification::Repairable,
+                            message: format!(
+                                "call to `{}()` but no `block {}` is declared in this file",
+                                target, target
+                            ),
+                            span: SourceSpan::from_byte_span(file_label, span, line_index),
+                            related: Vec::new(),
+                            hints: vec![
+                                format!("declare `block {}()` or check the name for typos", target),
+                            ],
+                        },
+                        span,
+                    );
+                }
             }
             FlowStmt::ConstraintMarker(marker) => {
                 // Check that the constraint name resolves to a text declaration.

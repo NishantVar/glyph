@@ -175,6 +175,126 @@ mod tests {
     }
 
     #[test]
+    fn block_with_description_parses() {
+        let src = "\
+block greet()
+    description: \"Say hello to the user.\"
+    flow:
+        \"Hello, world!\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        greet()
+";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        // Find the block declaration.
+        let block = file.decls.iter().find_map(|d| match d {
+            ast::Decl::Block(b) => Some(&b.node),
+            _ => None,
+        });
+        let block = block.expect("block should be present");
+        assert_eq!(block.name, "greet");
+        assert_eq!(
+            block.description.as_deref(),
+            Some("Say hello to the user.")
+        );
+        assert_eq!(block.flow.len(), 1);
+    }
+
+    #[test]
+    fn block_without_description_parses() {
+        let src = "\
+block greet()
+    flow:
+        \"Hello, world!\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        greet()
+";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let block = file.decls.iter().find_map(|d| match d {
+            ast::Decl::Block(b) => Some(&b.node),
+            _ => None,
+        });
+        let block = block.expect("block should be present");
+        assert_eq!(block.name, "greet");
+        assert!(block.description.is_none());
+    }
+
+    #[test]
+    fn block_single_string_shorthand_parses() {
+        let src = "\
+block greet()
+    \"Say hello to the user.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        greet()
+";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let block = file.decls.iter().find_map(|d| match d {
+            ast::Decl::Block(b) => Some(&b.node),
+            _ => None,
+        });
+        let block = block.expect("block should be present");
+        assert_eq!(block.flow.len(), 1);
+        match &block.flow[0] {
+            ast::FlowStmt::InlineString(s) => {
+                assert_eq!(s, "Say hello to the user.");
+            }
+            _ => panic!("expected InlineString"),
+        }
+    }
+
+    #[test]
+    fn call_to_same_file_block_expands_inline() {
+        let src = "\
+block greet()
+    \"Say hello to the user.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        greet()
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                assert!(
+                    markdown.contains("1. Say hello to the user."),
+                    "expected inlined block body in Steps:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn undefined_call_fires_diagnostic() {
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        unknown_block()
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::undefined-call"),
+            "expected undefined-call diagnostic, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
     fn check_source_flags_tab_indent_as_repairable() {
         // Tab-indented source surfaces a `repairable` diagnostic, not an error.
         let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";
