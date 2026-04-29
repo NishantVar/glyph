@@ -615,6 +615,50 @@ skill main()
     }
 
     #[test]
+    fn effects_none_assertion_with_inferred_effects_is_error() {
+        // Skill declares `effects: none` but calls a block with effects.
+        // This should be a contradiction — under-declared error.
+        let src = "\
+block writer()
+    effects: writes_files
+    \"Write some files.\"
+
+skill main()
+    description: \"Main skill.\"
+    effects: none
+    flow:
+        writer()
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::effects-under-declared"),
+            "expected effects-under-declared for none-vs-inferred, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 1);
+    }
+
+    #[test]
+    fn effects_none_alone_is_valid_when_no_effects_inferred() {
+        // Skill declares `effects: none` and calls no blocks with effects.
+        // This is valid — no error.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    effects: none
+    flow:
+        \"Do something.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        assert!(
+            !bag.has_error(),
+            "effects: none with empty inferred set should be valid, got: {:?}",
+            bag.iter().map(|d| &d.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn check_source_flags_tab_indent_as_repairable() {
         // Tab-indented source surfaces a `repairable` diagnostic, not an error.
         let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";

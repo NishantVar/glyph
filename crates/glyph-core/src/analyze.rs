@@ -279,7 +279,24 @@ fn analyze_skill(
     let has_effects_declaration = !skill.effects.is_empty();
     let declared_none = skill.effects.iter().any(|e| e == "none");
 
-    if has_effects_declaration && !declared_none {
+    if has_effects_declaration && declared_none {
+        // `effects: none` is an author assertion of zero effects.
+        // If the call graph infers any effects, that's under-declared.
+        if !inferred.is_empty() {
+            let span = spanned.span;
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::effects-under-declared",
+                    format!(
+                        "`effects: none` declared but call graph infers: {}",
+                        inferred.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                    ),
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+        }
+    } else if has_effects_declaration && !declared_none {
         // Check under-declared: inferred effects not in declared set.
         let missing: BTreeSet<&str> = inferred.iter().map(|s| s.as_str()).filter(|e| !declared_set.contains(e)).collect();
         if !missing.is_empty() {
