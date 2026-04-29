@@ -16,7 +16,7 @@
 
 use std::collections::HashSet;
 
-use crate::ast::{Decl, FlowStmt, SourceFile};
+use crate::ast::{ContextEntry, Decl, FlowStmt, SourceFile};
 use crate::diagnostic::{DiagBag, Diagnostic, SourceSpan};
 use crate::slot::scan_slots;
 use crate::span::{LineIndex, Span, Spanned};
@@ -130,9 +130,94 @@ fn analyze_skill(
                     span,
                 );
             }
-            FlowStmt::ConstraintMarker(_) | FlowStmt::ContextMarker(_) => {
-                // Valid flow statements — no diagnostic needed here.
+            FlowStmt::ConstraintMarker(marker) => {
+                // Check that the constraint name resolves to a text declaration.
+                if !text_names.contains(marker.name.as_str()) {
+                    let span = spanned.span;
+                    bag.push(
+                        Diagnostic::error(
+                            "G::analyze::undefined-name",
+                            format!(
+                                "`{}` is not a declared `text` in this file",
+                                marker.name
+                            ),
+                            SourceSpan::from_byte_span(file_label, span, line_index),
+                        ),
+                        span,
+                    );
+                }
             }
+            FlowStmt::ContextMarker(entry) => {
+                check_context_entry_name(entry, text_names, spanned.span, file_label, line_index, bag);
+            }
+        }
+    }
+
+    // Check body-level constraint name refs.
+    for marker in &skill.body_constraints {
+        if !text_names.contains(marker.name.as_str()) {
+            let span = spanned.span;
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::undefined-name",
+                    format!(
+                        "`{}` is not a declared `text` in this file",
+                        marker.name
+                    ),
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+        }
+    }
+
+    // Check body-level context name refs.
+    for entry in &skill.body_context {
+        check_context_entry_name(entry, text_names, spanned.span, file_label, line_index, bag);
+    }
+
+    // Check context: section name refs.
+    for entry in &skill.context_section {
+        check_context_entry_name(entry, text_names, spanned.span, file_label, line_index, bag);
+    }
+
+    // Check missing description — repairable (Phase 3 Repair generates one).
+    if skill.description.is_none() {
+        let span = spanned.span;
+        bag.push(
+            crate::diagnostic::Diagnostic {
+                id: "G::analyze::missing-description".into(),
+                classification: crate::diagnostic::Classification::Repairable,
+                message: format!("`skill {}` has no `description:` sub-section", skill.name),
+                span: SourceSpan::from_byte_span(file_label, span, line_index),
+                related: Vec::new(),
+                hints: vec![
+                    "add a `description:` sub-section, or let `glyph fmt` generate one".into(),
+                ],
+            },
+            span,
+        );
+    }
+}
+
+fn check_context_entry_name(
+    entry: &ContextEntry,
+    text_names: &HashSet<&str>,
+    span: crate::span::Span,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    if let ContextEntry::NameRef(name) = entry {
+        if !text_names.contains(name.as_str()) {
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::undefined-name",
+                    format!("`{}` is not a declared `text` in this file", name),
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
         }
     }
 }

@@ -297,3 +297,35 @@ fn bare_name_in_flow_fires_text_in_flow_diagnostic() {
     let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
     assert_has_diagnostic_id(&stdout, "G::analyze::text-in-flow");
 }
+
+// --- Acceptance criterion 10: all listed diagnostics fire on corpus triggers ---
+
+#[test]
+fn undefined_constraint_name_fires_undefined_name_diagnostic() {
+    let src = fixture("invalid", "undefined_constraint_name.glyph.md");
+    let result = run_compile(src, "json");
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "expected exit 1; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_has_diagnostic_id(&stdout, "G::analyze::undefined-name");
+}
+
+#[test]
+fn missing_description_fires_repairable_diagnostic() {
+    let src = fixture("repairable", "missing_description.glyph.md");
+    let result = run_check(src, "json");
+    assert_eq!(
+        result.status.code(),
+        Some(2),
+        "expected exit 2 (repairable); stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_has_diagnostic_id(&stdout, "G::analyze::missing-description");
+}
