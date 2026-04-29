@@ -91,6 +91,30 @@ pub fn compile_source(
     Ok(CompileOutcome::Compiled { markdown, diagnostics: bag })
 }
 
+/// Run only Phase 1 (Parse) and Phase 2 (Analyze) and return the populated
+/// `DiagBag`. No output files are produced; the pipeline never enters
+/// Lower/Validate/Expand/Emit.
+///
+/// This is the engine behind the `glyph check` subcommand (`design/cli.md`
+/// §`glyph check`). The returned bag may carry zero diagnostics (clean source),
+/// errors, repairables, warnings, or any combination. The caller maps the bag
+/// onto an exit code via `DiagBag::exit_code()` (1-wins-over-2 rule honoured).
+pub fn check_source(source: &str, file_id: u32, file_label: &str) -> DiagBag {
+    let mut bag = DiagBag::new();
+    let line_index = LineIndex::new(source);
+
+    let parsed = parse::parse_with_diagnostics(source, file_id, file_label, &line_index, &mut bag);
+
+    // Phase 2 (Analyze) is currently a structural pass-through (`analyze.rs`).
+    // We still call it on a successful parse so the surface matches the full
+    // pipeline; later slices add real Phase 2 diagnostics that surface here.
+    if let Some(file) = parsed {
+        let _ = analyze::analyze(file);
+    }
+
+    bag
+}
+
 /// End-to-end file-driven compile.
 ///
 /// Reads `<name>.glyph.md`, runs the pipeline, and (on the success path) writes
@@ -134,5 +158,26 @@ mod tests {
     fn output_path_strips_glyph_md() {
         let p = compiled_output_path(Path::new("tests/corpus/valid/update_docs.glyph.md"));
         assert_eq!(p, Path::new("tests/corpus/valid/update_docs.md"));
+    }
+
+    #[test]
+    fn check_source_returns_empty_bag_on_empty_file_repairs_skipped() {
+        // An empty file produces `G::parse::empty-file` (error). check_source
+        // surfaces it and exits without running later phases.
+        let bag = check_source("", 0, "empty.glyph.md");
+        assert!(!bag.is_empty());
+        assert_eq!(bag.exit_code(), 1);
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.contains(&"G::parse::empty-file"), "ids: {:?}", ids);
+    }
+
+    #[test]
+    fn check_source_flags_tab_indent_as_repairable() {
+        // Tab-indented source surfaces a `repairable` diagnostic, not an error.
+        let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";
+        let bag = check_source(src, 0, "tab.glyph.md");
+        assert_eq!(bag.exit_code(), 2, "expected exit 2 for tab indent");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.contains(&"G::parse::tab-indent"), "ids: {:?}", ids);
     }
 }

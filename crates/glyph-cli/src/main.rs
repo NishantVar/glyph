@@ -2,9 +2,10 @@
 //!
 //! Usage:
 //!   glyph compile <path-to.glyph.md> [--format pretty|json]
+//!   glyph check   <path-or-dir>      [--format pretty|json]
 //!
 //! Exit codes (per `design/build-foundation.md` §A6):
-//!   0 — success (Markdown emitted)
+//!   0 — success (Markdown emitted, or `check` clean)
 //!   1 — hard errors (compilation cannot proceed)
 //!   2 — repairable diagnostics only
 //!   3 — invocation error (bad flags, missing path, IO failure)
@@ -40,6 +41,20 @@ enum Command {
         #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
         format: OutputFormat,
     },
+    /// Run Phases 1 (Parse) and 2 (Analyze) only — fast lint mode.
+    ///
+    /// Reports all diagnostics (errors / repairable / warnings) without continuing
+    /// to Lower/Validate/Expand/Emit. **Writes no output files.** Accepts either a
+    /// single `.glyph.md` file or a directory (recursively walked for `*.glyph.md`).
+    /// See `design/cli.md` §`glyph check`.
+    Check {
+        /// Path to the source file or directory.
+        path: PathBuf,
+        /// Diagnostic output format. `pretty` (default) renders to stderr with
+        /// codespan-reporting; `json` emits one NDJSON diagnostic per line on stdout.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -52,7 +67,123 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Compile { path, format } => run_compile(path, format),
+        Command::Check { path, format } => run_check(path, format),
     }
+}
+
+/// Run `glyph check <path>` over `path`. If `path` is a directory, walks it
+/// recursively for `*.glyph.md` files (sorted by path for byte-stable output)
+/// and processes each one. The aggregate exit code follows the same
+/// `1`-wins-over-`2` rule as a single-file check (per `design/cli.md`
+/// §Multi-File Behavior).
+///
+/// Never writes output files, regardless of outcome. Diagnostics are rendered
+/// per the requested `--format`.
+fn run_check(path: PathBuf, format: OutputFormat) -> ExitCode {
+    let files = match collect_glyph_sources(&path) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+
+    if files.is_empty() {
+        // Directory with no `.glyph.md` files inside — nothing to check, exit
+        // cleanly. (A missing single file would have errored in
+        // `collect_glyph_sources`.)
+        return ExitCode::from(0);
+    }
+
+    // Aggregate exit code across files: 1 wins over 2 wins over 0.
+    let mut worst: u8 = 0;
+    for file in files {
+        let source = match std::fs::read_to_string(&file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("glyph: cannot read `{}`: {}", file.display(), e);
+                return ExitCode::from(3);
+            }
+        };
+        let label = file.display().to_string();
+        let bag = glyph_core::check_source(&source, 0, &label);
+        emit_diagnostics(&bag, &label, &source, format);
+        let code = bag.exit_code();
+        worst = combine_exit_codes(worst, code);
+    }
+
+    ExitCode::from(worst)
+}
+
+/// Combine two exit codes per the `1`-wins-over-`2` rule
+/// (`design/build-foundation.md` §A6).
+fn combine_exit_codes(a: u8, b: u8) -> u8 {
+    match (a, b) {
+        (1, _) | (_, 1) => 1,
+        (2, _) | (_, 2) => 2,
+        _ => 0,
+    }
+}
+
+/// Collect every `.glyph.md` source file under `path`.
+///
+/// - If `path` is a single file, returns `vec![path]` (regardless of extension —
+///   surfacing extension issues is the parser's job, not the CLI's).
+/// - If `path` is a directory, walks it recursively and returns every entry
+///   ending in `.glyph.md`, sorted by path for deterministic output.
+/// - Anything else (missing path, IO error) returns `Err(ExitCode 3)`.
+fn collect_glyph_sources(path: &std::path::Path) -> Result<Vec<PathBuf>, ExitCode> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("glyph: cannot stat `{}`: {}", path.display(), e);
+            return Err(ExitCode::from(3));
+        }
+    };
+
+    if metadata.is_file() {
+        return Ok(vec![path.to_path_buf()]);
+    }
+
+    if metadata.is_dir() {
+        let mut out: Vec<PathBuf> = Vec::new();
+        let mut stack: Vec<PathBuf> = vec![path.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("glyph: cannot read directory `{}`: {}", dir.display(), e);
+                    return Err(ExitCode::from(3));
+                }
+            };
+            for entry in entries {
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(e) => {
+                        eprintln!("glyph: cannot read directory entry under `{}`: {}", dir.display(), e);
+                        return Err(ExitCode::from(3));
+                    }
+                };
+                let p = entry.path();
+                let ft = match entry.file_type() {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("glyph: cannot stat `{}`: {}", p.display(), e);
+                        return Err(ExitCode::from(3));
+                    }
+                };
+                if ft.is_dir() {
+                    stack.push(p);
+                } else if ft.is_file() {
+                    if p.to_string_lossy().ends_with(".glyph.md") {
+                        out.push(p);
+                    }
+                }
+            }
+        }
+        out.sort();
+        return Ok(out);
+    }
+
+    eprintln!("glyph: `{}` is neither a regular file nor a directory", path.display());
+    Err(ExitCode::from(3))
 }
 
 fn run_compile(path: PathBuf, format: OutputFormat) -> ExitCode {

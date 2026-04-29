@@ -6,7 +6,7 @@
 use crate::ast::{
     ConstraintMarker, ConstraintMarkerKind, Decl, FlowStmt, Skill, SourceFile, TextDecl,
 };
-use crate::diagnostic::{DiagBag, Diagnostic, SourceSpan};
+use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::span::{LineIndex, Span, Spanned};
 use crate::tokenize::{tokenize, Token, TokenKind, TokenizeError};
 
@@ -50,15 +50,50 @@ pub fn parse_with_diagnostics(
     line_index: &LineIndex,
     bag: &mut DiagBag,
 ) -> Option<SourceFile> {
-    // Tokenize. Tokenize errors are not yet wired to structured diagnostics in
-    // this slice; they fall through and the caller treats the parse as failed.
+    // Tokenize. Indent-shape failures (`TabIndent`, `MixedIndent`) are wired to
+    // **repairable** structured diagnostics here per `pipeline.md` Phase 1
+    // ("Flags tabs and mixed indentation as repairable diagnostics") so that
+    // `glyph check`/`glyph compile` can surface an actionable, repair-eligible
+    // diagnostic instead of an opaque tokenize error. Other tokenize errors
+    // (`BadIndent`, `UnterminatedString`, `UnexpectedChar`) will pick up
+    // structured IDs in later slices; for now they bubble through as `None`.
     let tokens = match tokenize(source, file_id) {
         Ok((toks, _)) => toks,
+        Err(TokenizeError::TabIndent { byte_offset }) => {
+            let span = Span::new(file_id, byte_offset, byte_offset + 1);
+            bag.push(
+                Diagnostic {
+                    id: "G::parse::tab-indent".into(),
+                    classification: Classification::Repairable,
+                    message: "tab character used for indentation; Glyph requires 4-space indents".into(),
+                    span: SourceSpan::from_byte_span(file_label, span, line_index),
+                    related: Vec::new(),
+                    hints: vec![
+                        "`glyph fmt` (Phase 3a) converts tabs to 4-space indentation".into(),
+                    ],
+                },
+                span,
+            );
+            return None;
+        }
+        Err(TokenizeError::MixedIndent { byte_offset }) => {
+            let span = Span::new(file_id, byte_offset, byte_offset + 1);
+            bag.push(
+                Diagnostic {
+                    id: "G::parse::mixed-indent".into(),
+                    classification: Classification::Repairable,
+                    message: "mixed space-then-tab indentation; Glyph requires consistent 4-space indents".into(),
+                    span: SourceSpan::from_byte_span(file_label, span, line_index),
+                    related: Vec::new(),
+                    hints: vec![
+                        "`glyph fmt` (Phase 3a) normalises mixed indentation to 4-space".into(),
+                    ],
+                },
+                span,
+            );
+            return None;
+        }
         Err(_) => {
-            // Future slices will map each TokenizeError to a structured
-            // diagnostic ID (G::parse::tab-indent, ...). For now, we leave
-            // tokenize errors unconverted; the caller can fall back to
-            // `parse(...)` semantics if it wants the legacy behavior.
             return None;
         }
     };
