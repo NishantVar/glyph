@@ -336,6 +336,36 @@ skill main()
     }
 
     #[test]
+    fn block_multi_step_inlines_concatenated() {
+        let src = "\
+block setup()
+    flow:
+        \"Check the environment.\"
+        \"Install dependencies.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        setup()
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                // Multi-step block body should be concatenated with spaces for Tier 1.
+                assert!(
+                    markdown.contains("Check the environment. Install dependencies."),
+                    "expected concatenated body in Steps:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
     fn undefined_call_fires_diagnostic() {
         let src = "\
 skill main()
@@ -349,6 +379,13 @@ skill main()
             ids.contains(&"G::analyze::undefined-call"),
             "expected undefined-call diagnostic, got: {:?}",
             ids
+        );
+        // undefined-call is repairable (Phase 3 Repair generates a block).
+        let diag = bag.iter().find(|d| d.id == "G::analyze::undefined-call").unwrap();
+        assert_eq!(
+            diag.classification,
+            diagnostic::Classification::Repairable,
+            "undefined-call should be repairable"
         );
     }
 
