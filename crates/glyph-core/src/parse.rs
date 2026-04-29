@@ -1167,14 +1167,62 @@ impl<'a> Parser<'a> {
 
     /// Parse a branch condition: consume all tokens until the next LineStart or Eof.
     /// Returns the condition as a reconstructed string.
+    /// Validates applies() syntax: no-parens and with-args diagnostics.
     fn parse_branch_condition(&mut self) -> Result<String, ParseError> {
         let mut parts: Vec<String> = Vec::new();
         loop {
             match &self.peek().kind {
                 TokenKind::LineStart { .. } | TokenKind::Eof => break,
                 TokenKind::Ident(s) => {
-                    parts.push(s.clone());
+                    let ident = s.clone();
+                    let ident_span = self.peek().span;
                     self.pos += 1;
+
+                    // Check for `.applies` pattern.
+                    if ident == "applies" && !parts.is_empty() && parts.last() == Some(&".".to_string()) {
+                        // Check if followed by `(` — if not, it's applies-no-parens.
+                        if !matches!(self.peek().kind, TokenKind::Lparen) {
+                            let span = ident_span;
+                            self.bag.push(
+                                Diagnostic::error(
+                                    "G::parse::applies-no-parens",
+                                    "`.applies` must be followed by `()` — write `.applies()`",
+                                    SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                ),
+                                span,
+                            );
+                        } else {
+                            // Consume `(`
+                            self.pos += 1;
+                            // Check for args — if next is not `)`, it's applies-with-args.
+                            if !matches!(self.peek().kind, TokenKind::Rparen) {
+                                let span = ident_span;
+                                self.bag.push(
+                                    Diagnostic::error(
+                                        "G::parse::applies-with-args",
+                                        "`.applies()` must not be called with arguments",
+                                        SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                    ),
+                                    span,
+                                );
+                                // Skip args until `)`.
+                                while !self.at_eof()
+                                    && !matches!(self.peek().kind, TokenKind::Rparen | TokenKind::LineStart { .. })
+                                {
+                                    self.pos += 1;
+                                }
+                            }
+                            if matches!(self.peek().kind, TokenKind::Rparen) {
+                                self.pos += 1;
+                            }
+                            parts.push(ident);
+                            parts.push("(".into());
+                            parts.push(")".into());
+                            continue;
+                        }
+                    }
+
+                    parts.push(ident);
                 }
                 TokenKind::StringLit(s) => {
                     parts.push(format!("\"{}\"", s));

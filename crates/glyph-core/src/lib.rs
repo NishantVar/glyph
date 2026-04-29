@@ -1032,6 +1032,145 @@ skill main()
     }
 
     #[test]
+    fn applies_parses_in_branch_condition() {
+        // AC5: BLOCKNAME.applies() parses inside if/elif.
+        let src = "\
+block fast_mode()
+    description: \"When the user wants fast processing.\"
+    flow:
+        \"Do fast processing.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if fast_mode.applies()
+            fast_mode()
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        // Should NOT have errors — applies() is valid in branch condition.
+        assert!(
+            !bag.has_error(),
+            "applies() in branch condition should be valid, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn applies_on_non_block_fires_error() {
+        // AC7: applies-on-non-block fires when receiver is a text declaration.
+        let src = "\
+text my_text = \"Some text.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if my_text.applies()
+            \"Do something.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::applies-on-non-block"),
+            "expected applies-on-non-block, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn applies_on_undescribed_block_fires_repairable() {
+        // AC6/AC7: applies-on-undescribed-block fires for same-file block without description.
+        let src = "\
+block my_block()
+    flow:
+        \"Do something.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if my_block.applies()
+            my_block()
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::applies-on-undescribed-block"),
+            "expected applies-on-undescribed-block, got: {:?}",
+            ids
+        );
+        // Should be repairable for same-file blocks.
+        let diag = bag.iter().find(|d| d.id == "G::analyze::applies-on-undescribed-block").unwrap();
+        assert_eq!(diag.classification, diagnostic::Classification::Repairable);
+    }
+
+    #[test]
+    fn applies_on_unknown_name_fires_non_block_error() {
+        // AC7: applies on unknown name.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if unknown_thing.applies()
+            \"Do something.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::applies-on-non-block"),
+            "expected applies-on-non-block for unknown receiver, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn applies_no_parens_fires_diagnostic() {
+        // AC7: applies-no-parens — .applies without ().
+        let src = "\
+block my_block()
+    description: \"Test.\"
+    flow:
+        \"Do something.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if my_block.applies
+            \"Do something.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::applies-no-parens"),
+            "expected G::parse::applies-no-parens, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn applies_with_args_fires_diagnostic() {
+        // AC7: applies-with-args — .applies(arg) with arguments.
+        let src = "\
+block my_block()
+    description: \"Test.\"
+    flow:
+        \"Do something.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if my_block.applies(x)
+            \"Do something.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::applies-with-args"),
+            "expected G::parse::applies-with-args, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
     fn branch_condition_equals_does_not_trigger_operator_in_expression() {
         // AC2: `==` in `if` condition does NOT trigger `operator-in-expression`.
         let src = "\
