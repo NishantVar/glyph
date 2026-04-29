@@ -24,7 +24,7 @@ Step 2 must not:
 - introduce new IR nodes, new calls, new constraints, or new steps;
 - reinterpret or reorder the skill's workflow;
 - invent sections beyond `## Instructions` with its `### Steps` and `### Constraints` sub-sections (see `compiled-output.md`);
-- invent new `{param}` references that do not correspond to declared parameters (declared parameter references must be preserved);
+- invent new `{param}` references that do not correspond to declared parameters (declared parameter references must be preserved), or fail to resolve `local_ref` slots into natural-language prose;
 - change effects, types, or the call graph;
 - re-materialize content that was already prose after Step 1 (inline strings and resolved `text` references pass through untouched);
 - serve as a second repair loop; it has no access to diagnostics and no ability to rewrite source.
@@ -40,12 +40,12 @@ Step 2 receives a **resolved IR** — the same IR shape produced by Phase 4 (Low
 Specifically, Step 2 receives:
 
 - the full validated IR of the skill (all nodes, not one node at a time) in a serialized form — JSON or an equivalent structured encoding;
-- for every `Call` node: `{ target_name, resolved_body_text, site_modifier?, role, effects, scoped_constraints, position }`, where `resolved_body_text` is the post-Step-1 body with `{param}` references preserved as named slots, and `scoped_constraints` is the list of constraints declared on the called block (see §3.2 Scoped Constraint Inlining);
+- for every `Call` node: `{ target_name, resolved_body_text, local_refs, site_modifier?, role, effects, scoped_constraints, position }`, where `resolved_body_text` is the post-Step-1 body with `{param}` references preserved as named slots and `{local}` references preserved as literal `{name}` tokens. The `local_refs` array (see `ir-schema.md` §Resolved IR) lists each local-binding slot by name and producing node ID; Step 2 cross-references this array to identify which `{name}` tokens are local bindings that must be resolved into natural-language prose. `scoped_constraints` is the list of constraints declared on the called block (see §3.2 Scoped Constraint Inlining);
 - for every top-level `Constraint` node: `{ resolved_text, strength, polarity }` (text may contain `{param}` references);
 - for every `InlineInstruction` node: `{ text, role }` (typically passes through);
 - for every `Branch` node: `{ condition_text, then_body, elif_branches, else_body, applies_descriptions? }` with every sub-body already resolved. The optional `applies_descriptions: {block_name → resolved_description}` side-map is populated by Step 1 whenever the Branch's own `condition_text` or any `elif_branches[*].condition_text` invokes the block trigger predicate `BLOCKNAME.applies()` (see `ir-and-semantics.md` §Block Trigger Predicate). Step 2 uses the side-map to choose the projection form: when every arm's condition is *purely* one or more `applies()` calls combined by `or` (or each `if`/`elif` arm is guarded by a single `applies()` call), Step 2 emits a "decide which applies" prose frame keyed by the resolved descriptions; for mixed conditions (e.g., `block_x.applies() and not is_dry_run`), Step 2 inlines the resolved description into the larger condition prose (e.g., "If the user wants a structured plan and this is not a dry run, ...");
 - for the `Return` expression: its resolved text plus a flag indicating it must fold into the final Step;
-- skill-level metadata: `name`, `description` (if present), `effects` (as a list), the ordered position of each node in `flow:`, and the parameter list (names, types, and defaults — used for generating the `## Parameters` section).
+- skill-level metadata: `name`, `description` (if present), `effects` (as a list), the ordered position of each node in `flow:`, and the parameter list (names, types, and defaults if declared — used for generating the `## Parameters` section, where parameters without defaults render with a `(required)` marker per `compiled-output.md`).
 - a **stable, file-local IR node ID** (e.g., `n0`, `n1`, …) on every node, assigned by Lower (`pipeline.md` Phase 4). The IDs are opaque, never appear in compiled output, and are not echoed back by Step 2 (the output contract in §3.3 is Markdown only). They exist so that Phase 6b's count + ordering checks (§4.1) and any internal diagnostic referring to "the IR node Step 2 failed to project" can name a specific node unambiguously across runs and across the parse-then-re-parse boundary inside Repair.
 
 **Whole-skill prompting, not per-node.** Step 2 is invoked **once per skill compilation**, with the full resolved IR visible in a single prompt. This is deliberate:
@@ -111,7 +111,8 @@ The output must preserve the following structural invariants:
 4. **No invented content.** Step 2 may reshape wording but must not add new steps, new sub-steps, new constraints, new sections, or commentary.
 5. **Bounded length.** For non-conditional Steps, each step is **one instruction-sized paragraph** — at most three sentences, typically one or two. For conditional Steps (Branch projections), each **sub-step** is at most three sentences. Each constraint is **one sentence**. This is the floor and ceiling; longer items indicate Step 2 is inventing content, shorter items indicate Step 2 is stripping content.
 6. **Parameter references preserved.** `{param}` references from the resolved IR must survive into the output unchanged. Step 2 must not substitute, remove, or rename them. Step 2 must not invent new `{param}` references for names not in the skill's parameter list.
-7. **No authoring artifacts.** No `generated` markers, no `with` modifier text, no import paths, no IR field names. `{param}` references for declared parameters are the only authoring-adjacent syntax that survives.
+6b. **Local binding references resolved.** `local_ref` slots (e.g., `{diagnosis}` where `diagnosis` is a local binding, not a declared parameter) must be resolved by Step 2 into natural-language cross-references in the prose. They must **not** survive as literal `{name}` tokens in the output — the consuming LLM already produced the referenced value in a prior step. For example, `{diagnosis}` might become "the diagnosis from your earlier analysis" or "the diagnosis identified in step 1." Step 2 uses the local's name and the producing step's position/content to generate a clear cross-reference.
+7. **No authoring artifacts.** No `generated` markers, no `with` modifier text, no import paths, no IR field names. `{param}` references for declared parameters are the only authoring-adjacent syntax that survives. Local binding references are fully resolved into prose.
 8. **Standard Markdown only.** Headings, numbered lists, bulleted lists, inline emphasis. No HTML, no tables, no code blocks inside steps.
 
 The frontmatter (`name`, `description`, `effects`) is **not** produced by Step 2. It is assembled deterministically by Phase 7 (Emit) from skill-level IR metadata. The `## Parameters` section is assembled by Step 2: it generates a brief description for each parameter from the parameter's name, type, usage context, and default value. Step 2 also produces the `## Instructions` section body.
@@ -161,11 +162,12 @@ For the Markdown returned by Step 2:
 - **Parameter reference validity.**
   - Every `{...}` reference in any list item must correspond to a declared parameter in the skill's `InputContract`. Invented parameter references are rejected.
   - Every parameter from the `InputContract` that appears in the Step 1 resolved IR must still appear as a `{param}` reference in the output (Step 2 must not silently drop them).
+  - No `local_ref` slots survive as literal `{name}` tokens in the output. Phase 6b iterates each Call's `local_refs` array (`ir-schema.md` §Resolved IR) and checks that the corresponding `{name}` token no longer appears literally in the compiled Markdown. A surviving local-ref is `G::expand::unresolved-local-ref` (error).
   - No `with` modifier string from any `Call` node appears verbatim in the output (it should have been consumed, not quoted).
 
 - **Parameters section shape.**
   - If the skill has parameters, `## Parameters` must be present and contain exactly one bulleted item per `InputContract` parameter.
-  - Each item must include the parameter name in bold and a brief description. Default values, if declared, must be listed.
+  - Each item must include the parameter name in bold and a brief description. Each item must end with either a `(default: <value>)` trailer (when the parameter has a default) or a `(required)` trailer (when it does not). Skill parameters use both forms; export-block parameters always carry a default per `language-surface.md` §3.10.
   - If the skill has no parameters, `## Parameters` must not be present.
 
 - **Content shape.**
@@ -198,6 +200,7 @@ For the Markdown returned by Step 2:
 | `G::expand::step-order-mismatch` | error | Step order diverges from `flow:` order |
 | `G::expand::invented-param-ref` | error | `{...}` reference does not match any declared parameter |
 | `G::expand::dropped-param-ref` | error | A parameter reference from Step 1 output was silently removed by Step 2 |
+| `G::expand::unresolved-local-ref` | error | A `local_ref` slot survived as a literal `{name}` token — Step 2 failed to resolve it into prose |
 | `G::expand::modifier-leaked` | error | `with` modifier string appears verbatim in output |
 | `G::expand::params-section-mismatch` | error | `## Parameters` item count does not match `InputContract` parameter count |
 | `G::expand::params-section-missing` | error | Skill has parameters but `## Parameters` section is absent |
@@ -218,7 +221,7 @@ All 6b diagnostics are classified `error`, not `repairable`. Phase 3 Repair oper
 
 ### 4.3 What 6b Does Not Check
 
-- **Semantic faithfulness of wording.** 6b does not verify that the prose the LLM produced for a step actually reflects the IR node's meaning. That is out of scope for a deterministic gate. The Safety Sandwich bounds the LLM structurally, not semantically; semantic drift is mitigated by the one-sentence rule for generated bodies (`repair.md` §5) and by the resolved-body text flowing in as Step 2's primary input.
+- **Semantic faithfulness of wording.** 6b does not verify that the prose the LLM produced for a step actually reflects the IR node's meaning. That is out of scope for a deterministic gate. The Safety Sandwich bounds the LLM structurally, not semantically; semantic drift is mitigated by the single-string rule for generated bodies (`repair.md` §5) and by the resolved-body text flowing in as Step 2's primary input.
 - **Effect correctness.** Effects are fixed in Phase 4 and validated in Phase 5. Step 2 cannot touch them.
 - **Style.** Tone, formality, and clarity are not checked. Only the structural contract is enforced.
 - **Markdown well-formedness via a real Markdown parser.** 6b's lightweight structural checks (§4.1) plus `G::expand::malformed-markdown` are sufficient for MVP. A full parser-based well-formedness pass beyond these checks is **deferred** — see `todo.md` §Phase 6b Validation.
@@ -264,7 +267,7 @@ If both retries also fail 6b, emit the specific 6b diagnostic that fired (the ca
 
 ### 5.4 Quality
 
-Semantic wrongness — output that passes 6b but reshapes prose in a way the author would object to — is not detected by the compiler. The Safety Sandwich bounds the LLM structurally, not semantically (`foundations.md` #18). The mitigations are the one-sentence rule for generated bodies (`repair.md` §5), the resolved-body text flowing into Step 2 unchanged, and the Phase 6b slot/role/count enforcement.
+Semantic wrongness — output that passes 6b but reshapes prose in a way the author would object to — is not detected by the compiler. The Safety Sandwich bounds the LLM structurally, not semantically (`foundations.md` #18). The mitigations are the single-string rule for generated bodies (`repair.md` §5), the resolved-body text flowing into Step 2 unchanged, and the Phase 6b slot/role/count enforcement.
 
 ### 5.5 Retry Budget Constants
 
@@ -394,7 +397,7 @@ Constraints (unordered):
   - strength=soft, polarity=require, text="Follow the repository's existing patterns before introducing new abstractions."
 
 Rules:
-  - Emit `## Parameters` with one bulleted item per parameter (name, description, default).
+  - Emit `## Parameters` with one bulleted item per parameter (name, description, and either `(default: <value>)` or `(required)` per `compiled-output.md` §`## Parameters`).
   - Emit `## Instructions` with `### Steps` and `### Constraints`.
   - Every flow item -> exactly one numbered Step, in order.
   - Every constraint -> exactly one bulleted Constraint.

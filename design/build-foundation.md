@@ -46,7 +46,7 @@ Two-phase approach:
 - Identifiers: `[a-zA-Z_][a-zA-Z0-9_]*`.
 - Literals: quoted strings (`"..."`, `"""..."""`), integers, floats, booleans.
 - Punctuation: `(`, `)`, `,`, `:`, `=`, `.`.
-- Parameter slots: `{name}` inside instruction-bearing strings. Curly braces (`{`, `}`) are not standalone punctuation in MVP — they appear only as parameter slot delimiters inside strings. The tokenizer recognizes `{name}` as a single `ParamSlot` token when scanning string content.
+- Name slots: `{name}` inside instruction-bearing strings. These resolve to declared parameters (preserved as runtime slots in compiled output) or local bindings (resolved into prose by Expand Step 2). Curly braces (`{`, `}`) are not standalone punctuation in MVP — they appear only as name slot delimiters inside strings. The tokenizer recognizes `{name}` as a single `NameSlot` token when scanning string content; the distinction between parameter refs and local refs is resolved later in Analyze.
 
 Tokens carry byte-offset spans. Line/col is derived on demand from the line-offset table.
 
@@ -201,7 +201,7 @@ Hand-rolled `Display` impl (~15 lines). These mean the compiler itself is broken
 
 | Channel | Content | Format |
 |---|---|---|
-| **stdout** (`--format json`) | `error` + `repairable` diagnostics | JSON array of `Diagnostic` |
+| **stdout** (`--format json`) | Per-file diagnostic + emission records | NDJSON (one JSON object per line; see `cli.md` §JSON format shape) |
 | **stderr** (always) | `warning` diagnostics + fatal compiler errors | Pretty-printed via `codespan-reporting` |
 | **disk** | `foo.md` (compiled output) + `foo.ir.json` (validated IR, if `--emit-ir`) | Markdown + JSON |
 

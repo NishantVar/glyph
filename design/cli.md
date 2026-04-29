@@ -87,6 +87,7 @@ Logging uses verbosity-gated `eprintln!` to stderr. Default level is warn (error
 | `--out-dir <path>` | `-o` | Override output directory. Default: compiled `.md` lands next to its `.glyph.md` source. Procedure subdirectories are created relative to this location. |
 | `--emit-ir` | | Emit the post-Step-1 resolved IR as a sidecar JSON file next to the compiled `.md` (e.g., `fix_bug.ir.json`). See §IR JSON Output. |
 | `--format <fmt>` | `-f` | Diagnostic output format: `pretty` (default, uses `codespan-reporting`) or `json` (structured, for agent consumption). See §Diagnostic Output. |
+| `--strict` | | Treat `repairable` diagnostics as hard errors: exit code 1 instead of 2. No `.md` output is written. Useful for CI gates and lint-clean enforcement. |
 
 ### `check` flags
 

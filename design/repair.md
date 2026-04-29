@@ -198,13 +198,18 @@ generated block handle_test_availability(ctx)
     "If tests are available for the inspected context, run the test suite. Otherwise, flag for manual review."
 ```
 
-The extracted block follows the same rules as all generated blocks: one-sentence body (§5.1), appended after all non-generated declarations (§5.3), stable once created (§5.4), promotable to a hand-written `block` (§5.6).
+The extracted block follows the same rules as all generated blocks: single-string body (§5.1), appended after all non-generated declarations (§5.3), stable once created (§5.4), promotable to a hand-written `block` (§5.6).
 
 **Idempotence.** After extraction, the inner `Branch` no longer exists — it has been replaced by a call. Re-running Analyze finds no nested branch, so no further extraction occurs.
 
 ### 4.9.1 No Overwrite of Existing Declarations
 
-Repair never silently overwrites, deletes, or renames an existing declaration — `generated text`, `generated block`, hand-written `text`, hand-written `block`, or any other form — to make room for a newly-generated one. If a name collision would arise (the author wrote a declaration whose name matches a stale `generated` declaration, or two different unresolved use sites would generate the same name), the compiler hard-fails with `G::analyze::name-collision` (`diagnostics.md`). The author resolves manually: rename one of the conflicting declarations, or explicitly delete the stale `generated` declaration themselves. This is the only safe rule given that the LLM cannot infer with certainty that a stale `generated` definition is no longer needed.
+Repair never silently overwrites, deletes, or renames an existing declaration to make room for a newly-generated one, **except** when an author-written declaration supersedes a `generated` one (handled by the No-Shadowing Rule, §5.5). The remaining collision cases hard-fail with `G::analyze::name-collision` (`diagnostics.md`):
+
+- **Author-written vs. author-written.** Two hand-written declarations share a name. Always a hard error.
+- **Generated vs. generated.** Two different unresolved use sites would produce the same generated name. Always a hard error.
+
+The author resolves manually: rename one of the conflicting declarations, or explicitly delete the stale declaration. For these non-supersession cases the LLM cannot infer which definition the author intended, so a hard-fail is the only safe rule.
 
 ### 4.10 Constraint Conflict Scan (Phase 3c)
 
@@ -247,7 +252,7 @@ It does **not** scan across scopes — a callee's scoped constraints (carried as
 **Retry policy.** Same info-rich pattern as Expand Step 2 (`expand.md` §5):
 
 - Up to **2 retries** if the LLM output is malformed (not valid JSON, doesn't address every pair, references ID not in the input set, returns a `type` outside the three-value enum). Each retry includes the original prompt, the previous failed output, a structured violation report, and an edit directive.
-- After two failed retries, emit `G::repair::constraint-scan-malformed` (error) and abort. No compiled output is written.
+- After two failed retries, emit `G::repair::constraint-scan-malformed` (error) and abort. The compiled output may already be on disk (Phase 3c runs post-compile in the agent loop); the error diagnostic tells the author to fix the source and recompile.
 
 **Idempotence.** Phase 3c does not modify source — it only emits diagnostics. So re-running Repair on the same source produces the same constraint set, the same prompt, and (modulo model non-determinism, the same caveat as 3b) the same verdict. The overall Repair idempotence claim from §4.5 is preserved.
 
@@ -279,7 +284,7 @@ generated text validate_before_success = "Run the full validation suite and conf
 
 ```
 generated block <name>(<params>)
-    <one-sentence-body>
+    <single-string-body>
 ```
 
 Examples:
@@ -306,7 +311,7 @@ Rules specific to `generated text`:
 Rules specific to `generated block`:
 
 - Minimal `block` shape with a `generated` prefix. Parameters are allowed (inferred from the use site); the generated form has no explicit return type annotation.
-- The body is exactly one inline or block string — a single sentence. This is the **one-sentence rule**: generated bodies stay close to the name's meaning and leave room for the `with` modifier and downstream passes to shape the final instruction. If the name implies a multi-step workflow, repair emits one summarizing sentence and optionally leaves a diagnostic suggesting the author promote it to a hand-written `block` with a `flow:`.
+- The body is exactly one inline or block string — a single instruction string. This is the **single-string rule**: generated bodies stay close to the name's meaning and leave room for the `with` modifier and downstream passes to shape the final instruction. The string may contain compound sentences (e.g. describing both branches of an extracted conditional), but the body is always one string literal, never a `flow:` with multiple statements. If the name implies a multi-step workflow, repair emits one summarizing instruction string and optionally leaves a diagnostic suggesting the author promote it to a hand-written `block` with a `flow:`.
 - The body may reference parameters by name (e.g. `"{area}"`); the expand pass substitutes them with concrete values. No other interpolation semantics in MVP.
 
 ### 5.2 Repair-Only Authorship
@@ -367,7 +372,7 @@ This is the only case where the compiler auto-deletes a declaration. The author'
 
 Authors may interact with generated declarations in three ways. All work through existing name resolution and the idempotence rule; no special compiler behavior is needed.
 
-- **Edit the body.** The declaration stays `generated text` / `generated block`. Repair sees the name is defined and skips it. For `generated block`, edits are still constrained to the one-sentence body until promoted.
+- **Edit the body.** The declaration stays `generated text` / `generated block`. Repair sees the name is defined and skips it. For `generated block`, edits are still constrained to the single-string body until promoted.
 - **Promote to `text` or `block`.** Delete the word `generated`. For a promoted `block`, the author may then add `flow:`, `effects:`, `constraints:`, and a proper body with multiple steps. The declaration may also be moved anywhere in the file.
 - **Promote to imported library.** Move the content into another `.glyph.md` file as `export text` or `export block`, import it back, and delete the local `generated` declaration.
 
@@ -380,7 +385,7 @@ Neither `export generated text` nor `export generated block` is a valid declarat
 Generated declarations compile identically to their hand-written counterparts:
 
 - `generated text`: at the usage site, the bare name is replaced by the string content.
-- `generated block`: at the usage site, the call expands to the one-sentence body, with `{param}` references preserved as named slots and the optional `with` modifier applied by the expand pass.
+- `generated block`: at the usage site, the call expands to the single-string body, with `{param}` references preserved as named slots and the optional `with` modifier applied by the expand pass.
 - The declaration itself produces nothing in compiled output. The `generated` marker is erased. No provenance marker appears in the compiled `.md` file.
 
 ## 6. Comment Syntax
@@ -403,9 +408,9 @@ The repair pass may add:
 - missing type annotations;
 - local declarations for author-defined shorthand;
 - stable `generated text` definitions for undefined bare names;
-- stable `generated block` definitions for undefined parens-calls (one-sentence bodies);
+- stable `generated block` definitions for undefined parens-calls (single-string bodies);
 - missing imports when the referenced library is obvious from available context (deferred from MVP — see `todo.md`);
-- missing `effects:` on an `export block` whose inferred set is non-empty — Phase 3b inserts an `effects:` sub-section with the inferred set into the source, triggered by `G::analyze::missing-export-effects` (see `ir-and-semantics.md` §3 and `diagnostics.md`);
+- missing `effects:` on any declaration (skill, block, or export block) whose inferred set is non-empty — Phase 3a deterministically inserts an `effects:` sub-section with the inferred set into the source, triggered by `G::analyze::missing-effects`, and emits `G::repair::inferred-effects` (warning, informational) so the author knows what was added (see `ir-and-semantics.md` §3 and `diagnostics.md`);
 - missing `description:` on a `skill` — Phase 3b generates a one-sentence description from the skill name, parameters, and body, and adds it as a `description:` sub-section, triggered by `G::analyze::missing-description` (see `ir-and-semantics.md` §4 and `diagnostics.md`);
 - `export` on a block only when an importability diagnostic makes the author's intent clear;
 - missing block delimiters or indentation fixes;
@@ -466,7 +471,7 @@ This restriction eliminates cross-file trigger propagation: one file's repair ca
 
 **Imports as resolution targets, not as repair targets.** Repair is allowed to *resolve* against existing imports — if an unresolved bare name happens to match an already-imported declaration (selectively imported name, qualified-call alias, or stdlib entry the author already imported), repair prefers that resolution over materializing a `generated text` / `generated block` (per §4.5 idempotence detection: "does this name resolve to something? If yes, do not regenerate"). Repair may also add markers (`avoid`, `require`, `must`) in front of imported names when the diagnostic chain calls for it. What repair never does is *modify the import set itself*: it cannot add a new `import` statement, change an import's `as` alias, switch between selective and whole-module form, or rewrite an imported file's declarations. The post-repair source's import block is byte-identical to the pre-repair version unless §4.4 (intent potency) or a deterministic 3a rewrite (duplicate-import merging, unused-import removal) explicitly triggered.
 
-**Generated bodies do not introduce cross-file dependencies.** A `generated block` body is a single instruction string with `{param}` slots (§5.1, one-sentence rule). It is not a `flow:` block and cannot contain calls into other declarations — neither same-file nor imported. This sidesteps the question of whether a repair-generated body could legitimately reference an imported callee: by construction, it never does. If the author's intent requires composing imported callees, the right surface is a hand-written `block` or `export block`, not a generated definition.
+**Generated bodies do not introduce cross-file dependencies.** A `generated block` body is a single instruction string with `{param}` slots (§5.1, single-string rule). It is not a `flow:` block and cannot contain calls into other declarations — neither same-file nor imported. This sidesteps the question of whether a repair-generated body could legitimately reference an imported callee: by construction, it never does. If the author's intent requires composing imported callees, the right surface is a hand-written `block` or `export block`, not a generated definition.
 
 **Post-MVP:** cross-file repair (editing other `.glyph.md` files when diagnostics require it) and auto-import discovery (adding imports to files the author did not reference) are deferred. See `todo.md`.
 

@@ -363,6 +363,8 @@ Blank lines inside `if`/`elif`/`else` bodies are visual separators and do not cl
 
 The `Branch` IR node is a container. Its children carry their own roles. The branch itself does not have an instruction role -- it structures the execution path.
 
+> **Compiled-output note:** The `OutputContract` role is an IR-level concept used for type-checking, importer validation, and visualization. In compiled Markdown, the `Return` node **folds into the closing sentence of the final `### Steps` item** — there is no dedicated `### Returns` or `### Output` section in MVP. See `compiled-output.md` §Return Folding and `ir-and-semantics.md` §Roles for details.
+
 ### Compiled-Output Projection
 
 Conditional logic in `flow:` projects to a **single numbered Step** with **lettered sub-steps per arm** under `### Steps` in `## Instructions` (`compiled-output.md`). Each arm is introduced by a condition header (`If <condition>:` for `if`/`elif`, `Otherwise:` for `else`), and each Step-projecting node inside the arm becomes a lettered sub-step (`a.`, `b.`, `c.`). Letters reset per arm.
@@ -396,7 +398,7 @@ Rules:
 - `return <expr>` where `<expr>` is a call, binding reference, dot access, literal, or `none`.
 - `return` alone (no expression) is equivalent to `return none`.
 - **Single, terminal-only.** Exactly **one** `return` statement per `skill`, `block`, or `export block`, and it must appear as the **last statement at the top level of `flow:`**. `return` is **not** allowed inside `if`/`elif`/`else` branch bodies (no early return). Multiple `return` statements in a single `flow:` are a parse error.
-- If `return` is omitted, the body implicitly returns `none`. This applies uniformly to `skill`, `block`, and `export block` — there is no per-path return-coverage analysis, because `return` is forbidden in branches and only appears once at the end of `flow:` (or not at all).
+- **Implicit vs. explicit:** If `return` is omitted, the body implicitly returns `none`. This applies to `skill` and private `block` declarations. **`export block` requires an explicit `return`** (even `return none`) because its output is a public contract visible to importers (see `language-surface.md` §3.3). The compiler inserts an implicit `Return { value: none }` during Lower only for `skill` and `block` — omitting `return` in an `export block` is a repairable diagnostic (`G::analyze::missing-return`). There is no per-path return-coverage analysis, because `return` is forbidden in branches and only appears once at the end of `flow:` (or not at all).
 
 Parse-level diagnostics enforcing this rule:
 

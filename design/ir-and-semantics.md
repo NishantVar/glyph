@@ -35,7 +35,7 @@ Projection from IR to compiled Markdown is target-specific. MVP projection produ
 
 - `Step` → numbered list items under `### Steps`. Parameters carried by the step appear as `{param}` references in the compiled prose, resolved by the consuming LLM at runtime.
 - `Constraint` → bulleted items under `### Constraints`. Strength (`soft`/`hard`) and polarity (`require`/`avoid`) influence wording and prominence.
-- `InputContract` → projected into the `## Parameters` section of compiled output (names, descriptions, optional defaults). Parameters appear as `{param}` references in Step and Constraint prose, resolved by the consuming LLM at runtime.
+- `InputContract` → projected into the `## Parameters` section of compiled output (names, descriptions, and either a default value or a `(required)` marker per parameter; see `compiled-output.md` §`## Parameters`). Parameters appear as `{param}` references in Step and Constraint prose, resolved by the consuming LLM at runtime.
 - `OutputContract` → folded into the final `Step`. The `return` expression becomes the closing sentence of the last numbered step. No dedicated compiled section in MVP.
 - Effects → YAML frontmatter `effects` list, not a prose section.
 
@@ -172,8 +172,8 @@ effects:
 
 ### `none` Semantics
 
-- Omitting `effects:` entirely is equivalent to `effects: none`.
-- Writing `effects: none` explicitly is allowed for documentation.
+- Omitting `effects:` entirely means "the compiler should infer effects from the call graph." If the inferred set is non-empty, the compiler auto-adds an `effects:` sub-section during Phase 3a (deterministic repair) and emits a warning-level notification (`G::repair::inferred-effects`). If the inferred set is empty, no `effects:` line is added (the declaration genuinely has no effects).
+- Writing `effects: none` explicitly is an **author assertion** that the declaration has no side effects. If the call graph contradicts this (inferred set is non-empty), the compiler emits `G::analyze::effects-under-declared` (error). This is not repairable — the author made a deliberate claim that turned out to be wrong.
 - `none` must not appear alongside other keywords. `effects: none, reads_files` is a compile error.
 
 ### Propagation
@@ -202,11 +202,10 @@ The one addendum: when the compiler selects Tier 3 (external file) for an import
 
 ### Author Declaration And Validation
 
-**Declare-not-infer-into-source.** Effects are author-declared, never compiler-inferred-into-source. The compiler computes an **inferred** set by walking the call graph and unioning every callee's effect contribution (user-defined blocks per their declared `effects:`, and stdlib calls per their synthetic-body projection — see `stdlib.md` §Projection Model: Uniform Synthetic Body and §Propagation), but it does not write that set back into the author's `effects:` header. The header is the author's contract; the inferred set is the compiler's reality check. The compiler diffs the two and emits a diagnostic — it never silently rewrites the author's declaration to match what it inferred. This is an explicit-by-design contract analogous to Rust's `unsafe`: capability surface is something the author owns and signs off on, not something the compiler decides on their behalf. (The narrow exception is the export-block auto-fill repair described two paragraphs below, which is gated on the author having omitted `effects:` entirely so there is no existing declaration to overwrite.)
+**Infer-when-omitted, validate-when-declared.** The compiler computes an **inferred** effect set by walking the call graph and unioning every callee's effect contribution (user-defined blocks per their declared `effects:`, and stdlib calls per their synthetic-body projection — see `stdlib.md` §Projection Model: Uniform Synthetic Body and §Propagation). How the compiler uses that inferred set depends on whether the author wrote an `effects:` line:
 
-Authors may optionally declare `effects:` for readability. When declared, the compiler validates that the **declared set is a superset of the inferred set**. If the declared set is smaller than inferred, that is a compile error (the declaration is lying about what the block does). Writing `effects: none` on a declaration whose inferred set is non-empty triggers `effects-under-declared` for the same reason — `none` is a strict subset claim that contradicts inference.
-
-**Auto-fill for export blocks.** An `export block` declaration that omits `effects:` entirely (i.e., does not write the keyword at all) and whose inferred set is non-empty does **not** trigger `effects-under-declared`. Instead, Phase 2 (Analyze) emits `G::analyze::missing-export-effects` (repairable) and Phase 3b (Repair) inserts an `effects:` sub-section with the inferred set into the source. This keeps export contracts explicit at the file boundary without forcing authors to hand-write what the compiler already knows. See `repair.md` §3b and `diagnostics.md`.
+- **Omitted entirely.** The author did not write `effects:` at all. Phase 2 (Analyze) emits `G::analyze::missing-effects` (repairable). Phase 3a (deterministic repair) auto-adds an `effects:` sub-section with the inferred set and emits `G::repair::inferred-effects` (warning, informational) so the author knows what was added. This applies uniformly to skills, blocks, and export blocks — there is no declaration-type asymmetry. If the inferred set is empty, no `effects:` line is added and no diagnostic fires (the declaration genuinely has no effects).
+- **Declared by the author.** The compiler validates that the **declared set is a superset of the inferred set**. If the declared set is smaller than inferred, that is a compile error (`G::analyze::effects-under-declared`) — the declaration is lying about what the block does. Writing `effects: none` explicitly when the inferred set is non-empty is the same error: `none` is a strict subset claim that contradicts inference. This is not repairable — the author made a deliberate declaration and the compiler will not silently overwrite it.
 
 If the declared set is **larger** than inferred (e.g. `effects: reads_files, runs_commands` when only `reads_files` is inferred), the compiler emits a `warning`-tier diagnostic (`G::analyze::effects-over-declared`). Compilation proceeds. Over-declaration is legitimate (forward-compat, intentional widening of a public contract), so it is not an error; the warning lets the author remove the extra keyword if they are confident it is no longer needed. Repair never narrows a declared effect set, since that would silently break import contracts.
 

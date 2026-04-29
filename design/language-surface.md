@@ -387,7 +387,7 @@ Repair-materialized block. Structurally a minimal `block` with a `generated` pre
 
 ```
 generated block <name>(<params>)
-    <one-sentence-body>
+    <single-string-body>
 ```
 
 **Example:**
@@ -403,11 +403,11 @@ generated block summarize_changes()
 **Rules:**
 
 - Same header shape as `block` (parameters allowed, no return type in the generated form).
-- Body is a single inline or block string — one sentence. This keeps the machine-generated definition close to the name's meaning and minimizes drift from author intent.
+- Body is a single inline or block string — the **single-string rule**. Compound sentences are allowed; multi-statement `flow:` bodies are not. This keeps the machine-generated definition close to the name's meaning and minimizes drift from author intent.
 - Used for undefined parens-calls. Bare names without parens still materialize as `generated text`.
 - Not exportable. `export generated block` is invalid. To share, promote to `block` or `export block`.
 - All `generated block` declarations must appear after all non-generated top-level declarations, alongside `generated text`.
-- Full rules for authorship, the one-sentence constraint, placement, promotion, and the no-shadowing interaction are in [repair.md](repair.md).
+- Full rules for authorship, the single-string constraint, placement, promotion, and the no-shadowing interaction are in [repair.md](repair.md).
 
 ### 3.10 Parameter Syntax
 
@@ -418,7 +418,8 @@ name = "default"              // untyped, with default
 name: Type = default_value    // typed, with default
 ```
 
-- **Default values are mandatory on parameters whose declarations compile to `.md` files** — i.e., `skill` parameters (which surface in the skill's `## Parameters` section) and `export block` parameters (which surface in external procedure files when projected at Tier 3). The consuming LLM uses the default as a fallback when the user does not specify a value. A parameter without a default on a `skill` or `export block` emits `G::analyze::missing-param-default` (**compile error**, not repairable). Author must add an explicit default; the compiler does not synthesize defaults — there is no principled non-LLM repair, and LLM-guessed defaults would introduce non-determinism into a value that ships in compiled output.
+- **`skill` parameter defaults are optional.** A skill parameter without a default is a **runtime-required input**: the consuming LLM must extract its value from the user's request context with no fallback. The compiled `## Parameters` section marks such parameters as required (see [compiled-output.md](compiled-output.md) §`## Parameters`). A skill parameter with a default is optional at runtime — the LLM uses the default if the user does not specify a value. This distinction lets authors separate inputs that must come from the user (e.g., a target file path) from those that have a sensible fallback (e.g., a verbosity level).
+- **`export block` parameter defaults are mandatory.** Export blocks project to standalone procedure `.md` files at Tier 3, but their parameter slots are filled by the caller's `call` expression at compile time, not by the consuming LLM at runtime. Defaults exist for caller ergonomics: a caller may omit an argument and inherit the default. A parameter without a default on an `export block` emits `G::analyze::missing-param-default` (**compile error**, not repairable). Author must add an explicit default; the compiler does not synthesize defaults — there is no principled non-LLM repair, and LLM-guessed defaults would introduce non-determinism into a value that ships in compiled output. (Post-MVP we may relax this to allow required export-block parameters, mirroring ordinary function-call semantics; see [todo.md](todo.md).)
 - **Private `block` parameters may omit defaults.** Private blocks never compile to standalone files — their parameters are resolved at call sites within the same file. A private block parameter without a default is legal; the caller must supply the argument.
 - Type annotations use the `name: Type` slot. The full type system is a Tier 2 concern; this reserves the syntactic position.
 - Default values are either Tier 0 literals (strings, numbers, booleans, `none`) **or** a name reference to an in-scope value-binding declaration (`text` / `int` / `float`, including imported ones). Named references must be type-compatible with the parameter and must resolve at compile time — since `text`/`int`/`float` declarations are compile-time constants, this is always satisfied. The compiled `## Parameters` section emits the **resolved literal value**, not the name; consumers see the concrete default at runtime. This makes preferences (`preferences.md`) usable directly as parameter defaults: `summarize(temperature: Float = default_temperature)` resolves to the prefs library's current value at compile time. References to other parameters or to `block` declarations are not permitted; calls and arbitrary expressions are not permitted. A default that is neither a literal nor a name reference to a value-binding is a parse error.

@@ -258,17 +258,39 @@ After Expand Step 1 (deterministic resolution), every node carries resolved cont
 ```
 ResolvedCall {
   ...Call fields...
-  resolved_body_text:  String              // callee body with {param} slots preserved
+  resolved_body_text:  String              // callee body with {param} slots preserved as literal
+                                           // {name} and {local} slots preserved as literal {name};
+                                           // readers cross-reference local_refs to identify which
+                                           // {name} tokens are local bindings vs. parameters
+  local_refs:          [LocalRef]          // one entry per {local} slot in resolved_body_text;
+                                           // empty when the body has no local-binding references
   projection_mode:     ProjectionMode      // inline | same_file_procedure | external_file
   callee_flow:         [ResolvedFlowNode]? // present only when projection_mode != inline
   callee_constraints:  [Constraint]?       // present only when projection_mode != inline
   procedure_path:      String?             // relative file path; present only when external_file
 }
 
+LocalRef {
+  name:                String              // the local binding name (matches {name} in the text)
+  node_id:             String              // the producing node's IR ID (e.g. "n7")
+}
+
 ResolvedConstraint {
   ...Constraint fields...
-  // text field already contains resolved content; {param} slots preserved
+  // text field already contains resolved content; {param} slots preserved,
+  // {local} slots tagged as local_ref
 }
+
+// Name slot tagging (applies to resolved_body_text and constraint text):
+// A {name} slot in the resolved text is classified by Step 1 as either:
+//   - param_ref: name matches a declared parameter → preserved as literal {name}
+//     in compiled output for the consuming LLM to fill at runtime.
+//     Not listed in local_refs.
+//   - local_ref: name matches a local binding (e.g., from x = call(...)) →
+//     listed in the local_refs array on the enclosing ResolvedCall.
+//     The {name} token stays literal in resolved_body_text; the local_refs
+//     entry carries the producing node's ID. Step 2 must resolve every
+//     local_ref into natural-language prose; none may survive in output.
 
 ResolvedInstructionRef {
   ...InstructionRef fields...

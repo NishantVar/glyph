@@ -112,21 +112,21 @@ Mechanical transformations where the correct fix is unambiguous:
 - Duplicate import merging: two imports from the same file merge into one statement (per `imports.md` §6).
 - Unused import removal: imported names not referenced anywhere in the file are removed (per `imports.md` §7).
 - Source section reordering: sections within a declaration body are reordered to the recommended convention (per `ir-and-semantics.md` §4).
+- Missing `effects:` auto-fill: when a declaration omits `effects:` entirely and the inferred set (from the call graph) is non-empty, 3a inserts an `effects:` sub-section with the inferred set and emits `G::repair::inferred-effects` (warning, informational). This is deterministic — the call graph is fully resolved by Phase 2. Applies uniformly to skills, blocks, and export blocks (per `ir-and-semantics.md` §3).
 
 ### 3b. LLM-assisted repair (only runs if repairable diagnostics remain after 3a)
 
 The LLM receives the source, the remaining diagnostics, and the compiler's rules. It makes the smallest changes needed:
 
-- **Unresolved bare names** (no parens at use site): generates a `generated text` definition — a single one-sentence expansion — and appends it to the end of the file.
-- **Unresolved parens-calls** (parentheses at use site): generates a `generated block` definition — a single one-sentence body — and appends it to the end of the file. Parameters are inferred from the call site.
+- **Unresolved bare names** (no parens at use site): generates a `generated text` definition — a single-string expansion — and appends it to the end of the file.
+- **Unresolved parens-calls** (parentheses at use site): generates a `generated block` definition — a single-string body — and appends it to the end of the file. Parameters are inferred from the call site.
 - **Ambiguous roles:** adds the minimal marker needed (e.g., adds `avoid` in front of an ambiguous instruction).
 - **Missing type annotations:** adds `: Type` where inference failed and the compiler requires it.
 - **Missing `description:`:** generates a one-line summary from the skill name and body content, adds it as a `description:` sub-section in the source.
-- **Missing `effects:`:** infers effects from the call graph and adds an `effects:` sub-section.
 - **Broken indentation or delimiters:** fixes structural issues that Parse flagged.
 - **Marker addition when inference succeeds:** materializes the smallest explicit marker back into source when role, strength, and polarity confidence is high.
 
-Generated definitions follow the one-sentence rule: bodies stay close to the name's meaning and minimize drift from author intent. Full rules in `repair.md` §5.
+Generated definitions follow the single-string rule: bodies stay close to the name's meaning and minimize drift from author intent. Full rules in `repair.md` §5.
 
 ### 3c. Constraint conflict scan (LLM, runs once after 3a/3b convergence per declaration with ≥2 constraints)
 
@@ -239,6 +239,7 @@ Expand has a strict internal ordering: **deterministic resolution first, then LL
 All mechanical substitutions happen first, before any LLM is involved:
 
 - **Parameter reference preservation.** `{param}` placeholders in `generated block` bodies and parameter references in the IR are **not** substituted — they are preserved as named slots for the consuming LLM to resolve at runtime. `"Inspect the failure in {area}"` stays as `"Inspect the failure in {area}"`.
+- **Local binding reference tagging.** `{name}` slots that resolve to local bindings (e.g., `{diagnosis}` where `diagnosis = analyze_error(...)`) are tagged as `local_ref` on the resolved IR node. Unlike parameter references, local-ref slots are **not** preserved as literal `{name}` tokens — Step 2 resolves them into natural-language cross-references in the compiled prose. The consuming LLM already produced the referenced value in a prior step and does not need a placeholder for its own output.
 - **Parameter metadata assembly.** For each parameter in the skill's `InputContract`, Step 1 collects the name, type annotation (if any), and default value (if any) into a parameter list for the `## Parameters` section.
 - **Bare name inlining.** Bare names that resolve to `text` or `generated text` are replaced with their string content as-is.
 - **Inline string passthrough.** Inline strings like `"Don't propose a fix until you've confirmed the root cause."` pass through unchanged.
@@ -246,13 +247,13 @@ All mechanical substitutions happen first, before any LLM is involved:
 - **Block projection tier assignment.** For each `Call` node targeting a block, Step 1 selects a projection tier (inline, same-file procedure, or external file) based on callee complexity, conditionality, and reuse. The tier is stored on the `ResolvedCall` node as `projection_mode`. For `same_file_procedure` and `external_file` tiers, Step 1 also attaches the callee's resolved flow nodes and constraints to the `ResolvedCall`. See `compiled-output.md` §Three-Tier Block Projection for the heuristic.
 - **Block trigger predicate resolution.** For each `Branch` IR node whose `condition` (or any `elif_branches[*].condition`) contains a `BLOCKNAME.applies()` invocation, Step 1 reads the referenced block's resolved `description:` and populates the Branch's `applies_descriptions: {block_name → resolved_description}` side-map (per `ir-schema.md` §Resolved IR `ResolvedBranch`, `ir-json-schema.md` §Branch). The condition string itself is preserved unchanged — only the side-map is added. Step 2 reads the side-map to choose between the pure-applies "decide which applies" form and the mixed-condition inline form (per `compiled-output.md` §Description-Driven Branch Projection).
 
-After Step 1, every IR node has resolved content — bare names and inline strings are concrete, but `{param}` references remain as named slots. An unresolved bare name after this step is a compile error. A `{param}` reference to a name not in the skill's parameter list is also a compile error. The result is a **resolved IR** that could theoretically be emitted as-is (it would be correct but stilted).
+After Step 1, every IR node has resolved content — bare names and inline strings are concrete, `{param}` references for declared parameters remain as named slots, and `{name}` references to local bindings are tagged as `local_ref` for Step 2 to resolve into prose. An unresolved bare name after this step is a compile error. A `{name}` slot whose name does not resolve to either a declared parameter or a local binding in scope is also a compile error. The result is a **resolved IR** that could theoretically be emitted as-is (it would be correct but stilted).
 
 #### Step 2: LLM reshaping (only where needed)
 
 The LLM receives the resolved IR nodes and produces natural-language prose. It does not see raw parameters or unresolved names — only concrete content. Its job is to turn structured data into readable agent instructions.
 
-- **Call-node expansion.** Each resolved `Call` node becomes a full prose instruction sentence. The LLM receives the resolved body text (with `{param}` references preserved as named slots) and the call's context (what role it plays, what comes before and after). The LLM must preserve `{param}` references in its output.
+- **Call-node expansion.** Each resolved `Call` node becomes a full prose instruction sentence. The LLM receives the resolved body text (with `{param}` references preserved as named slots and `local_ref` slots tagged for resolution) and the call's context (what role it plays, what comes before and after). The LLM must preserve `{param}` references in its output and resolve `local_ref` slots into natural-language cross-references (e.g., `{diagnosis}` → "the diagnosis from your earlier analysis").
 - **`with` modifier application.** If a call carries a `site_modifier`, the LLM uses it as a reshaping prompt applied to the resolved body text. The modifier steers tone, emphasis, and detail — it does not introduce new parameters or change the call's semantics. The modifier is consumed and does not appear in output. Parameter references in the body text are preserved through the reshaping.
 - **Constraint rewording.** Each `Constraint` node gets wording shaped by its strength and polarity. `Constraint(strength: soft, polarity: avoid)` renders as a prohibition; `Constraint(strength: hard, polarity: require)` renders with strongest possible wording; `Constraint(strength: soft, polarity: require)` renders with standard wording.
 - **Conditional projection.** Each `if`/`elif`/`else` chain becomes a single numbered Step with lettered sub-steps per arm. Each arm is introduced by a condition header, and each Step-projecting node inside the arm becomes a lettered sub-step (`a.`, `b.`, `c.`, resetting per arm). Nested branches flatten into prose within their parent sub-step (see `compiled-output.md` §Constraint Rendering).
@@ -402,7 +403,7 @@ Emit is pure formatting. The IR has all the content; Emit arranges it into the f
   - `description` — from the skill's `description:` sub-section (generated by Repair or Expand if omitted).
   - `effects` — YAML flow-sequence list of the full inferred effect set. Field omitted entirely when effects are `none` or empty.
 
-- **`## Parameters`** — emitted when the skill declares parameters. Contains a bulleted list of parameter names, descriptions (generated by Step 2), and optional default values. Omitted for parameterless skills.
+- **`## Parameters`** — emitted when the skill declares parameters. Contains a bulleted list of parameter names, descriptions (generated by Step 2), and either a default value or a `(required)` marker per parameter (see `compiled-output.md` §`## Parameters`). Omitted for parameterless skills.
 
 - **`## Instructions`** — always emitted. Contains:
   - `### Steps` — numbered list, one expanded instruction per item. Order matters. The final item includes the return-summary sentence. Conditional: omitted only for pure constraint-only skills.
@@ -548,7 +549,7 @@ Incremental compilation and build caching are **deferred** from MVP (per `todo.m
 - **Foundations:** `foundations.md` — #18 (deterministic passes own correctness), #33 (novice learnability).
 - **Source syntax:** `language-surface.md` — declaration forms, indentation, sub-sections. §5 lists the 9-step pipeline that this document supersedes.
 - **IR and roles:** `ir-and-semantics.md` — four MVP roles, constraint model, effects, section vocabulary.
-- **Repair:** `repair.md` — full repair rules, generated definitions (text and block), one-sentence rule, idempotence, intent potency.
+- **Repair:** `repair.md` — full repair rules, generated definitions (text and block), single-string rule, idempotence, intent potency.
 - **Data flow:** `data-flow.md` — parameters, calls, `with` modifier, control flow, return semantics, closure.
 - **Compiled output:** `compiled-output.md` — frontmatter shape, `## Parameters` section, `## Instructions` structure, projection rules, parameterless compilation model.
 - **Imports:** `imports.md` — path resolution, cycle rejection, effect propagation, multi-file compilation order.

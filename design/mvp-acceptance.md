@@ -131,7 +131,7 @@ Each file has `repairable` diagnostics. The compiler stops after Phase 2 and emi
 | `indent_tabs.glyph.md` | `G::parse::tab-indent` |
 | `mixed_indent.glyph.md` | `G::parse::mixed-indent` |
 | `nested_branch.glyph.md` | `G::analyze::nested-branch` |
-| `missing_effects.glyph.md` | `G::analyze::missing-export-effects` |
+| `missing_effects.glyph.md` | `G::analyze::missing-effects` |
 | `duplicate_import.glyph.md` | `G::analyze::duplicate-import` |
 | `unused_import.glyph.md` | `G::analyze::unused-import` |
 | `duplicate_subsection.glyph.md` | `G::parse::duplicate-subsection` |
@@ -166,7 +166,7 @@ When a file contains both `error` and `repairable` diagnostics, exit code is `1`
 | `missing_file.glyph.md` | `G::analyze::missing-file` |
 | `effects_under.glyph.md` | `G::analyze::effects-under-declared` |
 | `empty_skill.glyph.md` | `G::analyze::empty-skill-body` |
-| `no_param_default.glyph.md` | `G::analyze::missing-param-default` |
+| `no_param_default.glyph.md` | `G::analyze::missing-param-default` (fixture must declare an `export block` whose parameter lacks a default; skill parameters without defaults are legal) |
 | `bad_param_slot.glyph.md` | `G::analyze::unknown-param-slot` |
 | `closure_leak.glyph.md` | `G::analyze::closure-violation` |
 | `library_no_exports.glyph.md` | `G::analyze::no-exports-in-library` |
@@ -342,7 +342,7 @@ Every diagnostic below is emitted by the deterministic compiler (Phases 1, 2, 4,
 | `G::parse::applies-no-parens` | error |
 | `G::parse::applies-with-args` | error |
 
-**Analyze phase (24):**
+**Analyze phase (26):**
 
 | ID | Classification |
 |----|---------------|
@@ -358,7 +358,9 @@ Every diagnostic below is emitted by the deterministic compiler (Phases 1, 2, 4,
 | `G::analyze::ambiguous-role` | repairable |
 | `G::analyze::effects-under-declared` | error |
 | `G::analyze::effects-over-declared` | warning |
-| `G::analyze::missing-export-effects` | repairable |
+| `G::analyze::missing-effects` | repairable |
+| `G::analyze::nominal-mismatch` | error |
+| `G::analyze::lossy-coercion` | error |
 | `G::analyze::missing-return` | repairable |
 | `G::analyze::closure-violation` | error |
 | `G::analyze::stdlib-missing-import` | repairable |
@@ -393,7 +395,7 @@ Every diagnostic below is emitted by the deterministic compiler (Phases 1, 2, 4,
 |----|---------------|
 | `G::build::skipped-due-to-failed-import` | warning |
 
-**Validate-output phase (24):**
+**Validate-output phase (25):**
 
 Phase 6b structural validation, implemented in `glyph validate-output`. These diagnostics check that Step 2's Markdown output faithfully projects the input IR. All are classification `error`. Full catalog in `expand.md` §4.2, cross-referenced in `agent-skill.md` §`glyph validate-output`.
 
@@ -408,6 +410,7 @@ Phase 6b structural validation, implemented in `glyph validate-output`. These di
 | `G::expand::step-order-mismatch` | error |
 | `G::expand::invented-param-ref` | error |
 | `G::expand::dropped-param-ref` | error |
+| `G::expand::unresolved-local-ref` | error |
 | `G::expand::modifier-leaked` | error |
 | `G::expand::params-section-mismatch` | error |
 | `G::expand::params-section-missing` | error |
@@ -424,19 +427,19 @@ Phase 6b structural validation, implemented in `glyph validate-output`. These di
 | `G::expand::procedure-duplicate` | error |
 | `G::expand::procedure-order` | error |
 
-**Total: 72 compiler-scope diagnostic IDs** (17 Parse + 24 Analyze + 1 Imports + 5 Validate + 1 Build + 24 Validate-output).
+**Total: 75 compiler-scope diagnostic IDs** (17 Parse + 26 Analyze + 1 Imports + 5 Validate + 1 Build + 25 Validate-output).
 
 ### 4.2 Agent-scope diagnostics (not in compiler)
 
 These diagnostics are the responsibility of the external agent skill that drives Repair (Phase 3) and Expand Step 2 (Phase 6). They are part of the Glyph spec but not implemented in the compiler binary.
 
-**Repair notifications (4):** `G::repair::generated-text`, `G::repair::generated-block`, `G::repair::branch-extracted`, `G::repair::constraint-tension`
+**Repair notifications (5):** `G::repair::generated-text`, `G::repair::generated-block`, `G::repair::branch-extracted`, `G::repair::inferred-effects`, `G::repair::constraint-tension`
 
 **Repair execution failures (5):** `G::repair::llm-unavailable`, `G::repair::output-invalid`, `G::repair::no-convergence`, `G::repair::constraint-contradiction`, `G::repair::constraint-scan-malformed`
 
 **Expand Step 2 execution (1):** `G::expand::llm-unavailable`
 
-**Total: 10 agent-scope diagnostic IDs.** These will be tested when the agent skill is implemented. Phase 6b structural validation (24 `G::expand::*` diagnostics) moved to compiler-scope under `glyph validate-output` — see §4.1.
+**Total: 11 agent-scope diagnostic IDs.** These will be tested when the agent skill is implemented. Phase 6b structural validation (25 `G::expand::*` diagnostics) moved to compiler-scope under `glyph validate-output` — see §4.1.
 
 ### 4.3 Post-MVP diagnostics
 
@@ -484,10 +487,10 @@ The 5-skill project in `tests/corpus/multi-file/` (§3) compiles successfully:
 
 ### Bar 5: Diagnostic coverage
 
-Every compiler-scope diagnostic ID (§4.1, 72 total) has at least one triggering test:
+Every compiler-scope diagnostic ID (§4.1, 75 total) has at least one triggering test:
 - Parse and Analyze diagnostics: triggered by corpus files in `invalid/` (exit 1) and `repairable/` (exit 2)
 - Validate diagnostics: triggered by unit tests with hand-crafted invalid IR (§4.4)
-- Validate-output diagnostics (24 Phase 6b): triggered by unit tests feeding crafted `.ir.json` + `.md` pairs to `glyph validate-output`
+- Validate-output diagnostics (25 Phase 6b): triggered by unit tests feeding crafted `.ir.json` + `.md` pairs to `glyph validate-output`
 - Build diagnostic: triggered by multi-file test with a deliberately failed dependency
 - Warnings (`effects-over-declared`): triggered by `valid/` corpus file that compiles successfully with warning on stderr
 

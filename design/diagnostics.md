@@ -115,7 +115,7 @@ Representative diagnostics implied by the current design.
 | `G::analyze::ambiguous-role` | repairable | Can't determine instruction role from context (`ir-and-semantics.md` §2) |
 | `G::analyze::effects-under-declared` | error | Declared effects are a subset of inferred effects (`ir-and-semantics.md` §3) |
 | `G::analyze::effects-over-declared` | warning | Declared effects include keywords not inferred from the body; non-blocking, surfaced for author cleanup (`ir-and-semantics.md` §3) |
-| `G::analyze::missing-export-effects` | repairable | An `export block` declaration omits `effects:` entirely and the inferred set is non-empty (`ir-and-semantics.md` §3) |
+| `G::analyze::missing-effects` | repairable | A declaration (skill, block, or export block) omits `effects:` entirely and the inferred set is non-empty; Phase 3a auto-adds the inferred effects (`ir-and-semantics.md` §3) |
 | `G::analyze::nominal-mismatch` | error | Type name mismatch at a call boundary (`types.md`) |
 | `G::analyze::lossy-coercion` | error | Lossy numeric conversion, e.g. `3.7` where integer expected (`values-and-names.md`) |
 | `G::analyze::missing-return` | repairable | Export block lacks `return` on a code path (`language-surface.md` §3.3) |
@@ -126,7 +126,7 @@ Representative diagnostics implied by the current design.
 | `G::analyze::nested-branch` | repairable | A `Branch` appears inside another `Branch`'s arm body; Repair will auto-extract it into a `generated block` (`repair.md` §4.9) |
 | `G::analyze::empty-skill-body` | error | A `skill` declaration has no `description:`, no `flow:`, no `constraints:`, no `effects:` — there is nothing to project. A skill must have at least one of `flow:` (with statements) or `constraints:` (with markers); a constraint-only skill is legal (`compiled-output.md`) |
 | `G::analyze::no-exports-in-library` | error | A library file (zero `skill` declarations) has zero `export` declarations — it has no consumer-visible contribution. Add at least one `export block`, `export text`, `export int`, or `export float` (`language-surface.md` §File-Level Rules) |
-| `G::analyze::missing-param-default` | error | A `skill` or `export block` parameter lacks a default value; all parameters on declarations that compile to `.md` files must have defaults (`language-surface.md` §3.10). Author must add an explicit default; the compiler does not synthesize defaults. |
+| `G::analyze::missing-param-default` | error | An `export block` parameter lacks a default value; export-block parameter defaults are mandatory in MVP because their slots are filled by callers at compile time, not by the consuming LLM at runtime (`language-surface.md` §3.10). Author must add an explicit default; the compiler does not synthesize defaults. **Does not apply to `skill` parameters** — those without defaults are runtime-required inputs and surface as such in the compiled `## Parameters` section. |
 | `G::analyze::missing-description` | repairable | A `skill` declaration omits `description:`; Repair generates one from the skill name and body and adds it as a `description:` sub-section in the source (`ir-and-semantics.md` §4, `compiled-output.md` §Frontmatter) |
 | `G::analyze::applies-on-non-block` | error | `NAME.applies()` was called where `NAME` resolves to something other than a `block` or `export block` declaration (e.g., a `text`, an `import` alias, a parameter). The trigger predicate is defined only on blocks (`ir-and-semantics.md` §Block Trigger Predicate) |
 | `G::analyze::applies-on-undescribed-block` | repairable / error | `BLOCKNAME.applies()` is called on a block that lacks a `description:` sub-section. **Repairable** when the block is defined in the same file under compilation; Repair adds a trigger-shaped `description:` to the block. **Error** when the block is imported from another file; the author must edit the source library directly because Repair is single-file (`ir-and-semantics.md` §Block Trigger Predicate, `repair.md` §9) |
@@ -153,7 +153,7 @@ Build-phase diagnostics cover project-level orchestration concerns rather than a
 
 ### Validate-output phase (Phase 6b)
 
-Phase 6b structural validation, implemented in the `glyph validate-output` subcommand. These are **compiler-scope** diagnostics — deterministic checks that Step 2's Markdown output faithfully projects the input IR. All 24 are classification `error`. The canonical specification lives in `expand.md` §4.2; the workflow integration is in `agent-skill.md` §`glyph validate-output`.
+Phase 6b structural validation, implemented in the `glyph validate-output` subcommand. These are **compiler-scope** diagnostics — deterministic checks that Step 2's Markdown output faithfully projects the input IR. All 25 are classification `error`. The canonical specification lives in `expand.md` §4.2; the workflow integration is in `agent-skill.md` §`glyph validate-output`.
 
 | ID | Classification | Trigger |
 |---|---|---|
@@ -166,6 +166,7 @@ Phase 6b structural validation, implemented in the `glyph validate-output` subco
 | `G::expand::step-order-mismatch` | error | Step order diverges from `flow:` order |
 | `G::expand::invented-param-ref` | error | `{...}` reference does not match any declared parameter |
 | `G::expand::dropped-param-ref` | error | A parameter reference from Step 1 output was silently removed by Step 2 |
+| `G::expand::unresolved-local-ref` | error | A `local_ref` slot survived as a literal `{name}` token — Step 2 failed to resolve it into prose |
 | `G::expand::modifier-leaked` | error | `with` modifier string appears verbatim in output |
 | `G::expand::params-section-mismatch` | error | `## Parameters` item count does not match `InputContract` parameter count |
 | `G::expand::params-section-missing` | error | Skill has parameters but `## Parameters` section is absent |
@@ -189,6 +190,7 @@ Phase 6b structural validation, implemented in the `glyph validate-output` subco
 | `G::repair::generated-text` | warning | A `generated text` was materialized for an undefined bare name (`repair.md` §5) |
 | `G::repair::generated-block` | warning | A `generated block` was materialized for an undefined parens-call (`repair.md` §5) |
 | `G::repair::branch-extracted` | warning | A nested `Branch` was auto-extracted into a `generated block` to keep compiled output at one level of sub-steps (`repair.md` §4.9) |
+| `G::repair::inferred-effects` | warning | Phase 3a deterministically inferred and auto-added an `effects:` sub-section for a declaration that omitted it; informational — the author should review the added effects (`ir-and-semantics.md` §3, `pipeline.md` Phase 3a) |
 | `G::repair::constraint-tension` | warning | Phase 3c LLM scan identified two constraints in the same declaration that are in friction but both reasonable to hold (`repair.md` §4.10). Build proceeds; both constraints survive into compiled output. |
 
 ### Repair execution failures
@@ -203,7 +205,7 @@ Phase 6b structural validation, implemented in the `glyph validate-output` subco
 
 ### Expand execution failures (agent-scope)
 
-Step 2 execution-level failures that are the agent's responsibility, independent of structural validation. Phase 6b structural diagnostics (24 IDs) are compiler-scope — see the Validate-output section above.
+Step 2 execution-level failures that are the agent's responsibility, independent of structural validation. Phase 6b structural diagnostics (25 IDs) are compiler-scope — see the Validate-output section above.
 
 | ID | Classification | Trigger |
 |---|---|---|
