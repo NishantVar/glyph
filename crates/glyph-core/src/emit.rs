@@ -22,7 +22,9 @@ pub fn emit(arena: &IrArena) -> String {
     out.push_str(&format!("name: {}\n", skill.name));
     out.push_str(&format!("description: {}\n", skill.description));
     if !skill.effects.is_empty() {
-        out.push_str(&format!("effects: [{}]\n", skill.effects.join(", ")));
+        let mut sorted_effects = skill.effects.clone();
+        sorted_effects.sort();
+        out.push_str(&format!("effects: [{}]\n", sorted_effects.join(", ")));
     }
     out.push_str("---\n\n");
 

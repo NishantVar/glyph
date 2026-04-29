@@ -491,6 +491,95 @@ skill main()
     }
 
     #[test]
+    fn frontmatter_effects_in_canonical_order() {
+        // Declared effects should appear in canonical (alphabetical) order in
+        // the compiled frontmatter, regardless of source declaration order.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    effects: writes_files, reads_files
+    flow:
+        \"Do something.\"
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                assert!(
+                    markdown.contains("effects: [reads_files, writes_files]"),
+                    "effects should be alphabetically sorted in frontmatter:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn frontmatter_omits_effects_when_empty() {
+        // When the inferred/declared effects set is empty, the frontmatter should
+        // not include an `effects:` field at all.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        \"Do something.\"
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                assert!(
+                    !markdown.contains("effects:"),
+                    "effects field should be omitted when empty:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn effects_inferred_from_call_graph_appear_in_frontmatter() {
+        // Skill declares effects matching what the call graph infers.
+        // The frontmatter should show the effects.
+        let src = "\
+block reader()
+    effects: reads_files
+    \"Read files.\"
+
+block writer()
+    effects: writes_files
+    \"Write files.\"
+
+skill main()
+    description: \"Main skill.\"
+    effects: reads_files, writes_files
+    flow:
+        reader()
+        writer()
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                assert!(
+                    markdown.contains("effects: [reads_files, writes_files]"),
+                    "expected inferred effects in frontmatter:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
     fn check_source_flags_tab_indent_as_repairable() {
         // Tab-indented source surfaces a `repairable` diagnostic, not an error.
         let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";
