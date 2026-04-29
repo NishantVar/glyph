@@ -4,8 +4,8 @@
 //! `update_docs.glyph.md` per `design/mvp-acceptance.md` §1.
 
 use crate::ast::{
-    BlockDecl, ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl, ExportBlockDecl,
-    FlowStmt, Param, ReturnExpr, Skill, SourceFile, TextDecl,
+    BlockDecl, ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl, ElifBranch,
+    ExportBlockDecl, FlowStmt, Param, ReturnExpr, Skill, SourceFile, TextDecl,
 };
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::slot::scan_slots;
@@ -487,7 +487,7 @@ impl<'a> Parser<'a> {
                                         match self.current_line_indent() {
                                             Some(2) => {
                                                 self.expect_line_start()?;
-                                                let stmt = self.parse_flow_stmt()?;
+                                                let stmt = self.parse_flow_stmt(2)?;
                                                 flow.push(stmt);
                                             }
                                             _ => break,
@@ -916,7 +916,7 @@ impl<'a> Parser<'a> {
                     match self.current_line_indent() {
                         Some(2) => {
                             self.expect_line_start()?;
-                            let stmt = self.parse_flow_stmt()?;
+                            let stmt = self.parse_flow_stmt(2)?;
                             flow.push(stmt);
                         }
                         _ => break,
@@ -933,9 +933,28 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// Parse a sequence of flow statements at a given indent level.
+    /// Returns the collected statements.
+    fn parse_flow_body(&mut self, indent: u32) -> Result<Vec<FlowStmt>, ParseError> {
+        let mut stmts = Vec::new();
+        loop {
+            match self.current_line_indent() {
+                Some(n) if n == indent => {
+                    self.expect_line_start()?;
+                    let stmt = self.parse_flow_stmt(indent)?;
+                    stmts.push(stmt);
+                }
+                _ => break,
+            }
+        }
+        Ok(stmts)
+    }
+
     /// Parse a single flow statement (already past LineStart).
-    /// Handles inline strings, constraint/context markers, calls, and bare names.
-    fn parse_flow_stmt(&mut self) -> Result<FlowStmt, ParseError> {
+    /// Handles inline strings, constraint/context markers, calls, bare names,
+    /// and if/elif/else branches. `current_indent` is the indent level of the
+    /// line we just consumed (used to determine branch body indent).
+    fn parse_flow_stmt(&mut self, current_indent: u32) -> Result<FlowStmt, ParseError> {
         match &self.peek().kind {
             TokenKind::StringLit(s) => {
                 let v = s.clone();
@@ -1047,6 +1066,53 @@ impl<'a> Parser<'a> {
                             }),
                         }
                     }
+                    "if" => {
+                        self.pos += 1;
+                        let condition = self.parse_branch_condition()?;
+                        let body_indent = current_indent + 1;
+                        let then_body = self.parse_flow_body(body_indent)?;
+
+                        let mut elif_branches: Vec<ElifBranch> = Vec::new();
+                        let mut else_body: Option<Vec<FlowStmt>> = None;
+
+                        // Look for elif / else arms at the same indent as `if`.
+                        loop {
+                            match self.current_line_indent() {
+                                Some(n) if n == current_indent => {
+                                    // Peek at keyword without consuming LineStart yet.
+                                    let saved = self.pos;
+                                    self.expect_line_start()?;
+                                    match &self.peek().kind {
+                                        TokenKind::Ident(kw) if kw == "elif" => {
+                                            self.pos += 1;
+                                            let cond = self.parse_branch_condition()?;
+                                            let body = self.parse_flow_body(body_indent)?;
+                                            elif_branches.push(ElifBranch { condition: cond, body });
+                                        }
+                                        TokenKind::Ident(kw) if kw == "else" => {
+                                            self.pos += 1;
+                                            let body = self.parse_flow_body(body_indent)?;
+                                            else_body = Some(body);
+                                            break; // else is always last
+                                        }
+                                        _ => {
+                                            // Not elif/else — put back the LineStart.
+                                            self.pos = saved;
+                                            break;
+                                        }
+                                    }
+                                }
+                                _ => break,
+                            }
+                        }
+
+                        Ok(FlowStmt::Branch {
+                            condition,
+                            then_body,
+                            elif_branches,
+                            else_body,
+                        })
+                    }
                     _ => {
                         // Could be a call (name followed by `(`) or a bare name.
                         self.pos += 1;
@@ -1086,6 +1152,46 @@ impl<'a> Parser<'a> {
                                 target: kw_val,
                                 args,
                             })
+                        } else if matches!(self.peek().kind, TokenKind::Dot) {
+                            // Detect `name.applies()` used outside a branch condition.
+                            let dot_span = self.peek().span;
+                            self.pos += 1; // consume `.`
+                            if let TokenKind::Ident(method) = &self.peek().kind {
+                                if method == "applies" {
+                                    // Skip the rest of the `.applies(...)` tokens.
+                                    self.pos += 1; // consume `applies`
+                                    if matches!(self.peek().kind, TokenKind::Lparen) {
+                                        self.pos += 1; // consume `(`
+                                        // Skip args until `)`.
+                                        while !matches!(self.peek().kind, TokenKind::Rparen | TokenKind::Eof | TokenKind::LineStart { .. }) {
+                                            self.pos += 1;
+                                        }
+                                        if matches!(self.peek().kind, TokenKind::Rparen) {
+                                            self.pos += 1;
+                                        }
+                                    }
+                                    self.bag.push(
+                                        Diagnostic::error(
+                                            "G::parse::applies-outside-condition",
+                                            format!("`{}.applies()` can only be used inside an `if`/`elif` condition", kw_val),
+                                            SourceSpan::from_byte_span(self.file_label, dot_span, self.line_index),
+                                        ),
+                                        dot_span,
+                                    );
+                                    // Return a BareName so parsing can continue.
+                                    Ok(FlowStmt::BareName(kw_val))
+                                } else {
+                                    Err(ParseError::Unexpected {
+                                        span: dot_span,
+                                        message: format!("unexpected `.{}` after `{}`", method, kw_val),
+                                    })
+                                }
+                            } else {
+                                Err(ParseError::Unexpected {
+                                    span: dot_span,
+                                    message: "unexpected `.` in flow statement".into(),
+                                })
+                            }
                         } else {
                             Ok(FlowStmt::BareName(kw_val))
                         }
@@ -1097,6 +1203,118 @@ impl<'a> Parser<'a> {
                 message: "expected string, keyword, or name in flow body".into(),
             }),
         }
+    }
+
+    /// Parse a branch condition: consume all tokens until the next LineStart or Eof.
+    /// Returns the condition as a reconstructed string.
+    /// Validates applies() syntax: no-parens and with-args diagnostics.
+    fn parse_branch_condition(&mut self) -> Result<String, ParseError> {
+        let mut parts: Vec<String> = Vec::new();
+        loop {
+            match &self.peek().kind {
+                TokenKind::LineStart { .. } | TokenKind::Eof => break,
+                TokenKind::Ident(s) => {
+                    let ident = s.clone();
+                    let ident_span = self.peek().span;
+                    self.pos += 1;
+
+                    // Check for `.applies` pattern.
+                    if ident == "applies" && !parts.is_empty() && parts.last() == Some(&".".to_string()) {
+                        // Check if followed by `(` — if not, it's applies-no-parens.
+                        if !matches!(self.peek().kind, TokenKind::Lparen) {
+                            let span = ident_span;
+                            self.bag.push(
+                                Diagnostic::error(
+                                    "G::parse::applies-no-parens",
+                                    "`.applies` must be followed by `()` — write `.applies()`",
+                                    SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                ),
+                                span,
+                            );
+                        } else {
+                            // Consume `(`
+                            self.pos += 1;
+                            // Check for args — if next is not `)`, it's applies-with-args.
+                            if !matches!(self.peek().kind, TokenKind::Rparen) {
+                                let span = ident_span;
+                                self.bag.push(
+                                    Diagnostic::error(
+                                        "G::parse::applies-with-args",
+                                        "`.applies()` must not be called with arguments",
+                                        SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                    ),
+                                    span,
+                                );
+                                // Skip args until `)`.
+                                while !self.at_eof()
+                                    && !matches!(self.peek().kind, TokenKind::Rparen | TokenKind::LineStart { .. })
+                                {
+                                    self.pos += 1;
+                                }
+                            }
+                            if matches!(self.peek().kind, TokenKind::Rparen) {
+                                self.pos += 1;
+                            }
+                            parts.push(ident);
+                            parts.push("(".into());
+                            parts.push(")".into());
+                            continue;
+                        }
+                    }
+
+                    parts.push(ident);
+                }
+                TokenKind::StringLit(s) => {
+                    parts.push(format!("\"{}\"", s));
+                    self.pos += 1;
+                }
+                TokenKind::DoubleEquals => {
+                    parts.push("==".into());
+                    self.pos += 1;
+                }
+                TokenKind::Dot => {
+                    parts.push(".".into());
+                    self.pos += 1;
+                }
+                TokenKind::Lparen => {
+                    parts.push("(".into());
+                    self.pos += 1;
+                }
+                TokenKind::Rparen => {
+                    parts.push(")".into());
+                    self.pos += 1;
+                }
+                TokenKind::Comma => {
+                    parts.push(",".into());
+                    self.pos += 1;
+                }
+                TokenKind::Colon => {
+                    parts.push(":".into());
+                    self.pos += 1;
+                }
+                TokenKind::Equals => {
+                    parts.push("=".into());
+                    self.pos += 1;
+                }
+            }
+        }
+        if parts.is_empty() {
+            return Err(ParseError::Unexpected {
+                span: self.peek().span,
+                message: "expected branch condition after `if` or `elif`".into(),
+            });
+        }
+        // Reconstruct with smart spacing: no space before/after `.`, `(`, `)`.
+        let mut result = String::new();
+        for (i, part) in parts.iter().enumerate() {
+            if i > 0 && part != "." && part != "(" && part != ")" && part != ","
+                && parts[i - 1] != "." && parts[i - 1] != "("
+            {
+                result.push(' ');
+            }
+            result.push_str(part);
+        }
+        Ok(result)
     }
 
     /// After a `:`, consume the rest of the line as a single string literal.
@@ -1150,6 +1368,19 @@ pub(crate) fn check_return_rules(
     bag: &mut DiagBag,
     in_branch: bool,
 ) {
+    // Recurse into branch bodies to check for return-in-branch.
+    for stmt in flow {
+        if let FlowStmt::Branch { then_body, elif_branches, else_body, .. } = stmt {
+            check_return_rules(then_body, span, file_label, line_index, bag, true);
+            for elif in elif_branches {
+                check_return_rules(&elif.body, span, file_label, line_index, bag, true);
+            }
+            if let Some(eb) = else_body {
+                check_return_rules(eb, span, file_label, line_index, bag, true);
+            }
+        }
+    }
+
     let return_positions: Vec<usize> = flow
         .iter()
         .enumerate()

@@ -6,8 +6,8 @@
 
 use crate::ast::{BlockDecl, ConstraintMarkerKind, ContextEntry, Decl, FlowStmt, ReturnExpr, Skill, SourceFile};
 use crate::ir::{
-    IrArena, IrBlock, IrCall, IrConstraint, IrContext, IrInlineInstruction, IrNode, IrParam,
-    IrSkill, NodeId, Polarity, Role, Strength,
+    IrArena, IrBlock, IrBranch, IrCall, IrConstraint, IrContext, IrElifBranch,
+    IrInlineInstruction, IrNode, IrParam, IrSkill, NodeId, Polarity, Role, Strength,
 };
 use std::collections::BTreeMap;
 
@@ -45,6 +45,119 @@ fn resolve_context_entry(
             .cloned()
             .ok_or_else(|| LowerError::UndefinedContextRef(name.clone())),
     }
+}
+
+/// Lower a list of flow statements into IR nodes, returning node IDs.
+/// Used for branch body lowering. Constraint/context markers inside branch
+/// bodies stay inline (not hoisted) per pipeline.md §Phase 4.
+fn lower_flow_body(
+    stmts: &[FlowStmt],
+    arena: &mut IrArena,
+    texts: &BTreeMap<String, String>,
+    blocks: &BTreeMap<String, &BlockDecl>,
+) -> Result<Vec<NodeId>, LowerError> {
+    let mut ids = Vec::new();
+    for stmt in stmts {
+        match stmt {
+            FlowStmt::InlineString(text) => {
+                let next = NodeId(arena.len() as u32);
+                let id = arena.push(IrNode::InlineInstruction(IrInlineInstruction {
+                    node_id: next,
+                    text: text.clone(),
+                    role: Role::Step,
+                }));
+                ids.push(id);
+            }
+            FlowStmt::ConstraintMarker(marker) => {
+                // Inside a branch body: stays inline, rendered as part of
+                // conditional Step prose. Create an InlineInstruction with
+                // the constraint text so it can be emitted as a sub-step.
+                let resolved = texts
+                    .get(&marker.name)
+                    .cloned()
+                    .ok_or_else(|| LowerError::UndefinedConstraintRef(marker.name.clone()))?;
+                let prefix = match marker.marker {
+                    ConstraintMarkerKind::Require => "",
+                    ConstraintMarkerKind::Avoid => "Do not: ",
+                    ConstraintMarkerKind::Must => "MUST: ",
+                    ConstraintMarkerKind::MustAvoid => "MUST NOT: ",
+                };
+                let next = NodeId(arena.len() as u32);
+                let id = arena.push(IrNode::InlineInstruction(IrInlineInstruction {
+                    node_id: next,
+                    text: format!("{}{}", prefix, resolved),
+                    role: Role::Constraint,
+                }));
+                ids.push(id);
+            }
+            FlowStmt::ContextMarker(entry) => {
+                // Inside a branch body: stays inline per spec.
+                let resolved = resolve_context_entry(entry, texts)?;
+                let next = NodeId(arena.len() as u32);
+                let id = arena.push(IrNode::InlineInstruction(IrInlineInstruction {
+                    node_id: next,
+                    text: format!("Note: {}", resolved),
+                    role: Role::Context,
+                }));
+                ids.push(id);
+            }
+            FlowStmt::Call { target, args } => {
+                let resolved_body = if let Some(block) = blocks.get(target.as_str()) {
+                    let body_text = resolve_block_body_text(block, texts)?;
+                    Some(body_text)
+                } else {
+                    None
+                };
+                let next = NodeId(arena.len() as u32);
+                let id = arena.push(IrNode::Call(IrCall {
+                    node_id: next,
+                    target: target.clone(),
+                    args: args.clone(),
+                    resolved_body,
+                }));
+                ids.push(id);
+            }
+            FlowStmt::Branch { condition, then_body, elif_branches, else_body } => {
+                let branch_id = NodeId(arena.len() as u32);
+                // Reserve a slot for the Branch node.
+                arena.push(IrNode::InlineInstruction(IrInlineInstruction {
+                    node_id: branch_id,
+                    text: String::new(),
+                    role: Role::Step,
+                }));
+                let then_ids = lower_flow_body(then_body, arena, texts, blocks)?;
+                let mut ir_elifs = Vec::new();
+                for elif in elif_branches {
+                    let elif_ids = lower_flow_body(&elif.body, arena, texts, blocks)?;
+                    ir_elifs.push(IrElifBranch {
+                        condition: elif.condition.clone(),
+                        body: elif_ids,
+                    });
+                }
+                let ir_else = if let Some(eb) = else_body {
+                    Some(lower_flow_body(eb, arena, texts, blocks)?)
+                } else {
+                    None
+                };
+                // Replace the placeholder with the actual Branch node.
+                let nodes = arena.nodes_mut();
+                nodes[branch_id.0 as usize] = IrNode::Branch(IrBranch {
+                    node_id: branch_id,
+                    condition: condition.clone(),
+                    then_body: then_ids,
+                    elif_branches: ir_elifs,
+                    else_body: ir_else,
+                    applies_descriptions: None,
+                });
+                ids.push(branch_id);
+            }
+            FlowStmt::Return(_) | FlowStmt::BareName(_) => {
+                // Return in branch body is caught by check_return_rules.
+                // BareName is caught by Analyze.
+            }
+        }
+    }
+    Ok(ids)
 }
 
 pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
@@ -209,6 +322,40 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
                 // BareName in flow is caught by Analyze before Lower runs.
                 // If we somehow reach here, skip silently — the diagnostic
                 // was already emitted.
+            }
+            FlowStmt::Branch { condition, then_body, elif_branches, else_body } => {
+                let branch_id = NodeId(arena.len() as u32);
+                // Reserve a placeholder slot.
+                arena.push(IrNode::InlineInstruction(IrInlineInstruction {
+                    node_id: branch_id,
+                    text: String::new(),
+                    role: Role::Step,
+                }));
+                let then_ids = lower_flow_body(then_body, &mut arena, &texts, &blocks)?;
+                let mut ir_elifs = Vec::new();
+                for elif in elif_branches {
+                    let elif_ids = lower_flow_body(&elif.body, &mut arena, &texts, &blocks)?;
+                    ir_elifs.push(IrElifBranch {
+                        condition: elif.condition.clone(),
+                        body: elif_ids,
+                    });
+                }
+                let ir_else = if let Some(eb) = else_body {
+                    Some(lower_flow_body(eb, &mut arena, &texts, &blocks)?)
+                } else {
+                    None
+                };
+                // Replace placeholder with actual Branch.
+                let nodes = arena.nodes_mut();
+                nodes[branch_id.0 as usize] = IrNode::Branch(IrBranch {
+                    node_id: branch_id,
+                    condition: condition.clone(),
+                    then_body: then_ids,
+                    elif_branches: ir_elifs,
+                    else_body: ir_else,
+                    applies_descriptions: None,
+                });
+                step_ids.push(branch_id);
             }
         }
     }

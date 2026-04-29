@@ -940,6 +940,457 @@ skill main()
     }
 
     #[test]
+    fn branch_parses_if_elif_else() {
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if mode == \"fast\"
+            \"Do the fast thing.\"
+        elif mode == \"slow\"
+            \"Do the slow thing.\"
+        else
+            \"Do the default thing.\"
+";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let skill = file.decls.iter().find_map(|d| match d {
+            ast::Decl::Skill(s) => Some(&s.node),
+            _ => None,
+        }).unwrap();
+        assert_eq!(skill.flow.len(), 1);
+        match &skill.flow[0] {
+            ast::FlowStmt::Branch { condition, then_body, elif_branches, else_body } => {
+                assert_eq!(condition, "mode == \"fast\"");
+                assert_eq!(then_body.len(), 1);
+                assert_eq!(elif_branches.len(), 1);
+                assert_eq!(elif_branches[0].condition, "mode == \"slow\"");
+                assert_eq!(elif_branches[0].body.len(), 1);
+                assert!(else_body.is_some());
+                assert_eq!(else_body.as_ref().unwrap().len(), 1);
+            }
+            other => panic!("expected Branch, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn branch_compiles_with_lettered_substeps() {
+        // AC1: branching compiles; output uses lettered sub-steps per arm.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        \"Prepare the environment.\"
+        if mode == \"fast\"
+            \"Do the fast thing.\"
+            \"Log performance metrics.\"
+        elif mode == \"slow\"
+            \"Do the slow thing.\"
+        else
+            \"Do the default thing.\"
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                // Step 1 should be the prepare step.
+                assert!(markdown.contains("1. Prepare the environment."), "markdown:\n{}", markdown);
+                // Step 2 should be the branch with lettered sub-steps.
+                assert!(markdown.contains("2. If mode == \"fast\":"), "markdown:\n{}", markdown);
+                assert!(markdown.contains("   a. Do the fast thing."), "markdown:\n{}", markdown);
+                assert!(markdown.contains("   b. Log performance metrics."), "markdown:\n{}", markdown);
+                // elif arm
+                assert!(markdown.contains("   If mode == \"slow\":"), "markdown:\n{}", markdown);
+                assert!(markdown.contains("   a. Do the slow thing."), "markdown:\n{}", markdown);
+                // else arm
+                assert!(markdown.contains("   Otherwise:"), "markdown:\n{}", markdown);
+                assert!(markdown.contains("   a. Do the default thing."), "markdown:\n{}", markdown);
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn nested_branch_fires_diagnostic() {
+        // AC3: `nested-branch` fires when a branch is nested inside a branch.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if mode == \"fast\"
+            if level == \"high\"
+                \"Do the high-fast thing.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::nested-branch"),
+            "expected G::analyze::nested-branch, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn applies_parses_in_branch_condition() {
+        // AC5: BLOCKNAME.applies() parses inside if/elif.
+        let src = "\
+block fast_mode()
+    description: \"When the user wants fast processing.\"
+    flow:
+        \"Do fast processing.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if fast_mode.applies()
+            fast_mode()
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        // Should NOT have errors — applies() is valid in branch condition.
+        assert!(
+            !bag.has_error(),
+            "applies() in branch condition should be valid, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn applies_on_non_block_fires_error() {
+        // AC7: applies-on-non-block fires when receiver is a text declaration.
+        let src = "\
+text my_text = \"Some text.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if my_text.applies()
+            \"Do something.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::applies-on-non-block"),
+            "expected applies-on-non-block, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn applies_on_undescribed_block_fires_repairable() {
+        // AC6/AC7: applies-on-undescribed-block fires for same-file block without description.
+        let src = "\
+block my_block()
+    flow:
+        \"Do something.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if my_block.applies()
+            my_block()
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::applies-on-undescribed-block"),
+            "expected applies-on-undescribed-block, got: {:?}",
+            ids
+        );
+        // Should be repairable for same-file blocks.
+        let diag = bag.iter().find(|d| d.id == "G::analyze::applies-on-undescribed-block").unwrap();
+        assert_eq!(diag.classification, diagnostic::Classification::Repairable);
+    }
+
+    #[test]
+    fn applies_on_unknown_name_fires_non_block_error() {
+        // AC7: applies on unknown name.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if unknown_thing.applies()
+            \"Do something.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::applies-on-non-block"),
+            "expected applies-on-non-block for unknown receiver, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn context_in_branch_stays_inline() {
+        // AC9: context marker inside a branch body stays inline, does not surface in ### Context.
+        let src = "\
+text project_info = \"This is a monorepo project.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if mode == \"debug\"
+            context project_info
+            \"Run debug checks.\"
+        else
+            \"Run normal checks.\"
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                // context should NOT appear as a top-level ### Context section.
+                // The branch-scoped context inlines into the sub-step prose.
+                assert!(
+                    !markdown.contains("### Context"),
+                    "branch-scoped context should not surface in ### Context:\n{}",
+                    markdown
+                );
+                // The context text should appear inline in the branch sub-steps.
+                assert!(
+                    markdown.contains("Note: This is a monorepo project."),
+                    "branch-scoped context should be inline:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn constraint_in_branch_stays_inline() {
+        // AC9-parallel: constraint marker inside a branch body stays inline.
+        let src = "\
+text no_breaking_changes = \"Do not break backwards compatibility.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if scope == \"public\"
+            require no_breaking_changes
+            \"Update the public API docs.\"
+        else
+            \"Update internal docs.\"
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                // Constraint should NOT appear in ### Constraints.
+                assert!(
+                    !markdown.contains("### Constraints"),
+                    "branch-scoped constraint should not surface in ### Constraints:\n{}",
+                    markdown
+                );
+                // The constraint text should appear inline in the branch sub-steps.
+                assert!(
+                    markdown.contains("Do not break backwards compatibility."),
+                    "branch-scoped constraint should be inline:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn applies_descriptions_populated_in_expand() {
+        // AC6: applies_descriptions side-map is populated post-Step-1.
+        let src = "\
+block fast_mode()
+    description: \"When the user wants fast processing.\"
+    flow:
+        \"Do fast processing.\"
+
+block slow_mode()
+    description: \"When the user wants thorough processing.\"
+    flow:
+        \"Do slow processing.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if fast_mode.applies()
+            fast_mode()
+        elif slow_mode.applies()
+            slow_mode()
+        else
+            \"Do default processing.\"
+";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let file = analyze::analyze(file);
+        let arena = lower::lower(&file).expect("should lower");
+        let arena = expand::expand_step1(arena);
+        // Find the Branch node.
+        let branch = arena.nodes().iter().find_map(|n| match n {
+            ir::IrNode::Branch(br) => Some(br),
+            _ => None,
+        });
+        let branch = branch.expect("should have a Branch node");
+        let descs = branch.applies_descriptions.as_ref().expect("applies_descriptions should be populated");
+        assert_eq!(descs.get("fast_mode").map(|s| s.as_str()), Some("When the user wants fast processing."));
+        assert_eq!(descs.get("slow_mode").map(|s| s.as_str()), Some("When the user wants thorough processing."));
+    }
+
+    #[test]
+    fn pure_applies_branch_renders_decide_form() {
+        // AC8: Pure-applies branch arms render via description-keyed projection.
+        let src = "\
+block fast_mode()
+    description: \"When the user wants fast processing.\"
+    flow:
+        \"Do fast processing.\"
+
+block slow_mode()
+    description: \"When the user wants thorough processing.\"
+    flow:
+        \"Do slow processing.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if fast_mode.applies()
+            fast_mode()
+        elif slow_mode.applies()
+            slow_mode()
+        else
+            \"Do default processing.\"
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                assert!(
+                    markdown.contains("Decide which of the following applies"),
+                    "expected description-driven projection:\n{}",
+                    markdown
+                );
+                assert!(
+                    markdown.contains("When the user wants fast processing."),
+                    "expected fast_mode description in output:\n{}",
+                    markdown
+                );
+                assert!(
+                    markdown.contains("When the user wants thorough processing."),
+                    "expected slow_mode description in output:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn applies_no_parens_fires_diagnostic() {
+        // AC7: applies-no-parens — .applies without ().
+        let src = "\
+block my_block()
+    description: \"Test.\"
+    flow:
+        \"Do something.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if my_block.applies
+            \"Do something.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::applies-no-parens"),
+            "expected G::parse::applies-no-parens, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn applies_with_args_fires_diagnostic() {
+        // AC7: applies-with-args — .applies(arg) with arguments.
+        let src = "\
+block my_block()
+    description: \"Test.\"
+    flow:
+        \"Do something.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if my_block.applies(x)
+            \"Do something.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::applies-with-args"),
+            "expected G::parse::applies-with-args, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn branch_condition_equals_does_not_trigger_operator_in_expression() {
+        // AC2: `==` in `if` condition does NOT trigger `operator-in-expression`.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        if mode == \"fast\"
+            \"Do the fast thing.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::parse::operator-in-expression"),
+            "== in branch condition should not trigger operator-in-expression, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn applies_outside_branch_condition_is_parse_error() {
+        // AC5: applies() is rejected outside branch-condition position.
+        // Writing `my_block.applies()` as a flow statement should produce
+        // the specific `G::parse::applies-outside-condition` diagnostic.
+        let src = "\
+block my_block()
+    description: \"Test.\"
+    flow:
+        \"Do something.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        my_block.applies()
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::applies-outside-condition"),
+            "expected G::parse::applies-outside-condition, got: {:?}",
+            ids
+        );
+        // It should NOT compile successfully.
+        let outcome = compile_source(src, 0, "test.glyph.md");
+        match outcome {
+            Ok(CompileOutcome::Compiled { .. }) => {
+                panic!("applies() outside branch condition should not compile successfully");
+            }
+            _ => {
+                // Expected — diagnostics block compilation.
+            }
+        }
+    }
+
+    #[test]
     fn check_source_flags_tab_indent_as_repairable() {
         // Tab-indented source surfaces a `repairable` diagnostic, not an error.
         let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";

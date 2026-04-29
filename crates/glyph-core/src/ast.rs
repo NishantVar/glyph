@@ -112,6 +112,20 @@ pub enum FlowStmt {
     Call { target: String, args: Vec<String> },
     /// `return <expr>` — terminal-only at flow root.
     Return(ReturnExpr),
+    /// `if`/`elif`/`else` branch chain.
+    Branch {
+        condition: String,
+        then_body: Vec<FlowStmt>,
+        elif_branches: Vec<ElifBranch>,
+        else_body: Option<Vec<FlowStmt>>,
+    },
+}
+
+/// An `elif` arm in a branch chain.
+#[derive(Clone, Debug)]
+pub struct ElifBranch {
+    pub condition: String,
+    pub body: Vec<FlowStmt>,
 }
 
 /// The expression following `return`.

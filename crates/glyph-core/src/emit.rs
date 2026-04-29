@@ -4,7 +4,7 @@
 //! inline strings as Steps, constraint markers as bulleted Constraints. The output
 //! shape is fixed by `design/compiled-output.md`.
 
-use crate::ir::{IrArena, IrNode, Polarity};
+use crate::ir::{IrArena, IrBranch, IrNode, NodeId, Polarity};
 
 pub fn emit(arena: &IrArena) -> String {
     let root_id = arena
@@ -69,20 +69,21 @@ pub fn emit(arena: &IrArena) -> String {
     if !skill.steps.is_empty() {
         out.push_str("### Steps\n\n");
         for (idx, step_id) in skill.steps.iter().enumerate() {
-            let text = match arena.get(*step_id) {
-                IrNode::InlineInstruction(i) => i.text.clone(),
+            match arena.get(*step_id) {
+                IrNode::InlineInstruction(i) => {
+                    out.push_str(&format!("{}. {}\n", idx + 1, i.text));
+                }
+                IrNode::Branch(br) => {
+                    emit_branch(&mut out, arena, br, idx + 1);
+                }
                 IrNode::Call(c) => {
-                    // After Tier 1 expansion, all calls should have been inlined as
-                    // InlineInstruction nodes. Reaching here means validate failed to
-                    // catch an unresolved callee — this is a compiler bug.
                     panic!(
                         "IrNode::Call to `{}` survived past expand; validate should have caught this",
                         c.target
                     );
                 }
-                _ => panic!("Step node was not an InlineInstruction or Call"),
+                _ => panic!("Step node was not an InlineInstruction, Branch, or Call"),
             };
-            out.push_str(&format!("{}. {}\n", idx + 1, text));
         }
         out.push('\n');
     }
@@ -106,6 +107,120 @@ pub fn emit(arena: &IrArena) -> String {
         out.pop();
     }
     out
+}
+
+/// Emit a branch as a single numbered step with lettered sub-steps per arm.
+///
+/// Per `compiled-output.md` §Constraint Rendering:
+/// - Each arm is introduced by a condition header.
+/// - Step-projecting nodes become lettered sub-steps (`a.`, `b.`, `c.`).
+/// - Letters reset per arm.
+/// - Pure-applies branches use "Decide which of the following applies" form.
+fn emit_branch(out: &mut String, arena: &IrArena, br: &IrBranch, step_num: usize) {
+    // Check if this is a pure-applies branch (all conditions are .applies() calls).
+    let is_pure_applies = is_pure_applies_branch(br);
+
+    if is_pure_applies {
+        out.push_str(&format!(
+            "{}. Decide which of the following applies and follow only that path:\n",
+            step_num
+        ));
+        // Emit the "if" arm using its description.
+        emit_applies_arm(out, arena, br, &br.condition, &br.then_body);
+        // Emit elif arms.
+        for elif in &br.elif_branches {
+            emit_applies_arm(out, arena, br, &elif.condition, &elif.body);
+        }
+        // Emit else arm.
+        if let Some(else_body) = &br.else_body {
+            out.push_str("   Otherwise:\n");
+            emit_lettered_substeps(out, arena, else_body);
+        }
+    } else {
+        // Standard conditional form.
+        out.push_str(&format!("{}. If {}:\n", step_num, br.condition));
+        emit_lettered_substeps(out, arena, &br.then_body);
+        for elif in &br.elif_branches {
+            out.push_str(&format!("   If {}:\n", elif.condition));
+            emit_lettered_substeps(out, arena, &elif.body);
+        }
+        if let Some(else_body) = &br.else_body {
+            out.push_str("   Otherwise:\n");
+            emit_lettered_substeps(out, arena, else_body);
+        }
+    }
+}
+
+/// Emit an applies-arm using the resolved description from applies_descriptions.
+fn emit_applies_arm(
+    out: &mut String,
+    arena: &IrArena,
+    br: &IrBranch,
+    condition: &str,
+    body: &[NodeId],
+) {
+    // Extract block name from condition like "block_name.applies()"
+    let block_name = extract_applies_block_name(condition);
+    let description = block_name
+        .as_deref()
+        .and_then(|name| {
+            br.applies_descriptions
+                .as_ref()
+                .and_then(|map| map.get(name))
+        });
+    if let Some(desc) = description {
+        out.push_str(&format!("   When {}:\n", desc));
+    } else {
+        out.push_str(&format!("   If {}:\n", condition));
+    }
+    emit_lettered_substeps(out, arena, body);
+}
+
+/// Emit lettered sub-steps for a branch arm body.
+fn emit_lettered_substeps(out: &mut String, arena: &IrArena, body: &[NodeId]) {
+    let mut letter = b'a';
+    for node_id in body {
+        let text = match arena.get(*node_id) {
+            IrNode::InlineInstruction(i) => i.text.clone(),
+            IrNode::Call(c) => {
+                panic!(
+                    "IrNode::Call to `{}` survived past expand in branch body",
+                    c.target
+                );
+            }
+            IrNode::Branch(_) => {
+                // Nested branches flatten into prose (one level of structure only).
+                "(nested branch)".to_string()
+            }
+            _ => panic!("Unexpected node type in branch body"),
+        };
+        out.push_str(&format!("   {}. {}\n", letter as char, text));
+        letter += 1;
+    }
+}
+
+/// Check if a branch is a pure-applies branch (all conditions are single .applies() calls).
+fn is_pure_applies_branch(br: &IrBranch) -> bool {
+    if !is_applies_condition(&br.condition) {
+        return false;
+    }
+    for elif in &br.elif_branches {
+        if !is_applies_condition(&elif.condition) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Check if a condition string is a single `BLOCKNAME.applies()` call.
+fn is_applies_condition(condition: &str) -> bool {
+    condition.trim().ends_with(".applies()")
+}
+
+/// Extract the block name from a `BLOCKNAME.applies()` condition.
+fn extract_applies_block_name(condition: &str) -> Option<String> {
+    let trimmed = condition.trim();
+    trimmed.strip_suffix(".applies()").map(|s| s.to_string())
 }
 
 /// Deterministic constraint phrasing per `design/compiled-output.md` §Constraint Rendering.

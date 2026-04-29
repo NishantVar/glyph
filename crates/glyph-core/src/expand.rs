@@ -6,7 +6,7 @@
 //! - Tier 1 (inline): callee body < 150 words → inlined as InlineInstruction.
 
 use crate::ir::{IrArena, IrInlineInstruction, IrNode, Role};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Count words in resolved prose per `compiled-output.md` §Word Counting Rule.
 ///
@@ -91,6 +91,53 @@ pub fn expand_step1(mut arena: IrArena) -> IrArena {
                 text: body,
                 role: Role::Step,
             });
+        }
+    }
+
+    // Phase 2b: Populate applies_descriptions on Branch nodes.
+    // Collect block descriptions into a lookup map.
+    let mut block_descriptions: HashMap<String, String> = HashMap::new();
+    for n in arena.nodes() {
+        if let IrNode::Block(b) = n {
+            if let Some(ref desc) = b.description {
+                block_descriptions.insert(b.name.clone(), desc.clone());
+            }
+        }
+    }
+    // Walk Branch nodes and populate applies_descriptions.
+    let nodes = arena.nodes_mut();
+    for i in 0..nodes.len() {
+        if let IrNode::Branch(ref br) = nodes[i] {
+            let mut descs: BTreeMap<String, String> = BTreeMap::new();
+            // Check all conditions (if + elif) for .applies() patterns.
+            let mut conditions = vec![br.condition.clone()];
+            for elif in &br.elif_branches {
+                conditions.push(elif.condition.clone());
+            }
+            for cond in &conditions {
+                let applies_suffix = ".applies()";
+                let mut search_from = 0;
+                while let Some(pos) = cond[search_from..].find(applies_suffix) {
+                    let abs_pos = search_from + pos;
+                    let receiver = &cond[..abs_pos];
+                    let block_name = receiver
+                        .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
+                        .next()
+                        .unwrap_or("");
+                    if !block_name.is_empty() {
+                        if let Some(desc) = block_descriptions.get(block_name) {
+                            descs.insert(block_name.to_string(), desc.clone());
+                        }
+                    }
+                    search_from = abs_pos + applies_suffix.len();
+                }
+            }
+            if !descs.is_empty() {
+                // We need to mutate the Branch — clone data and replace.
+                let mut br_clone = br.clone();
+                br_clone.applies_descriptions = Some(descs);
+                nodes[i] = IrNode::Branch(br_clone);
+            }
         }
     }
 
