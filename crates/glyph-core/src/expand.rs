@@ -6,7 +6,7 @@
 //! - Tier 1 (inline): callee body < 150 words → inlined as InlineInstruction.
 
 use crate::ir::{IrArena, IrInlineInstruction, IrNode, Role};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Count words in resolved prose per `compiled-output.md` §Word Counting Rule.
 ///
@@ -64,33 +64,57 @@ pub fn expand_step1(mut arena: IrArena) -> IrArena {
         }
     }
 
-    // Phase 2: Tier 1 inline expansion.
-    // For each Call node whose resolved_body is Some and whose callee's word
-    // count is < 150, replace the Call with an InlineInstruction.
+    // Phase 2: Tier assignment and Tier 1 inline expansion.
+    //
+    // Collect block metadata for tier decisions:
+    // - flow_statement_count: number of individual flow statements
+    // - call_count: how many times each block is called in the skill
+    let mut block_flow_counts: HashMap<String, usize> = HashMap::new();
+    for n in arena.nodes() {
+        if let IrNode::Block(b) = n {
+            block_flow_counts.insert(b.name.clone(), b.flow_statements.len());
+        }
+    }
+
+    // Count call frequency per target across all Call nodes.
+    let mut call_frequency: HashMap<String, usize> = HashMap::new();
+    for n in arena.nodes() {
+        if let IrNode::Call(c) = n {
+            *call_frequency.entry(c.target.clone()).or_insert(0) += 1;
+        }
+    }
+
     let nodes = arena.nodes_mut();
     for i in 0..nodes.len() {
-        let should_inline = if let IrNode::Call(c) = &nodes[i] {
-            if let Some(ref body) = c.resolved_body {
-                let wc = block_word_counts.get(&c.target).copied().unwrap_or_else(|| count_words(body));
-                wc < 150
-            } else {
-                false
+        if let IrNode::Call(c) = &nodes[i] {
+            if c.resolved_body.is_none() {
+                continue;
             }
-        } else {
-            false
-        };
-
-        if should_inline {
-            let (node_id, body) = if let IrNode::Call(c) = &nodes[i] {
-                (c.node_id, c.resolved_body.clone().unwrap())
-            } else {
-                unreachable!()
-            };
-            nodes[i] = IrNode::InlineInstruction(IrInlineInstruction {
-                node_id,
-                text: body,
-                role: Role::Step,
+            let target = &c.target;
+            let wc = block_word_counts.get(target).copied().unwrap_or_else(|| {
+                count_words(c.resolved_body.as_ref().unwrap())
             });
+            let stmt_count = block_flow_counts.get(target).copied().unwrap_or(0);
+            let freq = call_frequency.get(target).copied().unwrap_or(1);
+
+            // Tier 2 conditions: >= 4 flow statements, or called 2+ times.
+            let is_tier2 = stmt_count >= 4 || freq >= 2;
+
+            if is_tier2 {
+                // Mark as Tier 2 — leave the Call node in place.
+                let mut c_clone = c.clone();
+                c_clone.projection_tier = Some(2);
+                nodes[i] = IrNode::Call(c_clone);
+            } else if wc < 150 {
+                // Tier 1: inline.
+                let node_id = c.node_id;
+                let body = c.resolved_body.clone().unwrap();
+                nodes[i] = IrNode::InlineInstruction(IrInlineInstruction {
+                    node_id,
+                    text: body,
+                    role: Role::Step,
+                });
+            }
         }
     }
 

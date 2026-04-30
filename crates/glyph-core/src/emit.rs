@@ -5,6 +5,7 @@
 //! shape is fixed by `design/compiled-output.md`.
 
 use crate::ir::{IrArena, IrBranch, IrNode, NodeId, Polarity};
+use std::collections::HashSet;
 
 pub fn emit(arena: &IrArena) -> String {
     let root_id = arena
@@ -66,6 +67,10 @@ pub fn emit(arena: &IrArena) -> String {
     }
 
     // ### Steps (numbered list).
+    // Track Tier 2 procedure references in first-reference order.
+    let mut procedure_order: Vec<String> = Vec::new();
+    let mut procedure_seen: HashSet<String> = HashSet::new();
+
     if !skill.steps.is_empty() {
         out.push_str("### Steps\n\n");
         for (idx, step_id) in skill.steps.iter().enumerate() {
@@ -76,9 +81,20 @@ pub fn emit(arena: &IrArena) -> String {
                 IrNode::Branch(br) => {
                     emit_branch(&mut out, arena, br, idx + 1);
                 }
+                IrNode::Call(c) if c.projection_tier == Some(2) => {
+                    let kebab_name = c.target.replace('_', "-");
+                    out.push_str(&format!(
+                        "{}. Follow the {} procedure below.\n",
+                        idx + 1,
+                        kebab_name
+                    ));
+                    if procedure_seen.insert(c.target.clone()) {
+                        procedure_order.push(c.target.clone());
+                    }
+                }
                 IrNode::Call(c) => {
                     panic!(
-                        "IrNode::Call to `{}` survived past expand; validate should have caught this",
+                        "IrNode::Call to `{}` survived past expand without tier assignment",
                         c.target
                     );
                 }
@@ -100,6 +116,27 @@ pub fn emit(arena: &IrArena) -> String {
             out.push_str(&format!("- {}\n", line));
         }
         out.push('\n');
+    }
+
+    // ### Procedure: <name> sections (Tier 2, in first-reference order).
+    for target_name in &procedure_order {
+        let kebab_name = target_name.replace('_', "-");
+        // Find the Block node for this target.
+        let block = arena.nodes().iter().find_map(|n| {
+            if let IrNode::Block(b) = n {
+                if b.name == *target_name {
+                    return Some(b);
+                }
+            }
+            None
+        });
+        if let Some(block) = block {
+            out.push_str(&format!("### Procedure: {}\n\n", kebab_name));
+            for (i, stmt) in block.flow_statements.iter().enumerate() {
+                out.push_str(&format!("{}. {}\n", i + 1, stmt));
+            }
+            out.push('\n');
+        }
     }
 
     // Trim trailing blank line for byte-stable output.
@@ -182,6 +219,10 @@ fn emit_lettered_substeps(out: &mut String, arena: &IrArena, body: &[NodeId]) {
     for node_id in body {
         let text = match arena.get(*node_id) {
             IrNode::InlineInstruction(i) => i.text.clone(),
+            IrNode::Call(c) if c.projection_tier == Some(2) => {
+                let kebab_name = c.target.replace('_', "-");
+                format!("Follow the {} procedure.", kebab_name)
+            }
             IrNode::Call(c) => {
                 panic!(
                     "IrNode::Call to `{}` survived past expand in branch body",

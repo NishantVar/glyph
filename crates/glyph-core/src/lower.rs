@@ -115,6 +115,7 @@ fn lower_flow_body(
                     args: args.clone(),
                     resolved_body,
                     site_modifier: site_modifier.clone(),
+                    projection_tier: None,
                 }));
                 ids.push(id);
             }
@@ -225,12 +226,22 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
                     _ => None,
                 })
                 .collect();
+            // Collect individual flow statement strings for Tier 2 procedure emission.
+            let flow_statements: Vec<String> = block
+                .flow
+                .iter()
+                .filter_map(|stmt| match stmt {
+                    FlowStmt::InlineString(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect();
             let next = NodeId(arena.len() as u32);
             arena.push(IrNode::Block(IrBlock {
                 node_id: next,
                 name: block.name.clone(),
                 description: block.description.clone(),
                 body_text,
+                flow_statements,
                 resolved_word_count: None,
                 outgoing_calls,
             }));
@@ -302,6 +313,7 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
                     args: args.clone(),
                     resolved_body,
                     site_modifier: site_modifier.clone(),
+                    projection_tier: None,
                 }));
                 step_ids.push(id);
             }
