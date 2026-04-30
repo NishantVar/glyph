@@ -1148,9 +1148,12 @@ impl<'a> Parser<'a> {
                                 }
                             }
                             self.expect(&TokenKind::Rparen)?;
+                            // Check for optional `with "modifier"`.
+                            let site_modifier = self.try_parse_with_modifier()?;
                             Ok(FlowStmt::Call {
                                 target: kw_val,
                                 args,
+                                site_modifier,
                             })
                         } else if matches!(self.peek().kind, TokenKind::Dot) {
                             // Detect `name.applies()` used outside a branch condition.
@@ -1192,6 +1195,23 @@ impl<'a> Parser<'a> {
                                     message: "unexpected `.` in flow statement".into(),
                                 })
                             }
+                        } else if matches!(&self.peek().kind, TokenKind::Ident(w) if w == "with") {
+                            // `bare_name with "..."` — `with` only attaches to calls.
+                            let span = self.peek().span;
+                            self.bag.push(
+                                Diagnostic::error(
+                                    "G::parse::with-on-bare-name",
+                                    "`with` modifier requires a call expression (add parentheses)",
+                                    SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                ),
+                                span,
+                            );
+                            // Consume `with` and its string to avoid parse cascade.
+                            self.pos += 1;
+                            if matches!(self.peek().kind, TokenKind::StringLit(_)) {
+                                self.pos += 1;
+                            }
+                            Ok(FlowStmt::BareName(kw_val))
                         } else {
                             Ok(FlowStmt::BareName(kw_val))
                         }
@@ -1315,6 +1335,55 @@ impl<'a> Parser<'a> {
             result.push_str(part);
         }
         Ok(result)
+    }
+
+    /// Try to parse `with "modifier text"` after a call expression.
+    /// Returns `Some(text)` if found, `None` otherwise.
+    /// Emits `G::parse::multiple-with` if a second `with` clause follows.
+    fn try_parse_with_modifier(&mut self) -> Result<Option<String>, ParseError> {
+        if let TokenKind::Ident(kw) = &self.peek().kind {
+            if kw == "with" {
+                let _with_span = self.peek().span;
+                self.pos += 1;
+                let modifier = match &self.peek().kind {
+                    TokenKind::StringLit(s) => {
+                        let v = s.clone();
+                        self.pos += 1;
+                        v
+                    }
+                    _ => {
+                        return Err(ParseError::Unexpected {
+                            span: self.peek().span,
+                            message: "expected string literal after `with`".into(),
+                        });
+                    }
+                };
+                // Check for chained `with` — `G::parse::multiple-with`.
+                if let TokenKind::Ident(kw2) = &self.peek().kind {
+                    if kw2 == "with" {
+                        let span = self.peek().span;
+                        self.bag.push(
+                            Diagnostic::error(
+                                "G::parse::multiple-with",
+                                "only one `with` modifier is allowed per call site",
+                                SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                            ),
+                            span,
+                        );
+                        // Consume the second `with` and its string to avoid parse errors.
+                        self.pos += 1;
+                        if matches!(self.peek().kind, TokenKind::StringLit(_)) {
+                            self.pos += 1;
+                        }
+                    }
+                }
+                Ok(Some(modifier))
+            } else {
+                Ok(None)
+            }
+        } else {
+            Ok(None)
+        }
     }
 
     /// After a `:`, consume the rest of the line as a single string literal.

@@ -231,6 +231,7 @@ mod tests {
             target: "missing_block".into(),
             args: vec![],
             resolved_body: None, // unresolved!
+            site_modifier: None,
         }));
         arena.set_root_skill(skill_id);
         let err = validate(&arena).unwrap_err();
@@ -257,6 +258,7 @@ mod tests {
             target: "foo".into(),
             args: vec![],
             resolved_body: Some("Do something.".into()),
+            site_modifier: None,
         }));
         // Block "foo" that calls itself (direct recursion).
         arena.push(IrNode::Block(IrBlock {
@@ -322,6 +324,7 @@ mod tests {
             target: "foo".into(),
             args: vec![],
             resolved_body: Some("Do something.".into()),
+            site_modifier: None,
         }));
         // Block "foo" calls "bar".
         arena.push(IrNode::Block(IrBlock {
