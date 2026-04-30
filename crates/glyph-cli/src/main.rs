@@ -70,6 +70,19 @@ enum Command {
         #[arg(long)]
         strict: bool,
     },
+    /// Validate that a compiled `.md` structurally matches its `.ir.json`.
+    ///
+    /// Runs the 26 deterministic Phase 6b structural checks against the
+    /// agent-rewritten Markdown and the resolved IR JSON. See `expand.md` §4.
+    ValidateOutput {
+        /// Path to the `.ir.json` file.
+        ir_json_path: PathBuf,
+        /// Path to the compiled `.md` file.
+        md_path: PathBuf,
+        /// Diagnostic output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
+        format: OutputFormat,
+    },
     /// Run Phase 3a deterministic source rewrites. Rewrites `.glyph.md` files
     /// in place. Analogous to `rustfmt` / `gofmt`.
     Fmt {
@@ -92,7 +105,43 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Compile { path, format, emit_ir, strict } => run_compile(path, format, emit_ir, strict),
         Command::Check { path, format, strict } => run_check(path, format, strict),
+        Command::ValidateOutput { ir_json_path, md_path, format } => run_validate_output(ir_json_path, md_path, format),
         Command::Fmt { path, check } => run_fmt(path, check),
+    }
+}
+
+fn run_validate_output(ir_json_path: PathBuf, md_path: PathBuf, format: OutputFormat) -> ExitCode {
+    let ir_json = match std::fs::read_to_string(&ir_json_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("glyph: cannot read `{}`: {}", ir_json_path.display(), e);
+            return ExitCode::from(3);
+        }
+    };
+    let md = match std::fs::read_to_string(&md_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("glyph: cannot read `{}`: {}", md_path.display(), e);
+            return ExitCode::from(3);
+        }
+    };
+
+    let violations = glyph_core::validate_output::validate_output(&ir_json, &md);
+
+    if violations.is_empty() {
+        ExitCode::from(0)
+    } else {
+        match format {
+            OutputFormat::Json => {
+                let json = glyph_core::validate_output::violations_to_json(&violations);
+                println!("{}", json);
+            }
+            OutputFormat::Pretty => {
+                let pretty = glyph_core::validate_output::violations_to_pretty(&violations);
+                eprintln!("{}", pretty);
+            }
+        }
+        ExitCode::from(1)
     }
 }
 

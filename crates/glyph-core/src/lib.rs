@@ -18,6 +18,7 @@ pub mod slot;
 pub mod span;
 pub mod tokenize;
 pub mod validate;
+pub mod validate_output;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
