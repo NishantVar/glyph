@@ -585,6 +585,31 @@ fn analyze_skill(
         }
     }
 
+    // G::analyze::empty-skill-body — skill with no description, no flow, no
+    // constraints, no effects. A skill must have at least one of flow (with
+    // statements) or constraints (with markers) to be projectable.
+    if skill.description.is_none()
+        && skill.flow.is_empty()
+        && skill.body_constraints.is_empty()
+        && skill.effects.is_empty()
+        && skill.body_context.is_empty()
+        && skill.context_section.is_empty()
+    {
+        let span = spanned.span;
+        bag.push(
+            Diagnostic::error(
+                "G::analyze::empty-skill-body",
+                format!(
+                    "`skill {}` has no `description:`, `flow:`, `constraints:`, or `effects:` — nothing to project",
+                    skill.name
+                ),
+                SourceSpan::from_byte_span(file_label, span, line_index),
+            ),
+            span,
+        );
+        return; // No point checking further if the skill is empty.
+    }
+
     // Check missing description — repairable (Phase 3 Repair generates one).
     if skill.description.is_none() {
         let span = spanned.span;
@@ -964,6 +989,61 @@ pub fn stdlib_block_effects(name: &str) -> Option<&'static [&'static str]> {
     }
 }
 
+/// Emit `G::analyze::nominal-mismatch` for a type name mismatch at a call boundary.
+///
+/// In the full type system, this fires when a call passes a value whose nominal
+/// type doesn't match the callee's parameter type annotation. The MVP grammar
+/// does not yet have type annotations, so this is a placeholder that fires when
+/// explicitly invoked by the compiler infrastructure once type annotations land.
+pub fn emit_nominal_mismatch(
+    actual_type: &str,
+    expected_type: &str,
+    context_name: &str,
+    span: Span,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    bag.push(
+        Diagnostic::error(
+            "G::analyze::nominal-mismatch",
+            format!(
+                "type mismatch at call boundary for `{}`: expected `{}`, got `{}`",
+                context_name, expected_type, actual_type
+            ),
+            SourceSpan::from_byte_span(file_label, span, line_index),
+        ),
+        span,
+    );
+}
+
+/// Emit `G::analyze::lossy-coercion` for a lossy numeric conversion.
+///
+/// Fires when a float value is passed where an integer is expected, or similar
+/// lossy conversions. The MVP grammar does not yet support numeric literals or
+/// type annotations, so this is a placeholder that fires when explicitly invoked.
+pub fn emit_lossy_coercion(
+    from_type: &str,
+    to_type: &str,
+    context_name: &str,
+    span: Span,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    bag.push(
+        Diagnostic::error(
+            "G::analyze::lossy-coercion",
+            format!(
+                "lossy coercion for `{}`: `{}` cannot be losslessly converted to `{}`",
+                context_name, from_type, to_type
+            ),
+            SourceSpan::from_byte_span(file_label, span, line_index),
+        ),
+        span,
+    );
+}
+
 fn analyze_export_block(
     spanned: &crate::span::Spanned<crate::ast::ExportBlockDecl>,
     file_label: &str,
@@ -1073,5 +1153,39 @@ mod tests {
             Classification::Error,
             "imported block applies-on-undescribed-block should be Error, not Repairable"
         );
+    }
+
+    #[test]
+    fn nominal_mismatch_fires() {
+        let mut bag = DiagBag::new();
+        let source = "test";
+        let line_index = LineIndex::new(source);
+        let span = Span::new(0, 0, source.len() as u32);
+
+        emit_nominal_mismatch("Report", "TestResult", "my_call", span, "test.glyph.md", &line_index, &mut bag);
+
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.contains(&"G::analyze::nominal-mismatch"), "ids: {:?}", ids);
+        let diag = bag.iter().find(|d| d.id == "G::analyze::nominal-mismatch").unwrap();
+        assert_eq!(diag.classification, Classification::Error);
+        assert!(diag.message.contains("Report"));
+        assert!(diag.message.contains("TestResult"));
+    }
+
+    #[test]
+    fn lossy_coercion_fires() {
+        let mut bag = DiagBag::new();
+        let source = "test";
+        let line_index = LineIndex::new(source);
+        let span = Span::new(0, 0, source.len() as u32);
+
+        emit_lossy_coercion("float", "int", "my_param", span, "test.glyph.md", &line_index, &mut bag);
+
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.contains(&"G::analyze::lossy-coercion"), "ids: {:?}", ids);
+        let diag = bag.iter().find(|d| d.id == "G::analyze::lossy-coercion").unwrap();
+        assert_eq!(diag.classification, Classification::Error);
+        assert!(diag.message.contains("float"));
+        assert!(diag.message.contains("int"));
     }
 }

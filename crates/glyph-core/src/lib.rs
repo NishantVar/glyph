@@ -3501,4 +3501,92 @@ skill delegate(task = "do something")
             "subagent's spawns_agent effect should propagate, got: {:?}", ids
         );
     }
+
+    // --- Slice 23: Diagnostic coverage backfill ---
+
+    #[test]
+    fn parse_nested_flow_diagnostic() {
+        // `flow:` inside `flow:` is illegal.
+        let src = "\
+skill foo()
+    description: \"Foo.\"
+    flow:
+        \"Do step one.\"
+        flow:
+            \"Nested flow not allowed.\"
+";
+        let bag = check_source(src, 0, "nested_flow.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.contains(&"G::parse::nested-flow"), "ids: {:?}", ids);
+    }
+
+    #[test]
+    fn analyze_empty_skill_body_diagnostic() {
+        // A skill with no description, no flow, no constraints, no effects.
+        let src = "\
+skill empty()
+";
+        let bag = check_source(src, 0, "empty_skill.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.contains(&"G::analyze::empty-skill-body"), "ids: {:?}", ids);
+    }
+
+    #[test]
+    fn parse_multiple_skills_diagnostic() {
+        // More than one `skill` in a file triggers multiple-skills.
+        let src = "\
+skill foo()
+    description: \"Foo.\"
+    flow:
+        \"Do foo.\"
+
+skill bar()
+    description: \"Bar.\"
+    flow:
+        \"Do bar.\"
+";
+        let bag = check_source(src, 0, "two_skills.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.contains(&"G::parse::multiple-skills"), "ids: {:?}", ids);
+    }
+
+    #[test]
+    fn parse_duplicate_subsection_diagnostic() {
+        // Two `description:` in same skill triggers duplicate-subsection.
+        let src = "\
+skill foo()
+    description: \"First.\"
+    description: \"Second.\"
+    flow:
+        \"Do something.\"
+";
+        let bag = check_source(src, 0, "dup.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.contains(&"G::parse::duplicate-subsection"), "ids: {:?}", ids);
+    }
+
+    #[test]
+    fn parse_operator_in_expression_diagnostic() {
+        // Operator chars in expression position trigger operator-in-expression.
+        let src = "\
+skill foo()
+    description: \"Foo.\"
+    flow:
+        \"prefix\" + \"suffix\"
+";
+        let bag = check_source(src, 0, "op.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.contains(&"G::parse::operator-in-expression"), "ids: {:?}", ids);
+        assert_eq!(bag.exit_code(), 2, "operator-in-expression is repairable (exit 2)");
+    }
+
+    #[test]
+    fn parse_mixed_indent_diagnostic() {
+        // Source with spaces then tab on the same line triggers mixed-indent.
+        let src = "skill foo()\n \tflow:\n";
+        let bag = check_source(src, 0, "mixed.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.contains(&"G::parse::mixed-indent"), "ids: {:?}", ids);
+        assert_eq!(bag.exit_code(), 2, "mixed-indent is repairable (exit 2)");
+    }
 }
