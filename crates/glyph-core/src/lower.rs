@@ -164,8 +164,16 @@ fn lower_flow_body(
 }
 
 pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
+    lower_with_imports(file, &BTreeMap::new())
+}
+
+/// Lower with additional imported text values available for constraint/context resolution.
+pub fn lower_with_imports(
+    file: &SourceFile,
+    imported_texts: &BTreeMap<String, String>,
+) -> Result<IrArena, LowerError> {
     // Collect text declarations into a name → value map.
-    let mut texts: BTreeMap<String, String> = BTreeMap::new();
+    let mut texts: BTreeMap<String, String> = imported_texts.clone();
     for d in &file.decls {
         if let Decl::Text(t) = d {
             texts.insert(t.node.name.clone(), t.node.value.clone());
@@ -336,6 +344,7 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
                         }
                     }
                     ReturnExpr::Name(name) => Some(name.clone()),
+                    ReturnExpr::Inline(s) => Some(s.clone()),
                 };
                 return_text = text;
             }

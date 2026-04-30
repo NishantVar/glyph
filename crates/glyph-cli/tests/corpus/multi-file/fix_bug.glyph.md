@@ -1,0 +1,59 @@
+import "./prefs.glyph.md" { preserve_existing_patterns }
+import "./repo_tools.glyph.md" { inspect_repo, has_test_suite }
+
+skill fix_bug(scope = ".")
+    description: "Debug and fix a bug in the codebase with minimal, targeted changes."
+    require preserve_existing_patterns
+    avoid unrelated_edits
+    context:
+        codebase_assumptions
+        "The bug is assumed to be reproducible locally."
+
+    effects: reads_files, writes_files, runs_commands
+
+    flow:
+        inspect_repo(scope) with "focus on the area where the bug was reported"
+        if deep_investigation.applies()
+            "Trace the reported symptoms through multiple code layers."
+            "Gather extensive evidence from logs, tests, and code."
+        else
+            identify_root_cause()
+        "Don't propose a fix until you've confirmed the root cause."
+        if has_test_suite.applies()
+            "Run the existing test suite before making changes to establish a baseline."
+        else
+            "Manually verify the fix by inspecting the changed code paths."
+        patch_minimally()
+        validate_fix()
+        return summarize_changes()
+
+text unrelated_edits = "Making changes outside the requested scope or fixing unrelated issues."
+
+text codebase_assumptions = "This codebase follows standard project conventions and has a test suite."
+
+block deep_investigation()
+    description: "The bug spans multiple subsystems or layers."
+    flow:
+        "Map the full dependency chain of the affected code."
+        "Identify every subsystem involved in the bug."
+        "Create a minimal reproduction case."
+        "Document the cross-cutting impact."
+
+block identify_root_cause()
+    flow:
+        "Trace the reported symptoms to their origin."
+        "Confirm the root cause with evidence from logs, tests, or code inspection."
+
+block patch_minimally()
+    flow:
+        "Apply the smallest change that fixes the root cause."
+        "Preserve existing patterns and avoid unnecessary refactoring."
+
+block validate_fix()
+    flow:
+        "Verify the fix resolves the original issue."
+        "Run related tests to check for regressions."
+
+block summarize_changes()
+    flow:
+        "List what was changed and why."

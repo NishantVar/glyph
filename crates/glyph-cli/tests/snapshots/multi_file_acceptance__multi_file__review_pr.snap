@@ -1,0 +1,32 @@
+---
+source: crates/glyph-cli/tests/multi_file_acceptance.rs
+expression: md
+---
+---
+name: review_pr
+description: Review a pull request for correctness, style, and safety.
+effects: [reads_files, runs_commands]
+---
+
+## Parameters
+
+- **scope** (default: ".")
+- **risk** (default: "medium")
+
+## Instructions
+
+### Steps
+
+1. Load and follow the procedure in `repo_tools/inspect-repo.md`.
+2. If risk == "high":
+   a. Note: This is a high-risk change that may affect security-sensitive code paths.
+   b. Identify the test framework used in {scope}. Run the existing test suite. Collect pass/fail results and any error output. Produce a structured test result with pass count, fail count, and failure details.
+   c. Verify no security-sensitive code paths are affected.
+   Otherwise:
+   a. Spot-check test coverage for changed code.
+3. Summarize findings with actionable feedback Return the result of Produce a structured review with approval status and comments..
+
+### Constraints
+
+- Review every changed file, not just the ones that look interesting.
+- Verify that tests exist for changed behavior and that they pass.
