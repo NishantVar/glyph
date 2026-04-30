@@ -22,6 +22,35 @@ pub enum Decl {
     /// full `export block` lowering ships in slice 7/13.
     ExportBlock(Spanned<ExportBlockDecl>),
     Block(Spanned<BlockDecl>),
+    /// `import "<path>" { name1, name2 }` or `import "<path>" as <alias>`.
+    Import(Spanned<ImportDecl>),
+}
+
+/// An `import` declaration at the top of a source file.
+#[derive(Clone, Debug)]
+pub struct ImportDecl {
+    /// The path string from the source (e.g., `"./prefs.glyph.md"`).
+    pub path: String,
+    /// The import form: selective `{ name1, name2 as alias }` or whole-module `as alias`.
+    pub kind: ImportKind,
+}
+
+/// Selective vs. whole-module import.
+#[derive(Clone, Debug)]
+pub enum ImportKind {
+    /// `import "<path>" { name1, name2 as alias2 }` — named imports.
+    Selective(Vec<ImportName>),
+    /// `import "<path>" as <alias>` — whole-module import.
+    WholeModule { alias: String },
+}
+
+/// A single name in a selective import, optionally aliased.
+#[derive(Clone, Debug)]
+pub struct ImportName {
+    /// The name as declared in the imported file.
+    pub name: String,
+    /// Optional local alias (`as <alias>`).
+    pub alias: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -167,4 +196,6 @@ pub struct BlockDecl {
 pub struct TextDecl {
     pub name: String,
     pub value: String,
+    /// Whether this text was declared with `export`.
+    pub exported: bool,
 }

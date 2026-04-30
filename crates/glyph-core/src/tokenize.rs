@@ -26,6 +26,10 @@ pub enum TokenKind {
     Dot,
     /// `==` — branch condition equality (not a value-level operator).
     DoubleEquals,
+    /// `{` — opening brace (selective imports).
+    Lbrace,
+    /// `}` — closing brace (selective imports).
+    Rbrace,
     /// End of file.
     Eof,
 }
@@ -159,6 +163,18 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
             } else if b == b'.' {
                 tokens.push(Token {
                     kind: TokenKind::Dot,
+                    span: Span::new(file_id, p as u32, (p + 1) as u32),
+                });
+                p += 1;
+            } else if b == b'{' {
+                tokens.push(Token {
+                    kind: TokenKind::Lbrace,
+                    span: Span::new(file_id, p as u32, (p + 1) as u32),
+                });
+                p += 1;
+            } else if b == b'}' {
+                tokens.push(Token {
+                    kind: TokenKind::Rbrace,
                     span: Span::new(file_id, p as u32, (p + 1) as u32),
                 });
                 p += 1;

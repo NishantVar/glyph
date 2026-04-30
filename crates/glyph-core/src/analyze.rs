@@ -82,9 +82,172 @@ pub fn analyze_with_diagnostics(
             }
             Decl::Block(_) => {}
             Decl::Text(_) => {}
+            Decl::Import(_) => {}
         }
     }
     file
+}
+
+/// Run Phase 2 with import-augmented name sets.
+///
+/// Like `analyze_with_diagnostics` but also considers imported texts and blocks
+/// when resolving names. Tracks which imported names are actually used via
+/// `used_import_names`.
+pub fn analyze_with_imports(
+    file: &SourceFile,
+    file_id: u32,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+    imported_texts: &HashSet<String>,
+    imported_blocks: &HashSet<String>,
+    used_import_names: &mut HashSet<String>,
+) -> SourceFile {
+    // Collect local text declaration names.
+    let local_text_names: HashSet<&str> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Text(t) => Some(t.node.name.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    // Collect local block declaration names.
+    let local_block_names: HashSet<&str> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Block(b) => Some(b.node.name.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    // Combined sets including imports.
+    let mut text_names: HashSet<&str> = local_text_names;
+    let imported_text_refs: Vec<String> = imported_texts.iter().cloned().collect();
+    for t in &imported_text_refs {
+        text_names.insert(t.as_str());
+    }
+
+    let mut block_names: HashSet<&str> = local_block_names;
+    let imported_block_refs: Vec<String> = imported_blocks.iter().cloned().collect();
+    for b in &imported_block_refs {
+        block_names.insert(b.as_str());
+    }
+
+    // Collect block declarations for effect inference (local only).
+    let block_decls: HashMap<&str, &crate::ast::BlockDecl> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Block(b) => Some((b.node.name.as_str(), &b.node)),
+            _ => None,
+        })
+        .collect();
+
+    for decl in &file.decls {
+        match decl {
+            Decl::Skill(spanned) => {
+                analyze_skill_with_usage_tracking(
+                    spanned, file_id, file_label, line_index, bag,
+                    &text_names, &block_names, &block_decls,
+                    imported_texts, imported_blocks, used_import_names,
+                );
+            }
+            Decl::ExportBlock(spanned) => {
+                analyze_export_block(spanned, file_label, line_index, bag);
+            }
+            Decl::Block(_) | Decl::Text(_) | Decl::Import(_) => {}
+        }
+    }
+    file.clone()
+}
+
+/// Like `analyze_skill` but also tracks which imported names are used.
+fn analyze_skill_with_usage_tracking(
+    spanned: &Spanned<crate::ast::Skill>,
+    file_id: u32,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+    text_names: &HashSet<&str>,
+    block_names: &HashSet<&str>,
+    block_decls: &HashMap<&str, &crate::ast::BlockDecl>,
+    imported_texts: &HashSet<String>,
+    imported_blocks: &HashSet<String>,
+    used_import_names: &mut HashSet<String>,
+) {
+    // Run the normal analysis.
+    analyze_skill(spanned, file_id, file_label, line_index, bag, text_names, block_names, block_decls);
+
+    // Track usage: walk flow/constraints/context to see which imported names are referenced.
+    let skill = &spanned.node;
+
+    // Check constraint markers.
+    for marker in &skill.body_constraints {
+        if imported_texts.contains(&marker.name) {
+            used_import_names.insert(marker.name.clone());
+        }
+    }
+
+    // Check context entries.
+    for entry in &skill.body_context {
+        if let crate::ast::ContextEntry::NameRef(name) = entry {
+            if imported_texts.contains(name) {
+                used_import_names.insert(name.clone());
+            }
+        }
+    }
+    for entry in &skill.context_section {
+        if let crate::ast::ContextEntry::NameRef(name) = entry {
+            if imported_texts.contains(name) {
+                used_import_names.insert(name.clone());
+            }
+        }
+    }
+
+    // Check flow statements.
+    track_flow_usage(&skill.flow, imported_texts, imported_blocks, used_import_names);
+}
+
+fn track_flow_usage(
+    flow: &[crate::ast::FlowStmt],
+    imported_texts: &HashSet<String>,
+    imported_blocks: &HashSet<String>,
+    used: &mut HashSet<String>,
+) {
+    for stmt in flow {
+        match stmt {
+            crate::ast::FlowStmt::Call { target, .. } => {
+                if imported_blocks.contains(target) {
+                    used.insert(target.clone());
+                }
+            }
+            crate::ast::FlowStmt::ConstraintMarker(marker) => {
+                if imported_texts.contains(&marker.name) {
+                    used.insert(marker.name.clone());
+                }
+            }
+            crate::ast::FlowStmt::ContextMarker(entry) => {
+                if let crate::ast::ContextEntry::NameRef(name) = entry {
+                    if imported_texts.contains(name) {
+                        used.insert(name.clone());
+                    }
+                }
+            }
+            crate::ast::FlowStmt::Branch { then_body, elif_branches, else_body, .. } => {
+                track_flow_usage(then_body, imported_texts, imported_blocks, used);
+                for elif in elif_branches {
+                    track_flow_usage(&elif.body, imported_texts, imported_blocks, used);
+                }
+                if let Some(eb) = else_body {
+                    track_flow_usage(eb, imported_texts, imported_blocks, used);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn analyze_skill(

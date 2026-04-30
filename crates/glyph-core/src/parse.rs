@@ -5,7 +5,8 @@
 
 use crate::ast::{
     BlockDecl, ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl, ElifBranch,
-    ExportBlockDecl, FlowStmt, Param, ReturnExpr, Skill, SourceFile, TextDecl,
+    ExportBlockDecl, FlowStmt, ImportDecl, ImportKind, ImportName, Param, ReturnExpr, Skill,
+    SourceFile, TextDecl,
 };
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::slot::scan_slots;
@@ -303,11 +304,40 @@ impl<'a> Parser<'a> {
                     let d = self.parse_block_decl()?;
                     decls.push(Decl::Block(d));
                 }
+                "import" => {
+                    let d = self.parse_import()?;
+                    decls.push(Decl::Import(d));
+                }
                 "export" => {
-                    // Slice 4 supports `export block <name>(<params>)` headers only.
-                    // Body is skipped — full lowering ships in a later slice.
-                    let d = self.parse_export_block()?;
-                    decls.push(Decl::ExportBlock(d));
+                    // Peek at the word after `export` to decide: `export block` or `export text`.
+                    let saved = self.pos;
+                    self.pos += 1; // skip `export`
+                    let next_kw = match &self.peek().kind {
+                        TokenKind::Ident(s) => s.clone(),
+                        _ => {
+                            return Err(ParseError::Unexpected {
+                                span: self.peek().span,
+                                message: "expected `block` or `text` after `export`".into(),
+                            });
+                        }
+                    };
+                    self.pos = saved; // restore
+                    match next_kw.as_str() {
+                        "block" => {
+                            let d = self.parse_export_block()?;
+                            decls.push(Decl::ExportBlock(d));
+                        }
+                        "text" => {
+                            let d = self.parse_export_text()?;
+                            decls.push(Decl::Text(d));
+                        }
+                        _ => {
+                            return Err(ParseError::Unexpected {
+                                span: self.peek().span,
+                                message: format!("expected `block` or `text` after `export`, found `{}`", next_kw),
+                            });
+                        }
+                    }
                 }
                 other => {
                     return Err(ParseError::Unexpected {
@@ -377,6 +407,102 @@ impl<'a> Parser<'a> {
             },
             span,
         ))
+    }
+
+    /// Parse `import "<path>" { name1, name2 as alias }` or `import "<path>" as <alias>`.
+    fn parse_import(&mut self) -> Result<Spanned<ImportDecl>, ParseError> {
+        let (_, kw_span) = self.expect_ident(Some("import"))?;
+        // Path must be a string literal.
+        let path = match &self.peek().kind {
+            TokenKind::StringLit(s) => {
+                let v = s.clone();
+                self.pos += 1;
+                v
+            }
+            _ => {
+                return Err(ParseError::Unexpected {
+                    span: self.peek().span,
+                    message: "expected string literal (path) after `import`".into(),
+                });
+            }
+        };
+
+        let kind = match &self.peek().kind {
+            TokenKind::Lbrace => {
+                // Selective import: `{ name1, name2 as alias2 }`
+                self.pos += 1; // consume `{`
+                let mut names = Vec::new();
+                if !matches!(self.peek().kind, TokenKind::Rbrace) {
+                    loop {
+                        let (name, _) = self.expect_ident(None)?;
+                        let alias = if let TokenKind::Ident(kw) = &self.peek().kind {
+                            if kw == "as" {
+                                self.pos += 1;
+                                let (alias_name, _) = self.expect_ident(None)?;
+                                Some(alias_name)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        names.push(ImportName { name, alias });
+                        match &self.peek().kind {
+                            TokenKind::Comma => {
+                                self.pos += 1;
+                                // Allow trailing comma before `}`.
+                                if matches!(self.peek().kind, TokenKind::Rbrace) {
+                                    break;
+                                }
+                            }
+                            _ => break,
+                        }
+                    }
+                }
+                self.expect(&TokenKind::Rbrace)?;
+                ImportKind::Selective(names)
+            }
+            TokenKind::Ident(kw) if kw == "as" => {
+                // Whole-module import: `as <alias>`
+                self.pos += 1;
+                let (alias, _) = self.expect_ident(None)?;
+                ImportKind::WholeModule { alias }
+            }
+            _ => {
+                return Err(ParseError::Unexpected {
+                    span: self.peek().span,
+                    message: "expected `{` (selective import) or `as` (whole-module import) after import path".into(),
+                });
+            }
+        };
+
+        let end_span = self.tokens[self.pos.saturating_sub(1)].span;
+        let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
+        Ok(Spanned::new(ImportDecl { path, kind }, span))
+    }
+
+    /// Parse `export text <name> = "<value>"`.
+    fn parse_export_text(&mut self) -> Result<Spanned<TextDecl>, ParseError> {
+        let (_, kw_span) = self.expect_ident(Some("export"))?;
+        let (_, _) = self.expect_ident(Some("text"))?;
+        let (name, _) = self.expect_ident(None)?;
+        self.expect(&TokenKind::Equals)?;
+        let value = match &self.peek().kind {
+            TokenKind::StringLit(s) => {
+                let v = s.clone();
+                self.pos += 1;
+                v
+            }
+            _ => {
+                return Err(ParseError::Unexpected {
+                    span: self.peek().span,
+                    message: "expected string literal as `export text` value".into(),
+                });
+            }
+        };
+        let end_span = self.tokens[self.pos - 1].span;
+        let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
+        Ok(Spanned::new(TextDecl { name, value, exported: true }, span))
     }
 
     /// Parse `export block <name>(<params>)` header only (slice 4 placeholder).
@@ -1316,6 +1442,14 @@ impl<'a> Parser<'a> {
                     parts.push("=".into());
                     self.pos += 1;
                 }
+                TokenKind::Lbrace => {
+                    parts.push("{".into());
+                    self.pos += 1;
+                }
+                TokenKind::Rbrace => {
+                    parts.push("}".into());
+                    self.pos += 1;
+                }
             }
         }
         if parts.is_empty() {
@@ -1420,7 +1554,7 @@ impl<'a> Parser<'a> {
         };
         let end_span = self.tokens[self.pos - 1].span;
         let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
-        Ok(Spanned::new(TextDecl { name, value }, span))
+        Ok(Spanned::new(TextDecl { name, value, exported: false }, span))
     }
 }
 

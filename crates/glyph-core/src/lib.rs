@@ -17,10 +17,12 @@ pub mod span;
 pub mod tokenize;
 pub mod validate;
 
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
-use crate::diagnostic::DiagBag;
-use crate::span::LineIndex;
+use crate::ast::{Decl, ImportKind};
+use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
+use crate::span::{LineIndex, Span};
 
 #[derive(Debug)]
 pub enum CompileError {
@@ -139,6 +141,330 @@ pub fn compile_file(path: &Path) -> Result<CompileOutcome, CompileError> {
         })?;
     }
     Ok(outcome)
+}
+
+/// Resolve an import path relative to the importing file's directory.
+///
+/// If the path doesn't end with `.glyph.md` and no file exists at the literal
+/// path, appends `.glyph.md` and retries. Returns the canonical path.
+fn resolve_import_path(importer: &Path, import_path: &str) -> Option<PathBuf> {
+    let base_dir = importer.parent().unwrap_or_else(|| Path::new("."));
+    let candidate = base_dir.join(import_path);
+    if candidate.is_file() {
+        return candidate.canonicalize().ok();
+    }
+    // Auto-resolution: try appending `.glyph.md`.
+    if !import_path.ends_with(".glyph.md") {
+        let with_ext = base_dir.join(format!("{}.glyph.md", import_path));
+        if with_ext.is_file() {
+            return with_ext.canonicalize().ok();
+        }
+    }
+    None
+}
+
+/// Describes what a file exports — used for cross-file name resolution.
+#[derive(Clone, Debug)]
+pub struct ExportedNames {
+    /// Names of exported `text` declarations.
+    pub texts: HashSet<String>,
+    /// Names of exported `block` declarations.
+    pub blocks: HashSet<String>,
+    /// Names of `skill` declarations (not importable selectively).
+    pub skills: HashSet<String>,
+    /// Names of private (non-exported) declarations.
+    pub privates: HashSet<String>,
+}
+
+/// Extract the exported names from a parsed source file.
+fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
+    let mut exports = ExportedNames {
+        texts: HashSet::new(),
+        blocks: HashSet::new(),
+        skills: HashSet::new(),
+        privates: HashSet::new(),
+    };
+    for decl in &file.decls {
+        match decl {
+            Decl::Text(t) => {
+                if t.node.exported {
+                    exports.texts.insert(t.node.name.clone());
+                } else {
+                    exports.privates.insert(t.node.name.clone());
+                }
+            }
+            Decl::ExportBlock(b) => {
+                exports.blocks.insert(b.node.name.clone());
+            }
+            Decl::Block(b) => {
+                exports.privates.insert(b.node.name.clone());
+            }
+            Decl::Skill(s) => {
+                exports.skills.insert(s.node.name.clone());
+            }
+            Decl::Import(_) => {}
+        }
+    }
+    exports
+}
+
+/// Run Phase 1 (Parse) and Phase 2 (Analyze) on a file at `path`, resolving
+/// imports from dependency files. This is the import-aware version of
+/// `check_source`.
+///
+/// Handles:
+/// - Path resolution (relative to importer)
+/// - Missing file detection (`G::analyze::missing-file`)
+/// - Circular import detection (`G::analyze::circular-import`)
+/// - Private/skill import validation (`G::analyze::import-private`, `G::analyze::import-skill`)
+/// - Duplicate/unused import detection
+/// - Cross-file name resolution
+pub fn check_file(path: &Path) -> DiagBag {
+    let mut bag = DiagBag::new();
+    let canon = match path.canonicalize() {
+        Ok(c) => c,
+        Err(_) => {
+            let span = Span::new(0, 0, 0);
+            let li = LineIndex::new("");
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::missing-file",
+                    format!("cannot read `{}`", path.display()),
+                    SourceSpan::from_byte_span(path.to_string_lossy().as_ref(), span, &li),
+                ),
+                span,
+            );
+            return bag;
+        }
+    };
+
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    let mut stack: Vec<PathBuf> = Vec::new();
+    check_file_recursive(&canon, &mut bag, &mut visited, &mut stack);
+    bag
+}
+
+fn check_file_recursive(
+    path: &Path,
+    bag: &mut DiagBag,
+    visited: &mut HashSet<PathBuf>,
+    stack: &mut Vec<PathBuf>,
+) -> Option<ExportedNames> {
+    // Cycle detection.
+    if let Some(pos) = stack.iter().position(|p| p == path) {
+        let cycle: Vec<String> = stack[pos..]
+            .iter()
+            .chain(std::iter::once(&path.to_path_buf()))
+            .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
+            .collect();
+        let cycle_str = cycle.join(" -> ");
+        let span = Span::new(0, 0, 0);
+        let li = LineIndex::new("");
+        bag.push(
+            Diagnostic::error(
+                "G::analyze::circular-import",
+                format!("circular import: {}", cycle_str),
+                SourceSpan::from_byte_span(
+                    path.file_name().unwrap_or_default().to_string_lossy().as_ref(),
+                    span,
+                    &li,
+                ),
+            ),
+            span,
+        );
+        return None;
+    }
+
+    // Already processed (no cycle, just shared dependency).
+    if visited.contains(path) {
+        // Re-parse to extract exports (could cache, but keep it simple).
+        let source = std::fs::read_to_string(path).ok()?;
+        let line_index = LineIndex::new(&source);
+        let mut tmp_bag = DiagBag::new();
+        let file_label = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let parsed = parse::parse_with_diagnostics(&source, 0, &file_label, &line_index, &mut tmp_bag)?;
+        return Some(extract_exports(&parsed));
+    }
+
+    visited.insert(path.to_path_buf());
+    stack.push(path.to_path_buf());
+
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => {
+            let span = Span::new(0, 0, 0);
+            let li = LineIndex::new("");
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::missing-file",
+                    format!("cannot read `{}`", path.display()),
+                    SourceSpan::from_byte_span(
+                        path.file_name().unwrap_or_default().to_string_lossy().as_ref(),
+                        span,
+                        &li,
+                    ),
+                ),
+                span,
+            );
+            stack.pop();
+            return None;
+        }
+    };
+
+    let file_label = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let line_index = LineIndex::new(&source);
+
+    let parsed = parse::parse_with_diagnostics(&source, 0, &file_label, &line_index, bag);
+    let file = match parsed {
+        Some(f) => f,
+        None => {
+            stack.pop();
+            return None;
+        }
+    };
+
+    // Collect imported names for cross-file resolution.
+    let mut imported_texts: HashSet<String> = HashSet::new();
+    let mut imported_blocks: HashSet<String> = HashSet::new();
+    let mut seen_import_paths: HashMap<PathBuf, Span> = HashMap::new();
+    let mut used_import_names: HashSet<String> = HashSet::new();
+    let mut all_import_names: Vec<(String, Span)> = Vec::new();
+
+    for decl in &file.decls {
+        if let Decl::Import(import_spanned) = decl {
+            let import = &import_spanned.node;
+            let import_span = import_spanned.span;
+
+            // Resolve the import path.
+            let resolved = resolve_import_path(path, &import.path);
+            let resolved = match resolved {
+                Some(r) => r,
+                None => {
+                    bag.push(
+                        Diagnostic::error(
+                            "G::analyze::missing-file",
+                            format!("imported file `{}` not found", import.path),
+                            SourceSpan::from_byte_span(&file_label, import_span, &line_index),
+                        ),
+                        import_span,
+                    );
+                    continue;
+                }
+            };
+
+            // Duplicate import detection.
+            if let Some(prev_span) = seen_import_paths.get(&resolved) {
+                bag.push(
+                    Diagnostic {
+                        id: "G::analyze::duplicate-import".into(),
+                        classification: Classification::Repairable,
+                        message: format!("duplicate import of `{}`", import.path),
+                        span: SourceSpan::from_byte_span(&file_label, import_span, &line_index),
+                        related: vec![SourceSpan::from_byte_span(&file_label, *prev_span, &line_index)],
+                        hints: vec!["merge the import lists or remove the duplicate".into()],
+                    },
+                    import_span,
+                );
+                continue;
+            }
+            seen_import_paths.insert(resolved.clone(), import_span);
+
+            // Recursively check/parse the dependency.
+            let dep_exports = check_file_recursive(&resolved, bag, visited, stack);
+            let dep_exports = match dep_exports {
+                Some(e) => e,
+                None => continue,
+            };
+
+            // Validate each imported name.
+            match &import.kind {
+                ImportKind::Selective(names) => {
+                    for imp_name in names {
+                        let local = imp_name.alias.as_deref().unwrap_or(&imp_name.name);
+                        all_import_names.push((local.to_string(), import_span));
+
+                        if dep_exports.skills.contains(&imp_name.name) {
+                            bag.push(
+                                Diagnostic::error(
+                                    "G::analyze::import-skill",
+                                    format!("`{}` is a `skill` and cannot be selectively imported", imp_name.name),
+                                    SourceSpan::from_byte_span(&file_label, import_span, &line_index),
+                                ),
+                                import_span,
+                            );
+                        } else if dep_exports.privates.contains(&imp_name.name) {
+                            bag.push(
+                                Diagnostic::error(
+                                    "G::analyze::import-private",
+                                    format!("`{}` is not exported from `{}`", imp_name.name, import.path),
+                                    SourceSpan::from_byte_span(&file_label, import_span, &line_index),
+                                ),
+                                import_span,
+                            );
+                        } else if dep_exports.texts.contains(&imp_name.name) {
+                            imported_texts.insert(local.to_string());
+                        } else if dep_exports.blocks.contains(&imp_name.name) {
+                            imported_blocks.insert(local.to_string());
+                        } else {
+                            bag.push(
+                                Diagnostic::error(
+                                    "G::analyze::import-private",
+                                    format!("`{}` is not exported from `{}`", imp_name.name, import.path),
+                                    SourceSpan::from_byte_span(&file_label, import_span, &line_index),
+                                ),
+                                import_span,
+                            );
+                        }
+                    }
+                }
+                ImportKind::WholeModule { alias } => {
+                    // Whole-module import: all exported names available as `alias.name`.
+                    // For now, just record that the alias is used. Whole-module imports
+                    // don't selectively import names so they skip per-name validation.
+                    all_import_names.push((alias.clone(), import_span));
+                    // Make all exported names available prefixed.
+                    for t in &dep_exports.texts {
+                        imported_texts.insert(format!("{}.{}", alias, t));
+                    }
+                    for b in &dep_exports.blocks {
+                        imported_blocks.insert(format!("{}.{}", alias, b));
+                    }
+                }
+            }
+        }
+    }
+
+    // Run Phase 2 with import-augmented name sets.
+    let _ = analyze::analyze_with_imports(
+        &file,
+        0,
+        &file_label,
+        &line_index,
+        bag,
+        &imported_texts,
+        &imported_blocks,
+        &mut used_import_names,
+    );
+
+    // Unused import detection.
+    for (name, span) in &all_import_names {
+        if !used_import_names.contains(name) {
+            bag.push(
+                Diagnostic {
+                    id: "G::analyze::unused-import".into(),
+                    classification: Classification::Repairable,
+                    message: format!("imported name `{}` is never used", name),
+                    span: SourceSpan::from_byte_span(&file_label, *span, &line_index),
+                    related: Vec::new(),
+                    hints: vec!["remove the unused import".into()],
+                },
+                *span,
+            );
+        }
+    }
+
+    stack.pop();
+    Some(extract_exports(&file))
 }
 
 /// Map `foo.glyph.md` → `foo.md` next to the source file.
@@ -1520,6 +1846,102 @@ skill main()
             }
             other => panic!("expected Call, got: {:?}", other),
         }
+    }
+
+    #[test]
+    fn import_selective_parses() {
+        let src = r#"import "./prefs.glyph.md" { preserve_existing_patterns }
+
+skill fix_bug()
+    description: "Fix a bug."
+    flow:
+        "Do something."
+"#;
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let import = file.decls.iter().find_map(|d| match d {
+            ast::Decl::Import(i) => Some(&i.node),
+            _ => None,
+        });
+        let import = import.expect("import should be present");
+        assert_eq!(import.path, "./prefs.glyph.md");
+        match &import.kind {
+            ast::ImportKind::Selective(names) => {
+                assert_eq!(names.len(), 1);
+                assert_eq!(names[0].name, "preserve_existing_patterns");
+                assert!(names[0].alias.is_none());
+            }
+            _ => panic!("expected selective import"),
+        }
+    }
+
+    #[test]
+    fn import_whole_module_parses() {
+        let src = r#"import "./prefs.glyph.md" as prefs
+
+skill fix_bug()
+    description: "Fix a bug."
+    flow:
+        "Do something."
+"#;
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let import = file.decls.iter().find_map(|d| match d {
+            ast::Decl::Import(i) => Some(&i.node),
+            _ => None,
+        });
+        let import = import.expect("import should be present");
+        assert_eq!(import.path, "./prefs.glyph.md");
+        match &import.kind {
+            ast::ImportKind::WholeModule { alias } => {
+                assert_eq!(alias, "prefs");
+            }
+            _ => panic!("expected whole-module import"),
+        }
+    }
+
+    #[test]
+    fn import_cross_file_name_resolution() {
+        // AC1: fix_bug.glyph.md resolves names imported from prefs.glyph.md
+        // and repo_tools.glyph.md.
+        let dir = tempfile::tempdir().unwrap();
+
+        // prefs.glyph.md — export text
+        let prefs_path = dir.path().join("prefs.glyph.md");
+        std::fs::write(&prefs_path, r#"export text preserve_existing_patterns = "Prefer existing patterns."
+"#).unwrap();
+
+        // repo_tools.glyph.md — export block
+        let tools_path = dir.path().join("repo_tools.glyph.md");
+        std::fs::write(&tools_path, r#"export block inspect_repo(scope = ".")
+    description: "Inspect the repo."
+    flow:
+        "Examine the repository at {scope}."
+        return context
+"#).unwrap();
+
+        // fix_bug.glyph.md — imports from both
+        let fix_path = dir.path().join("fix_bug.glyph.md");
+        std::fs::write(&fix_path, r#"import "./prefs.glyph.md" { preserve_existing_patterns }
+import "./repo_tools.glyph.md" { inspect_repo }
+
+skill fix_bug(scope = ".")
+    description: "Fix a bug."
+    require preserve_existing_patterns
+    effects: reads_files
+    flow:
+        inspect_repo(scope)
+"#).unwrap();
+
+        let bag = check_file(&fix_path);
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        // Should NOT have undefined-name or undefined-call errors.
+        assert!(
+            !ids.contains(&"G::analyze::undefined-name"),
+            "imported text should resolve, got: {:?}", ids
+        );
+        assert!(
+            !ids.contains(&"G::analyze::undefined-call"),
+            "imported block should resolve, got: {:?}", ids
+        );
     }
 
     #[test]
