@@ -59,9 +59,15 @@ fn serialize_param(param: &IrParam, node_id: &str) -> Value {
     m.insert("name".into(), Value::String(param.name.clone()));
     // type: omitted when duck-typed (always omitted in current IR)
     if let Some(ref default) = param.default {
+        // default is pre-rendered with surrounding quotes for strings (e.g., `"."`).
+        // Strip the quotes for the JSON value.
+        let raw = default
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or(default);
         m.insert(
             "default".into(),
-            json!({ "kind": "string", "value": default }),
+            json!({ "kind": "string", "value": raw }),
         );
     }
     Value::Object(m)

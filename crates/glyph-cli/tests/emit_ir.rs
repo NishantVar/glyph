@@ -367,6 +367,30 @@ fn emit_ir_context_node_serializes_correctly() {
 }
 
 #[test]
+fn emit_ir_params_serialize_with_correct_default() {
+    let source = r#"skill summarize(scope = ".", target)
+    description: "Summarize."
+    flow:
+        "Inspect files under {scope}."
+        "Write to {target}."
+"#;
+    let v = compile_and_read_ir("params.glyph.md", source);
+    let params = v["skill"]["params"].as_array().unwrap();
+    assert_eq!(params.len(), 2);
+
+    // scope has default "."
+    let scope = &params[0];
+    assert_eq!(scope["name"], "scope");
+    assert_eq!(scope["default"]["kind"], "string");
+    assert_eq!(scope["default"]["value"], ".");
+
+    // target has no default (required)
+    let target = &params[1];
+    assert_eq!(target["name"], "target");
+    assert!(target.get("default").map_or(true, |d| d.is_null()));
+}
+
+#[test]
 fn emit_ir_conforms_to_schema_full_skill() {
     let (_dir, src) = setup_tempdir("with_context.glyph.md");
     let result = run_compile_emit_ir(&src);
