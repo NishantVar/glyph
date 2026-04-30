@@ -106,9 +106,13 @@ pub struct IrCall {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site_modifier: Option<String>,
     /// Projection tier assigned by Expand Step 1.
-    /// `None` before expand runs; `Some(2)` = same-file procedure.
+    /// `None` before expand runs; `Some(2)` = same-file procedure; `Some(3)` = external file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projection_tier: Option<u8>,
+    /// Relative file path for Tier 3 (external-file) projections.
+    /// E.g., `repo_tools/inspect-repo.md`. Populated by Expand Step 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub procedure_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
