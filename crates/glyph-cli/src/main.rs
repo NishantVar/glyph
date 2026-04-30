@@ -103,7 +103,8 @@ fn run_check(path: PathBuf, format: OutputFormat) -> ExitCode {
             }
         };
         let label = file.display().to_string();
-        let bag = glyph_core::check_source(&source, 0, &label);
+        // Use import-aware check when the file path is available.
+        let bag = glyph_core::check_file(&file);
         emit_diagnostics(&bag, &label, &source, format);
         let code = bag.exit_code();
         worst = combine_exit_codes(worst, code);
