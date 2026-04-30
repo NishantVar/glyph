@@ -97,6 +97,30 @@ pub fn analyze_with_diagnostics(
         }
     }
 
+    // G::analyze::name-collision — duplicate export names.
+    {
+        let mut seen_exports: HashMap<&str, Span> = HashMap::new();
+        for decl in &file.decls {
+            let (name, span) = match decl {
+                Decl::ExportBlock(b) => (b.node.name.as_str(), b.span),
+                Decl::Text(t) if t.node.exported => (t.node.name.as_str(), t.span),
+                _ => continue,
+            };
+            if let Some(_prev_span) = seen_exports.get(name) {
+                bag.push(
+                    Diagnostic::error(
+                        "G::analyze::name-collision",
+                        format!("duplicate export name `{}`", name),
+                        SourceSpan::from_byte_span(file_label, span, line_index),
+                    ),
+                    span,
+                );
+            } else {
+                seen_exports.insert(name, span);
+            }
+        }
+    }
+
     // Library detection: file with zero skills.
     let has_skill = file.decls.iter().any(|d| matches!(d, Decl::Skill(_)));
     if !has_skill {
