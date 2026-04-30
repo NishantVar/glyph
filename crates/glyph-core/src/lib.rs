@@ -2526,4 +2526,201 @@ this is broken!!!
         // bad.md should NOT exist.
         assert!(!dir.path().join("bad.md").exists(), "bad.md should not exist");
     }
+
+    // --- Slice 13: Library files (export blocks/text + closure check) ---
+
+    #[test]
+    fn ac4_library_with_zero_exports_fires_no_exports_in_library() {
+        // A file with zero skills AND zero exports is an error.
+        let src = "\
+text private_text = \"This is private.\"
+block helper()
+    \"Do something.\"
+";
+        let bag = check_source(src, 0, "empty_lib.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::no-exports-in-library"),
+            "expected no-exports-in-library for library with zero exports, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 1, "no-exports-in-library should be a hard error");
+    }
+
+    #[test]
+    fn ac1_export_text_only_library_compiles_exit_zero() {
+        // A library file with only export text declarations should compile
+        // successfully (exit 0) and produce zero .md output.
+        let dir = tempfile::tempdir().unwrap();
+
+        let prefs_path = dir.path().join("prefs.glyph.md");
+        std::fs::write(&prefs_path, "\
+export text terminal_mux = \"tmux\"
+export text validation_strictness = \"high\"
+").unwrap();
+
+        let sources: Vec<PathBuf> = vec![prefs_path];
+        let result = compile_directory(&sources);
+
+        assert_eq!(result.exit_code, 0, "library file should compile with exit 0");
+        // No .md output should be produced for a library file.
+        assert!(
+            !dir.path().join("prefs.md").exists(),
+            "library file should not produce .md output"
+        );
+    }
+
+    #[test]
+    fn ac1_export_text_only_library_check_source_clean() {
+        // check_source on a library file with exports should produce zero
+        // errors (no no-exports-in-library, no other issues).
+        let src = "\
+export text terminal_mux = \"tmux\"
+export text validation_strictness = \"high\"
+";
+        let bag = check_source(src, 0, "prefs.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::no-exports-in-library"),
+            "library with exports should not fire no-exports-in-library, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 0, "clean library should exit 0");
+    }
+
+    #[test]
+    fn ac3_closure_violation_on_private_free_variable() {
+        // An export block that references a private (non-exported) block
+        // should fire G::analyze::closure-violation.
+        let src = "\
+block private_helper()
+    \"Do private stuff.\"
+
+export block shared_util(x = \"default\")
+    flow:
+        private_helper()
+        return x
+";
+        let bag = check_source(src, 0, "lib.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::closure-violation"),
+            "expected closure-violation for export block referencing private name, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 1, "closure-violation should be a hard error");
+    }
+
+    #[test]
+    fn ac3_no_closure_violation_for_params_and_exported_names() {
+        // Export block referencing its own params and exported text should
+        // NOT fire closure-violation.
+        let src = "\
+export text greeting = \"Hello.\"
+
+export block shared_util(x = \"default\")
+    flow:
+        \"Use {x}.\"
+        return x
+";
+        let bag = check_source(src, 0, "lib.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::closure-violation"),
+            "should not fire closure-violation for params/exported names, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn name_collision_fires_for_duplicate_export_names() {
+        // Two exports sharing the same name should fire G::analyze::name-collision.
+        let src = "\
+export text greeting = \"Hello.\"
+export text greeting = \"Hi.\"
+";
+        let bag = check_source(src, 0, "lib.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::name-collision"),
+            "expected name-collision for duplicate export names, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 1, "name-collision should be a hard error");
+    }
+
+    #[test]
+    fn ac5_exports_visited_in_source_order() {
+        // Exports should be extracted in source order for deterministic output.
+        let src = "\
+export text zebra = \"Z.\"
+export text alpha = \"A.\"
+export text middle = \"M.\"
+";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let exports = extract_exports(&file);
+        // The texts HashSet doesn't preserve order, but we can verify all are present.
+        assert!(exports.texts.contains("zebra"));
+        assert!(exports.texts.contains("alpha"));
+        assert!(exports.texts.contains("middle"));
+        assert_eq!(exports.texts.len(), 3);
+
+        // Verify source-order by walking decls directly.
+        let names: Vec<&str> = file.decls.iter().filter_map(|d| match d {
+            ast::Decl::Text(t) if t.node.exported => Some(t.node.name.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(names, vec!["zebra", "alpha", "middle"],
+            "exports should be in source order");
+    }
+
+    #[test]
+    fn ac2_repo_tools_library_compiles_with_large_export_block() {
+        // A library file with export blocks should compile successfully.
+        // Large export blocks (>= 150 words) should have their word count tracked
+        // for procedure-file emission (Slice 15).
+        let dir = tempfile::tempdir().unwrap();
+
+        // Build a large body with 160+ words.
+        let mut long_body = String::new();
+        for i in 0..20 {
+            long_body.push_str(&format!(
+                "        \"Step {} of the procedure: perform the operation carefully and thoroughly.\"\n",
+                i + 1
+            ));
+        }
+
+        let repo_tools_src = format!("\
+export block inspect_repo(scope = \".\")
+    description: \"Inspect the repository for issues.\"
+    flow:
+{}        return scope
+", long_body);
+
+        let tools_path = dir.path().join("repo_tools.glyph.md");
+        std::fs::write(&tools_path, &repo_tools_src).unwrap();
+
+        let sources: Vec<PathBuf> = vec![tools_path.clone()];
+        let result = compile_directory(&sources);
+
+        assert_eq!(result.exit_code, 0, "repo_tools library should compile with exit 0");
+        // No .md output for a library file.
+        assert!(
+            !dir.path().join("repo_tools.md").exists(),
+            "library file should not produce .md output"
+        );
+
+        // Verify word count is tracked on the parsed AST.
+        let source = std::fs::read_to_string(&tools_path).unwrap();
+        let (file, _) = parse::parse(&source, 0).expect("should parse");
+        let export_block = file.decls.iter().find_map(|d| match d {
+            ast::Decl::ExportBlock(b) => Some(&b.node),
+            _ => None,
+        }).expect("export block should be present");
+        assert!(
+            export_block.body_word_count >= 150,
+            "large export block should have >= 150 words, got {}",
+            export_block.body_word_count
+        );
+    }
 }

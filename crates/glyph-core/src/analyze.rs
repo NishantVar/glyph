@@ -72,19 +72,75 @@ pub fn analyze_with_diagnostics(
         })
         .collect();
 
+    // Collect private (non-exported) names for closure checking.
+    let private_names: HashSet<&str> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Text(t) if !t.node.exported => Some(t.node.name.as_str()),
+            Decl::Block(b) => Some(b.node.name.as_str()),
+            _ => None,
+        })
+        .collect();
+
     for decl in &file.decls {
         match decl {
             Decl::Skill(spanned) => {
                 analyze_skill(spanned, file_id, file_label, line_index, bag, &text_names, &block_names, &block_decls)
             }
             Decl::ExportBlock(spanned) => {
-                analyze_export_block(spanned, file_label, line_index, bag);
+                analyze_export_block(spanned, file_label, line_index, bag, &private_names);
             }
             Decl::Block(_) => {}
             Decl::Text(_) => {}
             Decl::Import(_) => {}
         }
     }
+
+    // G::analyze::name-collision — duplicate export names.
+    {
+        let mut seen_exports: HashMap<&str, Span> = HashMap::new();
+        for decl in &file.decls {
+            let (name, span) = match decl {
+                Decl::ExportBlock(b) => (b.node.name.as_str(), b.span),
+                Decl::Text(t) if t.node.exported => (t.node.name.as_str(), t.span),
+                _ => continue,
+            };
+            if let Some(_prev_span) = seen_exports.get(name) {
+                bag.push(
+                    Diagnostic::error(
+                        "G::analyze::name-collision",
+                        format!("duplicate export name `{}`", name),
+                        SourceSpan::from_byte_span(file_label, span, line_index),
+                    ),
+                    span,
+                );
+            } else {
+                seen_exports.insert(name, span);
+            }
+        }
+    }
+
+    // Library detection: file with zero skills.
+    let has_skill = file.decls.iter().any(|d| matches!(d, Decl::Skill(_)));
+    if !has_skill {
+        let has_export = file.decls.iter().any(|d| {
+            matches!(d, Decl::ExportBlock(_))
+                || matches!(d, Decl::Text(t) if t.node.exported)
+        });
+        if !has_export {
+            let span = crate::span::Span::new(file_id, 0, 0);
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::no-exports-in-library",
+                    "file has no `skill` and no `export` declarations",
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+        }
+    }
+
     file
 }
 
@@ -146,6 +202,17 @@ pub fn analyze_with_imports(
         })
         .collect();
 
+    // Collect private (non-exported) names for closure checking.
+    let private_names: HashSet<&str> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Text(t) if !t.node.exported => Some(t.node.name.as_str()),
+            Decl::Block(b) => Some(b.node.name.as_str()),
+            _ => None,
+        })
+        .collect();
+
     for decl in &file.decls {
         match decl {
             Decl::Skill(spanned) => {
@@ -156,11 +223,56 @@ pub fn analyze_with_imports(
                 );
             }
             Decl::ExportBlock(spanned) => {
-                analyze_export_block(spanned, file_label, line_index, bag);
+                analyze_export_block(spanned, file_label, line_index, bag, &private_names);
             }
             Decl::Block(_) | Decl::Text(_) | Decl::Import(_) => {}
         }
     }
+
+    // G::analyze::name-collision — duplicate export names.
+    {
+        let mut seen_exports: HashMap<&str, Span> = HashMap::new();
+        for decl in &file.decls {
+            let (name, span) = match decl {
+                Decl::ExportBlock(b) => (b.node.name.as_str(), b.span),
+                Decl::Text(t) if t.node.exported => (t.node.name.as_str(), t.span),
+                _ => continue,
+            };
+            if let Some(_prev_span) = seen_exports.get(name) {
+                bag.push(
+                    Diagnostic::error(
+                        "G::analyze::name-collision",
+                        format!("duplicate export name `{}`", name),
+                        SourceSpan::from_byte_span(file_label, span, line_index),
+                    ),
+                    span,
+                );
+            } else {
+                seen_exports.insert(name, span);
+            }
+        }
+    }
+
+    // Library detection: file with zero skills.
+    let has_skill = file.decls.iter().any(|d| matches!(d, Decl::Skill(_)));
+    if !has_skill {
+        let has_export = file.decls.iter().any(|d| {
+            matches!(d, Decl::ExportBlock(_))
+                || matches!(d, Decl::Text(t) if t.node.exported)
+        });
+        if !has_export {
+            let span = crate::span::Span::new(file_id, 0, 0);
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::no-exports-in-library",
+                    "file has no `skill` and no `export` declarations",
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+        }
+    }
+
     file.clone()
 }
 
@@ -793,6 +905,7 @@ fn analyze_export_block(
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
+    private_names: &HashSet<&str>,
 ) {
     let decl = &spanned.node;
     for p in &decl.params {
@@ -830,6 +943,25 @@ fn analyze_export_block(
             },
             span,
         );
+    }
+
+    // G::analyze::closure-violation — export block must not reference private names.
+    let param_names: HashSet<&str> = decl.params.iter().map(|p| p.name.as_str()).collect();
+    for body_ref in &decl.body_refs {
+        if private_names.contains(body_ref.as_str()) && !param_names.contains(body_ref.as_str()) {
+            let span = spanned.span;
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::closure-violation",
+                    format!(
+                        "`export block {}` references private name `{}` which is not visible to importers",
+                        decl.name, body_ref
+                    ),
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+        }
     }
 }
 
