@@ -138,11 +138,13 @@ pub struct IrElifBranch {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "snake_case")]
 pub enum Role {
+    InputContract,
     Step,
     Constraint,
     Context,
+    OutputContract,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

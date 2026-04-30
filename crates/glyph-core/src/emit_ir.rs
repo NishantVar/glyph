@@ -18,9 +18,11 @@ fn node_id_str(id: NodeId) -> String {
 /// Serialize a Role enum to its JSON string per ir-json-schema.md §Enum Serialization.
 fn role_str(role: Role) -> &'static str {
     match role {
+        Role::InputContract => "input_contract",
         Role::Step => "step",
         Role::Constraint => "constraint",
         Role::Context => "context",
+        Role::OutputContract => "output_contract",
     }
 }
 
