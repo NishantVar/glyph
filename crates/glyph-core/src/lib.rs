@@ -1945,6 +1945,188 @@ skill fix_bug(scope = ".")
     }
 
     #[test]
+    fn circular_import_detected_with_path() {
+        // AC2: Circular-import path is included in the diagnostic message.
+        let dir = tempfile::tempdir().unwrap();
+
+        let a_path = dir.path().join("a.glyph.md");
+        let b_path = dir.path().join("b.glyph.md");
+
+        std::fs::write(&a_path, r#"import "./b.glyph.md" { something }
+
+skill main()
+    description: "A."
+    flow:
+        "Do something."
+"#).unwrap();
+
+        std::fs::write(&b_path, r#"import "./a.glyph.md" { something }
+
+export text something = "Hello."
+"#).unwrap();
+
+        let bag = check_file(&a_path);
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::circular-import"),
+            "expected circular-import diagnostic, got: {:?}", ids
+        );
+        // Check that the cycle path is in the message.
+        let diag = bag.iter().find(|d| d.id == "G::analyze::circular-import").unwrap();
+        assert!(
+            diag.message.contains("a.glyph.md") && diag.message.contains("b.glyph.md"),
+            "cycle path should include both files, got: {}", diag.message
+        );
+        assert!(
+            diag.message.contains("->"),
+            "cycle path should use -> separator, got: {}", diag.message
+        );
+    }
+
+    #[test]
+    fn import_private_name_fails() {
+        // AC3: Importing a private (non-exported) name fails with import-private.
+        let dir = tempfile::tempdir().unwrap();
+
+        let lib_path = dir.path().join("lib.glyph.md");
+        std::fs::write(&lib_path, r#"text private_text = "This is private."
+export text public_text = "This is public."
+"#).unwrap();
+
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(&main_path, r#"import "./lib.glyph.md" { private_text }
+
+skill main()
+    description: "Main."
+    require private_text
+    flow:
+        "Do something."
+"#).unwrap();
+
+        let bag = check_file(&main_path);
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::import-private"),
+            "expected import-private diagnostic, got: {:?}", ids
+        );
+    }
+
+    #[test]
+    fn import_skill_fails() {
+        // AC4: Importing a skill (not a block/text) fails with import-skill.
+        let dir = tempfile::tempdir().unwrap();
+
+        let lib_path = dir.path().join("lib.glyph.md");
+        std::fs::write(&lib_path, r#"skill some_skill()
+    description: "A skill."
+    flow:
+        "Do something."
+"#).unwrap();
+
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(&main_path, r#"import "./lib.glyph.md" { some_skill }
+
+skill main()
+    description: "Main."
+    flow:
+        "Do something."
+"#).unwrap();
+
+        let bag = check_file(&main_path);
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::import-skill"),
+            "expected import-skill diagnostic, got: {:?}", ids
+        );
+    }
+
+    #[test]
+    fn duplicate_import_is_repairable() {
+        // AC5: Duplicate imports are repairable diagnostics (exit 2).
+        let dir = tempfile::tempdir().unwrap();
+
+        let lib_path = dir.path().join("lib.glyph.md");
+        std::fs::write(&lib_path, r#"export text greeting = "Hello."
+"#).unwrap();
+
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(&main_path, r#"import "./lib.glyph.md" { greeting }
+import "./lib.glyph.md" { greeting }
+
+skill main()
+    description: "Main."
+    require greeting
+    flow:
+        "Do something."
+"#).unwrap();
+
+        let bag = check_file(&main_path);
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::duplicate-import"),
+            "expected duplicate-import diagnostic, got: {:?}", ids
+        );
+        let diag = bag.iter().find(|d| d.id == "G::analyze::duplicate-import").unwrap();
+        assert_eq!(diag.classification, diagnostic::Classification::Repairable);
+    }
+
+    #[test]
+    fn unused_import_is_repairable() {
+        // AC5: Unused imports are repairable diagnostics (exit 2).
+        let dir = tempfile::tempdir().unwrap();
+
+        let lib_path = dir.path().join("lib.glyph.md");
+        std::fs::write(&lib_path, r#"export text greeting = "Hello."
+export text farewell = "Goodbye."
+"#).unwrap();
+
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(&main_path, r#"import "./lib.glyph.md" { greeting, farewell }
+
+skill main()
+    description: "Main."
+    require greeting
+    flow:
+        "Do something."
+"#).unwrap();
+
+        let bag = check_file(&main_path);
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::unused-import"),
+            "expected unused-import diagnostic, got: {:?}", ids
+        );
+        let diag = bag.iter().find(|d| d.id == "G::analyze::unused-import").unwrap();
+        assert_eq!(diag.classification, diagnostic::Classification::Repairable);
+        assert!(
+            diag.message.contains("farewell"),
+            "should mention the unused name, got: {}", diag.message
+        );
+    }
+
+    #[test]
+    fn missing_import_file_detected() {
+        // Missing file produces G::analyze::missing-file.
+        let dir = tempfile::tempdir().unwrap();
+
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(&main_path, r#"import "./nonexistent.glyph.md" { something }
+
+skill main()
+    description: "Main."
+    flow:
+        "Do something."
+"#).unwrap();
+
+        let bag = check_file(&main_path);
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::missing-file"),
+            "expected missing-file diagnostic, got: {:?}", ids
+        );
+    }
+
+    #[test]
     fn check_source_flags_tab_indent_as_repairable() {
         // Tab-indented source surfaces a `repairable` diagnostic, not an error.
         let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";
