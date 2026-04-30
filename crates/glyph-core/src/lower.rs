@@ -101,7 +101,7 @@ fn lower_flow_body(
                 }));
                 ids.push(id);
             }
-            FlowStmt::Call { target, args } => {
+            FlowStmt::Call { target, args, site_modifier } => {
                 let resolved_body = if let Some(block) = blocks.get(target.as_str()) {
                     let body_text = resolve_block_body_text(block, texts)?;
                     Some(body_text)
@@ -114,6 +114,7 @@ fn lower_flow_body(
                     target: target.clone(),
                     args: args.clone(),
                     resolved_body,
+                    site_modifier: site_modifier.clone(),
                 }));
                 ids.push(id);
             }
@@ -286,7 +287,7 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
                 }));
                 flow_hoisted_context_ids.push(id);
             }
-            FlowStmt::Call { target, args } => {
+            FlowStmt::Call { target, args, site_modifier } => {
                 // Create an IrCall node. Resolve callee body if block exists.
                 let resolved_body = if let Some(block) = blocks.get(target.as_str()) {
                     let body_text = resolve_block_body_text(block, &texts)?;
@@ -300,6 +301,7 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
                     target: target.clone(),
                     args: args.clone(),
                     resolved_body,
+                    site_modifier: site_modifier.clone(),
                 }));
                 step_ids.push(id);
             }

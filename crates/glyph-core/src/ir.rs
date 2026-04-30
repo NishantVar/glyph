@@ -98,6 +98,10 @@ pub struct IrCall {
     /// Resolved callee body text for Tier 1 inline expansion.
     /// Populated during Lower; None if callee not found.
     pub resolved_body: Option<String>,
+    /// `with` modifier text, if present. Stored for IR JSON (`--emit-ir`)
+    /// consumption by the agent in Step 2. Not applied during Step 1 emit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_modifier: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

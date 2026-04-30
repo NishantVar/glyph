@@ -1391,6 +1391,35 @@ skill main()
     }
 
     #[test]
+    fn with_modifier_parses_on_call() {
+        // AC1: `inspect_repo(scope) with "focus on auth"` parses and stores the
+        // modifier on the Call node in the AST.
+        let src = "\
+block inspect_repo(scope)
+    \"Inspect the repo.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        inspect_repo(scope) with \"focus on auth\"
+";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let skill = file.decls.iter().find_map(|d| match d {
+            ast::Decl::Skill(s) => Some(&s.node),
+            _ => None,
+        }).unwrap();
+        assert_eq!(skill.flow.len(), 1);
+        match &skill.flow[0] {
+            ast::FlowStmt::Call { target, args, site_modifier } => {
+                assert_eq!(target, "inspect_repo");
+                assert_eq!(args, &["scope".to_string()]);
+                assert_eq!(site_modifier.as_deref(), Some("focus on auth"));
+            }
+            other => panic!("expected Call, got: {:?}", other),
+        }
+    }
+
+    #[test]
     fn check_source_flags_tab_indent_as_repairable() {
         // Tab-indented source surfaces a `repairable` diagnostic, not an error.
         let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";

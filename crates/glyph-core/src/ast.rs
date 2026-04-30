@@ -108,8 +108,9 @@ pub enum FlowStmt {
     /// A bare name in `flow:` that is not preceded by a keyword prefix.
     /// Detected during analyze as `G::analyze::text-in-flow`.
     BareName(String),
-    /// A call expression: `name()` or `name(arg1, arg2)`.
-    Call { target: String, args: Vec<String> },
+    /// A call expression: `name()` or `name(arg1, arg2)`, with optional
+    /// `with "modifier"` site modifier.
+    Call { target: String, args: Vec<String>, site_modifier: Option<String> },
     /// `return <expr>` — terminal-only at flow root.
     Return(ReturnExpr),
     /// `if`/`elif`/`else` branch chain.

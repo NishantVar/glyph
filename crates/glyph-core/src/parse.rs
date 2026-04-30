@@ -1148,9 +1148,12 @@ impl<'a> Parser<'a> {
                                 }
                             }
                             self.expect(&TokenKind::Rparen)?;
+                            // Check for optional `with "modifier"`.
+                            let site_modifier = self.try_parse_with_modifier()?;
                             Ok(FlowStmt::Call {
                                 target: kw_val,
                                 args,
+                                site_modifier,
                             })
                         } else if matches!(self.peek().kind, TokenKind::Dot) {
                             // Detect `name.applies()` used outside a branch condition.
@@ -1315,6 +1318,33 @@ impl<'a> Parser<'a> {
             result.push_str(part);
         }
         Ok(result)
+    }
+
+    /// Try to parse `with "modifier text"` after a call expression.
+    /// Returns `Some(text)` if found, `None` otherwise.
+    fn try_parse_with_modifier(&mut self) -> Result<Option<String>, ParseError> {
+        if let TokenKind::Ident(kw) = &self.peek().kind {
+            if kw == "with" {
+                self.pos += 1;
+                match &self.peek().kind {
+                    TokenKind::StringLit(s) => {
+                        let v = s.clone();
+                        self.pos += 1;
+                        Ok(Some(v))
+                    }
+                    _ => {
+                        Err(ParseError::Unexpected {
+                            span: self.peek().span,
+                            message: "expected string literal after `with`".into(),
+                        })
+                    }
+                }
+            } else {
+                Ok(None)
+            }
+        } else {
+            Ok(None)
+        }
     }
 
     /// After a `:`, consume the rest of the line as a single string literal.
