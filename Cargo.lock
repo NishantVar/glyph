@@ -193,6 +193,7 @@ dependencies = [
  "glyph-core",
  "insta",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
