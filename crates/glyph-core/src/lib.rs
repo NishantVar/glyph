@@ -1391,6 +1391,67 @@ skill main()
     }
 
     #[test]
+    fn with_modifier_not_applied_in_compiled_output() {
+        // AC2: Compiled `.md` from Step 1 does NOT apply the modifier — the
+        // modifier is for the agent's Step 2, not the mechanical output.
+        let src = "\
+block inspect_repo(scope)
+    \"Inspect the repo for issues.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        inspect_repo(scope) with \"focus on auth\"
+";
+        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                // The modifier text should NOT appear in the compiled output.
+                assert!(
+                    !markdown.contains("focus on auth"),
+                    "modifier text should not appear in compiled .md:\n{}",
+                    markdown
+                );
+                // The call's resolved body should still inline normally.
+                assert!(
+                    markdown.contains("Inspect the repo for issues."),
+                    "block body should still inline:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!("expected compiled output, got diagnostics: {:?}", ids);
+            }
+        }
+    }
+
+    #[test]
+    fn with_modifier_preserved_on_ir_call() {
+        // AC2 supplement: verify `site_modifier` is preserved on the IrCall node
+        // in the IR arena (for `--emit-ir` consumers).
+        let src = "\
+block inspect_repo(scope)
+    \"Inspect the repo.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        inspect_repo(scope) with \"focus on auth\"
+";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let file = analyze::analyze(file);
+        let arena = lower::lower(&file).expect("should lower");
+        let call = arena.nodes().iter().find_map(|n| match n {
+            ir::IrNode::Call(c) => Some(c),
+            _ => None,
+        });
+        let call = call.expect("IrCall should exist");
+        assert_eq!(call.target, "inspect_repo");
+        assert_eq!(call.site_modifier.as_deref(), Some("focus on auth"));
+    }
+
+    #[test]
     fn with_modifier_parses_on_call() {
         // AC1: `inspect_repo(scope) with "focus on auth"` parses and stores the
         // modifier on the Call node in the AST.
