@@ -92,11 +92,14 @@ fn constraint_only_compiles_with_constraints_no_steps() {
 #[test]
 fn require_text_resolves_and_renders_constraint() {
     // update_docs.glyph.md has `require accuracy` + `text accuracy = "..."`.
+    // Copy to tempdir to avoid parallel-test races on the shared output file.
+    let dir = tempfile::tempdir().unwrap();
     let src = fixture("valid", "update_docs.glyph.md");
-    let out = src.with_file_name("update_docs.md");
-    let _ = std::fs::remove_file(&out);
+    let tmp_src = dir.path().join("update_docs.glyph.md");
+    std::fs::copy(&src, &tmp_src).unwrap();
+    let out = dir.path().join("update_docs.md");
 
-    let result = run_compile(src, "json");
+    let result = run_compile(tmp_src, "json");
     assert_eq!(result.status.code(), Some(0));
 
     let md = std::fs::read_to_string(&out).expect("compiled .md file is missing");
@@ -112,11 +115,14 @@ fn require_text_resolves_and_renders_constraint() {
 #[test]
 fn body_level_avoid_hoists_to_constraints_section() {
     // update_docs.glyph.md has `avoid stale_references` at body level.
+    // Copy to tempdir to avoid parallel-test races on the shared output file.
+    let dir = tempfile::tempdir().unwrap();
     let src = fixture("valid", "update_docs.glyph.md");
-    let out = src.with_file_name("update_docs.md");
-    let _ = std::fs::remove_file(&out);
+    let tmp_src = dir.path().join("update_docs.glyph.md");
+    std::fs::copy(&src, &tmp_src).unwrap();
+    let out = dir.path().join("update_docs.md");
 
-    let result = run_compile(src, "json");
+    let result = run_compile(tmp_src, "json");
     assert_eq!(result.status.code(), Some(0));
 
     let md = std::fs::read_to_string(&out).expect("compiled .md file is missing");
@@ -137,11 +143,14 @@ fn body_level_avoid_hoists_to_constraints_section() {
 
 #[test]
 fn context_section_emits_before_steps() {
+    // Copy to tempdir to avoid parallel-test races on the shared output file.
+    let dir = tempfile::tempdir().unwrap();
     let src = fixture("valid", "with_context.glyph.md");
-    let out = src.with_file_name("with_context.md");
-    let _ = std::fs::remove_file(&out);
+    let tmp_src = dir.path().join("with_context.glyph.md");
+    std::fs::copy(&src, &tmp_src).unwrap();
+    let out = dir.path().join("with_context.md");
 
-    let result = run_compile(src, "json");
+    let result = run_compile(tmp_src, "json");
     assert_eq!(
         result.status.code(),
         Some(0),
@@ -164,11 +173,14 @@ fn context_section_emits_before_steps() {
 
 #[test]
 fn text_in_context_resolves_to_string() {
+    // Copy to tempdir to avoid parallel-test races on the shared output file.
+    let dir = tempfile::tempdir().unwrap();
     let src = fixture("valid", "with_context.glyph.md");
-    let out = src.with_file_name("with_context.md");
-    let _ = std::fs::remove_file(&out);
+    let tmp_src = dir.path().join("with_context.glyph.md");
+    std::fs::copy(&src, &tmp_src).unwrap();
+    let out = dir.path().join("with_context.md");
 
-    let result = run_compile(src, "json");
+    let result = run_compile(tmp_src, "json");
     assert_eq!(result.status.code(), Some(0));
 
     let md = std::fs::read_to_string(&out).expect("compiled .md file is missing");
