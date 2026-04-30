@@ -116,6 +116,7 @@ fn lower_flow_body(
                     resolved_body,
                     site_modifier: site_modifier.clone(),
                     projection_tier: None,
+                    procedure_path: None,
                 }));
                 ids.push(id);
             }
@@ -319,6 +320,7 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
                     resolved_body,
                     site_modifier: site_modifier.clone(),
                     projection_tier: None,
+                    procedure_path: None,
                 }));
                 step_ids.push(id);
             }

@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 
 use crate::ast::{Decl, ImportKind};
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
+use crate::ir::IrNode;
 use crate::span::{LineIndex, Span};
 
 #[derive(Debug)]
@@ -592,6 +593,9 @@ pub fn compile_directory(sources: &[PathBuf]) -> BuildResult {
     }
 
     // Compile each file in topological order with partial failure.
+    // Track procedure file paths emitted by library files for Tier 3 references.
+    // Key: (library canonical path, block name) → relative procedure path.
+    let mut procedure_paths: HashMap<(PathBuf, String), String> = HashMap::new();
     let mut failed_files: HashSet<PathBuf> = HashSet::new();
     let mut outcomes: Vec<(PathBuf, FileOutcome)> = Vec::new();
     let mut any_failure = false;
@@ -610,7 +614,12 @@ pub fn compile_directory(sources: &[PathBuf]) -> BuildResult {
         }
 
         // Compile the file.
-        match compile_file(file) {
+        // Build the imported-block-to-procedure-path mapping for this file.
+        let imported_procedure_paths = build_imported_procedure_paths(
+            file, &file_imports, &procedure_paths,
+        );
+
+        match compile_file_with_imports(file, &imported_procedure_paths) {
             Ok(CompileOutcome::Compiled { diagnostics, .. }) => {
                 outcomes.push((file.clone(), FileOutcome::Compiled { diagnostics }));
             }
@@ -621,7 +630,11 @@ pub fn compile_directory(sources: &[PathBuf]) -> BuildResult {
             }
             Err(CompileError::Lower(lower::LowerError::NoSkill)) => {
                 // Library file (no skill declaration) — not a failure.
-                // No .md output produced, which is normal per pipeline.md §Phase 7.
+                // Emit procedure files for qualifying export blocks (Tier 3).
+                let emitted = emit_library_procedures(file);
+                for (block_name, rel_path) in emitted {
+                    procedure_paths.insert((file.clone(), block_name), rel_path);
+                }
                 outcomes.push((file.clone(), FileOutcome::Compiled { diagnostics: DiagBag::new() }));
             }
             Err(_e) => {
@@ -647,6 +660,205 @@ fn compiled_output_path(input: &Path) -> std::path::PathBuf {
             .unwrap_or(file_name),
     );
     parent.join(format!("{}.md", stem))
+}
+
+/// Extract the library stem from a source path: `repo_tools.glyph.md` → `repo_tools`.
+fn library_stem(input: &Path) -> String {
+    let file_name = input.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    file_name
+        .strip_suffix(".glyph.md")
+        .unwrap_or(file_name.strip_suffix(".md").unwrap_or(file_name))
+        .to_string()
+}
+
+/// Emit standalone procedure `.md` files for qualifying export blocks in a
+/// library file. An export block qualifies when its body_word_count >= 150.
+///
+/// Output path: `<parent>/<lib_stem>/<block-name-kebab>.md`
+/// Returns: Vec of (block_name, relative_procedure_path) for Tier 3 tracking.
+fn emit_library_procedures(path: &Path) -> Vec<(String, String)> {
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let parsed = match parse::parse(&source, 0) {
+        Ok((file, _)) => file,
+        Err(_) => return Vec::new(),
+    };
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = library_stem(path);
+    let mut emitted = Vec::new();
+
+    for decl in &parsed.decls {
+        if let Decl::ExportBlock(eb) = decl {
+            if eb.node.body_word_count < 150 {
+                continue;
+            }
+            let kebab_name = eb.node.name.replace('_', "-");
+            let subdir = parent.join(&stem);
+            std::fs::create_dir_all(&subdir).ok();
+
+            let params: Vec<(String, Option<String>)> = eb
+                .node
+                .params
+                .iter()
+                .map(|p| (p.name.clone(), p.default.clone()))
+                .collect();
+
+            let desc = eb.node.description.as_deref().unwrap_or("");
+            let markdown = emit::emit_procedure(
+                &eb.node.name,
+                desc,
+                &eb.node.effects,
+                &params,
+                &eb.node.flow_strings,
+            );
+
+            let out_path = subdir.join(format!("{}.md", kebab_name));
+            std::fs::write(&out_path, &markdown).ok();
+
+            let rel_path = format!("{}/{}.md", stem, kebab_name);
+            emitted.push((eb.node.name.clone(), rel_path));
+        }
+    }
+    emitted
+}
+
+/// Build a mapping from imported block names to their procedure file paths
+/// for a given consumer file.
+fn build_imported_procedure_paths(
+    consumer: &Path,
+    _file_imports: &HashMap<PathBuf, Vec<PathBuf>>,
+    procedure_paths: &HashMap<(PathBuf, String), String>,
+) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+
+    // Read the consumer file to find which names are imported from each dependency.
+    let source = match std::fs::read_to_string(consumer) {
+        Ok(s) => s,
+        Err(_) => return result,
+    };
+    let parsed = match parse::parse(&source, 0) {
+        Ok((file, _)) => file,
+        Err(_) => return result,
+    };
+
+    for decl in &parsed.decls {
+        if let Decl::Import(import_spanned) = decl {
+            let import = &import_spanned.node;
+            let resolved = resolve_import_path(consumer, &import.path);
+            let resolved = match resolved {
+                Some(r) => r,
+                None => continue,
+            };
+
+            match &import.kind {
+                ImportKind::Selective(names) => {
+                    for imp_name in names {
+                        let local = imp_name.alias.as_deref().unwrap_or(&imp_name.name);
+                        let key = (resolved.clone(), imp_name.name.clone());
+                        if let Some(proc_path) = procedure_paths.get(&key) {
+                            result.insert(local.to_string(), proc_path.clone());
+                        }
+                    }
+                }
+                ImportKind::WholeModule { alias } => {
+                    for ((lib_path, block_name), proc_path) in procedure_paths {
+                        if *lib_path == resolved {
+                            let qualified = format!("{}.{}", alias, block_name);
+                            result.insert(qualified, proc_path.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Compile a file with knowledge of imported block procedure paths.
+/// For files with no imports, this behaves identically to `compile_file`.
+fn compile_file_with_imports(
+    path: &Path,
+    imported_procedure_paths: &HashMap<String, String>,
+) -> Result<CompileOutcome, CompileError> {
+    if imported_procedure_paths.is_empty() {
+        return compile_file(path);
+    }
+
+    let source = std::fs::read_to_string(path).map_err(|e| CompileError::Read {
+        path: path.display().to_string(),
+        source: e,
+    })?;
+    let label = path.display().to_string();
+
+    let outcome = compile_source_with_imports(&source, 0, &label, imported_procedure_paths)?;
+    if let CompileOutcome::Compiled { ref markdown, .. } = outcome {
+        let out_path = compiled_output_path(path);
+        std::fs::write(&out_path, markdown).map_err(|e| CompileError::Write {
+            path: out_path.display().to_string(),
+            source: e,
+        })?;
+    }
+    Ok(outcome)
+}
+
+/// Like `compile_source` but with import context for Tier 3 block references.
+fn compile_source_with_imports(
+    source: &str,
+    file_id: u32,
+    file_label: &str,
+    imported_procedure_paths: &HashMap<String, String>,
+) -> Result<CompileOutcome, CompileError> {
+    let mut bag = DiagBag::new();
+    let line_index = LineIndex::new(source);
+
+    let parsed = parse::parse_with_diagnostics(source, file_id, file_label, &line_index, &mut bag);
+    if !bag.is_empty() && (bag.has_error() || bag.has_repairable()) {
+        return Ok(CompileOutcome::Diagnostics(bag));
+    }
+
+    let file = match parsed {
+        Some(file) => file,
+        None => {
+            return Err(CompileError::Parse(parse::ParseError::Eof {
+                message: "parser returned no AST and no diagnostics".into(),
+            }));
+        }
+    };
+
+    // Build imported block set from procedure paths.
+    let imported_blocks: HashSet<String> = imported_procedure_paths.keys().cloned().collect();
+    let imported_texts: HashSet<String> = HashSet::new();
+    let mut used_import_names: HashSet<String> = HashSet::new();
+
+    let file = analyze::analyze_with_imports(
+        &file, file_id, file_label, &line_index, &mut bag,
+        &imported_texts, &imported_blocks, &mut used_import_names,
+    );
+    if bag.has_error() || bag.has_repairable() {
+        return Ok(CompileOutcome::Diagnostics(bag));
+    }
+
+    let mut arena = lower::lower(&file).map_err(CompileError::Lower)?;
+
+    // Tag imported block calls with Tier 3 procedure paths before expand.
+    for node in arena.nodes_mut() {
+        if let IrNode::Call(c) = node {
+            if c.resolved_body.is_none() {
+                if let Some(proc_path) = imported_procedure_paths.get(&c.target) {
+                    c.projection_tier = Some(3);
+                    c.procedure_path = Some(proc_path.clone());
+                }
+            }
+        }
+    }
+
+    validate::validate(&arena).map_err(CompileError::Validate)?;
+    let arena = expand::expand_step1(arena);
+    let markdown = emit::emit(&arena);
+    Ok(CompileOutcome::Compiled { markdown, diagnostics: bag })
 }
 
 #[cfg(test)]
@@ -2722,5 +2934,157 @@ export block inspect_repo(scope = \".\")
             "large export block should have >= 150 words, got {}",
             export_block.body_word_count
         );
+    }
+
+    #[test]
+    fn tier3_library_emits_procedure_files() {
+        // AC1: repo_tools.glyph.md with two large export blocks should emit
+        //      repo_tools/inspect-repo.md and repo_tools/run-tests.md
+        // AC2: Procedure files carry `kind: procedure` in frontmatter
+        let dir = tempfile::tempdir().unwrap();
+
+        // Build two export blocks with >= 150 words each.
+        let mut long_body_1 = String::new();
+        for i in 0..20 {
+            long_body_1.push_str(&format!(
+                "        \"Step {} of the inspection: carefully examine the repository structure and contents.\"\n",
+                i + 1
+            ));
+        }
+        let mut long_body_2 = String::new();
+        for i in 0..20 {
+            long_body_2.push_str(&format!(
+                "        \"Step {} of the test run: execute the test suite and verify all assertions pass.\"\n",
+                i + 1
+            ));
+        }
+
+        let repo_tools_src = format!("\
+export block inspect_repo(scope = \".\")
+    description: \"Inspect the repository for issues.\"
+    effects: reads_files
+    flow:
+{}        return scope
+
+export block run_tests(target = \"all\")
+    description: \"Run the project test suite.\"
+    effects: reads_files
+    flow:
+{}        return target
+", long_body_1, long_body_2);
+
+        let tools_path = dir.path().join("repo_tools.glyph.md");
+        std::fs::write(&tools_path, &repo_tools_src).unwrap();
+
+        let sources: Vec<PathBuf> = vec![tools_path.clone()];
+        let result = compile_directory(&sources);
+        assert_eq!(result.exit_code, 0, "repo_tools library should compile with exit 0");
+
+        // AC1: procedure files emitted
+        let inspect_path = dir.path().join("repo_tools/inspect-repo.md");
+        let run_tests_path = dir.path().join("repo_tools/run-tests.md");
+        assert!(inspect_path.exists(), "repo_tools/inspect-repo.md should exist");
+        assert!(run_tests_path.exists(), "repo_tools/run-tests.md should exist");
+
+        // AC2: kind: procedure in frontmatter
+        let inspect_content = std::fs::read_to_string(&inspect_path).unwrap();
+        assert!(inspect_content.contains("kind: procedure"), "inspect-repo.md should have kind: procedure");
+        assert!(inspect_content.contains("name: inspect-repo"), "inspect-repo.md should have name: inspect-repo");
+
+        let run_tests_content = std::fs::read_to_string(&run_tests_path).unwrap();
+        assert!(run_tests_content.contains("kind: procedure"), "run-tests.md should have kind: procedure");
+        assert!(run_tests_content.contains("name: run-tests"), "run-tests.md should have name: run-tests");
+    }
+
+    #[test]
+    fn tier3_consumer_references_procedure_file() {
+        // AC3: Consumer's compiled .md references the procedure files at the conventional path
+        let dir = tempfile::tempdir().unwrap();
+
+        // Library with a large export block
+        let mut long_body = String::new();
+        for i in 0..20 {
+            long_body.push_str(&format!(
+                "        \"Step {} of the inspection: carefully examine the repository structure and contents.\"\n",
+                i + 1
+            ));
+        }
+
+        let lib_src = format!("\
+export block inspect_repo(scope = \".\")
+    description: \"Inspect the repository for issues.\"
+    effects: reads_files
+    flow:
+{}        return scope
+", long_body);
+
+        let lib_path = dir.path().join("repo_tools.glyph.md");
+        std::fs::write(&lib_path, &lib_src).unwrap();
+
+        // Consumer skill that imports and calls inspect_repo
+        let consumer_src = "\
+import \"repo_tools\" { inspect_repo }
+
+skill audit_code()
+    description: \"Audit the codebase.\"
+    effects: reads_files
+
+    flow:
+        inspect_repo()
+";
+        let consumer_path = dir.path().join("audit_code.glyph.md");
+        std::fs::write(&consumer_path, consumer_src).unwrap();
+
+        let sources: Vec<PathBuf> = vec![lib_path.clone(), consumer_path.clone()];
+        let result = compile_directory(&sources);
+        assert_eq!(result.exit_code, 0, "should compile with exit 0");
+
+        // Consumer's compiled output should reference the procedure file
+        let consumer_output = dir.path().join("audit_code.md");
+        assert!(consumer_output.exists(), "audit_code.md should exist");
+        let content = std::fs::read_to_string(&consumer_output).unwrap();
+        assert!(
+            content.contains("repo_tools/inspect-repo.md"),
+            "consumer should reference repo_tools/inspect-repo.md, got:\n{}",
+            content
+        );
+    }
+
+    #[test]
+    fn tier3_idempotent_output() {
+        // AC4: Re-running produces byte-identical procedure files
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut long_body = String::new();
+        for i in 0..20 {
+            long_body.push_str(&format!(
+                "        \"Step {} of the inspection: carefully examine the repository structure and contents.\"\n",
+                i + 1
+            ));
+        }
+
+        let repo_tools_src = format!("\
+export block inspect_repo(scope = \".\")
+    description: \"Inspect the repository for issues.\"
+    effects: reads_files
+    flow:
+{}        return scope
+", long_body);
+
+        let tools_path = dir.path().join("repo_tools.glyph.md");
+        std::fs::write(&tools_path, &repo_tools_src).unwrap();
+
+        let sources: Vec<PathBuf> = vec![tools_path.clone()];
+
+        // First run
+        compile_directory(&sources);
+        let inspect_path = dir.path().join("repo_tools/inspect-repo.md");
+        let first_content = std::fs::read_to_string(&inspect_path).unwrap();
+
+        // Second run
+        compile_directory(&sources);
+        let second_content = std::fs::read_to_string(&inspect_path).unwrap();
+
+        assert_eq!(first_content, second_content, "procedure file should be byte-identical across runs");
     }
 }

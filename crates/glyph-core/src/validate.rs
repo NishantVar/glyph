@@ -72,9 +72,11 @@ pub fn validate(arena: &IrArena) -> Result<(), ValidateError> {
     }
 
     // Check for unresolved callees (IrCall with resolved_body == None).
+    // Skip Tier 3 calls — they reference external procedure files and
+    // intentionally have no resolved_body.
     for n in arena.nodes() {
         if let IrNode::Call(c) = n {
-            if c.resolved_body.is_none() {
+            if c.resolved_body.is_none() && c.projection_tier != Some(3) {
                 return Err(ValidateError::UnresolvedCallee(c.target.clone()));
             }
         }
@@ -233,6 +235,7 @@ mod tests {
             resolved_body: None, // unresolved!
             site_modifier: None,
             projection_tier: None,
+            procedure_path: None,
         }));
         arena.set_root_skill(skill_id);
         let err = validate(&arena).unwrap_err();
@@ -261,6 +264,7 @@ mod tests {
             resolved_body: Some("Do something.".into()),
             site_modifier: None,
             projection_tier: None,
+            procedure_path: None,
         }));
         // Block "foo" that calls itself (direct recursion).
         arena.push(IrNode::Block(IrBlock {
@@ -329,6 +333,7 @@ mod tests {
             resolved_body: Some("Do something.".into()),
             site_modifier: None,
             projection_tier: None,
+            procedure_path: None,
         }));
         // Block "foo" calls "bar".
         arena.push(IrNode::Block(IrBlock {

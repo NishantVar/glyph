@@ -519,9 +519,15 @@ impl<'a> Parser<'a> {
         // Skip body — every line whose LineStart indent is > 0.
         // Scan for `return` keyword to set has_return flag.
         // Also collect bare-name references for closure checking and word count.
+        // Additionally capture description, effects, and flow strings for Tier 3 emission.
         let mut has_return = false;
         let mut body_refs: Vec<String> = Vec::new();
         let mut body_word_count: usize = 0;
+        let mut description: Option<String> = None;
+        let mut effects: Vec<String> = Vec::new();
+        let mut flow_strings: Vec<String> = Vec::new();
+        // Track which sub-section we are currently in.
+        let mut current_section: Option<&'static str> = None;
         let body_keywords: &[&str] = &[
             "flow", "return", "description", "effects", "constraints",
             "context", "require", "avoid", "must", "if", "elif", "else",
@@ -533,10 +539,15 @@ impl<'a> Parser<'a> {
                 Some(n) if n > 0 => {
                     // Drop the LineStart and every token until the next LineStart or Eof.
                     self.pos += 1;
-                    // Check if line starts with `return`.
+                    // Check if line starts with a sub-section keyword or `return`.
                     if let TokenKind::Ident(kw) = &self.peek().kind {
-                        if kw == "return" {
-                            has_return = true;
+                        match kw.as_str() {
+                            "return" => has_return = true,
+                            "description" => { current_section = Some("description"); }
+                            "effects" => { current_section = Some("effects"); }
+                            "flow" => { current_section = Some("flow"); }
+                            "constraints" | "context" => { current_section = Some("other"); }
+                            _ => {}
                         }
                     }
                     while !self.at_eof()
@@ -546,11 +557,25 @@ impl<'a> Parser<'a> {
                             TokenKind::Ident(ident) => {
                                 if !body_keywords.contains(&ident.as_str()) {
                                     body_refs.push(ident.clone());
+                                    // Capture effect names
+                                    if current_section == Some("effects") {
+                                        effects.push(ident.clone());
+                                    }
                                 }
                                 body_word_count += 1;
                             }
                             TokenKind::StringLit(s) => {
                                 body_word_count += s.split_whitespace().count();
+                                // Capture description and flow strings
+                                match current_section {
+                                    Some("description") => {
+                                        description = Some(s.clone());
+                                    }
+                                    Some("flow") => {
+                                        flow_strings.push(s.clone());
+                                    }
+                                    _ => {}
+                                }
                             }
                             _ => {}
                         }
@@ -567,7 +592,10 @@ impl<'a> Parser<'a> {
             kw_span
         };
         let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
-        Ok(Spanned::new(ExportBlockDecl { name, params, has_return, body_refs, body_word_count }, span))
+        Ok(Spanned::new(ExportBlockDecl {
+            name, params, has_return, body_refs, body_word_count,
+            description, effects, flow_strings,
+        }, span))
     }
 
     /// Parse `block <name>(<params>)` with optional body (description, flow,

@@ -97,6 +97,15 @@ pub struct ExportBlockDecl {
     /// Used to decide if the export block should be emitted as a standalone
     /// procedure file (>= 150 words) in Slice 15.
     pub body_word_count: usize,
+    /// Description text from `description:` sub-section, if present.
+    /// Used for procedure file frontmatter in Tier 3 emission.
+    pub description: Option<String>,
+    /// Effects declared in `effects:` sub-section.
+    /// Used for procedure file frontmatter in Tier 3 emission.
+    pub effects: Vec<String>,
+    /// Flow statement strings for Tier 3 procedure file emission.
+    /// Each entry is the text of a string literal from the `flow:` section.
+    pub flow_strings: Vec<String>,
 }
 
 /// A header parameter on `skill`, `block`, or `export block`.

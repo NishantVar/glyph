@@ -92,6 +92,14 @@ pub fn emit(arena: &IrArena) -> String {
                         procedure_order.push(c.target.clone());
                     }
                 }
+                IrNode::Call(c) if c.projection_tier == Some(3) => {
+                    let proc_path = c.procedure_path.as_deref().unwrap_or("unknown");
+                    out.push_str(&format!(
+                        "{}. Load and follow the procedure in `{}`.\n",
+                        idx + 1,
+                        proc_path
+                    ));
+                }
                 IrNode::Call(c) => {
                     panic!(
                         "IrNode::Call to `{}` survived past expand without tier assignment",
@@ -223,6 +231,10 @@ fn emit_lettered_substeps(out: &mut String, arena: &IrArena, body: &[NodeId]) {
                 let kebab_name = c.target.replace('_', "-");
                 format!("Follow the {} procedure.", kebab_name)
             }
+            IrNode::Call(c) if c.projection_tier == Some(3) => {
+                let proc_path = c.procedure_path.as_deref().unwrap_or("unknown");
+                format!("Load and follow the procedure in `{}`.", proc_path)
+            }
             IrNode::Call(c) => {
                 panic!(
                     "IrNode::Call to `{}` survived past expand in branch body",
@@ -324,6 +336,62 @@ fn gerund_to_base(word: &str) -> String {
         // Not a gerund — return lowercased original.
         lower
     }
+}
+
+/// Emit a standalone procedure `.md` file for a Tier 3 external-file export block.
+///
+/// Per `compiled-output.md` §External Procedure Files, the format is:
+/// - YAML frontmatter with `name`, `kind: procedure`, `description`, optional `effects`
+/// - `## Parameters` (if any)
+/// - `## Instructions` with `### Steps` from flow strings
+pub fn emit_procedure(
+    name: &str,
+    description: &str,
+    effects: &[String],
+    params: &[(String, Option<String>)],
+    flow_strings: &[String],
+) -> String {
+    let kebab_name = name.replace('_', "-");
+    let mut out = String::new();
+
+    // Frontmatter
+    out.push_str("---\n");
+    out.push_str(&format!("name: {}\n", kebab_name));
+    out.push_str("kind: procedure\n");
+    out.push_str(&format!("description: {}\n", description));
+    if !effects.is_empty() {
+        let mut sorted = effects.to_vec();
+        sorted.sort();
+        out.push_str(&format!("effects: [{}]\n", sorted.join(", ")));
+    }
+    out.push_str("---\n\n");
+
+    // Parameters
+    if !params.is_empty() {
+        out.push_str("## Parameters\n\n");
+        for (pname, default) in params {
+            match default {
+                Some(v) => out.push_str(&format!("- **{}** (default: {})\n", pname, v)),
+                None => out.push_str(&format!("- **{}** (required)\n", pname)),
+            }
+        }
+        out.push('\n');
+    }
+
+    // Instructions / Steps
+    out.push_str("## Instructions\n\n");
+    if !flow_strings.is_empty() {
+        out.push_str("### Steps\n\n");
+        for (i, step) in flow_strings.iter().enumerate() {
+            out.push_str(&format!("{}. {}\n", i + 1, step));
+        }
+    }
+
+    // Trim trailing blank lines for byte-stable output.
+    while out.ends_with("\n\n") {
+        out.pop();
+    }
+    out
 }
 
 #[cfg(test)]
