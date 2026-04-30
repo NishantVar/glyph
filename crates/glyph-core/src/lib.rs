@@ -2587,4 +2587,48 @@ export text validation_strictness = \"high\"
         );
         assert_eq!(bag.exit_code(), 0, "clean library should exit 0");
     }
+
+    #[test]
+    fn ac3_closure_violation_on_private_free_variable() {
+        // An export block that references a private (non-exported) block
+        // should fire G::analyze::closure-violation.
+        let src = "\
+block private_helper()
+    \"Do private stuff.\"
+
+export block shared_util(x = \"default\")
+    flow:
+        private_helper()
+        return x
+";
+        let bag = check_source(src, 0, "lib.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::closure-violation"),
+            "expected closure-violation for export block referencing private name, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 1, "closure-violation should be a hard error");
+    }
+
+    #[test]
+    fn ac3_no_closure_violation_for_params_and_exported_names() {
+        // Export block referencing its own params and exported text should
+        // NOT fire closure-violation.
+        let src = "\
+export text greeting = \"Hello.\"
+
+export block shared_util(x = \"default\")
+    flow:
+        \"Use {x}.\"
+        return x
+";
+        let bag = check_source(src, 0, "lib.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::closure-violation"),
+            "should not fire closure-violation for params/exported names, got: {:?}",
+            ids
+        );
+    }
 }

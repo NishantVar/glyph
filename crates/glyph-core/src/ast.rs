@@ -89,6 +89,10 @@ pub struct ExportBlockDecl {
     /// Whether the body contains an explicit `return` statement.
     /// Slice 8 needs this to fire `G::analyze::missing-return`.
     pub has_return: bool,
+    /// Bare-name references found in the body (calls, constraint/context refs).
+    /// Used by analyze to detect closure violations: an export block must not
+    /// reference private (non-exported, non-parameter) names.
+    pub body_refs: Vec<String>,
 }
 
 /// A header parameter on `skill`, `block`, or `export block`.

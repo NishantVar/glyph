@@ -518,7 +518,15 @@ impl<'a> Parser<'a> {
 
         // Skip body — every line whose LineStart indent is > 0.
         // Scan for `return` keyword to set has_return flag.
+        // Also collect bare-name references for closure checking.
         let mut has_return = false;
+        let mut body_refs: Vec<String> = Vec::new();
+        let body_keywords: &[&str] = &[
+            "flow", "return", "description", "effects", "constraints",
+            "context", "require", "avoid", "must", "if", "elif", "else",
+            "none", "with", "as", "import", "export", "block", "skill",
+            "text", "int", "float",
+        ];
         loop {
             match self.current_line_indent() {
                 Some(n) if n > 0 => {
@@ -533,6 +541,11 @@ impl<'a> Parser<'a> {
                     while !self.at_eof()
                         && !matches!(self.peek().kind, TokenKind::LineStart { .. })
                     {
+                        if let TokenKind::Ident(ident) = &self.peek().kind {
+                            if !body_keywords.contains(&ident.as_str()) {
+                                body_refs.push(ident.clone());
+                            }
+                        }
                         self.pos += 1;
                     }
                 }
@@ -546,7 +559,7 @@ impl<'a> Parser<'a> {
             kw_span
         };
         let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
-        Ok(Spanned::new(ExportBlockDecl { name, params, has_return }, span))
+        Ok(Spanned::new(ExportBlockDecl { name, params, has_return, body_refs }, span))
     }
 
     /// Parse `block <name>(<params>)` with optional body (description, flow,
