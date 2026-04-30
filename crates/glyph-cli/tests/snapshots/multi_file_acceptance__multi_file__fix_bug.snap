@@ -1,0 +1,38 @@
+---
+source: crates/glyph-cli/tests/multi_file_acceptance.rs
+expression: md
+---
+---
+name: fix_bug
+description: Debug and fix a bug in the codebase with minimal, targeted changes.
+effects: [reads_files, runs_commands, writes_files]
+---
+
+## Parameters
+
+- **scope** (default: ".")
+
+## Instructions
+
+### Context
+
+- This codebase follows standard project conventions and has a test suite.
+- The bug is assumed to be reproducible locally.
+
+### Steps
+
+1. Read the project structure in {scope}. Identify relevant source files and their relationships. Note any configuration files, test suites, and documentation. Produce a summary report of the repository layout and key files.
+2. Decide which of the following applies and follow only that path:
+   When When the bug spans multiple subsystems or layers.:
+   a. Trace the reported symptoms through multiple code layers.
+   b. Gather extensive evidence from logs, tests, and code.
+   Otherwise:
+   a. Trace the reported symptoms to their origin. Confirm the root cause with evidence from logs, tests, or code inspection.
+3. Don't propose a fix until you've confirmed the root cause.
+4. Apply the smallest change that fixes the root cause. Preserve existing patterns and avoid unnecessary refactoring.
+5. Verify the fix resolves the original issue. Run related tests to check for regressions Return the result of summarize_changes().
+
+### Constraints
+
+- Prefer the repository's existing patterns, helper APIs, naming, and file organization before introducing a new abstraction or style.
+- Do not make changes outside the requested scope or fixing unrelated issues.

@@ -1,0 +1,23 @@
+---
+source: crates/glyph-cli/tests/multi_file_acceptance.rs
+expression: md
+---
+---
+name: update_docs
+description: Update repository documentation to match current code.
+effects: [reads_files, writes_files]
+---
+
+## Instructions
+
+### Steps
+
+1. Scan the repository for files with documentation.
+2. Compare each document against the current code for accuracy.
+3. Update any sections that are outdated or incorrect.
+4. Verify all cross-references and links are still valid.
+
+### Constraints
+
+- Ensure all documentation accurately reflects the current code.
+- Do not leave references to removed or renamed symbols.
