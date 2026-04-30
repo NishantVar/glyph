@@ -167,6 +167,7 @@ fn serialize_call(c: &IrCall, arena: &IrArena) -> Value {
         Value::String(projection_mode_str(c.projection_tier).into()),
     );
 
+    // callee_description: present on non-inline calls when the callee block has a description.
     // callee_flow, callee_context, callee_constraints
     let is_inline = c.projection_tier.is_none() || c.projection_tier == Some(1);
     if is_inline {
@@ -177,6 +178,11 @@ fn serialize_call(c: &IrCall, arena: &IrArena) -> Value {
         // For non-inline projections, populate from callee block if available.
         let block = find_block_by_name(arena, &c.target);
         if let Some(block) = block {
+            // callee_description: emit when the block has a description set.
+            if let Some(ref desc) = block.description {
+                m.insert("callee_description".into(), Value::String(desc.clone()));
+            }
+
             // callee_flow: serialize the block's flow statements as inline instructions.
             let flow: Vec<Value> = block
                 .flow_statements
@@ -399,7 +405,7 @@ pub fn serialize_ir_json(arena: &IrArena, source_file: &str) -> Option<String> {
     envelope.insert("skill".into(), Value::Object(skill_obj));
 
     // Use serde_json to_string_pretty for human-readable output.
-    // BTreeMap in serde_json::Map ensures key ordering is insertion-order,
-    // but we build them in the spec-defined order.
+    // We build maps in spec-defined insertion order. serde_json::Map preserves
+    // insertion order, giving deterministic output across runs.
     Some(serde_json::to_string_pretty(&Value::Object(envelope)).unwrap())
 }

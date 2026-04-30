@@ -185,6 +185,11 @@ skill fix()
 
 #[test]
 fn emit_ir_includes_description_on_block_in_call() {
+    // Block/ExportBlock don't appear as separate nodes in the JSON — their
+    // content is inlined into Call nodes. When a described block is called
+    // via a non-inline (Tier 2+) projection, the callee's description should
+    // appear as `callee_description` on the Call node. When absent, the field
+    // is omitted entirely.
     let source = r#"block review_code()
     description: "Review code thoroughly."
     flow:
@@ -199,22 +204,41 @@ skill fix()
         review_code()
 "#;
     let v = compile_and_read_ir("desc.glyph.md", source);
-    // The description is on the Block node. In the IR JSON, Call nodes don't
-    // directly carry the callee's description. But the Block node's description
-    // is accessible. Let's verify it's in the IR via the underlying arena.
-    // Actually, per the spec, description on Block/ExportBlock: "emitted as a
-    // string when present, omitted when None". But Block/ExportBlock don't
-    // appear as separate nodes in the JSON — their content is inlined into Call.
-    // The spec says: "Includes description on Block/ExportBlock when set in source;
-    // omitted when absent". This likely means it should be a field on the Call
-    // node when projecting non-inline.
-    //
-    // For now, verify the call exists and has expected fields. The description
-    // handling will be verified in a unit test against the serializer.
     let flow = v["skill"]["flow"].as_array().unwrap();
     let call = &flow[0];
     assert_eq!(call["kind"], "call");
     assert_eq!(call["target"], "review_code");
+    assert_eq!(call["projection_mode"], "same_file_procedure");
+    // callee_description present because the block has a description set.
+    assert_eq!(
+        call["callee_description"], "Review code thoroughly.",
+        "callee_description should surface the block's description on non-inline calls"
+    );
+}
+
+#[test]
+fn emit_ir_omits_callee_description_when_absent() {
+    // When a block has no description, callee_description is omitted from the Call node.
+    let source = r#"block review_code()
+    flow:
+        "Scan for style violations."
+        "Check for security issues."
+        "Check for performance issues."
+        "Compile findings."
+
+skill fix()
+    description: "Fix it."
+    flow:
+        review_code()
+"#;
+    let v = compile_and_read_ir("desc_absent.glyph.md", source);
+    let flow = v["skill"]["flow"].as_array().unwrap();
+    let call = &flow[0];
+    assert_eq!(call["kind"], "call");
+    assert!(
+        call.get("callee_description").is_none() || call["callee_description"].is_null(),
+        "callee_description should be absent when block has no description"
+    );
 }
 
 #[test]
