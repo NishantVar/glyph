@@ -8,6 +8,7 @@ pub mod analyze;
 pub mod ast;
 pub mod diagnostic;
 pub mod emit;
+pub mod emit_ir;
 pub mod expand;
 pub mod ir;
 pub mod lower;
@@ -46,7 +47,7 @@ pub enum CompileError {
 /// rule in `design/build-foundation.md` §A6.
 #[derive(Debug)]
 pub enum CompileOutcome {
-    Compiled { markdown: String, diagnostics: DiagBag },
+    Compiled { markdown: String, diagnostics: DiagBag, arena: ir::IrArena },
     Diagnostics(DiagBag),
 }
 
@@ -95,7 +96,7 @@ pub fn compile_source(
     validate::validate(&arena).map_err(CompileError::Validate)?;
     let arena = expand::expand_step1(arena);
     let markdown = emit::emit(&arena);
-    Ok(CompileOutcome::Compiled { markdown, diagnostics: bag })
+    Ok(CompileOutcome::Compiled { markdown, diagnostics: bag, arena })
 }
 
 /// Run only Phase 1 (Parse) and Phase 2 (Analyze) and return the populated
@@ -134,8 +135,9 @@ pub fn compile_file(path: &Path) -> Result<CompileOutcome, CompileError> {
     })?;
     let label = path.display().to_string();
     let outcome = compile_source(&source, 0, &label)?;
-    if let CompileOutcome::Compiled { ref markdown, .. } = outcome {
+    if let CompileOutcome::Compiled { ref markdown, ref arena, .. } = outcome {
         let out_path = compiled_output_path(path);
+        let _ = arena; // arena available for --emit-ir; unused in compile_file
         atomic_write(&out_path, markdown).map_err(|e| CompileError::Write {
             path: out_path.display().to_string(),
             source: e,
@@ -815,8 +817,9 @@ fn compile_file_with_imports(
     let label = path.display().to_string();
 
     let outcome = compile_source_with_imports(&source, 0, &label, imported_procedure_paths)?;
-    if let CompileOutcome::Compiled { ref markdown, .. } = outcome {
+    if let CompileOutcome::Compiled { ref markdown, ref arena, .. } = outcome {
         let out_path = compiled_output_path(path);
+        let _ = arena;
         atomic_write(&out_path, markdown).map_err(|e| CompileError::Write {
             path: out_path.display().to_string(),
             source: e,
@@ -879,7 +882,7 @@ fn compile_source_with_imports(
     validate::validate(&arena).map_err(CompileError::Validate)?;
     let arena = expand::expand_step1(arena);
     let markdown = emit::emit(&arena);
-    Ok(CompileOutcome::Compiled { markdown, diagnostics: bag })
+    Ok(CompileOutcome::Compiled { markdown, diagnostics: bag, arena })
 }
 
 #[cfg(test)]

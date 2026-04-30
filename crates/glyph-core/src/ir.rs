@@ -160,7 +160,7 @@ pub enum Polarity {
 }
 
 /// Single arena per file. Lower allocates IDs in pre-order traversal.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct IrArena {
     nodes: Vec<IrNode>,
     /// The root skill, if any.
