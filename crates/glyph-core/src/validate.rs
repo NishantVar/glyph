@@ -232,6 +232,7 @@ mod tests {
             args: vec![],
             resolved_body: None, // unresolved!
             site_modifier: None,
+            projection_tier: None,
         }));
         arena.set_root_skill(skill_id);
         let err = validate(&arena).unwrap_err();
@@ -259,6 +260,7 @@ mod tests {
             args: vec![],
             resolved_body: Some("Do something.".into()),
             site_modifier: None,
+            projection_tier: None,
         }));
         // Block "foo" that calls itself (direct recursion).
         arena.push(IrNode::Block(IrBlock {
@@ -266,6 +268,7 @@ mod tests {
             name: "foo".into(),
             description: None,
             body_text: "Do something.".into(),
+            flow_statements: vec!["Do something.".into()],
             resolved_word_count: None,
             outgoing_calls: vec!["foo".into()], // self-referencing!
         }));
@@ -325,6 +328,7 @@ mod tests {
             args: vec![],
             resolved_body: Some("Do something.".into()),
             site_modifier: None,
+            projection_tier: None,
         }));
         // Block "foo" calls "bar".
         arena.push(IrNode::Block(IrBlock {
@@ -332,6 +336,7 @@ mod tests {
             name: "foo".into(),
             description: None,
             body_text: "Do something.".into(),
+            flow_statements: vec!["Do something.".into()],
             resolved_word_count: None,
             outgoing_calls: vec!["bar".into()],
         }));
@@ -341,6 +346,7 @@ mod tests {
             name: "bar".into(),
             description: None,
             body_text: "Do something else.".into(),
+            flow_statements: vec!["Do something else.".into()],
             resolved_word_count: None,
             outgoing_calls: vec!["foo".into()],
         }));

@@ -80,6 +80,9 @@ pub struct IrBlock {
     pub description: Option<String>,
     /// Resolved body text (concatenated flow inline strings).
     pub body_text: String,
+    /// Individual flow statement strings, preserved for Tier 2 procedure emission.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flow_statements: Vec<String>,
     /// Word count of the resolved body text, computed in Expand Step 1.
     #[serde(default)]
     pub resolved_word_count: Option<u32>,
@@ -102,6 +105,10 @@ pub struct IrCall {
     /// consumption by the agent in Step 2. Not applied during Step 1 emit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site_modifier: Option<String>,
+    /// Projection tier assigned by Expand Step 1.
+    /// `None` before expand runs; `Some(2)` = same-file procedure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_tier: Option<u8>,
 }
 
 #[derive(Clone, Debug, Serialize)]
