@@ -85,6 +85,27 @@ pub fn analyze_with_diagnostics(
             Decl::Import(_) => {}
         }
     }
+
+    // Library detection: file with zero skills.
+    let has_skill = file.decls.iter().any(|d| matches!(d, Decl::Skill(_)));
+    if !has_skill {
+        let has_export = file.decls.iter().any(|d| {
+            matches!(d, Decl::ExportBlock(_))
+                || matches!(d, Decl::Text(t) if t.node.exported)
+        });
+        if !has_export {
+            let span = crate::span::Span::new(file_id, 0, 0);
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::no-exports-in-library",
+                    "file has no `skill` and no `export` declarations",
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+        }
+    }
+
     file
 }
 

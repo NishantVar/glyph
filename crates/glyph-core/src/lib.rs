@@ -2526,4 +2526,24 @@ this is broken!!!
         // bad.md should NOT exist.
         assert!(!dir.path().join("bad.md").exists(), "bad.md should not exist");
     }
+
+    // --- Slice 13: Library files (export blocks/text + closure check) ---
+
+    #[test]
+    fn ac4_library_with_zero_exports_fires_no_exports_in_library() {
+        // A file with zero skills AND zero exports is an error.
+        let src = "\
+text private_text = \"This is private.\"
+block helper()
+    \"Do something.\"
+";
+        let bag = check_source(src, 0, "empty_lib.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::no-exports-in-library"),
+            "expected no-exports-in-library for library with zero exports, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 1, "no-exports-in-library should be a hard error");
+    }
 }
