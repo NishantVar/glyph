@@ -48,6 +48,10 @@ enum Command {
         /// next to the compiled `.md`. See `design/ir-json-schema.md`.
         #[arg(long)]
         emit_ir: bool,
+        /// Treat `repairable` diagnostics as hard errors: exit code 1 instead of
+        /// 2. No `.md` output is written when repairable diagnostics are present.
+        #[arg(long)]
+        strict: bool,
     },
     /// Run Phases 1 (Parse) and 2 (Analyze) only — fast lint mode.
     ///
@@ -62,6 +66,9 @@ enum Command {
         /// codespan-reporting; `json` emits one NDJSON diagnostic per line on stdout.
         #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
         format: OutputFormat,
+        /// Treat `repairable` diagnostics as hard errors: exit code 1 instead of 2.
+        #[arg(long)]
+        strict: bool,
     },
 }
 
@@ -74,8 +81,8 @@ enum OutputFormat {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Compile { path, format, emit_ir } => run_compile(path, format, emit_ir),
-        Command::Check { path, format } => run_check(path, format),
+        Command::Compile { path, format, emit_ir, strict } => run_compile(path, format, emit_ir, strict),
+        Command::Check { path, format, strict } => run_check(path, format, strict),
     }
 }
 
@@ -87,7 +94,7 @@ fn main() -> ExitCode {
 ///
 /// Never writes output files, regardless of outcome. Diagnostics are rendered
 /// per the requested `--format`.
-fn run_check(path: PathBuf, format: OutputFormat) -> ExitCode {
+fn run_check(path: PathBuf, format: OutputFormat, strict: bool) -> ExitCode {
     let files = match collect_glyph_sources(&path) {
         Ok(v) => v,
         Err(code) => return code,
@@ -118,6 +125,9 @@ fn run_check(path: PathBuf, format: OutputFormat) -> ExitCode {
         worst = combine_exit_codes(worst, code);
     }
 
+    if strict && worst == 2 {
+        return ExitCode::from(1);
+    }
     ExitCode::from(worst)
 }
 
@@ -195,7 +205,7 @@ fn collect_glyph_sources(path: &std::path::Path) -> Result<Vec<PathBuf>, ExitCod
     Err(ExitCode::from(3))
 }
 
-fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool) -> ExitCode {
+fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool) -> ExitCode {
     let metadata = match std::fs::metadata(&path) {
         Ok(m) => m,
         Err(e) => {
@@ -205,7 +215,7 @@ fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool) -> ExitCode {
     };
 
     if metadata.is_dir() {
-        return run_compile_directory(path, format);
+        return run_compile_directory(path, format, strict);
     }
 
     // Single-file compile (existing behavior).
@@ -228,6 +238,13 @@ fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool) -> ExitCode {
 
     match outcome {
         CompileOutcome::Compiled { markdown, diagnostics, arena } => {
+            let code = diagnostics.exit_code();
+            // In strict mode, repairable diagnostics (exit 2) become hard
+            // errors (exit 1) and no `.md` output is written.
+            if strict && code == 2 {
+                emit_diagnostics(&diagnostics, &label, &source, format);
+                return ExitCode::from(1);
+            }
             let out_path = compiled_output_path(&path);
             if let Err(e) = glyph_core::atomic_write(&out_path, &markdown) {
                 eprintln!("glyph: cannot write `{}`: {}", out_path.display(), e);
@@ -247,11 +264,14 @@ fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool) -> ExitCode {
                 }
             }
             emit_diagnostics(&diagnostics, &label, &source, format);
-            ExitCode::from(diagnostics.exit_code())
+            ExitCode::from(code)
         }
         CompileOutcome::Diagnostics(bag) => {
             let code = bag.exit_code();
             emit_diagnostics(&bag, &label, &source, format);
+            if strict && code == 2 {
+                return ExitCode::from(1);
+            }
             ExitCode::from(code)
         }
     }
@@ -259,7 +279,7 @@ fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool) -> ExitCode {
 
 /// Directory-mode compile: collect all `.glyph.md` files, build DAG, compile
 /// in topological order with partial failure.
-fn run_compile_directory(path: PathBuf, format: OutputFormat) -> ExitCode {
+fn run_compile_directory(path: PathBuf, format: OutputFormat, strict: bool) -> ExitCode {
     let files = match collect_glyph_sources(&path) {
         Ok(v) => v,
         Err(code) => return code,
@@ -313,7 +333,11 @@ fn run_compile_directory(path: PathBuf, format: OutputFormat) -> ExitCode {
         }
     }
 
-    ExitCode::from(result.exit_code)
+    let code = result.exit_code;
+    if strict && code == 2 {
+        return ExitCode::from(1);
+    }
+    ExitCode::from(code)
 }
 
 fn emit_diagnostics(bag: &DiagBag, file_label: &str, source: &str, format: OutputFormat) {
