@@ -119,8 +119,10 @@ fn compiler_emitted_output_passes_validation() {
     // Find a valid .glyph.md file
     let glyph_file = corpus_dir.join("update_docs.glyph.md");
     if !glyph_file.exists() {
-        // Skip if corpus doesn't have this file
-        return;
+        panic!(
+            "corpus file {:?} not found — test cannot be skipped silently",
+            glyph_file
+        );
     }
 
     let dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -135,18 +137,26 @@ fn compiler_emitted_output_passes_validation() {
         .output()
         .expect("failed to spawn glyph binary");
 
-    if compile_result.status.code() != Some(0) {
-        // Compilation failed — skip this test
-        return;
-    }
+    assert_eq!(
+        compile_result.status.code(),
+        Some(0),
+        "compilation failed — cannot validate output; stderr={:?}",
+        String::from_utf8_lossy(&compile_result.stderr),
+    );
 
     let ir_path = dir.path().join("update_docs.ir.json");
     let md_path = dir.path().join("update_docs.md");
 
-    if !ir_path.exists() || !md_path.exists() {
-        // IR or MD not produced — skip
-        return;
-    }
+    assert!(
+        ir_path.exists(),
+        "expected IR file at {:?} after --emit-ir compilation",
+        ir_path,
+    );
+    assert!(
+        md_path.exists(),
+        "expected MD file at {:?} after compilation",
+        md_path,
+    );
 
     // Now validate-output
     let validate_result = Command::new(glyph_bin())

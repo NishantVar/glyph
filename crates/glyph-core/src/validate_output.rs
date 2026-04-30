@@ -97,6 +97,9 @@ pub fn validate_output(ir_json: &str, md: &str) -> Vec<Violation> {
     // Procedure checks
     check_procedures(&md_struct, skill, &mut violations);
 
+    // Description-driven branch validation
+    check_applies_descriptions(skill, md, &mut violations);
+
     violations
 }
 
@@ -1417,6 +1420,58 @@ fn to_kebab(name: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Check: description-shape-missing (description-driven branch projection)
+// ---------------------------------------------------------------------------
+
+fn check_applies_descriptions(skill: &Value, md: &str, violations: &mut Vec<Violation>) {
+    if let Some(flow) = skill.get("flow").and_then(|f| f.as_array()) {
+        check_applies_descriptions_in_flow(flow, md, violations);
+    }
+}
+
+fn check_applies_descriptions_in_flow(flow: &[Value], md: &str, violations: &mut Vec<Violation>) {
+    for node in flow {
+        let kind = node.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+        if kind == "branch" {
+            // Check if this branch has applies_descriptions
+            if let Some(desc_map) = node.get("applies_descriptions").and_then(|d| d.as_object()) {
+                // When applies_descriptions is populated, the compiled output
+                // must use description-keyed prose, not raw condition expressions.
+                // Verify that none of the block names followed by `.applies()`
+                // survive literally in the markdown.
+                for block_name in desc_map.keys() {
+                    let raw_condition = format!("{}.applies()", block_name);
+                    if md.contains(&raw_condition) {
+                        violations.push(Violation::new(
+                            "G::expand::description-shape-missing",
+                            format!(
+                                "raw condition `{}` survives in output; \
+                                 description-driven branch should use resolved description prose",
+                                raw_condition
+                            ),
+                        ));
+                    }
+                }
+            }
+            // Recurse into branch bodies
+            if let Some(body) = node.get("then_body").and_then(|b| b.as_array()) {
+                check_applies_descriptions_in_flow(body, md, violations);
+            }
+            if let Some(elifs) = node.get("elif_branches").and_then(|b| b.as_array()) {
+                for elif in elifs {
+                    if let Some(body) = elif.get("body").and_then(|b| b.as_array()) {
+                        check_applies_descriptions_in_flow(body, md, violations);
+                    }
+                }
+            }
+            if let Some(body) = node.get("else_body").and_then(|b| b.as_array()) {
+                check_applies_descriptions_in_flow(body, md, violations);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -2469,5 +2524,61 @@ mod tests {
             .filter(|v| v.id.contains("substep") || v.id.contains("step-count"))
             .collect();
         assert!(branch_errors.is_empty(), "unexpected branch errors: {:?}", branch_errors);
+    }
+
+    #[test]
+    fn description_driven_branch_rejects_raw_applies_condition() {
+        // When a Branch has applies_descriptions, the compiled output must NOT
+        // contain the raw `.applies()` condition expressions. If they survive,
+        // it means the description-keyed rendering failed.
+        let ir = serde_json::json!({
+            "ir_version": 1,
+            "compiler": "glyph 0.1.0",
+            "source_file": "test.glyph.md",
+            "skill": {
+                "node_id": "n0",
+                "kind": "skill",
+                "name": "test_skill",
+                "description": "A test skill.",
+                "params": [],
+                "effects": [],
+                "context": [],
+                "constraints": [],
+                "flow": [
+                    {
+                        "node_id": "n1",
+                        "kind": "branch",
+                        "condition": "fork_with_plan.applies()",
+                        "then_body": [
+                            { "node_id": "n2", "kind": "inline_instruction", "text": "Fork with plan.", "role": "step" }
+                        ],
+                        "elif_branches": [
+                            {
+                                "node_id": "n3",
+                                "kind": "elif_branch",
+                                "condition": "fork_with_summary.applies()",
+                                "body": [
+                                    { "node_id": "n4", "kind": "inline_instruction", "text": "Fork with summary.", "role": "step" }
+                                ]
+                            }
+                        ],
+                        "else_body": null,
+                        "applies_descriptions": {
+                            "fork_with_plan": "Fork a terminal with a plan.",
+                            "fork_with_summary": "Fork a terminal with a summary."
+                        }
+                    }
+                ]
+            }
+        }).to_string();
+
+        // BAD rendering: uses raw condition expressions instead of descriptions
+        let md = "## Instructions\n\n### Steps\n\n1. If fork_with_plan.applies():\n   a. Fork with plan.\n   b. Fork with summary.\n";
+        let violations = validate_output(&ir, md);
+        assert!(
+            violations.iter().any(|v| v.id == "G::expand::description-shape-missing"),
+            "should reject raw .applies() condition in step prose; got: {:?}",
+            violations
+        );
     }
 }
