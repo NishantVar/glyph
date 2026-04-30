@@ -225,7 +225,7 @@ fn run_compile(path: PathBuf, format: OutputFormat) -> ExitCode {
     match outcome {
         CompileOutcome::Compiled { markdown, diagnostics } => {
             let out_path = compiled_output_path(&path);
-            if let Err(e) = std::fs::write(&out_path, &markdown) {
+            if let Err(e) = glyph_core::atomic_write(&out_path, &markdown) {
                 eprintln!("glyph: cannot write `{}`: {}", out_path.display(), e);
                 return ExitCode::from(3);
             }

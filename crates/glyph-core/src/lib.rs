@@ -136,7 +136,7 @@ pub fn compile_file(path: &Path) -> Result<CompileOutcome, CompileError> {
     let outcome = compile_source(&source, 0, &label)?;
     if let CompileOutcome::Compiled { ref markdown, .. } = outcome {
         let out_path = compiled_output_path(path);
-        std::fs::write(&out_path, markdown).map_err(|e| CompileError::Write {
+        atomic_write(&out_path, markdown).map_err(|e| CompileError::Write {
             path: out_path.display().to_string(),
             source: e,
         })?;
@@ -650,6 +650,27 @@ pub fn compile_directory(sources: &[PathBuf]) -> BuildResult {
     BuildResult { outcomes, exit_code }
 }
 
+/// Write `content` to `path` atomically: write to `path.tmp`, then rename.
+/// On failure, delete the `.tmp` and leave any prior `path` untouched.
+pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
+    let tmp_path = tmp_path_for(path);
+    // Clean stale .tmp from a previous interrupted run.
+    let _ = std::fs::remove_file(&tmp_path);
+    std::fs::write(&tmp_path, content)?;
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Return the `.tmp` sibling path for a given output path.
+fn tmp_path_for(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_os_string();
+    s.push(".tmp");
+    PathBuf::from(s)
+}
+
 /// Map `foo.glyph.md` → `foo.md` next to the source file.
 fn compiled_output_path(input: &Path) -> std::path::PathBuf {
     let parent = input.parent().unwrap_or_else(|| Path::new("."));
@@ -716,7 +737,7 @@ fn emit_library_procedures(path: &Path) -> Vec<(String, String)> {
             );
 
             let out_path = subdir.join(format!("{}.md", kebab_name));
-            std::fs::write(&out_path, &markdown).ok();
+            atomic_write(&out_path, &markdown).ok();
 
             let rel_path = format!("{}/{}.md", stem, kebab_name);
             emitted.push((eb.node.name.clone(), rel_path));
@@ -796,7 +817,7 @@ fn compile_file_with_imports(
     let outcome = compile_source_with_imports(&source, 0, &label, imported_procedure_paths)?;
     if let CompileOutcome::Compiled { ref markdown, .. } = outcome {
         let out_path = compiled_output_path(path);
-        std::fs::write(&out_path, markdown).map_err(|e| CompileError::Write {
+        atomic_write(&out_path, markdown).map_err(|e| CompileError::Write {
             path: out_path.display().to_string(),
             source: e,
         })?;
