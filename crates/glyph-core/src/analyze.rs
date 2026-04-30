@@ -86,7 +86,7 @@ pub fn analyze_with_diagnostics(
     for decl in &file.decls {
         match decl {
             Decl::Skill(spanned) => {
-                analyze_skill(spanned, file_id, file_label, line_index, bag, &text_names, &block_names, &block_decls)
+                analyze_skill(spanned, file_id, file_label, line_index, bag, &text_names, &block_names, &block_decls, &HashMap::new())
             }
             Decl::ExportBlock(spanned) => {
                 analyze_export_block(spanned, file_label, line_index, bag, &private_names);
@@ -158,6 +158,7 @@ pub fn analyze_with_imports(
     imported_texts: &HashSet<String>,
     imported_blocks: &HashSet<String>,
     used_import_names: &mut HashSet<String>,
+    imported_block_descriptions: &HashMap<String, String>,
 ) -> SourceFile {
     // Collect local text declaration names.
     let local_text_names: HashSet<&str> = file
@@ -220,6 +221,7 @@ pub fn analyze_with_imports(
                     spanned, file_id, file_label, line_index, bag,
                     &text_names, &block_names, &block_decls,
                     imported_texts, imported_blocks, used_import_names,
+                    imported_block_descriptions,
                 );
             }
             Decl::ExportBlock(spanned) => {
@@ -289,9 +291,10 @@ fn analyze_skill_with_usage_tracking(
     imported_texts: &HashSet<String>,
     imported_blocks: &HashSet<String>,
     used_import_names: &mut HashSet<String>,
+    imported_block_descriptions: &HashMap<String, String>,
 ) {
     // Run the normal analysis.
-    analyze_skill(spanned, file_id, file_label, line_index, bag, text_names, block_names, block_decls);
+    analyze_skill(spanned, file_id, file_label, line_index, bag, text_names, block_names, block_decls, imported_block_descriptions);
 
     // Track usage: walk flow/constraints/context to see which imported names are referenced.
     let skill = &spanned.node;
@@ -371,6 +374,7 @@ fn analyze_skill(
     text_names: &HashSet<&str>,
     block_names: &HashSet<&str>,
     block_decls: &HashMap<&str, &BlockDecl>,
+    imported_block_descriptions: &HashMap<String, String>,
 ) {
     let skill = &spanned.node;
     let declared: HashSet<&str> = skill.params.iter().map(|p| p.name.as_str()).collect();
@@ -507,13 +511,13 @@ fn analyze_skill(
                 // Check applies() calls in condition.
                 check_applies_in_condition(
                     condition, spanned.span, file_id, file_label, line_index, bag,
-                    &text_names, &block_names, &block_decls,
+                    &text_names, &block_names, &block_decls, imported_block_descriptions,
                 );
                 // Check elif conditions too.
                 for elif in elif_branches {
                     check_applies_in_condition(
                         &elif.condition, spanned.span, file_id, file_label, line_index, bag,
-                        &text_names, &block_names, &block_decls,
+                        &text_names, &block_names, &block_decls, imported_block_descriptions,
                     );
                 }
                 // Check flow statements inside branch bodies for name resolution.
@@ -798,6 +802,7 @@ fn check_applies_in_condition(
     text_names: &HashSet<&str>,
     block_names: &HashSet<&str>,
     block_decls: &HashMap<&str, &BlockDecl>,
+    imported_block_descriptions: &HashMap<String, String>,
 ) {
     // Find all `NAME.applies()` patterns in the condition.
     // Simple string scanning — condition is a reconstructed string.
@@ -840,7 +845,7 @@ fn check_applies_in_condition(
                             span,
                         );
                     }
-                } else {
+                } else if !imported_block_descriptions.contains_key(receiver_name) {
                     // Block is known by name but not in block_decls — imported
                     // block without accessible declaration. Treat as hard error
                     // per ir-and-semantics.md §Block Trigger Predicate: imported
@@ -1052,6 +1057,7 @@ mod tests {
             &text_names,
             &block_names,
             &block_decls,
+            &HashMap::new(),
         );
 
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();

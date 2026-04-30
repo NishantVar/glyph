@@ -1,5 +1,5 @@
 import "./prefs.glyph.md" { preserve_existing_patterns }
-import "./repo_tools.glyph.md" { inspect_repo }
+import "./repo_tools.glyph.md" { inspect_repo, has_test_suite }
 
 skill fix_bug(scope = ".")
     description: "Debug and fix a bug in the codebase with minimal, targeted changes."
@@ -19,6 +19,10 @@ skill fix_bug(scope = ".")
         else
             identify_root_cause()
         "Don't propose a fix until you've confirmed the root cause."
+        if has_test_suite.applies()
+            "Run the existing test suite before making changes to establish a baseline."
+        else
+            "Manually verify the fix by inspecting the changed code paths."
         patch_minimally()
         validate_fix()
         return summarize_changes()
@@ -28,7 +32,7 @@ text unrelated_edits = "Making changes outside the requested scope or fixing unr
 text codebase_assumptions = "This codebase follows standard project conventions and has a test suite."
 
 block deep_investigation()
-    description: "When the bug spans multiple subsystems or layers."
+    description: "The bug spans multiple subsystems or layers."
     flow:
         "Map the full dependency chain of the affected code."
         "Identify every subsystem involved in the bug."

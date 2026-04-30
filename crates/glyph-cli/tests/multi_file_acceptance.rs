@@ -50,6 +50,15 @@ fn compile_directory(dir: &std::path::Path) -> std::process::Output {
         .expect("failed to spawn glyph binary")
 }
 
+fn compile_directory_with_ir(dir: &std::path::Path) -> std::process::Output {
+    Command::new(glyph_bin())
+        .arg("compile")
+        .arg(dir)
+        .arg("--emit-ir")
+        .output()
+        .expect("failed to spawn glyph binary")
+}
+
 // ── AC: Directory compile exits 0 ──────────────────────────────────
 
 #[test]
@@ -154,11 +163,11 @@ fn fix_bug_resolves_imported_block_call() {
 
     let md = std::fs::read_to_string(path.join("fix_bug.md")).unwrap();
 
-    // The imported block `inspect_repo` from repo_tools.glyph.md should be
-    // inlined into the Steps section (Tier 1 projection).
+    // The imported block `inspect_repo` from repo_tools.glyph.md has 150+
+    // words, so it gets Tier 3 projection — a procedure file reference.
     assert!(
-        md.contains("Read the project structure"),
-        "imported inspect_repo block body should be expanded in fix_bug.md"
+        md.contains("repo_tools/inspect-repo.md"),
+        "imported inspect_repo should render as Tier 3 procedure reference in fix_bug.md"
     );
 }
 
@@ -170,16 +179,45 @@ fn review_pr_resolves_imported_blocks() {
 
     let md = std::fs::read_to_string(path.join("review_pr.md")).unwrap();
 
-    // inspect_repo called at top of flow.
+    // inspect_repo called at top of flow — now Tier 3 procedure reference.
     assert!(
-        md.contains("Read the project structure"),
-        "imported inspect_repo should be expanded in review_pr.md"
+        md.contains("repo_tools/inspect-repo.md"),
+        "imported inspect_repo should render as Tier 3 procedure reference in review_pr.md"
     );
 
-    // run_tests called inside the high-risk branch.
+    // run_tests called inside the high-risk branch — still Tier 1 inlined.
     assert!(
         md.contains("test framework"),
         "imported run_tests should be expanded in review_pr.md"
+    );
+}
+
+// ── AC: Procedure files for repo_tools exports ────────────────────
+
+#[test]
+fn repo_tools_procedure_files_emitted() {
+    let (_dir, path) = setup_tempdir();
+    let output = compile_directory(&path);
+    assert!(output.status.success(), "compile failed");
+
+    // inspect_repo has 150+ words — should get a Tier 3 procedure file.
+    assert!(
+        path.join("repo_tools").join("inspect-repo.md").exists(),
+        "repo_tools/inspect-repo.md procedure file should exist"
+    );
+
+    // Verify the procedure file has expected frontmatter.
+    let proc_md = std::fs::read_to_string(
+        path.join("repo_tools").join("inspect-repo.md"),
+    )
+    .unwrap();
+    assert!(
+        proc_md.contains("kind: procedure"),
+        "procedure file should have kind: procedure"
+    );
+    assert!(
+        proc_md.contains("name: inspect-repo"),
+        "procedure file should have correct name"
     );
 }
 
@@ -235,18 +273,38 @@ fn review_pr_has_branch_scoped_context() {
 // ── AC: .applies() conditional ─────────────────────────────────────
 
 #[test]
-fn fix_bug_has_applies_conditional() {
+fn fix_bug_has_applies_conditional_same_file() {
     let (_dir, path) = setup_tempdir();
     let output = compile_directory(&path);
     assert!(output.status.success(), "compile failed");
 
     let md = std::fs::read_to_string(path.join("fix_bug.md")).unwrap();
 
-    // fix_bug.glyph.md uses `if deep_investigation.applies()` which should
-    // render as a conditional based on the block's description.
+    // fix_bug.glyph.md uses `if deep_investigation.applies()` — same-file block.
     assert!(
         md.contains("bug spans multiple subsystems"),
         "deep_investigation.applies() should render with the block's description"
+    );
+    // AC 5 fix: no "When When" duplicate — description starts with "The"
+    assert!(
+        !md.contains("When When"),
+        "should not have duplicate 'When When' prefix"
+    );
+}
+
+#[test]
+fn fix_bug_has_applies_conditional_imported() {
+    let (_dir, path) = setup_tempdir();
+    let output = compile_directory(&path);
+    assert!(output.status.success(), "compile failed");
+
+    let md = std::fs::read_to_string(path.join("fix_bug.md")).unwrap();
+
+    // fix_bug.glyph.md uses `if has_test_suite.applies()` — imported block
+    // from repo_tools.glyph.md whose description lives in the library file.
+    assert!(
+        md.contains("established test suite"),
+        "imported has_test_suite.applies() should render with the library block's description"
     );
 }
 
@@ -295,23 +353,40 @@ fn update_docs_is_standalone() {
 fn multi_file_compile_is_idempotent() {
     let (_dir, path) = setup_tempdir();
 
-    // First run.
-    let r1 = compile_directory(&path);
+    // First run (with --emit-ir to also produce .ir.json files).
+    let r1 = compile_directory_with_ir(&path);
     assert!(r1.status.success(), "first compile failed");
     let fix1 = std::fs::read(path.join("fix_bug.md")).unwrap();
     let rev1 = std::fs::read(path.join("review_pr.md")).unwrap();
     let upd1 = std::fs::read(path.join("update_docs.md")).unwrap();
+    // .ir.json files
+    let fix_ir1 = std::fs::read(path.join("fix_bug.ir.json")).unwrap();
+    let rev_ir1 = std::fs::read(path.join("review_pr.ir.json")).unwrap();
+    let upd_ir1 = std::fs::read(path.join("update_docs.ir.json")).unwrap();
+    // Procedure files
+    let proc1 = std::fs::read(path.join("repo_tools").join("inspect-repo.md")).unwrap();
 
     // Second run.
-    let r2 = compile_directory(&path);
+    let r2 = compile_directory_with_ir(&path);
     assert!(r2.status.success(), "second compile failed");
     let fix2 = std::fs::read(path.join("fix_bug.md")).unwrap();
     let rev2 = std::fs::read(path.join("review_pr.md")).unwrap();
     let upd2 = std::fs::read(path.join("update_docs.md")).unwrap();
+    let fix_ir2 = std::fs::read(path.join("fix_bug.ir.json")).unwrap();
+    let rev_ir2 = std::fs::read(path.join("review_pr.ir.json")).unwrap();
+    let upd_ir2 = std::fs::read(path.join("update_docs.ir.json")).unwrap();
+    let proc2 = std::fs::read(path.join("repo_tools").join("inspect-repo.md")).unwrap();
 
+    // .md files byte-identical
     assert_eq!(fix1, fix2, "fix_bug.md not byte-identical across runs");
     assert_eq!(rev1, rev2, "review_pr.md not byte-identical across runs");
     assert_eq!(upd1, upd2, "update_docs.md not byte-identical across runs");
+    // .ir.json files byte-identical
+    assert_eq!(fix_ir1, fix_ir2, "fix_bug.ir.json not byte-identical across runs");
+    assert_eq!(rev_ir1, rev_ir2, "review_pr.ir.json not byte-identical across runs");
+    assert_eq!(upd_ir1, upd_ir2, "update_docs.ir.json not byte-identical across runs");
+    // Procedure files byte-identical
+    assert_eq!(proc1, proc2, "repo_tools/inspect-repo.md procedure not byte-identical across runs");
 }
 
 // ── AC: Frontmatter correctness ────────────────────────────────────

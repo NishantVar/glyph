@@ -314,7 +314,7 @@ fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool)
     };
 
     if metadata.is_dir() {
-        return run_compile_directory(path, format, strict);
+        return run_compile_directory(path, format, emit_ir, strict);
     }
 
     // Single-file compile (existing behavior).
@@ -378,7 +378,7 @@ fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool)
 
 /// Directory-mode compile: collect all `.glyph.md` files, build DAG, compile
 /// in topological order with partial failure.
-fn run_compile_directory(path: PathBuf, format: OutputFormat, strict: bool) -> ExitCode {
+fn run_compile_directory(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool) -> ExitCode {
     let files = match collect_glyph_sources(&path) {
         Ok(v) => v,
         Err(code) => return code,
@@ -388,7 +388,7 @@ fn run_compile_directory(path: PathBuf, format: OutputFormat, strict: bool) -> E
         return ExitCode::from(0);
     }
 
-    let result = glyph_core::compile_directory(&files);
+    let result = glyph_core::compile_directory_with_options(&files, emit_ir);
 
     // Emit diagnostics and stderr notes for each file outcome.
     for (file_path, outcome) in &result.outcomes {

@@ -492,6 +492,7 @@ fn check_file_recursive(
         &imported_texts,
         &imported_blocks,
         &mut used_import_names,
+        &HashMap::new(),
     );
 
     // Unused import detection.
@@ -541,6 +542,10 @@ pub enum FileOutcome {
 /// Implements partial failure: skip-dependents, leave-stale-`.md`, exit 1 if
 /// any file fails.
 pub fn compile_directory(sources: &[PathBuf]) -> BuildResult {
+    compile_directory_with_options(sources, false)
+}
+
+pub fn compile_directory_with_options(sources: &[PathBuf], emit_ir: bool) -> BuildResult {
     if sources.is_empty() {
         return BuildResult { outcomes: Vec::new(), exit_code: 0 };
     }
@@ -651,6 +656,7 @@ pub fn compile_directory(sources: &[PathBuf]) -> BuildResult {
     let mut file_exports: HashMap<PathBuf, ExportedNames> = HashMap::new();
     let mut file_text_values: HashMap<(PathBuf, String), String> = HashMap::new();
     let mut file_block_bodies: HashMap<(PathBuf, String), String> = HashMap::new();
+    let mut file_block_descriptions: HashMap<(PathBuf, String), String> = HashMap::new();
     let mut failed_files: HashSet<PathBuf> = HashSet::new();
     let mut outcomes: Vec<(PathBuf, FileOutcome)> = Vec::new();
     let mut any_failure = false;
@@ -676,12 +682,19 @@ pub fn compile_directory(sources: &[PathBuf]) -> BuildResult {
 
         // Build full resolved import data from dependency exports.
         let resolved_imports = build_resolved_imports(
-            file, &file_exports, &file_text_values, &file_block_bodies,
+            file, &file_exports, &file_text_values, &file_block_bodies, &file_block_descriptions,
         );
 
         match compile_file_with_resolved_imports(file, &imported_procedure_paths, &resolved_imports) {
-            Ok(CompileOutcome::Compiled { diagnostics, .. }) => {
-                extract_and_store_exports(file, &mut file_exports, &mut file_text_values, &mut file_block_bodies);
+            Ok(CompileOutcome::Compiled { diagnostics, arena, .. }) => {
+                extract_and_store_exports(file, &mut file_exports, &mut file_text_values, &mut file_block_bodies, &mut file_block_descriptions);
+                if emit_ir {
+                    let source_file = file.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                    if let Some(ir_json) = emit_ir::serialize_ir_json(&arena, source_file) {
+                        let ir_path = ir_json_output_path(file);
+                        atomic_write(&ir_path, &ir_json).ok();
+                    }
+                }
                 outcomes.push((file.clone(), FileOutcome::Compiled { diagnostics }));
             }
             Ok(CompileOutcome::Diagnostics(bag)) => {
@@ -691,7 +704,7 @@ pub fn compile_directory(sources: &[PathBuf]) -> BuildResult {
             }
             Err(CompileError::Lower(lower::LowerError::NoSkill)) => {
                 // Library file (no skill declaration) — not a failure.
-                extract_and_store_exports(file, &mut file_exports, &mut file_text_values, &mut file_block_bodies);
+                extract_and_store_exports(file, &mut file_exports, &mut file_text_values, &mut file_block_bodies, &mut file_block_descriptions);
                 // Emit procedure files for qualifying export blocks (Tier 3).
                 let emitted = emit_library_procedures(file);
                 for (block_name, rel_path) in emitted {
@@ -731,6 +744,16 @@ fn tmp_path_for(path: &Path) -> PathBuf {
     let mut s = path.as_os_str().to_os_string();
     s.push(".tmp");
     PathBuf::from(s)
+}
+
+/// Map `foo.glyph.md` → `foo.ir.json` next to the source file.
+fn ir_json_output_path(input: &Path) -> PathBuf {
+    let parent = input.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = input.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let stem = file_name
+        .strip_suffix(".glyph.md")
+        .unwrap_or_else(|| file_name.strip_suffix(".md").unwrap_or(file_name));
+    parent.join(format!("{}.ir.json", stem))
 }
 
 /// Map `foo.glyph.md` → `foo.md` next to the source file.
@@ -871,6 +894,7 @@ struct ResolvedImports {
     block_names: HashSet<String>,
     text_values: std::collections::BTreeMap<String, String>,
     block_bodies: HashMap<String, String>,
+    block_descriptions: HashMap<String, String>,
 }
 
 /// Build the full resolved import data for a consumer file.
@@ -879,12 +903,14 @@ fn build_resolved_imports(
     file_exports: &HashMap<PathBuf, ExportedNames>,
     file_text_values: &HashMap<(PathBuf, String), String>,
     file_block_bodies: &HashMap<(PathBuf, String), String>,
+    file_block_descriptions: &HashMap<(PathBuf, String), String>,
 ) -> ResolvedImports {
     let mut result = ResolvedImports {
         text_names: HashSet::new(),
         block_names: HashSet::new(),
         text_values: std::collections::BTreeMap::new(),
         block_bodies: HashMap::new(),
+        block_descriptions: HashMap::new(),
     };
 
     let source = match std::fs::read_to_string(consumer) {
@@ -926,6 +952,9 @@ fn build_resolved_imports(
                             if let Some(body) = file_block_bodies.get(&(resolved.clone(), imp_name.name.clone())) {
                                 result.block_bodies.insert(local.to_string(), body.clone());
                             }
+                            if let Some(desc) = file_block_descriptions.get(&(resolved.clone(), imp_name.name.clone())) {
+                                result.block_descriptions.insert(local.to_string(), desc.clone());
+                            }
                         }
                     }
                 }
@@ -941,7 +970,10 @@ fn build_resolved_imports(
                         let qualified = format!("{}.{}", alias, name);
                         result.block_names.insert(qualified.clone());
                         if let Some(body) = file_block_bodies.get(&(resolved.clone(), name.clone())) {
-                            result.block_bodies.insert(qualified, body.clone());
+                            result.block_bodies.insert(qualified.clone(), body.clone());
+                        }
+                        if let Some(desc) = file_block_descriptions.get(&(resolved.clone(), name.clone())) {
+                            result.block_descriptions.insert(qualified, desc.clone());
                         }
                     }
                 }
@@ -957,6 +989,7 @@ fn extract_and_store_exports(
     file_exports: &mut HashMap<PathBuf, ExportedNames>,
     file_text_values: &mut HashMap<(PathBuf, String), String>,
     file_block_bodies: &mut HashMap<(PathBuf, String), String>,
+    file_block_descriptions: &mut HashMap<(PathBuf, String), String>,
 ) {
     let source = match std::fs::read_to_string(file) {
         Ok(s) => s,
@@ -981,6 +1014,9 @@ fn extract_and_store_exports(
             let body_text = eb.node.flow_strings.join(" ");
             if !body_text.is_empty() {
                 file_block_bodies.insert((file.to_path_buf(), eb.node.name.clone()), body_text);
+            }
+            if let Some(ref desc) = eb.node.description {
+                file_block_descriptions.insert((file.to_path_buf(), eb.node.name.clone()), desc.clone());
             }
         }
     }
@@ -1051,6 +1087,7 @@ fn compile_source_with_resolved_imports(
     let file = analyze::analyze_with_imports(
         &file, file_id, file_label, &line_index, &mut bag,
         &resolved_imports.text_names, &all_imported_blocks, &mut used_import_names,
+        &resolved_imports.block_descriptions,
     );
     if bag.has_error() || bag.has_repairable() {
         return Ok(CompileOutcome::Diagnostics(bag));
@@ -1074,7 +1111,7 @@ fn compile_source_with_resolved_imports(
     }
 
     validate::validate(&arena).map_err(CompileError::Validate)?;
-    let arena = expand::expand_step1(arena);
+    let arena = expand::expand_step1_with_imported_descriptions(arena, &resolved_imports.block_descriptions);
     let markdown = emit::emit(&arena);
     Ok(CompileOutcome::Compiled { markdown, diagnostics: bag, arena })
 }

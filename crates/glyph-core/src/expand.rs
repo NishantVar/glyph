@@ -45,7 +45,11 @@ pub fn count_words(text: &str) -> u32 {
     count
 }
 
-pub fn expand_step1(mut arena: IrArena) -> IrArena {
+pub fn expand_step1(arena: IrArena) -> IrArena {
+    expand_step1_with_imported_descriptions(arena, &HashMap::new())
+}
+
+pub fn expand_step1_with_imported_descriptions(mut arena: IrArena, imported_block_descriptions: &HashMap<String, String>) -> IrArena {
     // Phase 1: Compute resolved_word_count for each Block node.
     let mut block_word_counts: HashMap<String, u32> = HashMap::new();
     for n in arena.nodes() {
@@ -128,6 +132,10 @@ pub fn expand_step1(mut arena: IrArena) -> IrArena {
     // Phase 2b: Populate applies_descriptions on Branch nodes.
     // Collect block descriptions into a lookup map.
     let mut block_descriptions: HashMap<String, String> = HashMap::new();
+    // Include imported block descriptions first, local descriptions will override.
+    for (name, desc) in imported_block_descriptions {
+        block_descriptions.insert(name.clone(), desc.clone());
+    }
     for n in arena.nodes() {
         if let IrNode::Block(b) = n {
             if let Some(ref desc) = b.description {
