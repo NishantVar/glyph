@@ -34,46 +34,38 @@ fn compile_fixture(name: &str) -> String {
 }
 
 #[test]
-fn four_plus_statement_block_emits_procedure_section() {
+fn explicit_blocks_tier2_projection() {
+    // Compile the fixture once to avoid parallel-test race conditions
+    // (compile_fixture deletes and recreates the output file).
     let output = compile_fixture("explicit_blocks");
+
+    // Four-plus-statement block emits a procedure section.
     assert!(
         output.contains("### Procedure: review-code"),
         "expected ### Procedure: review-code section in output:\n{}",
         output
     );
-}
 
-#[test]
-fn caller_steps_reference_procedure_by_name() {
-    let output = compile_fixture("explicit_blocks");
-    // The step referencing review_code should mention the procedure name.
+    // Caller steps reference the procedure by name.
     assert!(
         output.contains("review-code procedure"),
         "expected caller step to reference 'review-code procedure' in output:\n{}",
         output
     );
-}
 
-#[test]
-fn procedure_section_ordering_is_deterministic() {
-    let output1 = compile_fixture("explicit_blocks");
-    let output2 = compile_fixture("explicit_blocks");
-    assert_eq!(output1, output2, "procedure section ordering should be deterministic across runs");
-}
-
-#[test]
-fn small_block_still_inlines_tier1_regression() {
-    let output = compile_fixture("explicit_blocks");
-    // small_helper has only 1 statement, should inline (no procedure section).
+    // small_helper has only 1 statement — should inline (Tier 1), no procedure section.
     assert!(
         !output.contains("### Procedure: small-helper"),
         "small_helper should NOT get a procedure section (Tier 1 inline):\n{}",
         output
     );
-    // The inlined text should appear directly in Steps.
     assert!(
         output.contains("Do a quick check."),
         "small_helper body should be inlined in Steps:\n{}",
         output
     );
+
+    // Procedure section ordering is deterministic across runs.
+    let output2 = compile_fixture("explicit_blocks");
+    assert_eq!(output, output2, "procedure section ordering should be deterministic across runs");
 }
