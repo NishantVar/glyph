@@ -1391,6 +1391,28 @@ skill main()
     }
 
     #[test]
+    fn multiple_with_fires_diagnostic() {
+        // AC3: `G::parse::multiple-with` fires on chained `with` clauses.
+        let src = "\
+block foo()
+    \"Do something.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        foo() with \"a\" with \"b\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::multiple-with"),
+            "expected G::parse::multiple-with, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 1, "multiple-with should be a hard error");
+    }
+
+    #[test]
     fn with_modifier_not_applied_in_compiled_output() {
         // AC2: Compiled `.md` from Step 1 does NOT apply the modifier — the
         // modifier is for the agent's Step 2, not the mechanical output.

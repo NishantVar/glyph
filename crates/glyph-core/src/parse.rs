@@ -1322,23 +1322,45 @@ impl<'a> Parser<'a> {
 
     /// Try to parse `with "modifier text"` after a call expression.
     /// Returns `Some(text)` if found, `None` otherwise.
+    /// Emits `G::parse::multiple-with` if a second `with` clause follows.
     fn try_parse_with_modifier(&mut self) -> Result<Option<String>, ParseError> {
         if let TokenKind::Ident(kw) = &self.peek().kind {
             if kw == "with" {
+                let with_span = self.peek().span;
                 self.pos += 1;
-                match &self.peek().kind {
+                let modifier = match &self.peek().kind {
                     TokenKind::StringLit(s) => {
                         let v = s.clone();
                         self.pos += 1;
-                        Ok(Some(v))
+                        v
                     }
                     _ => {
-                        Err(ParseError::Unexpected {
+                        return Err(ParseError::Unexpected {
                             span: self.peek().span,
                             message: "expected string literal after `with`".into(),
-                        })
+                        });
+                    }
+                };
+                // Check for chained `with` — `G::parse::multiple-with`.
+                if let TokenKind::Ident(kw2) = &self.peek().kind {
+                    if kw2 == "with" {
+                        let span = self.peek().span;
+                        self.bag.push(
+                            Diagnostic::error(
+                                "G::parse::multiple-with",
+                                "only one `with` modifier is allowed per call site",
+                                SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                            ),
+                            span,
+                        );
+                        // Consume the second `with` and its string to avoid parse errors.
+                        self.pos += 1;
+                        if matches!(self.peek().kind, TokenKind::StringLit(_)) {
+                            self.pos += 1;
+                        }
                     }
                 }
+                Ok(Some(modifier))
             } else {
                 Ok(None)
             }
