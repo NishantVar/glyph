@@ -232,7 +232,12 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
                 .iter()
                 .filter_map(|stmt| match stmt {
                     FlowStmt::InlineString(s) => Some(s.clone()),
-                    _ => None,
+                    FlowStmt::Call { target, .. } => Some(format!("call {}", target)),
+                    FlowStmt::Branch { condition, .. } => Some(format!("if {}", condition)),
+                    FlowStmt::ConstraintMarker(m) => Some(format!("constraint {}", m.name)),
+                    FlowStmt::ContextMarker(_) => Some("context".to_string()),
+                    FlowStmt::Return(_) => Some("return".to_string()),
+                    FlowStmt::BareName(n) => Some(n.clone()),
                 })
                 .collect();
             let next = NodeId(arena.len() as u32);

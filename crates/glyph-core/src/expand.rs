@@ -6,7 +6,7 @@
 //! - Tier 1 (inline): callee body < 150 words → inlined as InlineInstruction.
 
 use crate::ir::{IrArena, IrInlineInstruction, IrNode, Role};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 /// Count words in resolved prose per `compiled-output.md` §Word Counting Rule.
 ///
@@ -105,7 +105,14 @@ pub fn expand_step1(mut arena: IrArena) -> IrArena {
                 let mut c_clone = c.clone();
                 c_clone.projection_tier = Some(2);
                 nodes[i] = IrNode::Call(c_clone);
-            } else if wc < 150 {
+            } else if wc >= 150 {
+                // Word-count promotion: block has < 4 statements but >= 150
+                // words of expanded prose → promote to Tier 2 (same-file
+                // procedure) per compiled-output.md §Three-Tier Block Projection.
+                let mut c_clone = c.clone();
+                c_clone.projection_tier = Some(2);
+                nodes[i] = IrNode::Call(c_clone);
+            } else {
                 // Tier 1: inline.
                 let node_id = c.node_id;
                 let body = c.resolved_body.clone().unwrap();
