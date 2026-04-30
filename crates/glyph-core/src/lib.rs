@@ -340,6 +340,49 @@ fn check_file_recursive(
             let import = &import_spanned.node;
             let import_span = import_spanned.span;
 
+            // Handle `@glyph/` stdlib imports (compiler-embedded, not filesystem).
+            if import.path.starts_with("@glyph/") {
+                if import.path == "@glyph/std" {
+                    // Stdlib module: exports `subagent` and `send` as blocks.
+                    // `load` is compiler-internal and NOT importable.
+                    match &import.kind {
+                        ImportKind::Selective(names) => {
+                            for imp_name in names {
+                                let local = imp_name.alias.as_deref().unwrap_or(&imp_name.name);
+                                all_import_names.push((local.to_string(), import_span));
+                                if imp_name.name == "subagent" || imp_name.name == "send" {
+                                    imported_blocks.insert(local.to_string());
+                                } else {
+                                    bag.push(
+                                        Diagnostic::error(
+                                            "G::analyze::import-private",
+                                            format!("`{}` is not exported from `{}`", imp_name.name, import.path),
+                                            SourceSpan::from_byte_span(&file_label, import_span, &line_index),
+                                        ),
+                                        import_span,
+                                    );
+                                }
+                            }
+                        }
+                        ImportKind::WholeModule { alias } => {
+                            all_import_names.push((alias.clone(), import_span));
+                            imported_blocks.insert(format!("{}.subagent", alias));
+                            imported_blocks.insert(format!("{}.send", alias));
+                        }
+                    }
+                } else {
+                    bag.push(
+                        Diagnostic::error(
+                            "G::imports::unknown-stdlib-module",
+                            format!("unknown stdlib module `{}`", import.path),
+                            SourceSpan::from_byte_span(&file_label, import_span, &line_index),
+                        ),
+                        import_span,
+                    );
+                }
+                continue;
+            }
+
             // Resolve the import path.
             let resolved = resolve_import_path(path, &import.path);
             let resolved = match resolved {
@@ -530,6 +573,10 @@ pub fn compile_directory(sources: &[PathBuf]) -> BuildResult {
         if let Some(file) = parsed {
             for decl in &file.decls {
                 if let Decl::Import(import_spanned) = decl {
+                    // Skip @glyph/ stdlib imports — they are compiler-embedded, not filesystem.
+                    if import_spanned.node.path.starts_with("@glyph/") {
+                        continue;
+                    }
                     if let Some(resolved) = resolve_import_path(&canon, &import_spanned.node.path) {
                         deps.push(resolved);
                     }
@@ -772,6 +819,10 @@ fn build_imported_procedure_paths(
     for decl in &parsed.decls {
         if let Decl::Import(import_spanned) = decl {
             let import = &import_spanned.node;
+            // Skip @glyph/ stdlib imports — compiler-embedded, no procedure paths.
+            if import.path.starts_with("@glyph/") {
+                continue;
+            }
             let resolved = resolve_import_path(consumer, &import.path);
             let resolved = match resolved {
                 Some(r) => r,
@@ -3112,5 +3163,164 @@ export block inspect_repo(scope = \".\")
         let second_content = std::fs::read_to_string(&inspect_path).unwrap();
 
         assert_eq!(first_content, second_content, "procedure file should be byte-identical across runs");
+    }
+
+    // --- Stdlib (slice 21) tests ---
+
+    #[test]
+    fn stdlib_subagent_resolvable_via_import() {
+        // AC1: `subagent` is resolvable when imported from `@glyph/std`.
+        let dir = tempfile::tempdir().unwrap();
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(&main_path, r#"import "@glyph/std" { subagent }
+
+skill delegate(task = "do something")
+    description: "Delegate work."
+    effects: spawns_agent
+    flow:
+        subagent(task)
+"#).unwrap();
+
+        let bag = check_file(&main_path);
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::undefined-call"),
+            "subagent should resolve via stdlib import, got: {:?}", ids
+        );
+        assert!(
+            !ids.contains(&"G::analyze::missing-file"),
+            "stdlib import should not trigger missing-file, got: {:?}", ids
+        );
+    }
+
+    #[test]
+    fn stdlib_load_not_importable() {
+        // AC2: `load` is compiler-internal and NOT resolvable from author source.
+        let dir = tempfile::tempdir().unwrap();
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(&main_path, r#"import "@glyph/std" { load }
+
+skill runner()
+    description: "Run something."
+    flow:
+        load("file.md")
+"#).unwrap();
+
+        let bag = check_file(&main_path);
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::import-private"),
+            "load should not be importable, got: {:?}", ids
+        );
+    }
+
+    #[test]
+    fn stdlib_send_resolvable_via_import() {
+        // AC1: `send` is resolvable when imported from `@glyph/std`.
+        let dir = tempfile::tempdir().unwrap();
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(&main_path, r#"import "@glyph/std" { send }
+
+skill notify(msg = "hello")
+    description: "Send a message."
+    effects: spawns_agent
+    flow:
+        send(msg)
+"#).unwrap();
+
+        let bag = check_file(&main_path);
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::undefined-call"),
+            "send should resolve via stdlib import, got: {:?}", ids
+        );
+        assert!(
+            !ids.contains(&"G::analyze::missing-file"),
+            "stdlib import should not trigger missing-file, got: {:?}", ids
+        );
+    }
+
+    #[test]
+    fn stdlib_missing_import_fires_for_subagent() {
+        // AC3: `stdlib-missing-import` repairable fires when `subagent` used without import.
+        let src = r#"skill delegate(task = "do something")
+    description: "Delegate work."
+    effects: spawns_agent
+    flow:
+        subagent(task)
+"#;
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::stdlib-missing-import"),
+            "should fire stdlib-missing-import for subagent without import, got: {:?}", ids
+        );
+        let diag = bag.iter().find(|d| d.id == "G::analyze::stdlib-missing-import").unwrap();
+        assert_eq!(
+            diag.classification, Classification::Repairable,
+            "stdlib-missing-import should be repairable"
+        );
+    }
+
+    #[test]
+    fn stdlib_missing_import_fires_for_send() {
+        // AC3: `stdlib-missing-import` repairable fires when `send` used without import.
+        let src = r#"skill notify(msg = "hello")
+    description: "Send a message."
+    effects: spawns_agent
+    flow:
+        send(msg)
+"#;
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::stdlib-missing-import"),
+            "should fire stdlib-missing-import for send without import, got: {:?}", ids
+        );
+    }
+
+    #[test]
+    fn stdlib_unknown_module_fires() {
+        // AC4: `unknown-stdlib-module` error fires on import of nonexistent @glyph/ path.
+        let dir = tempfile::tempdir().unwrap();
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(&main_path, r#"import "@glyph/foo" { bar }
+
+skill main()
+    description: "Main."
+    flow:
+        "Do something."
+"#).unwrap();
+
+        let bag = check_file(&main_path);
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::imports::unknown-stdlib-module"),
+            "should fire unknown-stdlib-module for @glyph/foo, got: {:?}", ids
+        );
+    }
+
+    #[test]
+    fn stdlib_subagent_effect_propagates() {
+        // AC5: stdlib entry's effect signature (`spawns_agent`) propagates —
+        // if a skill calls subagent() and declares effects but omits spawns_agent,
+        // it should fire effects-under-declared.
+        let dir = tempfile::tempdir().unwrap();
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(&main_path, r#"import "@glyph/std" { subagent }
+
+skill delegate(task = "do something")
+    description: "Delegate work."
+    effects: reads_files
+    flow:
+        subagent(task)
+"#).unwrap();
+
+        let bag = check_file(&main_path);
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::effects-under-declared"),
+            "subagent's spawns_agent effect should propagate, got: {:?}", ids
+        );
     }
 }

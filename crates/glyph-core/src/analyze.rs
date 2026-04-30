@@ -431,23 +431,44 @@ fn analyze_skill(
             FlowStmt::Call { target, .. } => {
                 // Check that the call target resolves to a declared block.
                 if !block_names.contains(target.as_str()) {
-                    let span = spanned.span;
-                    bag.push(
-                        crate::diagnostic::Diagnostic {
-                            id: "G::analyze::undefined-call".into(),
-                            classification: crate::diagnostic::Classification::Repairable,
-                            message: format!(
-                                "call to `{}()` but no `block {}` is declared in this file",
-                                target, target
-                            ),
-                            span: SourceSpan::from_byte_span(file_label, span, line_index),
-                            related: Vec::new(),
-                            hints: vec![
-                                format!("declare `block {}()` or check the name for typos", target),
-                            ],
-                        },
-                        span,
-                    );
+                    // Check if this is a stdlib name used without import.
+                    if is_stdlib_block_name(target) {
+                        let span = spanned.span;
+                        bag.push(
+                            crate::diagnostic::Diagnostic {
+                                id: "G::analyze::stdlib-missing-import".into(),
+                                classification: crate::diagnostic::Classification::Repairable,
+                                message: format!(
+                                    "`{}` is a standard library block; add `import \"@glyph/std\" {{ {} }}`",
+                                    target, target
+                                ),
+                                span: SourceSpan::from_byte_span(file_label, span, line_index),
+                                related: Vec::new(),
+                                hints: vec![
+                                    format!("add `import \"@glyph/std\" {{ {} }}` at the top of the file", target),
+                                ],
+                            },
+                            span,
+                        );
+                    } else {
+                        let span = spanned.span;
+                        bag.push(
+                            crate::diagnostic::Diagnostic {
+                                id: "G::analyze::undefined-call".into(),
+                                classification: crate::diagnostic::Classification::Repairable,
+                                message: format!(
+                                    "call to `{}()` but no `block {}` is declared in this file",
+                                    target, target
+                                ),
+                                span: SourceSpan::from_byte_span(file_label, span, line_index),
+                                related: Vec::new(),
+                                hints: vec![
+                                    format!("declare `block {}()` or check the name for typos", target),
+                                ],
+                            },
+                            span,
+                        );
+                    }
                 }
             }
             FlowStmt::ConstraintMarker(marker) => {
@@ -705,6 +726,11 @@ fn infer_effects_for_skill(
                     worklist.push(inner.clone());
                 }
             }
+        } else if let Some(effects) = stdlib_block_effects(&target) {
+            // Stdlib block: add its known effect signature.
+            for eff in effects {
+                inferred.insert((*eff).to_string());
+            }
         }
     }
 
@@ -862,22 +888,41 @@ fn check_branch_body_names(
         match stmt {
             FlowStmt::Call { target, .. } => {
                 if !block_names.contains(target.as_str()) {
-                    bag.push(
-                        Diagnostic {
-                            id: "G::analyze::undefined-call".into(),
-                            classification: Classification::Repairable,
-                            message: format!(
-                                "call to `{}()` but no `block {}` is declared in this file",
-                                target, target
-                            ),
-                            span: SourceSpan::from_byte_span(file_label, span, line_index),
-                            related: Vec::new(),
-                            hints: vec![
-                                format!("declare `block {}()` or check the name for typos", target),
-                            ],
-                        },
-                        span,
-                    );
+                    if is_stdlib_block_name(target) {
+                        bag.push(
+                            Diagnostic {
+                                id: "G::analyze::stdlib-missing-import".into(),
+                                classification: Classification::Repairable,
+                                message: format!(
+                                    "`{}` is a standard library block; add `import \"@glyph/std\" {{ {} }}`",
+                                    target, target
+                                ),
+                                span: SourceSpan::from_byte_span(file_label, span, line_index),
+                                related: Vec::new(),
+                                hints: vec![
+                                    format!("add `import \"@glyph/std\" {{ {} }}` at the top of the file", target),
+                                ],
+                            },
+                            span,
+                        );
+                    } else {
+                        bag.push(
+                            Diagnostic {
+                                id: "G::analyze::undefined-call".into(),
+                                classification: Classification::Repairable,
+                                message: format!(
+                                    "call to `{}()` but no `block {}` is declared in this file",
+                                    target, target
+                                ),
+                                span: SourceSpan::from_byte_span(file_label, span, line_index),
+                                related: Vec::new(),
+                                hints: vec![
+                                    format!("declare `block {}()` or check the name for typos", target),
+                                ],
+                            },
+                            span,
+                        );
+                    }
                 }
             }
             FlowStmt::ConstraintMarker(marker) => {
@@ -897,6 +942,20 @@ fn check_branch_body_names(
             }
             _ => {}
         }
+    }
+}
+
+/// Check if a name is a stdlib block (author-importable from `@glyph/std`).
+fn is_stdlib_block_name(name: &str) -> bool {
+    name == "subagent" || name == "send"
+}
+
+/// Return the effect signature for a stdlib block, if it is one.
+pub fn stdlib_block_effects(name: &str) -> Option<&'static [&'static str]> {
+    match name {
+        "subagent" => Some(&["spawns_agent"]),
+        "send" => Some(&["spawns_agent"]),
+        _ => None,
     }
 }
 
