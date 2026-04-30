@@ -44,6 +44,10 @@ enum Command {
         /// codespan-reporting; `json` emits one NDJSON diagnostic per line on stdout.
         #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
         format: OutputFormat,
+        /// Emit the post-Step-1 resolved IR as a sidecar JSON file (`foo.ir.json`)
+        /// next to the compiled `.md`. See `design/ir-json-schema.md`.
+        #[arg(long)]
+        emit_ir: bool,
     },
     /// Run Phases 1 (Parse) and 2 (Analyze) only — fast lint mode.
     ///
@@ -70,7 +74,7 @@ enum OutputFormat {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Compile { path, format } => run_compile(path, format),
+        Command::Compile { path, format, emit_ir } => run_compile(path, format, emit_ir),
         Command::Check { path, format } => run_check(path, format),
     }
 }
@@ -191,7 +195,7 @@ fn collect_glyph_sources(path: &std::path::Path) -> Result<Vec<PathBuf>, ExitCod
     Err(ExitCode::from(3))
 }
 
-fn run_compile(path: PathBuf, format: OutputFormat) -> ExitCode {
+fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool) -> ExitCode {
     let metadata = match std::fs::metadata(&path) {
         Ok(m) => m,
         Err(e) => {
@@ -223,11 +227,24 @@ fn run_compile(path: PathBuf, format: OutputFormat) -> ExitCode {
     };
 
     match outcome {
-        CompileOutcome::Compiled { markdown, diagnostics } => {
+        CompileOutcome::Compiled { markdown, diagnostics, arena } => {
             let out_path = compiled_output_path(&path);
             if let Err(e) = glyph_core::atomic_write(&out_path, &markdown) {
                 eprintln!("glyph: cannot write `{}`: {}", out_path.display(), e);
                 return ExitCode::from(3);
+            }
+            if emit_ir {
+                let source_file = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                if let Some(ir_json) = glyph_core::emit_ir::serialize_ir_json(&arena, source_file) {
+                    let ir_path = ir_json_output_path(&path);
+                    if let Err(e) = glyph_core::atomic_write(&ir_path, &ir_json) {
+                        eprintln!("glyph: cannot write `{}`: {}", ir_path.display(), e);
+                        return ExitCode::from(3);
+                    }
+                }
             }
             emit_diagnostics(&diagnostics, &label, &source, format);
             ExitCode::from(diagnostics.exit_code())
@@ -392,6 +409,16 @@ fn locate_byte(source: &str, line: u32, col: u32) -> usize {
         return line_start + (col.saturating_sub(1) as usize);
     }
     source.len().saturating_sub(1)
+}
+
+/// Map `foo.glyph.md` → `foo.ir.json` next to the source file.
+fn ir_json_output_path(input: &std::path::Path) -> PathBuf {
+    let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let file_name = input.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let stem = file_name
+        .strip_suffix(".glyph.md")
+        .unwrap_or_else(|| file_name.strip_suffix(".md").unwrap_or(file_name));
+    parent.join(format!("{}.ir.json", stem))
 }
 
 /// Map `foo.glyph.md` → `foo.md` next to the source file.

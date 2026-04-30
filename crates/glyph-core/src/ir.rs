@@ -138,11 +138,13 @@ pub struct IrElifBranch {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "snake_case")]
 pub enum Role {
+    InputContract,
     Step,
     Constraint,
     Context,
+    OutputContract,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -160,7 +162,7 @@ pub enum Polarity {
 }
 
 /// Single arena per file. Lower allocates IDs in pre-order traversal.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct IrArena {
     nodes: Vec<IrNode>,
     /// The root skill, if any.
