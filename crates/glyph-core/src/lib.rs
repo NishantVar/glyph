@@ -2546,4 +2546,45 @@ block helper()
         );
         assert_eq!(bag.exit_code(), 1, "no-exports-in-library should be a hard error");
     }
+
+    #[test]
+    fn ac1_export_text_only_library_compiles_exit_zero() {
+        // A library file with only export text declarations should compile
+        // successfully (exit 0) and produce zero .md output.
+        let dir = tempfile::tempdir().unwrap();
+
+        let prefs_path = dir.path().join("prefs.glyph.md");
+        std::fs::write(&prefs_path, "\
+export text terminal_mux = \"tmux\"
+export text validation_strictness = \"high\"
+").unwrap();
+
+        let sources: Vec<PathBuf> = vec![prefs_path];
+        let result = compile_directory(&sources);
+
+        assert_eq!(result.exit_code, 0, "library file should compile with exit 0");
+        // No .md output should be produced for a library file.
+        assert!(
+            !dir.path().join("prefs.md").exists(),
+            "library file should not produce .md output"
+        );
+    }
+
+    #[test]
+    fn ac1_export_text_only_library_check_source_clean() {
+        // check_source on a library file with exports should produce zero
+        // errors (no no-exports-in-library, no other issues).
+        let src = "\
+export text terminal_mux = \"tmux\"
+export text validation_strictness = \"high\"
+";
+        let bag = check_source(src, 0, "prefs.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::no-exports-in-library"),
+            "library with exports should not fire no-exports-in-library, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 0, "clean library should exit 0");
+    }
 }
