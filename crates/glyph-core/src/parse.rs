@@ -1213,10 +1213,15 @@ impl<'a> Parser<'a> {
                                     ReturnExpr::Name(name)
                                 }
                             }
+                            TokenKind::StringLit(s) => {
+                                let s = s.clone();
+                                self.pos += 1;
+                                ReturnExpr::Inline(s)
+                            }
                             _ => {
                                 return Err(ParseError::Unexpected {
                                     span: self.peek().span,
-                                    message: "expected identifier, call, or `none` after `return`".into(),
+                                    message: "expected identifier, call, string, or `none` after `return`".into(),
                                 });
                             }
                         };

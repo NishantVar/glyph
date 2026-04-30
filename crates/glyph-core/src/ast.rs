@@ -184,6 +184,8 @@ pub enum ReturnExpr {
     Call { target: String, args: Vec<String> },
     /// `return some_name` (binding reference).
     Name(String),
+    /// `return "inline string"`.
+    Inline(String),
 }
 
 /// An entry inside the `context:` sub-section or a body-level `context` marker.
