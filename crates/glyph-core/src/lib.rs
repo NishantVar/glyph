@@ -10,6 +10,7 @@ pub mod diagnostic;
 pub mod emit;
 pub mod emit_ir;
 pub mod expand;
+pub mod fmt;
 pub mod ir;
 pub mod lower;
 pub mod parse;

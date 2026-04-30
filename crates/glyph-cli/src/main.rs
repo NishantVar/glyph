@@ -70,6 +70,15 @@ enum Command {
         #[arg(long)]
         strict: bool,
     },
+    /// Run Phase 3a deterministic source rewrites. Rewrites `.glyph.md` files
+    /// in place. Analogous to `rustfmt` / `gofmt`.
+    Fmt {
+        /// Path to the source file or directory.
+        path: PathBuf,
+        /// Don't write changes; exit 1 if any file would be reformatted.
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -83,6 +92,47 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Compile { path, format, emit_ir, strict } => run_compile(path, format, emit_ir, strict),
         Command::Check { path, format, strict } => run_check(path, format, strict),
+        Command::Fmt { path, check } => run_fmt(path, check),
+    }
+}
+
+fn run_fmt(path: PathBuf, check: bool) -> ExitCode {
+    let files = match collect_glyph_sources(&path) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+
+    if files.is_empty() {
+        return ExitCode::from(0);
+    }
+
+    let mut any_changed = false;
+    for file in files {
+        let source = match std::fs::read_to_string(&file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("glyph: cannot read `{}`: {}", file.display(), e);
+                return ExitCode::from(3);
+            }
+        };
+
+        let result = glyph_core::fmt::fmt_source(&source);
+
+        if result.changed {
+            any_changed = true;
+            if !check {
+                if let Err(e) = std::fs::write(&file, &result.output) {
+                    eprintln!("glyph: cannot write `{}`: {}", file.display(), e);
+                    return ExitCode::from(3);
+                }
+            }
+        }
+    }
+
+    if check && any_changed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::from(0)
     }
 }
 
