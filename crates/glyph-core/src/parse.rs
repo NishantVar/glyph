@@ -108,6 +108,28 @@ pub fn parse_with_diagnostics(
             );
             return None;
         }
+        Err(TokenizeError::UnexpectedChar { byte_offset, ch })
+            if ch == '+' || ch == '-' || ch == '*' || ch == '/' =>
+        {
+            let span = Span::new(file_id, byte_offset, byte_offset + 1);
+            bag.push(
+                Diagnostic {
+                    id: "G::parse::operator-in-expression".into(),
+                    classification: Classification::Repairable,
+                    message: format!(
+                        "operator `{}` is not supported in expressions; MVP Glyph has no value-level operators",
+                        ch
+                    ),
+                    span: SourceSpan::from_byte_span(file_label, span, line_index),
+                    related: Vec::new(),
+                    hints: vec![
+                        "rewrite using a call expression or inline instruction string".into(),
+                    ],
+                },
+                span,
+            );
+            return None;
+        }
         Err(_) => {
             return None;
         }
@@ -179,6 +201,25 @@ pub fn parse_with_diagnostics(
             check_return_rules(&spanned_block.node.flow, spanned_block.span, file_label, line_index, bag, false);
         }
     }
+    // Detect `G::parse::multiple-skills`: more than one `skill` per file.
+    {
+        let skill_count = file.decls.iter().filter(|d| matches!(d, Decl::Skill(_))).count();
+        if skill_count > 1 {
+            let span = file.decls.iter().filter_map(|d| match d {
+                Decl::Skill(s) => Some(s.span),
+                _ => None,
+            }).nth(1).unwrap();
+            bag.push(
+                Diagnostic::error(
+                    "G::parse::multiple-skills",
+                    "a `.glyph.md` file may contain at most one `skill` declaration",
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+        }
+    }
+
     if bag.has_error() || bag.has_repairable() {
         return None;
     }
@@ -848,12 +889,23 @@ impl<'a> Parser<'a> {
                     );
                 }
                 if description.is_some() {
-                    return Err(ParseError::Unexpected {
-                        span: kw_span,
-                        message: "duplicate `description:` in skill body".into(),
-                    });
+                    let span = kw_span;
+                    self.bag.push(
+                        Diagnostic {
+                            id: "G::parse::duplicate-subsection".into(),
+                            classification: Classification::Repairable,
+                            message: "duplicate `description:` sub-section in skill body".into(),
+                            span: SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                            related: Vec::new(),
+                            hints: vec![
+                                "remove the duplicate or merge contents into one `description:`".into(),
+                            ],
+                        },
+                        span,
+                    );
+                } else {
+                    *description = Some(s);
                 }
-                *description = Some(s);
             }
             "effects" => {
                 self.pos += 1;
@@ -1245,6 +1297,44 @@ impl<'a> Parser<'a> {
                                 message: "expected name or string after `context` in flow".into(),
                             }),
                         }
+                    }
+                    "flow" => {
+                        // `flow:` inside `flow:` is illegal — G::parse::nested-flow.
+                        let span = self.peek().span;
+                        self.pos += 1;
+                        // Consume the colon if present to avoid parse cascade.
+                        if matches!(self.peek().kind, TokenKind::Colon) {
+                            self.pos += 1;
+                        }
+                        // Skip any remaining tokens on this line plus indented body.
+                        while !self.at_eof()
+                            && !matches!(self.peek().kind, TokenKind::LineStart { .. })
+                        {
+                            self.pos += 1;
+                        }
+                        // Skip indented body lines (indent > current_indent).
+                        loop {
+                            match self.current_line_indent() {
+                                Some(n) if n > current_indent => {
+                                    self.pos += 1; // skip LineStart
+                                    while !self.at_eof()
+                                        && !matches!(self.peek().kind, TokenKind::LineStart { .. })
+                                    {
+                                        self.pos += 1;
+                                    }
+                                }
+                                _ => break,
+                            }
+                        }
+                        self.bag.push(
+                            Diagnostic::error(
+                                "G::parse::nested-flow",
+                                "`flow:` inside `flow:` is not allowed",
+                                SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                            ),
+                            span,
+                        );
+                        Ok(FlowStmt::BareName(kw_val))
                     }
                     "if" => {
                         self.pos += 1;
