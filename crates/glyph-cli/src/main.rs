@@ -32,9 +32,13 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Compile a `.glyph.md` source file into Markdown next to the source.
+    /// Compile `.glyph.md` source file(s) into Markdown next to the source.
+    ///
+    /// Accepts a single file or a directory. When given a directory, all
+    /// `.glyph.md` files are compiled in topological order with partial failure
+    /// (skip-dependents, leave stale `.md`, exit 1 if any file fails).
     Compile {
-        /// Path to the source file.
+        /// Path to the source file or directory.
         path: PathBuf,
         /// Diagnostic output format. `pretty` (default) renders to stderr with
         /// codespan-reporting; `json` emits one NDJSON diagnostic per line on stdout.
@@ -188,8 +192,19 @@ fn collect_glyph_sources(path: &std::path::Path) -> Result<Vec<PathBuf>, ExitCod
 }
 
 fn run_compile(path: PathBuf, format: OutputFormat) -> ExitCode {
-    // Read the source up front so we can hand it to codespan-reporting for
-    // pretty rendering — `compile_file` swallows the source string.
+    let metadata = match std::fs::metadata(&path) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("glyph: cannot stat `{}`: {}", path.display(), e);
+            return ExitCode::from(3);
+        }
+    };
+
+    if metadata.is_dir() {
+        return run_compile_directory(path, format);
+    }
+
+    // Single-file compile (existing behavior).
     let source = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
@@ -209,13 +224,11 @@ fn run_compile(path: PathBuf, format: OutputFormat) -> ExitCode {
 
     match outcome {
         CompileOutcome::Compiled { markdown, diagnostics } => {
-            // Write the .md output next to the source (same as before slice 2).
             let out_path = compiled_output_path(&path);
             if let Err(e) = std::fs::write(&out_path, &markdown) {
                 eprintln!("glyph: cannot write `{}`: {}", out_path.display(), e);
                 return ExitCode::from(3);
             }
-            // Emit any non-blocking diagnostics (e.g., warnings).
             emit_diagnostics(&diagnostics, &label, &source, format);
             ExitCode::from(diagnostics.exit_code())
         }
@@ -225,6 +238,65 @@ fn run_compile(path: PathBuf, format: OutputFormat) -> ExitCode {
             ExitCode::from(code)
         }
     }
+}
+
+/// Directory-mode compile: collect all `.glyph.md` files, build DAG, compile
+/// in topological order with partial failure.
+fn run_compile_directory(path: PathBuf, format: OutputFormat) -> ExitCode {
+    let files = match collect_glyph_sources(&path) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+
+    if files.is_empty() {
+        return ExitCode::from(0);
+    }
+
+    let result = glyph_core::compile_directory(&files);
+
+    // Emit diagnostics and stderr notes for each file outcome.
+    for (file_path, outcome) in &result.outcomes {
+        match outcome {
+            glyph_core::FileOutcome::Compiled { diagnostics } => {
+                if !diagnostics.is_empty() {
+                    let source = std::fs::read_to_string(file_path).unwrap_or_default();
+                    let label = file_path.display().to_string();
+                    emit_diagnostics(diagnostics, &label, &source, format);
+                }
+            }
+            glyph_core::FileOutcome::Failed { diagnostics } => {
+                let source = std::fs::read_to_string(file_path).unwrap_or_default();
+                let label = file_path.display().to_string();
+                emit_diagnostics(diagnostics, &label, &source, format);
+            }
+            glyph_core::FileOutcome::Skipped { failed_dep } => {
+                let file_name = file_path.file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown");
+                let out_name = file_name.strip_suffix(".glyph.md")
+                    .map(|s| format!("{}.md", s))
+                    .unwrap_or_else(|| file_name.to_string());
+                eprintln!(
+                    "warning[G::build::skipped-due-to-failed-import]: `{}` skipped because `{}` failed",
+                    file_path.display(),
+                    failed_dep.display(),
+                );
+                // Stale .md note (per pipeline.md §Partial Failure Policy §3).
+                let stale_path = file_path.parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join(&out_name);
+                if stale_path.exists() {
+                    eprintln!(
+                        "note: `{}` was not regenerated; the on-disk version reflects the previous successful build of `{}` and may be out of sync.",
+                        out_name,
+                        file_name,
+                    );
+                }
+            }
+        }
+    }
+
+    ExitCode::from(result.exit_code)
 }
 
 fn emit_diagnostics(bag: &DiagBag, file_label: &str, source: &str, format: OutputFormat) {

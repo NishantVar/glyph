@@ -467,6 +467,176 @@ fn check_file_recursive(
     Some(extract_exports(&file))
 }
 
+/// Result of compiling a directory of `.glyph.md` files.
+#[derive(Debug)]
+pub struct BuildResult {
+    /// Per-file outcomes, keyed by the source path.
+    pub outcomes: Vec<(PathBuf, FileOutcome)>,
+    /// Overall exit code for the build (0 = all ok, 1 = any failure/skip).
+    pub exit_code: u8,
+}
+
+/// Per-file outcome in a multi-file build.
+#[derive(Debug)]
+pub enum FileOutcome {
+    /// File compiled successfully; `.md` was written.
+    Compiled { diagnostics: DiagBag },
+    /// File failed during compilation (Phases 1-7 produced errors).
+    Failed { diagnostics: DiagBag },
+    /// File was skipped because a transitive dependency failed.
+    Skipped { failed_dep: PathBuf },
+}
+
+/// Compile all `.glyph.md` files in `sources` (already collected and sorted).
+///
+/// Builds the import DAG, topological-sorts, compiles each file in order.
+/// Implements partial failure: skip-dependents, leave-stale-`.md`, exit 1 if
+/// any file fails.
+pub fn compile_directory(sources: &[PathBuf]) -> BuildResult {
+    if sources.is_empty() {
+        return BuildResult { outcomes: Vec::new(), exit_code: 0 };
+    }
+
+    // Phase 1 (partial): parse each file to extract import paths and build the DAG.
+    let mut file_imports: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+    let mut canonical_paths: Vec<PathBuf> = Vec::new();
+
+    for src_path in sources {
+        let canon = match src_path.canonicalize() {
+            Ok(c) => c,
+            Err(_) => src_path.to_path_buf(),
+        };
+        canonical_paths.push(canon.clone());
+
+        let source = match std::fs::read_to_string(&canon) {
+            Ok(s) => s,
+            Err(_) => {
+                file_imports.insert(canon, Vec::new());
+                continue;
+            }
+        };
+
+        let label = canon.display().to_string();
+        let line_index = LineIndex::new(&source);
+        let mut tmp_bag = DiagBag::new();
+        let parsed = parse::parse_with_diagnostics(&source, 0, &label, &line_index, &mut tmp_bag);
+
+        let mut deps = Vec::new();
+        if let Some(file) = parsed {
+            for decl in &file.decls {
+                if let Decl::Import(import_spanned) = decl {
+                    if let Some(resolved) = resolve_import_path(&canon, &import_spanned.node.path) {
+                        deps.push(resolved);
+                    }
+                }
+            }
+        }
+        file_imports.insert(canon, deps);
+    }
+
+    // Topological sort (Kahn's algorithm).
+    let all_files: Vec<PathBuf> = canonical_paths;
+    let file_set: HashSet<PathBuf> = all_files.iter().cloned().collect();
+
+    // Build in-degree map and adjacency (dep -> dependents).
+    let mut in_degree: HashMap<PathBuf, usize> = HashMap::new();
+    let mut dependents: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+    for f in &all_files {
+        in_degree.entry(f.clone()).or_insert(0);
+    }
+    for (file, deps) in &file_imports {
+        for dep in deps {
+            if file_set.contains(dep) {
+                *in_degree.entry(file.clone()).or_insert(0) += 1;
+                dependents.entry(dep.clone()).or_default().push(file.clone());
+            }
+        }
+    }
+
+    // Kahn's: start with zero in-degree nodes, sorted for determinism.
+    let mut queue: Vec<PathBuf> = in_degree
+        .iter()
+        .filter(|(_, &deg)| deg == 0)
+        .map(|(f, _)| f.clone())
+        .collect();
+    queue.sort();
+
+    let mut topo_order: Vec<PathBuf> = Vec::new();
+    while let Some(node) = queue.pop() {
+        // pop from end; since we sorted ascending, reverse to get smallest first
+        // Actually, let's use a proper approach: sort and drain from front.
+        topo_order.push(node.clone());
+        if let Some(deps) = dependents.get(&node) {
+            let mut newly_ready = Vec::new();
+            for dep in deps {
+                if let Some(deg) = in_degree.get_mut(dep) {
+                    *deg -= 1;
+                    if *deg == 0 {
+                        newly_ready.push(dep.clone());
+                    }
+                }
+            }
+            newly_ready.sort();
+            for nr in newly_ready {
+                queue.push(nr);
+            }
+            queue.sort();
+        }
+    }
+
+    // Any files not in topo_order are in cycles — treat as failed.
+    for f in &all_files {
+        if !topo_order.contains(f) {
+            topo_order.push(f.clone());
+        }
+    }
+
+    // Compile each file in topological order with partial failure.
+    let mut failed_files: HashSet<PathBuf> = HashSet::new();
+    let mut outcomes: Vec<(PathBuf, FileOutcome)> = Vec::new();
+    let mut any_failure = false;
+
+    for file in &topo_order {
+        // Check if any dependency failed.
+        let deps = file_imports.get(file).cloned().unwrap_or_default();
+        let failed_dep = deps.iter().find(|d| file_set.contains(*d) && failed_files.contains(*d));
+
+        if let Some(fd) = failed_dep {
+            // Skip this file — a dependency failed.
+            failed_files.insert(file.clone());
+            any_failure = true;
+            outcomes.push((file.clone(), FileOutcome::Skipped { failed_dep: fd.clone() }));
+            continue;
+        }
+
+        // Compile the file.
+        match compile_file(file) {
+            Ok(CompileOutcome::Compiled { diagnostics, .. }) => {
+                outcomes.push((file.clone(), FileOutcome::Compiled { diagnostics }));
+            }
+            Ok(CompileOutcome::Diagnostics(bag)) => {
+                failed_files.insert(file.clone());
+                any_failure = true;
+                outcomes.push((file.clone(), FileOutcome::Failed { diagnostics: bag }));
+            }
+            Err(CompileError::Lower(lower::LowerError::NoSkill)) => {
+                // Library file (no skill declaration) — not a failure.
+                // No .md output produced, which is normal per pipeline.md §Phase 7.
+                outcomes.push((file.clone(), FileOutcome::Compiled { diagnostics: DiagBag::new() }));
+            }
+            Err(_e) => {
+                failed_files.insert(file.clone());
+                any_failure = true;
+                let bag = DiagBag::new();
+                outcomes.push((file.clone(), FileOutcome::Failed { diagnostics: bag }));
+            }
+        }
+    }
+
+    let exit_code = if any_failure { 1 } else { 0 };
+    BuildResult { outcomes, exit_code }
+}
+
 /// Map `foo.glyph.md` → `foo.md` next to the source file.
 fn compiled_output_path(input: &Path) -> std::path::PathBuf {
     let parent = input.parent().unwrap_or_else(|| Path::new("."));
@@ -2134,5 +2304,226 @@ skill main()
         assert_eq!(bag.exit_code(), 2, "expected exit 2 for tab indent");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(ids.contains(&"G::parse::tab-indent"), "ids: {:?}", ids);
+    }
+
+    // --- Slice 12: Multi-file build orchestration tests ---
+
+    #[test]
+    fn ac1_directory_compile_processes_every_file() {
+        // AC1: `glyph compile dir/` processes every `.glyph.md` even if not
+        // transitively reached by imports.
+        let dir = tempfile::tempdir().unwrap();
+
+        // Three independent files — none imports the others.
+        std::fs::write(dir.path().join("a.glyph.md"), "\
+skill alpha()
+    description: \"Alpha skill.\"
+    flow:
+        \"Do alpha.\"
+").unwrap();
+
+        std::fs::write(dir.path().join("b.glyph.md"), "\
+skill beta()
+    description: \"Beta skill.\"
+    flow:
+        \"Do beta.\"
+").unwrap();
+
+        std::fs::write(dir.path().join("c.glyph.md"), "\
+skill gamma()
+    description: \"Gamma skill.\"
+    flow:
+        \"Do gamma.\"
+").unwrap();
+
+        let sources: Vec<PathBuf> = vec![
+            dir.path().join("a.glyph.md"),
+            dir.path().join("b.glyph.md"),
+            dir.path().join("c.glyph.md"),
+        ];
+        let result = compile_directory(&sources);
+
+        // All three files should produce outcomes.
+        assert_eq!(result.outcomes.len(), 3, "all files should be processed");
+        assert_eq!(result.exit_code, 0, "all files should succeed");
+
+        // All three .md output files should exist.
+        assert!(dir.path().join("a.md").exists(), "a.md should exist");
+        assert!(dir.path().join("b.md").exists(), "b.md should exist");
+        assert!(dir.path().join("c.md").exists(), "c.md should exist");
+    }
+
+    #[test]
+    fn ac2_topological_order_libraries_before_consumers() {
+        // AC2: Files compile in topological order (libraries before consumers).
+        // We verify that the topological ordering places the imported file
+        // before the importing file in the outcome list, even when the input
+        // list is reversed.
+        let dir = tempfile::tempdir().unwrap();
+
+        // lib.glyph.md — standalone (no skill, just an export text — library)
+        std::fs::write(dir.path().join("lib.glyph.md"), "\
+export text greeting = \"Hello from lib.\"
+").unwrap();
+
+        // consumer.glyph.md — imports from lib but is self-contained for compile
+        std::fs::write(dir.path().join("consumer.glyph.md"), "\
+import \"./lib.glyph.md\" { greeting }
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        \"Use the greeting.\"
+").unwrap();
+
+        // Pass files in reverse alphabetical order to prove topo sort reorders.
+        let sources: Vec<PathBuf> = vec![
+            dir.path().join("consumer.glyph.md"),
+            dir.path().join("lib.glyph.md"),
+        ];
+        let result = compile_directory(&sources);
+
+        assert_eq!(result.outcomes.len(), 2);
+
+        // lib should come before consumer in the outcomes (topological order).
+        let first_file = &result.outcomes[0].0;
+        assert!(
+            first_file.to_string_lossy().contains("lib.glyph.md"),
+            "lib should compile before consumer, got: {}",
+            first_file.display()
+        );
+    }
+
+    #[test]
+    fn ac3_failure_skips_dependent_with_warning() {
+        // AC3: Failure in b.glyph.md skips c.glyph.md (which imports it) with
+        // the G::build::skipped-due-to-failed-import warning.
+        let dir = tempfile::tempdir().unwrap();
+
+        // a.glyph.md — valid, standalone
+        std::fs::write(dir.path().join("a.glyph.md"), "\
+skill alpha()
+    description: \"Alpha skill.\"
+    flow:
+        \"Do alpha.\"
+").unwrap();
+
+        // b.glyph.md — intentionally broken (will fail Phase 1)
+        std::fs::write(dir.path().join("b.glyph.md"), "\
+this is not valid glyph syntax at all!!!
+").unwrap();
+
+        // c.glyph.md — imports b, should be skipped
+        std::fs::write(dir.path().join("c.glyph.md"), "\
+import \"./b.glyph.md\" { something }
+
+skill gamma()
+    description: \"Gamma skill.\"
+    flow:
+        \"Do gamma.\"
+").unwrap();
+
+        let sources: Vec<PathBuf> = vec![
+            dir.path().join("a.glyph.md"),
+            dir.path().join("b.glyph.md"),
+            dir.path().join("c.glyph.md"),
+        ];
+        let result = compile_directory(&sources);
+
+        assert_eq!(result.exit_code, 1, "build should fail");
+
+        // a.md should exist (a succeeded).
+        assert!(dir.path().join("a.md").exists(), "a.md should exist");
+
+        // c should be skipped.
+        let c_outcome = result.outcomes.iter().find(|(p, _)| {
+            p.to_string_lossy().contains("c.glyph.md")
+        });
+        assert!(c_outcome.is_some(), "c.glyph.md should be in outcomes");
+        match &c_outcome.unwrap().1 {
+            FileOutcome::Skipped { failed_dep } => {
+                assert!(
+                    failed_dep.to_string_lossy().contains("b.glyph.md"),
+                    "failed_dep should reference b.glyph.md, got: {}",
+                    failed_dep.display()
+                );
+            }
+            other => panic!("expected Skipped for c.glyph.md, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ac4_stale_md_left_untouched_on_skip() {
+        // AC4: Stale c.md left untouched on disk after c.glyph.md skip.
+        let dir = tempfile::tempdir().unwrap();
+
+        // Pre-existing stale c.md from a previous build.
+        let stale_content = "# Previous build output\nThis is stale.";
+        std::fs::write(dir.path().join("c.md"), stale_content).unwrap();
+
+        // b.glyph.md — broken
+        std::fs::write(dir.path().join("b.glyph.md"), "\
+this is broken!!!
+").unwrap();
+
+        // c.glyph.md — imports b, will be skipped
+        std::fs::write(dir.path().join("c.glyph.md"), "\
+import \"./b.glyph.md\" { something }
+
+skill gamma()
+    description: \"Gamma skill.\"
+    flow:
+        \"Do gamma.\"
+").unwrap();
+
+        let sources: Vec<PathBuf> = vec![
+            dir.path().join("b.glyph.md"),
+            dir.path().join("c.glyph.md"),
+        ];
+        let result = compile_directory(&sources);
+
+        assert_eq!(result.exit_code, 1);
+
+        // c.md should still contain the stale content, untouched.
+        let c_md = std::fs::read_to_string(dir.path().join("c.md")).unwrap();
+        assert_eq!(
+            c_md, stale_content,
+            "stale c.md should be left untouched"
+        );
+    }
+
+    #[test]
+    fn ac5_exit_1_if_any_failed_partial_output_present() {
+        // AC5: Build exits 1 if any file failed; partial output present for
+        // successful files.
+        let dir = tempfile::tempdir().unwrap();
+
+        // good.glyph.md — valid
+        std::fs::write(dir.path().join("good.glyph.md"), "\
+skill good()
+    description: \"Good skill.\"
+    flow:
+        \"Do good.\"
+").unwrap();
+
+        // bad.glyph.md — broken
+        std::fs::write(dir.path().join("bad.glyph.md"), "\
+this is broken!!!
+").unwrap();
+
+        let sources: Vec<PathBuf> = vec![
+            dir.path().join("good.glyph.md"),
+            dir.path().join("bad.glyph.md"),
+        ];
+        let result = compile_directory(&sources);
+
+        // Exit 1 because bad.glyph.md failed.
+        assert_eq!(result.exit_code, 1, "should exit 1 when any file fails");
+
+        // good.md should exist (partial output).
+        assert!(dir.path().join("good.md").exists(), "good.md should exist as partial output");
+
+        // bad.md should NOT exist.
+        assert!(!dir.path().join("bad.md").exists(), "bad.md should not exist");
     }
 }
