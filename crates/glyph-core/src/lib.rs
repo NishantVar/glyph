@@ -1391,6 +1391,26 @@ skill main()
     }
 
     #[test]
+    fn with_on_bare_name_fires_diagnostic() {
+        // AC4: `G::parse::with-on-bare-name` fires when `with` follows a bare
+        // name (no parens), e.g., `some_name with "focus"`.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    flow:
+        some_name with \"focus\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::with-on-bare-name"),
+            "expected G::parse::with-on-bare-name, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 1, "with-on-bare-name should be a hard error");
+    }
+
+    #[test]
     fn multiple_with_fires_diagnostic() {
         // AC3: `G::parse::multiple-with` fires on chained `with` clauses.
         let src = "\

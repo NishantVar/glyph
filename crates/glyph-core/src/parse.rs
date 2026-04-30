@@ -1195,6 +1195,23 @@ impl<'a> Parser<'a> {
                                     message: "unexpected `.` in flow statement".into(),
                                 })
                             }
+                        } else if matches!(&self.peek().kind, TokenKind::Ident(w) if w == "with") {
+                            // `bare_name with "..."` — `with` only attaches to calls.
+                            let span = self.peek().span;
+                            self.bag.push(
+                                Diagnostic::error(
+                                    "G::parse::with-on-bare-name",
+                                    "`with` modifier requires a call expression (add parentheses)",
+                                    SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                ),
+                                span,
+                            );
+                            // Consume `with` and its string to avoid parse cascade.
+                            self.pos += 1;
+                            if matches!(self.peek().kind, TokenKind::StringLit(_)) {
+                                self.pos += 1;
+                            }
+                            Ok(FlowStmt::BareName(kw_val))
                         } else {
                             Ok(FlowStmt::BareName(kw_val))
                         }
