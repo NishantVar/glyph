@@ -1343,7 +1343,7 @@ impl<'a> Parser<'a> {
     fn try_parse_with_modifier(&mut self) -> Result<Option<String>, ParseError> {
         if let TokenKind::Ident(kw) = &self.peek().kind {
             if kw == "with" {
-                let with_span = self.peek().span;
+                let _with_span = self.peek().span;
                 self.pos += 1;
                 let modifier = match &self.peek().kind {
                     TokenKind::StringLit(s) => {
