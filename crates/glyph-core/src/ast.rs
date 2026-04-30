@@ -93,6 +93,10 @@ pub struct ExportBlockDecl {
     /// Used by analyze to detect closure violations: an export block must not
     /// reference private (non-exported, non-parameter) names.
     pub body_refs: Vec<String>,
+    /// Approximate word count of the body content (string literals + identifiers).
+    /// Used to decide if the export block should be emitted as a standalone
+    /// procedure file (>= 150 words) in Slice 15.
+    pub body_word_count: usize,
 }
 
 /// A header parameter on `skill`, `block`, or `export block`.

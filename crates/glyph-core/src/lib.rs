@@ -2673,4 +2673,54 @@ export text middle = \"M.\"
         assert_eq!(names, vec!["zebra", "alpha", "middle"],
             "exports should be in source order");
     }
+
+    #[test]
+    fn ac2_repo_tools_library_compiles_with_large_export_block() {
+        // A library file with export blocks should compile successfully.
+        // Large export blocks (>= 150 words) should have their word count tracked
+        // for procedure-file emission (Slice 15).
+        let dir = tempfile::tempdir().unwrap();
+
+        // Build a large body with 160+ words.
+        let mut long_body = String::new();
+        for i in 0..20 {
+            long_body.push_str(&format!(
+                "        \"Step {} of the procedure: perform the operation carefully and thoroughly.\"\n",
+                i + 1
+            ));
+        }
+
+        let repo_tools_src = format!("\
+export block inspect_repo(scope = \".\")
+    description: \"Inspect the repository for issues.\"
+    flow:
+{}        return scope
+", long_body);
+
+        let tools_path = dir.path().join("repo_tools.glyph.md");
+        std::fs::write(&tools_path, &repo_tools_src).unwrap();
+
+        let sources: Vec<PathBuf> = vec![tools_path.clone()];
+        let result = compile_directory(&sources);
+
+        assert_eq!(result.exit_code, 0, "repo_tools library should compile with exit 0");
+        // No .md output for a library file.
+        assert!(
+            !dir.path().join("repo_tools.md").exists(),
+            "library file should not produce .md output"
+        );
+
+        // Verify word count is tracked on the parsed AST.
+        let source = std::fs::read_to_string(&tools_path).unwrap();
+        let (file, _) = parse::parse(&source, 0).expect("should parse");
+        let export_block = file.decls.iter().find_map(|d| match d {
+            ast::Decl::ExportBlock(b) => Some(&b.node),
+            _ => None,
+        }).expect("export block should be present");
+        assert!(
+            export_block.body_word_count >= 150,
+            "large export block should have >= 150 words, got {}",
+            export_block.body_word_count
+        );
+    }
 }
