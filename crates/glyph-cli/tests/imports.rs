@@ -100,3 +100,40 @@ fn ac4_import_skill() {
     assert_contains_diagnostic_id(&stdout, "G::analyze::import-skill");
     assert_eq!(output.status.code(), Some(1), "import-skill should be exit 1");
 }
+
+/// AC5: Duplicate imports are repairable diagnostics → exit 2.
+#[test]
+fn ac5_duplicate_import_exit_2() {
+    let output = run_check("repairable/imports/duplicate_import.glyph.md", "json");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_contains_diagnostic_id(&stdout, "G::analyze::duplicate-import");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "duplicate import should be exit 2 (repairable), stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// AC5: Unused imports are repairable diagnostics → exit 2.
+#[test]
+fn ac5_unused_import_exit_2() {
+    let output = run_check("repairable/imports/unused_import.glyph.md", "json");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_contains_diagnostic_id(&stdout, "G::analyze::unused-import");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "unused import should be exit 2 (repairable), stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Missing import file produces G::analyze::missing-file.
+#[test]
+fn missing_import_file_exit_1() {
+    let output = run_check("invalid/imports/missing_import.glyph.md", "json");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_contains_diagnostic_id(&stdout, "G::analyze::missing-file");
+    assert_eq!(output.status.code(), Some(1), "missing file should be exit 1");
+}
