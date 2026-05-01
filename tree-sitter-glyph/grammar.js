@@ -571,18 +571,29 @@ module.exports = grammar({
     block_string: ($) =>
       seq(
         '"""',
-        repeat(choice($.interpolation, $.block_string_content)),
+        repeat(choice($.interpolation, $.block_string_content, $._embedded_quotes)),
         '"""',
       ),
 
+    // Block-string content: runs of safe characters, escape sequences,
+    // and embedded quotes followed by a non-special trailing char. The
+    // patterns deliberately require a trailing non-special char on the
+    // single- and double-quote forms so the lexer prefers the 3-char
+    // closing `"""` literal (longest match) when three consecutive
+    // quotes appear at the current position. Tree-sitter's RE2 regex
+    // has no lookahead, so the trailing-char trick is how we encode
+    // "not followed by a third quote" without consuming it later.
+    //
+    // Edge case: `""{name}` (two literal quotes immediately before an
+    // interpolation) cannot match any of these patterns — `{` is
+    // special and not eligible for the trailing slot. The
+    // `_embedded_quotes` alternative on `block_string`'s repeat covers
+    // exactly that case: two or one bare quotes with negative token
+    // precedence so the closer always wins, and the `{` is left for
+    // the next iteration's `interpolation` rule.
     block_string_content: (_) =>
       token.immediate(
         prec(1,
-          // Match any sequence that doesn't contain an interpolation
-          // brace or three consecutive quotes. We approximate via:
-          //   - any single non-special char
-          //   - or one or two `"` not followed by a third `"`
-          //   - or `\` escape sequence
           choice(
             /[^"{\\]+/,
             /\\./,
@@ -591,6 +602,13 @@ module.exports = grammar({
           ),
         ),
       ),
+
+    // Bare embedded quotes used only when the longer content patterns
+    // and the closing `"""` literal both fail (e.g. `""` immediately
+    // before `{` or `\`). Negative precedence keeps the closer
+    // dominant.
+    _embedded_quotes: (_) =>
+      token.immediate(prec(-1, choice('""', '"'))),
 
     interpolation: ($) =>
       seq(

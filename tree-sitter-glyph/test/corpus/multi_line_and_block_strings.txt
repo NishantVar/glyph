@@ -110,3 +110,121 @@ skill foo()
           (inline_instruction
             (string_literal
               (string_content))))))))
+
+================================================================================
+Block string with literal "" mid-content (followed by non-special)
+================================================================================
+
+text rules = """before""world"""
+
+skill foo()
+    flow:
+        "x"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (text_declaration
+    name: (identifier)
+    value: (block_string
+      (block_string_content)
+      (block_string_content)
+      (block_string_content)))
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))
+
+================================================================================
+Block string with literal "" immediately before interpolation
+================================================================================
+
+text rules = """before""{name}after"""
+
+skill foo()
+    flow:
+        "x"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (text_declaration
+    name: (identifier)
+    value: (block_string
+      (block_string_content)
+      (interpolation
+        (identifier))
+      (block_string_content)))
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))
+
+================================================================================
+Block string with leading and consecutive embedded quotes around interpolations
+================================================================================
+
+text rules = """""{a}""{b}"""
+
+skill foo()
+    flow:
+        "x"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (text_declaration
+    name: (identifier)
+    value: (block_string
+      (interpolation
+        (identifier))
+      (interpolation
+        (identifier))))
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))
+
+================================================================================
+Block string with single literal " mid-content
+================================================================================
+
+text rules = """one"two"""
+
+skill foo()
+    flow:
+        "x"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (text_declaration
+    name: (identifier)
+    value: (block_string
+      (block_string_content)
+      (block_string_content)
+      (block_string_content)))
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))
