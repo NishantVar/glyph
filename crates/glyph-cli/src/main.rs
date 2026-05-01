@@ -360,7 +360,7 @@ fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool,
                     .file_name()
                     .and_then(|s| s.to_str())
                     .unwrap_or("");
-                if let Some(ir_json) = glyph_core::emit_ir::serialize_ir_json(&arena, source_file) {
+                if let Some(ir_json) = glyph_core::emit_ir::serialize_ir_json(&arena, source_file, enable_effects) {
                     let ir_path = ir_json_output_path(&path);
                     if let Err(e) = glyph_core::atomic_write(&ir_path, &ir_json) {
                         eprintln!("glyph: cannot write `{}`: {}", ir_path.display(), e);

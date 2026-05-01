@@ -107,7 +107,7 @@ pub fn compile_source_with_effects(
     let arena = lower::lower(&file).map_err(CompileError::Lower)?;
     validate::validate(&arena).map_err(CompileError::Validate)?;
     let arena = expand::expand_step1(arena);
-    let markdown = emit::emit(&arena);
+    let markdown = emit::emit(&arena, enable_effects);
     Ok(CompileOutcome::Compiled { markdown, diagnostics: bag, arena })
 }
 
@@ -715,7 +715,7 @@ pub fn compile_directory_with_options(sources: &[PathBuf], emit_ir: bool, enable
                 extract_and_store_exports(file, &mut file_exports, &mut file_text_values, &mut file_block_bodies, &mut file_block_descriptions);
                 if emit_ir {
                     let source_file = file.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                    if let Some(ir_json) = emit_ir::serialize_ir_json(&arena, source_file) {
+                    if let Some(ir_json) = emit_ir::serialize_ir_json(&arena, source_file, enable_effects) {
                         let ir_path = ir_json_output_path(file);
                         atomic_write(&ir_path, &ir_json).ok();
                     }
@@ -731,7 +731,7 @@ pub fn compile_directory_with_options(sources: &[PathBuf], emit_ir: bool, enable
                 // Library file (no skill declaration) — not a failure.
                 extract_and_store_exports(file, &mut file_exports, &mut file_text_values, &mut file_block_bodies, &mut file_block_descriptions);
                 // Emit procedure files for qualifying export blocks (Tier 3).
-                let emitted = emit_library_procedures(file);
+                let emitted = emit_library_procedures(file, enable_effects);
                 for (block_name, rel_path) in emitted {
                     procedure_paths.insert((file.clone(), block_name), rel_path);
                 }
@@ -807,7 +807,7 @@ fn library_stem(input: &Path) -> String {
 ///
 /// Output path: `<parent>/<lib_stem>/<block-name-kebab>.md`
 /// Returns: Vec of (block_name, relative_procedure_path) for Tier 3 tracking.
-fn emit_library_procedures(path: &Path) -> Vec<(String, String)> {
+fn emit_library_procedures(path: &Path, enable_effects: bool) -> Vec<(String, String)> {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -844,6 +844,7 @@ fn emit_library_procedures(path: &Path) -> Vec<(String, String)> {
                 &eb.node.effects,
                 &params,
                 &eb.node.flow_strings,
+                enable_effects,
             );
 
             let out_path = subdir.join(format!("{}.md", kebab_name));
@@ -1140,7 +1141,7 @@ fn compile_source_with_resolved_imports(
 
     validate::validate(&arena).map_err(CompileError::Validate)?;
     let arena = expand::expand_step1_with_imported_descriptions(arena, &resolved_imports.block_descriptions);
-    let markdown = emit::emit(&arena);
+    let markdown = emit::emit(&arena, enable_effects);
     Ok(CompileOutcome::Compiled { markdown, diagnostics: bag, arena })
 }
 
