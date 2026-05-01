@@ -143,16 +143,24 @@ bool tree_sitter_glyph_external_scanner_scan(void *payload,
     return true;
   }
 
+  // If none of our external tokens are valid in the current parse state,
+  // do nothing. This is how multi-line constructs (`(...)`, `{...}`, `"""..."""`)
+  // suppress INDENT/DEDENT/NEWLINE: inside those bracket regions, the grammar
+  // rules don't reference any of our externals, so we return false and the
+  // newline/whitespace is absorbed by the grammar's `extras`. Without this
+  // guard, we would advance past the `\n` and mutate state, only to have
+  // `drain_pending` find no valid token to emit — silently corrupting the
+  // indent stack.
+  if (!valid_symbols[TOKEN_NEWLINE] &&
+      !valid_symbols[TOKEN_INDENT] &&
+      !valid_symbols[TOKEN_DEDENT]) {
+    return false;
+  }
+
   bool at_eof = lexer->eof(lexer);
   bool at_newline = !at_eof && lexer->lookahead == '\n';
 
   if (!at_newline && !at_eof) {
-    return false;
-  }
-
-  // Inside paired delimiters, suppress all tokens. (Currently unreachable in
-  // M1 since parens are tracked elsewhere, but kept for forward compat.)
-  if (s->paren_depth > 0) {
     return false;
   }
 

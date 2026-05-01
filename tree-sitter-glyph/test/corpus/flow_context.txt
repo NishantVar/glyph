@@ -45,5 +45,5 @@ text deployment_rules = "Follow the deployment checklist before deploying."
               (string_content)))))))
   (text_declaration
     name: (identifier)
-    (string_literal
+    value: (string_literal
       (string_content))))

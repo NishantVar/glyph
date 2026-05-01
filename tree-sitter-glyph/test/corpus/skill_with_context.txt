@@ -47,5 +47,5 @@ text project_layout = "This codebase uses a monorepo layout with per-crate Cargo
               (string_content)))))))
   (text_declaration
     name: (identifier)
-    (string_literal
+    value: (string_literal
       (string_content))))

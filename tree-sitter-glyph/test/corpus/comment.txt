@@ -21,8 +21,7 @@ skill hello()
         content: (string_literal
           (string_content)))
       (flow_section
-        (flow_statement
-          (comment))
+        (comment)
         (flow_statement
           (inline_instruction
             (string_literal

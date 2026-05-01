@@ -48,9 +48,9 @@ text stale_references = "Leaving references to removed or renamed symbols."
               (string_content)))))))
   (text_declaration
     name: (identifier)
-    (string_literal
+    value: (string_literal
       (string_content)))
   (text_declaration
     name: (identifier)
-    (string_literal
+    value: (string_literal
       (string_content))))

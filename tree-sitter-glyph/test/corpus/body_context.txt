@@ -38,5 +38,5 @@ text project_conventions = "This project follows strict linting rules."
               (string_content)))))))
   (text_declaration
     name: (identifier)
-    (string_literal
+    value: (string_literal
       (string_content))))
