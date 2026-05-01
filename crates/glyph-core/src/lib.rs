@@ -100,7 +100,7 @@ pub fn compile_source_with_effects(
         }
     };
 
-    let file = analyze::analyze_with_diagnostics(file, file_id, file_label, &line_index, &mut bag);
+    let file = analyze::analyze_with_diagnostics(file, file_id, file_label, &line_index, &mut bag, enable_effects);
     if bag.has_error() || bag.has_repairable() {
         return Ok(CompileOutcome::Diagnostics(bag));
     }
@@ -133,7 +133,7 @@ pub fn check_source_with_effects(source: &str, file_id: u32, file_label: &str, e
     // Phase 2 (Analyze) — slice 4 adds the parameter-related diagnostics
     // (`G::analyze::unknown-param-slot`, `G::analyze::missing-param-default`).
     if let Some(file) = parsed {
-        let _ = analyze::analyze_with_diagnostics(file, file_id, file_label, &line_index, &mut bag);
+        let _ = analyze::analyze_with_diagnostics(file, file_id, file_label, &line_index, &mut bag, enable_effects);
     }
 
     bag
@@ -517,6 +517,7 @@ fn check_file_recursive(
         &imported_blocks,
         &mut used_import_names,
         &HashMap::new(),
+        enable_effects,
     );
 
     // Unused import detection.
@@ -1114,6 +1115,7 @@ fn compile_source_with_resolved_imports(
         &file, file_id, file_label, &line_index, &mut bag,
         &resolved_imports.text_names, &all_imported_blocks, &mut used_import_names,
         &resolved_imports.block_descriptions,
+        enable_effects,
     );
     if bag.has_error() || bag.has_repairable() {
         return Ok(CompileOutcome::Diagnostics(bag));
@@ -3647,5 +3649,166 @@ skill foo()
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(ids.contains(&"G::parse::mixed-indent"), "ids: {:?}", ids);
         assert_eq!(bag.exit_code(), 2, "mixed-indent is repairable (exit 2)");
+    }
+
+    // --- Effects gate: flag-off behavior ---
+
+    #[test]
+    fn effects_off_no_missing_effects_diagnostic() {
+        // When enable_effects is false, the analyzer should NOT fire
+        // missing-effects even if the call graph would infer effects.
+        // Use a block with effects and a skill that calls it (with effects on).
+        // First verify the diagnostic fires with effects on:
+        let src = "\
+block writer()
+    effects: writes_files
+    \"Write some files.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        writer()
+";
+        let bag_on = check_source_with_effects(src, 0, "test.glyph.md", true);
+        let ids_on: Vec<&str> = bag_on.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids_on.contains(&"G::analyze::missing-effects"),
+            "with effects on, expected missing-effects, got: {:?}",
+            ids_on
+        );
+
+        // Now with effects off — the parser rejects `effects:` on the block,
+        // so we need a source WITHOUT effects syntax. Use just the skill+block
+        // without effects declarations, and the analyzer should not infer.
+        let src_no_effects = "\
+block writer()
+    \"Write some files.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        writer()
+";
+        let bag_off = check_source_with_effects(src_no_effects, 0, "test.glyph.md", false);
+        let ids_off: Vec<&str> = bag_off.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids_off.iter().any(|id| id.starts_with("G::analyze::effects")),
+            "with effects off, no effect diagnostics should fire, got: {:?}",
+            ids_off
+        );
+    }
+
+    #[test]
+    fn effects_off_no_under_declared_diagnostic() {
+        // When enable_effects is false, effects-under-declared should not fire.
+        // With effects on: skill declares fewer effects than call graph infers.
+        let src = "\
+block writer()
+    effects: writes_files
+    \"Write some files.\"
+
+skill main()
+    description: \"Main skill.\"
+    effects: reads_files
+    flow:
+        writer()
+";
+        let bag_on = check_source_with_effects(src, 0, "test.glyph.md", true);
+        let ids_on: Vec<&str> = bag_on.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids_on.contains(&"G::analyze::effects-under-declared"),
+            "with effects on, expected effects-under-declared, got: {:?}",
+            ids_on
+        );
+
+        // With effects off, same source structure but no effects syntax.
+        let src_off = "\
+block writer()
+    \"Write some files.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        writer()
+";
+        let bag_off = check_source_with_effects(src_off, 0, "test.glyph.md", false);
+        let ids_off: Vec<&str> = bag_off.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids_off.iter().any(|id| id.starts_with("G::analyze::effects")),
+            "with effects off, no effect diagnostics should fire, got: {:?}",
+            ids_off
+        );
+    }
+
+    #[test]
+    fn effects_off_no_over_declared_diagnostic() {
+        // When enable_effects is false, effects-over-declared should not fire.
+        let src = "\
+block reader()
+    effects: reads_files
+    \"Read some files.\"
+
+skill main()
+    description: \"Main skill.\"
+    effects: reads_files, writes_files
+    flow:
+        reader()
+";
+        let bag_on = check_source_with_effects(src, 0, "test.glyph.md", true);
+        let ids_on: Vec<&str> = bag_on.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids_on.contains(&"G::analyze::effects-over-declared"),
+            "with effects on, expected effects-over-declared, got: {:?}",
+            ids_on
+        );
+
+        // With effects off — can't have effects syntax, so no over-declared scenario.
+        // Still verify no effect diagnostics fire on a clean source.
+        let src_off = "\
+block reader()
+    \"Read some files.\"
+
+skill main()
+    description: \"Main skill.\"
+    flow:
+        reader()
+";
+        let bag_off = check_source_with_effects(src_off, 0, "test.glyph.md", false);
+        let ids_off: Vec<&str> = bag_off.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids_off.iter().any(|id| id.starts_with("G::analyze::effects")),
+            "with effects off, no effect diagnostics should fire, got: {:?}",
+            ids_off
+        );
+    }
+
+    #[test]
+    fn effects_off_empty_skill_body_excludes_effects() {
+        // When enable_effects is on, a skill with only effects: is not empty.
+        // When off, effects don't count as content.
+        let src_on = "\
+skill main()
+    effects: reads_files
+";
+        let bag_on = check_source_with_effects(src_on, 0, "test.glyph.md", true);
+        let ids_on: Vec<&str> = bag_on.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids_on.contains(&"G::analyze::empty-skill-body"),
+            "with effects on, skill with only effects should NOT be empty, got: {:?}",
+            ids_on
+        );
+
+        // With effects off, a completely empty skill (parser strips effects:)
+        // should fire empty-skill-body.
+        let src_off = "\
+skill main()
+";
+        let bag_off = check_source_with_effects(src_off, 0, "test.glyph.md", false);
+        let ids_off: Vec<&str> = bag_off.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids_off.contains(&"G::analyze::empty-skill-body"),
+            "with effects off, empty skill should fire empty-skill-body, got: {:?}",
+            ids_off
+        );
     }
 }

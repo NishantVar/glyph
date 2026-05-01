@@ -41,6 +41,7 @@ pub fn analyze_with_diagnostics(
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
+    enable_effects: bool,
 ) -> SourceFile {
     // Collect text declaration names for bare-name detection in flow.
     let text_names: HashSet<&str> = file
@@ -86,7 +87,7 @@ pub fn analyze_with_diagnostics(
     for decl in &file.decls {
         match decl {
             Decl::Skill(spanned) => {
-                analyze_skill(spanned, file_id, file_label, line_index, bag, &text_names, &block_names, &block_decls, &HashMap::new())
+                analyze_skill(spanned, file_id, file_label, line_index, bag, &text_names, &block_names, &block_decls, &HashMap::new(), enable_effects)
             }
             Decl::ExportBlock(spanned) => {
                 analyze_export_block(spanned, file_label, line_index, bag, &private_names);
@@ -159,6 +160,7 @@ pub fn analyze_with_imports(
     imported_blocks: &HashSet<String>,
     used_import_names: &mut HashSet<String>,
     imported_block_descriptions: &HashMap<String, String>,
+    enable_effects: bool,
 ) -> SourceFile {
     // Collect local text declaration names.
     let local_text_names: HashSet<&str> = file
@@ -222,6 +224,7 @@ pub fn analyze_with_imports(
                     &text_names, &block_names, &block_decls,
                     imported_texts, imported_blocks, used_import_names,
                     imported_block_descriptions,
+                    enable_effects,
                 );
             }
             Decl::ExportBlock(spanned) => {
@@ -292,9 +295,10 @@ fn analyze_skill_with_usage_tracking(
     imported_blocks: &HashSet<String>,
     used_import_names: &mut HashSet<String>,
     imported_block_descriptions: &HashMap<String, String>,
+    enable_effects: bool,
 ) {
     // Run the normal analysis.
-    analyze_skill(spanned, file_id, file_label, line_index, bag, text_names, block_names, block_decls, imported_block_descriptions);
+    analyze_skill(spanned, file_id, file_label, line_index, bag, text_names, block_names, block_decls, imported_block_descriptions, enable_effects);
 
     // Track usage: walk flow/constraints/context to see which imported names are referenced.
     let skill = &spanned.node;
@@ -375,6 +379,7 @@ fn analyze_skill(
     block_names: &HashSet<&str>,
     block_decls: &HashMap<&str, &BlockDecl>,
     imported_block_descriptions: &HashMap<String, String>,
+    enable_effects: bool,
 ) {
     let skill = &spanned.node;
     let declared: HashSet<&str> = skill.params.iter().map(|p| p.name.as_str()).collect();
@@ -588,10 +593,12 @@ fn analyze_skill(
     // G::analyze::empty-skill-body — skill with no description, no flow, no
     // constraints, no effects. A skill must have at least one of flow (with
     // statements) or constraints (with markers) to be projectable.
+    // When enable_effects is off, effects are not considered as content.
+    let effects_count_as_content = enable_effects && !skill.effects.is_empty();
     if skill.description.is_none()
         && skill.flow.is_empty()
         && skill.body_constraints.is_empty()
-        && skill.effects.is_empty()
+        && !effects_count_as_content
         && skill.body_context.is_empty()
         && skill.context_section.is_empty()
     {
@@ -629,6 +636,10 @@ fn analyze_skill(
     }
 
     // --- Effect inference and validation ---
+    // Skip entirely when effects are disabled.
+    if !enable_effects {
+        return;
+    }
     // Infer effects by walking the call graph (local-transitive for same-file blocks).
     let inferred = infer_effects_for_skill(skill, block_decls);
 
@@ -1170,6 +1181,71 @@ mod tests {
         assert_eq!(diag.classification, Classification::Error);
         assert!(diag.message.contains("Report"));
         assert!(diag.message.contains("TestResult"));
+    }
+
+    #[test]
+    fn analyze_with_diagnostics_receives_enable_effects() {
+        // Verify that analyze_with_diagnostics accepts the enable_effects flag
+        // and that when false, effect inference is skipped.
+        use crate::ast::{BlockDecl, Decl, FlowStmt, Skill, SourceFile};
+        use crate::span::Spanned;
+
+        // Build a source file with a block that has effects and a skill that
+        // calls it without declaring effects.
+        let block = Spanned {
+            node: BlockDecl {
+                name: "writer".to_string(),
+                params: Vec::new(),
+                flow: vec![FlowStmt::InlineString("Write files.".to_string())],
+                description: None,
+                effects: vec!["writes_files".to_string()],
+            },
+            span: Span::new(0, 0, 10),
+        };
+        let skill = Spanned {
+            node: Skill {
+                name: "main".to_string(),
+                params: Vec::new(),
+                description: Some("Main skill.".to_string()),
+                flow: vec![FlowStmt::Call {
+                    target: "writer".to_string(),
+                    args: Vec::new(),
+                    site_modifier: None,
+                }],
+                flow_present: true,
+                body_constraints: Vec::new(),
+                body_context: Vec::new(),
+                body_bare_names: Vec::new(),
+                effects: Vec::new(),
+                context_section: Vec::new(),
+            },
+            span: Span::new(0, 0, 10),
+        };
+        let file = SourceFile {
+            decls: vec![Decl::Block(block), Decl::Skill(skill)],
+        };
+        let source = "dummy source";
+        let li = LineIndex::new(source);
+
+        // With enable_effects=true, missing-effects should fire.
+        let mut bag_on = DiagBag::new();
+        analyze_with_diagnostics(file.clone(), 0, "test.glyph.md", &li, &mut bag_on, true);
+        let ids_on: Vec<&str> = bag_on.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids_on.contains(&"G::analyze::missing-effects"),
+            "with effects on, expected missing-effects, got: {:?}",
+            ids_on
+        );
+
+        // With enable_effects=false, no effect diagnostics should fire.
+        let mut bag_off = DiagBag::new();
+        analyze_with_diagnostics(file, 0, "test.glyph.md", &li, &mut bag_off, false);
+        let ids_off: Vec<&str> = bag_off.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids_off.iter().any(|id| id.starts_with("G::analyze::effects") || *id == "G::analyze::missing-effects"),
+            "with effects off, no effect diagnostics should fire, got: {:?}",
+            ids_off
+        );
     }
 
     #[test]
