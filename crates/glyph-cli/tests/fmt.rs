@@ -130,14 +130,13 @@ fn fmt_reorders_sections_to_canonical_layout() {
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 
     let result = std::fs::read_to_string(&tmp_path).unwrap();
-    // Canonical order: description, effects, context, constraints, flow.
+    // Canonical order: description, context, constraints, flow.
+    // (effects removed — disabled by default)
     let desc_pos = result.find("    description:").expect("should have description:");
-    let effects_pos = result.find("    effects:").expect("should have effects:");
     let context_pos = result.find("    context:").expect("should have context:");
     let constraints_pos = result.find("    constraints:").expect("should have constraints:");
     let flow_pos = result.find("    flow:").expect("should have flow:");
-    assert!(desc_pos < effects_pos, "description should come before effects");
-    assert!(effects_pos < context_pos, "effects should come before context");
+    assert!(desc_pos < context_pos, "description should come before context");
     assert!(context_pos < constraints_pos, "context should come before constraints");
     assert!(constraints_pos < flow_pos, "constraints should come before flow");
 }

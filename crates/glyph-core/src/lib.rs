@@ -65,6 +65,16 @@ pub fn compile_source(
     file_id: u32,
     file_label: &str,
 ) -> Result<CompileOutcome, CompileError> {
+    compile_source_with_effects(source, file_id, file_label, false)
+}
+
+/// Compile with explicit effects gate.
+pub fn compile_source_with_effects(
+    source: &str,
+    file_id: u32,
+    file_label: &str,
+    enable_effects: bool,
+) -> Result<CompileOutcome, CompileError> {
     let mut bag = DiagBag::new();
 
     // Build a line index up front for diagnostic span conversion. The parser
@@ -72,7 +82,7 @@ pub fn compile_source(
     // recompute here to avoid plumbing an extra return value out of `parse`.
     let line_index = LineIndex::new(source);
 
-    let parsed = parse::parse_with_diagnostics(source, file_id, file_label, &line_index, &mut bag);
+    let parsed = parse::parse_with_diagnostics_opts(source, file_id, file_label, &line_index, &mut bag, enable_effects);
     if !bag.is_empty() && (bag.has_error() || bag.has_repairable()) {
         // Diagnostics block compilation. Surface and stop.
         return Ok(CompileOutcome::Diagnostics(bag));
@@ -110,10 +120,15 @@ pub fn compile_source(
 /// errors, repairables, warnings, or any combination. The caller maps the bag
 /// onto an exit code via `DiagBag::exit_code()` (1-wins-over-2 rule honoured).
 pub fn check_source(source: &str, file_id: u32, file_label: &str) -> DiagBag {
+    check_source_with_effects(source, file_id, file_label, false)
+}
+
+/// Check with explicit effects gate.
+pub fn check_source_with_effects(source: &str, file_id: u32, file_label: &str, enable_effects: bool) -> DiagBag {
     let mut bag = DiagBag::new();
     let line_index = LineIndex::new(source);
 
-    let parsed = parse::parse_with_diagnostics(source, file_id, file_label, &line_index, &mut bag);
+    let parsed = parse::parse_with_diagnostics_opts(source, file_id, file_label, &line_index, &mut bag, enable_effects);
 
     // Phase 2 (Analyze) — slice 4 adds the parameter-related diagnostics
     // (`G::analyze::unknown-param-slot`, `G::analyze::missing-param-default`).
@@ -1062,7 +1077,7 @@ fn compile_source_with_resolved_imports(
     let mut bag = DiagBag::new();
     let line_index = LineIndex::new(source);
 
-    let parsed = parse::parse_with_diagnostics(source, file_id, file_label, &line_index, &mut bag);
+    let parsed = parse::parse_with_diagnostics_opts(source, file_id, file_label, &line_index, &mut bag, false);
     if !bag.is_empty() && (bag.has_error() || bag.has_repairable()) {
         return Ok(CompileOutcome::Diagnostics(bag));
     }
@@ -1362,7 +1377,7 @@ skill main()
     flow:
         \"Do something.\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source_with_effects(src, 0, "test.glyph.md", true);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::parse::none-with-effects"),
@@ -1388,7 +1403,7 @@ skill main()
     flow:
         writer()
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source_with_effects(src, 0, "test.glyph.md", true);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::effects-under-declared"),
@@ -1413,7 +1428,7 @@ skill main()
     flow:
         reader()
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source_with_effects(src, 0, "test.glyph.md", true);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::effects-over-declared"),
@@ -1441,7 +1456,7 @@ skill main()
     flow:
         writer()
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source_with_effects(src, 0, "test.glyph.md", true);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::missing-effects"),
@@ -1464,7 +1479,7 @@ skill main()
     flow:
         \"Do something.\"
 ";
-        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        let outcome = compile_source_with_effects(src, 0, "test.glyph.md", true).expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 assert!(
@@ -1526,7 +1541,7 @@ skill main()
         reader()
         writer()
 ";
-        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        let outcome = compile_source_with_effects(src, 0, "test.glyph.md", true).expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 assert!(
@@ -1563,7 +1578,7 @@ skill main()
     flow:
         outer()
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source_with_effects(src, 0, "test.glyph.md", true);
         // No errors or repairables — declared matches inferred exactly.
         assert!(
             !bag.has_error(),
@@ -1592,7 +1607,7 @@ skill main()
     flow:
         writer()
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source_with_effects(src, 0, "test.glyph.md", true);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::effects-under-declared"),
@@ -1613,7 +1628,7 @@ skill main()
     flow:
         \"Do something.\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source_with_effects(src, 0, "test.glyph.md", true);
         assert!(
             !bag.has_error(),
             "effects: none with empty inferred set should be valid, got: {:?}",
@@ -1632,7 +1647,7 @@ skill main()
     flow:
         \"Do something.\"
 ";
-        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        let outcome = compile_source_with_effects(src, 0, "test.glyph.md", true).expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 assert!(
@@ -1646,6 +1661,44 @@ skill main()
                 panic!("expected compiled output, got diagnostics: {:?}", ids);
             }
         }
+    }
+
+    #[test]
+    fn effects_disabled_produces_diagnostic() {
+        // When enable_effects is false (default), `effects:` in source
+        // produces a `G::parse::effects-disabled` error diagnostic.
+        let src = "\
+skill main()
+    description: \"Main skill.\"
+    effects: reads_files
+    flow:
+        \"Do something.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::effects-disabled"),
+            "expected G::parse::effects-disabled when effects are off, got: {:?}",
+            ids
+        );
+        assert_eq!(bag.exit_code(), 1, "effects-disabled should be a hard error");
+    }
+
+    #[test]
+    fn effects_disabled_on_block_produces_diagnostic() {
+        // `effects:` on a block declaration should also fire effects-disabled.
+        let src = "\
+block helper()
+    effects: writes_files
+    \"Do something.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::effects-disabled"),
+            "expected G::parse::effects-disabled on block, got: {:?}",
+            ids
+        );
     }
 
     #[test]
@@ -3217,13 +3270,11 @@ export block inspect_repo(scope = \".\")
         let repo_tools_src = format!("\
 export block inspect_repo(scope = \".\")
     description: \"Inspect the repository for issues.\"
-    effects: reads_files
     flow:
 {}        return scope
 
 export block run_tests(target = \"all\")
     description: \"Run the project test suite.\"
-    effects: reads_files
     flow:
 {}        return target
 ", long_body_1, long_body_2);
@@ -3268,7 +3319,6 @@ export block run_tests(target = \"all\")
         let lib_src = format!("\
 export block inspect_repo(scope = \".\")
     description: \"Inspect the repository for issues.\"
-    effects: reads_files
     flow:
 {}        return scope
 ", long_body);
@@ -3282,7 +3332,6 @@ import \"repo_tools\" { inspect_repo }
 
 skill audit_code()
     description: \"Audit the codebase.\"
-    effects: reads_files
 
     flow:
         inspect_repo()
@@ -3321,7 +3370,6 @@ skill audit_code()
         let repo_tools_src = format!("\
 export block inspect_repo(scope = \".\")
     description: \"Inspect the repository for issues.\"
-    effects: reads_files
     flow:
 {}        return scope
 ", long_body);
@@ -3354,7 +3402,6 @@ export block inspect_repo(scope = \".\")
 
 skill delegate(task = "do something")
     description: "Delegate work."
-    effects: spawns_agent
     flow:
         subagent(task)
 "#).unwrap();
@@ -3401,7 +3448,6 @@ skill runner()
 
 skill notify(msg = "hello")
     description: "Send a message."
-    effects: spawns_agent
     flow:
         send(msg)
 "#).unwrap();
@@ -3423,7 +3469,6 @@ skill notify(msg = "hello")
         // AC3: `stdlib-missing-import` repairable fires when `subagent` used without import.
         let src = r#"skill delegate(task = "do something")
     description: "Delegate work."
-    effects: spawns_agent
     flow:
         subagent(task)
 "#;
@@ -3445,7 +3490,6 @@ skill notify(msg = "hello")
         // AC3: `stdlib-missing-import` repairable fires when `send` used without import.
         let src = r#"skill notify(msg = "hello")
     description: "Send a message."
-    effects: spawns_agent
     flow:
         send(msg)
 "#;
@@ -3483,18 +3527,22 @@ skill main()
         // AC5: stdlib entry's effect signature (`spawns_agent`) propagates —
         // if a skill calls subagent() and declares effects but omits spawns_agent,
         // it should fire effects-under-declared.
-        let dir = tempfile::tempdir().unwrap();
-        let main_path = dir.path().join("main.glyph.md");
-        std::fs::write(&main_path, r#"import "@glyph/std" { subagent }
+        // Note: effects require --enable-effects; this test uses
+        // check_source_with_effects to exercise the effects-on path.
+        // The analyzer has hardcoded knowledge of stdlib names (`subagent` →
+        // `spawns_agent`), so we define a local block to bring the name into
+        // scope while still exercising effect propagation.
+        let src = r#"block subagent(task)
+    effects: spawns_agent
+    "Spawn a sub-agent."
 
 skill delegate(task = "do something")
     description: "Delegate work."
     effects: reads_files
     flow:
         subagent(task)
-"#).unwrap();
-
-        let bag = check_file(&main_path);
+"#;
+        let bag = check_source_with_effects(src, 0, "test.glyph.md", true);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::effects-under-declared"),

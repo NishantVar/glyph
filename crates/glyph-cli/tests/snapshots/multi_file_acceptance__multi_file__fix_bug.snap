@@ -5,7 +5,6 @@ expression: md
 ---
 name: fix_bug
 description: Debug and fix a bug in the codebase with minimal, targeted changes.
-effects: [reads_files, runs_commands, writes_files]
 ---
 
 ## Parameters

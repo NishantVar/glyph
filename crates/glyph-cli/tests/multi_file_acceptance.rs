@@ -403,7 +403,6 @@ fn fix_bug_frontmatter() {
         md.contains("description: Debug and fix a bug"),
         "frontmatter description"
     );
-    assert!(md.contains("effects:"), "frontmatter effects");
 }
 
 #[test]
