@@ -240,6 +240,10 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
 /// - Duplicate/unused import detection
 /// - Cross-file name resolution
 pub fn check_file(path: &Path) -> DiagBag {
+    check_file_with_effects(path, false)
+}
+
+pub fn check_file_with_effects(path: &Path, enable_effects: bool) -> DiagBag {
     let mut bag = DiagBag::new();
     let canon = match path.canonicalize() {
         Ok(c) => c,
@@ -260,7 +264,7 @@ pub fn check_file(path: &Path) -> DiagBag {
 
     let mut visited: HashSet<PathBuf> = HashSet::new();
     let mut stack: Vec<PathBuf> = Vec::new();
-    check_file_recursive(&canon, &mut bag, &mut visited, &mut stack);
+    check_file_recursive(&canon, &mut bag, &mut visited, &mut stack, enable_effects);
     bag
 }
 
@@ -269,6 +273,7 @@ fn check_file_recursive(
     bag: &mut DiagBag,
     visited: &mut HashSet<PathBuf>,
     stack: &mut Vec<PathBuf>,
+    enable_effects: bool,
 ) -> Option<ExportedNames> {
     // Cycle detection.
     if let Some(pos) = stack.iter().position(|p| p == path) {
@@ -302,7 +307,7 @@ fn check_file_recursive(
         let line_index = LineIndex::new(&source);
         let mut tmp_bag = DiagBag::new();
         let file_label = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        let parsed = parse::parse_with_diagnostics(&source, 0, &file_label, &line_index, &mut tmp_bag)?;
+        let parsed = parse::parse_with_diagnostics_opts(&source, 0, &file_label, &line_index, &mut tmp_bag, enable_effects)?;
         return Some(extract_exports(&parsed));
     }
 
@@ -334,7 +339,7 @@ fn check_file_recursive(
     let file_label = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
     let line_index = LineIndex::new(&source);
 
-    let parsed = parse::parse_with_diagnostics(&source, 0, &file_label, &line_index, bag);
+    let parsed = parse::parse_with_diagnostics_opts(&source, 0, &file_label, &line_index, bag, enable_effects);
     let file = match parsed {
         Some(f) => f,
         None => {
@@ -433,7 +438,7 @@ fn check_file_recursive(
             seen_import_paths.insert(resolved.clone(), import_span);
 
             // Recursively check/parse the dependency.
-            let dep_exports = check_file_recursive(&resolved, bag, visited, stack);
+            let dep_exports = check_file_recursive(&resolved, bag, visited, stack, enable_effects);
             let dep_exports = match dep_exports {
                 Some(e) => e,
                 None => continue,
@@ -557,10 +562,10 @@ pub enum FileOutcome {
 /// Implements partial failure: skip-dependents, leave-stale-`.md`, exit 1 if
 /// any file fails.
 pub fn compile_directory(sources: &[PathBuf]) -> BuildResult {
-    compile_directory_with_options(sources, false)
+    compile_directory_with_options(sources, false, false)
 }
 
-pub fn compile_directory_with_options(sources: &[PathBuf], emit_ir: bool) -> BuildResult {
+pub fn compile_directory_with_options(sources: &[PathBuf], emit_ir: bool, enable_effects: bool) -> BuildResult {
     if sources.is_empty() {
         return BuildResult { outcomes: Vec::new(), exit_code: 0 };
     }
@@ -700,7 +705,7 @@ pub fn compile_directory_with_options(sources: &[PathBuf], emit_ir: bool) -> Bui
             file, &file_exports, &file_text_values, &file_block_bodies, &file_block_descriptions,
         );
 
-        match compile_file_with_resolved_imports(file, &imported_procedure_paths, &resolved_imports) {
+        match compile_file_with_resolved_imports(file, &imported_procedure_paths, &resolved_imports, enable_effects) {
             Ok(CompileOutcome::Compiled { diagnostics, arena, .. }) => {
                 extract_and_store_exports(file, &mut file_exports, &mut file_text_values, &mut file_block_bodies, &mut file_block_descriptions);
                 if emit_ir {
@@ -1043,6 +1048,7 @@ fn compile_file_with_resolved_imports(
     path: &Path,
     imported_procedure_paths: &HashMap<String, String>,
     resolved_imports: &ResolvedImports,
+    enable_effects: bool,
 ) -> Result<CompileOutcome, CompileError> {
     if imported_procedure_paths.is_empty() && resolved_imports.text_names.is_empty() && resolved_imports.block_names.is_empty() {
         return compile_file(path);
@@ -1054,7 +1060,7 @@ fn compile_file_with_resolved_imports(
     })?;
     let label = path.display().to_string();
 
-    let outcome = compile_source_with_resolved_imports(&source, 0, &label, imported_procedure_paths, resolved_imports)?;
+    let outcome = compile_source_with_resolved_imports(&source, 0, &label, imported_procedure_paths, resolved_imports, enable_effects)?;
     if let CompileOutcome::Compiled { ref markdown, ref arena, .. } = outcome {
         let out_path = compiled_output_path(path);
         let _ = arena;
@@ -1073,11 +1079,12 @@ fn compile_source_with_resolved_imports(
     file_label: &str,
     imported_procedure_paths: &HashMap<String, String>,
     resolved_imports: &ResolvedImports,
+    enable_effects: bool,
 ) -> Result<CompileOutcome, CompileError> {
     let mut bag = DiagBag::new();
     let line_index = LineIndex::new(source);
 
-    let parsed = parse::parse_with_diagnostics_opts(source, file_id, file_label, &line_index, &mut bag, false);
+    let parsed = parse::parse_with_diagnostics_opts(source, file_id, file_label, &line_index, &mut bag, enable_effects);
     if !bag.is_empty() && (bag.has_error() || bag.has_repairable()) {
         return Ok(CompileOutcome::Diagnostics(bag));
     }

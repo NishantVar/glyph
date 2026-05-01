@@ -199,7 +199,7 @@ fn run_fmt(path: PathBuf, check: bool) -> ExitCode {
 ///
 /// Never writes output files, regardless of outcome. Diagnostics are rendered
 /// per the requested `--format`.
-fn run_check(path: PathBuf, format: OutputFormat, strict: bool, _enable_effects: bool) -> ExitCode {
+fn run_check(path: PathBuf, format: OutputFormat, strict: bool, enable_effects: bool) -> ExitCode {
     let files = match collect_glyph_sources(&path) {
         Ok(v) => v,
         Err(code) => return code,
@@ -224,7 +224,7 @@ fn run_check(path: PathBuf, format: OutputFormat, strict: bool, _enable_effects:
         };
         let label = file.display().to_string();
         // Use import-aware check when the file path is available.
-        let bag = glyph_core::check_file(&file);
+        let bag = glyph_core::check_file_with_effects(&file, enable_effects);
         emit_diagnostics(&bag, &label, &source, format);
         let code = bag.exit_code();
         worst = combine_exit_codes(worst, code);
@@ -384,7 +384,7 @@ fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool,
 
 /// Directory-mode compile: collect all `.glyph.md` files, build DAG, compile
 /// in topological order with partial failure.
-fn run_compile_directory(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool, _enable_effects: bool) -> ExitCode {
+fn run_compile_directory(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool, enable_effects: bool) -> ExitCode {
     let files = match collect_glyph_sources(&path) {
         Ok(v) => v,
         Err(code) => return code,
@@ -394,7 +394,7 @@ fn run_compile_directory(path: PathBuf, format: OutputFormat, emit_ir: bool, str
         return ExitCode::from(0);
     }
 
-    let result = glyph_core::compile_directory_with_options(&files, emit_ir);
+    let result = glyph_core::compile_directory_with_options(&files, emit_ir, enable_effects);
 
     // Emit diagnostics and stderr notes for each file outcome.
     for (file_path, outcome) in &result.outcomes {
