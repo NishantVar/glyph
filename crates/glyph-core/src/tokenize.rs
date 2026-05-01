@@ -17,6 +17,12 @@ pub enum TokenKind {
     Ident(String),
     /// Quoted string literal — contents (without surrounding quotes), value already unescaped.
     StringLit(String),
+    /// Integer literal — the original source text (e.g. `"3"`, `"-1"`). Stored
+    /// as a string so the parser can decide on coercion / overflow handling
+    /// per `values-and-names.md` §Numeric Coercion.
+    IntLit(String),
+    /// Float literal — the original source text (e.g. `"0.8"`, `"3.14"`).
+    FloatLit(String),
     Lparen,
     Rparen,
     Colon,
@@ -47,6 +53,12 @@ pub enum TokenizeError {
     BadIndent { byte_offset: u32 },
     UnterminatedString { byte_offset: u32 },
     UnexpectedChar { byte_offset: u32, ch: char },
+    /// Numeric literal with disallowed leading zero (e.g. `03`).
+    /// Per `values-and-names.md` §Integers: leading zeros are not allowed.
+    LeadingZero { byte_offset: u32 },
+    /// Numeric literal missing digits on one side of the decimal point
+    /// (e.g. `.5` or `3.`). Per `values-and-names.md` §Floats.
+    BadFloat { byte_offset: u32 },
 }
 
 pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), TokenizeError> {
@@ -161,6 +173,13 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
                 });
                 p += 1;
             } else if b == b'.' {
+                // Leading-dot float (`.5`) is invalid per `values-and-names.md`
+                // (floats require digits on both sides of the `.`). Surface as
+                // `G::parse::malformed-float` rather than letting it tokenize
+                // as `Dot` + `IntLit` and produce a confusing downstream error.
+                if p + 1 < content_end && bytes[p + 1].is_ascii_digit() {
+                    return Err(TokenizeError::BadFloat { byte_offset: p as u32 });
+                }
                 tokens.push(Token {
                     kind: TokenKind::Dot,
                     span: Span::new(file_id, p as u32, (p + 1) as u32),
@@ -229,6 +248,70 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
                     kind: TokenKind::Ident(text),
                     span: Span::new(file_id, start as u32, p as u32),
                 });
+            } else if b.is_ascii_digit()
+                || (b == b'-'
+                    && p + 1 < content_end
+                    && bytes[p + 1].is_ascii_digit()
+                    && !matches!(
+                        tokens.last().map(|t| &t.kind),
+                        // The previous token can act as the left-hand side of a
+                        // binary operator. Treat `-` as `operator-in-expression`
+                        // (handled later as `UnexpectedChar`) rather than the
+                        // sign of a negative literal so e.g. `retries-1` is
+                        // surfaced as a malformed expression instead of being
+                        // silently parsed as `retries` and `-1`.
+                        Some(TokenKind::Ident(_))
+                            | Some(TokenKind::IntLit(_))
+                            | Some(TokenKind::FloatLit(_))
+                            | Some(TokenKind::StringLit(_))
+                            | Some(TokenKind::Rparen)
+                            | Some(TokenKind::Rbrace)
+                    ))
+            {
+                // Numeric literal scan per `values-and-names.md`:
+                //   integer: -?[0-9]+ (no leading zeros except `0` itself)
+                //   float:   -?[0-9]+\.[0-9]+ (digits required on both sides)
+                let start = p;
+                if bytes[p] == b'-' {
+                    p += 1;
+                }
+                let int_start = p;
+                while p < content_end && bytes[p].is_ascii_digit() {
+                    p += 1;
+                }
+                let int_len = p - int_start;
+                // Leading zero check: more than one digit and the first is '0'.
+                if int_len > 1 && bytes[int_start] == b'0' {
+                    return Err(TokenizeError::LeadingZero { byte_offset: start as u32 });
+                }
+                // Float branch: a '.' followed by at least one digit.
+                if p < content_end && bytes[p] == b'.' {
+                    let dot_pos = p;
+                    p += 1;
+                    let frac_start = p;
+                    while p < content_end && bytes[p].is_ascii_digit() {
+                        p += 1;
+                    }
+                    if p == frac_start {
+                        // `3.` — no fractional digits.
+                        return Err(TokenizeError::BadFloat { byte_offset: dot_pos as u32 });
+                    }
+                    let text = std::str::from_utf8(&bytes[start..p])
+                        .expect("ASCII numeric literal")
+                        .to_string();
+                    tokens.push(Token {
+                        kind: TokenKind::FloatLit(text),
+                        span: Span::new(file_id, start as u32, p as u32),
+                    });
+                } else {
+                    let text = std::str::from_utf8(&bytes[start..p])
+                        .expect("ASCII numeric literal")
+                        .to_string();
+                    tokens.push(Token {
+                        kind: TokenKind::IntLit(text),
+                        span: Span::new(file_id, start as u32, p as u32),
+                    });
+                }
             } else {
                 return Err(TokenizeError::UnexpectedChar {
                     byte_offset: p as u32,

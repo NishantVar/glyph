@@ -4,4 +4,4 @@ skill fix_bug()
 		"Find the bug."
 		"Fix it."
 
-text accuracy = "Be accurate."
+const accuracy = "Be accurate."

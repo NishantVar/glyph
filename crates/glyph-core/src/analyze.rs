@@ -43,12 +43,12 @@ pub fn analyze_with_diagnostics(
     bag: &mut DiagBag,
     enable_effects: bool,
 ) -> SourceFile {
-    // Collect text declaration names for bare-name detection in flow.
+    // Collect const declaration names for bare-name detection in flow.
     let text_names: HashSet<&str> = file
         .decls
         .iter()
         .filter_map(|d| match d {
-            Decl::Text(t) => Some(t.node.name.as_str()),
+            Decl::Const(t) => Some(t.node.name.as_str()),
             _ => None,
         })
         .collect();
@@ -78,7 +78,7 @@ pub fn analyze_with_diagnostics(
         .decls
         .iter()
         .filter_map(|d| match d {
-            Decl::Text(t) if !t.node.exported => Some(t.node.name.as_str()),
+            Decl::Const(t) if !t.node.exported => Some(t.node.name.as_str()),
             Decl::Block(b) => Some(b.node.name.as_str()),
             _ => None,
         })
@@ -93,7 +93,7 @@ pub fn analyze_with_diagnostics(
                 analyze_export_block(spanned, file_label, line_index, bag, &private_names);
             }
             Decl::Block(_) => {}
-            Decl::Text(_) => {}
+            Decl::Const(_) => {}
             Decl::Import(_) => {}
         }
     }
@@ -104,7 +104,7 @@ pub fn analyze_with_diagnostics(
         for decl in &file.decls {
             let (name, span) = match decl {
                 Decl::ExportBlock(b) => (b.node.name.as_str(), b.span),
-                Decl::Text(t) if t.node.exported => (t.node.name.as_str(), t.span),
+                Decl::Const(t) if t.node.exported => (t.node.name.as_str(), t.span),
                 _ => continue,
             };
             if let Some(_prev_span) = seen_exports.get(name) {
@@ -127,7 +127,7 @@ pub fn analyze_with_diagnostics(
     if !has_skill {
         let has_export = file.decls.iter().any(|d| {
             matches!(d, Decl::ExportBlock(_))
-                || matches!(d, Decl::Text(t) if t.node.exported)
+                || matches!(d, Decl::Const(t) if t.node.exported)
         });
         if !has_export {
             let span = crate::span::Span::new(file_id, 0, 0);
@@ -162,12 +162,12 @@ pub fn analyze_with_imports(
     imported_block_descriptions: &HashMap<String, String>,
     enable_effects: bool,
 ) -> SourceFile {
-    // Collect local text declaration names.
+    // Collect local const declaration names.
     let local_text_names: HashSet<&str> = file
         .decls
         .iter()
         .filter_map(|d| match d {
-            Decl::Text(t) => Some(t.node.name.as_str()),
+            Decl::Const(t) => Some(t.node.name.as_str()),
             _ => None,
         })
         .collect();
@@ -210,7 +210,7 @@ pub fn analyze_with_imports(
         .decls
         .iter()
         .filter_map(|d| match d {
-            Decl::Text(t) if !t.node.exported => Some(t.node.name.as_str()),
+            Decl::Const(t) if !t.node.exported => Some(t.node.name.as_str()),
             Decl::Block(b) => Some(b.node.name.as_str()),
             _ => None,
         })
@@ -230,7 +230,7 @@ pub fn analyze_with_imports(
             Decl::ExportBlock(spanned) => {
                 analyze_export_block(spanned, file_label, line_index, bag, &private_names);
             }
-            Decl::Block(_) | Decl::Text(_) | Decl::Import(_) => {}
+            Decl::Block(_) | Decl::Const(_) | Decl::Import(_) => {}
         }
     }
 
@@ -240,7 +240,7 @@ pub fn analyze_with_imports(
         for decl in &file.decls {
             let (name, span) = match decl {
                 Decl::ExportBlock(b) => (b.node.name.as_str(), b.span),
-                Decl::Text(t) if t.node.exported => (t.node.name.as_str(), t.span),
+                Decl::Const(t) if t.node.exported => (t.node.name.as_str(), t.span),
                 _ => continue,
             };
             if let Some(_prev_span) = seen_exports.get(name) {
@@ -263,7 +263,7 @@ pub fn analyze_with_imports(
     if !has_skill {
         let has_export = file.decls.iter().any(|d| {
             matches!(d, Decl::ExportBlock(_))
-                || matches!(d, Decl::Text(t) if t.node.exported)
+                || matches!(d, Decl::Const(t) if t.node.exported)
         });
         if !has_export {
             let span = crate::span::Span::new(file_id, 0, 0);
@@ -417,12 +417,12 @@ fn analyze_skill(
             }
             FlowStmt::BareName(name) => {
                 // A bare name in flow: without a keyword prefix is a compile error.
-                // Per spec: `G::analyze::text-in-flow` (repairable — Repair adds
+                // Per spec: `G::analyze::const-in-flow` (repairable — Repair adds
                 // parens and materializes a `generated block`).
                 let span = spanned.span;
                 bag.push(
                     crate::diagnostic::Diagnostic {
-                        id: "G::analyze::text-in-flow".into(),
+                        id: "G::analyze::const-in-flow".into(),
                         classification: crate::diagnostic::Classification::Repairable,
                         message: format!(
                             "bare name `{}` in `flow:` is not a valid statement; add a keyword prefix (`require`/`avoid`/`must`/`context`) or parentheses for a call",
@@ -481,14 +481,14 @@ fn analyze_skill(
                 }
             }
             FlowStmt::ConstraintMarker(marker) => {
-                // Check that the constraint name resolves to a text declaration.
+                // Check that the constraint name resolves to a const declaration.
                 if !text_names.contains(marker.name.as_str()) {
                     let span = spanned.span;
                     bag.push(
                         Diagnostic::error(
                             "G::analyze::undefined-name",
                             format!(
-                                "`{}` is not a declared `text` in this file",
+                                "`{}` is not a declared `const` in this file",
                                 marker.name
                             ),
                             SourceSpan::from_byte_span(file_label, span, line_index),
@@ -545,7 +545,7 @@ fn analyze_skill(
                 Diagnostic::error(
                     "G::analyze::undefined-name",
                     format!(
-                        "`{}` is not a declared `text` in this file",
+                        "`{}` is not a declared `const` in this file",
                         marker.name
                     ),
                     SourceSpan::from_byte_span(file_label, span, line_index),
@@ -565,7 +565,7 @@ fn analyze_skill(
         check_context_entry_name(entry, text_names, spanned.span, file_label, line_index, bag);
     }
 
-    // Check body-level bare names against text declarations.
+    // Check body-level bare names against const declarations.
     // A bare text name at body level (no keyword prefix) is ambiguous — the
     // compiler doesn't know if the author meant constraint, context, or step.
     for name in &skill.body_bare_names {
@@ -790,7 +790,7 @@ fn check_context_entry_name(
             bag.push(
                 Diagnostic::error(
                     "G::analyze::undefined-name",
-                    format!("`{}` is not a declared `text` in this file", name),
+                    format!("`{}` is not a declared `const` in this file", name),
                     SourceSpan::from_byte_span(file_label, span, line_index),
                 ),
                 span,
@@ -851,11 +851,11 @@ fn check_applies_in_condition(
         let receiver_name = receiver.rsplit(|c: char| !c.is_alphanumeric() && c != '_').next().unwrap_or("");
         if !receiver_name.is_empty() {
             if text_names.contains(receiver_name) {
-                // Receiver is a text declaration — not a block.
+                // Receiver is a const declaration — not a block.
                 bag.push(
                     Diagnostic::error(
                         "G::analyze::applies-on-non-block",
-                        format!("`{}.applies()` — receiver `{}` is a `text` declaration, not a `block`", receiver_name, receiver_name),
+                        format!("`{}.applies()` — receiver `{}` is a `const` declaration, not a `block`", receiver_name, receiver_name),
                         SourceSpan::from_byte_span(file_label, span, line_index),
                     ),
                     span,
@@ -971,7 +971,7 @@ fn check_branch_body_names(
                     bag.push(
                         Diagnostic::error(
                             "G::analyze::undefined-name",
-                            format!("`{}` is not a declared `text` in this file", marker.name),
+                            format!("`{}` is not a declared `const` in this file", marker.name),
                             SourceSpan::from_byte_span(file_label, span, line_index),
                         ),
                         span,

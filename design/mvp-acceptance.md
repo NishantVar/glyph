@@ -320,7 +320,7 @@ Same as the walking skeleton (§1). Tests standalone compilation with no imports
 
 Every diagnostic below is emitted by the deterministic compiler (Phases 1, 2, 4, 5, 7) and must have at least one triggering test.
 
-**Parse phase (17):**
+**Parse phase (20):**
 
 | ID | Classification |
 |----|---------------|
@@ -341,6 +341,9 @@ Every diagnostic below is emitted by the deterministic compiler (Phases 1, 2, 4,
 | `G::parse::multiple-skills` | error |
 | `G::parse::applies-no-parens` | error |
 | `G::parse::applies-with-args` | error |
+| `G::parse::legacy-type-keyword` | error |
+| `G::parse::leading-zero` | error |
+| `G::parse::malformed-float` | error |
 
 **Analyze phase (27):**
 
@@ -429,7 +432,7 @@ Phase 6b structural validation, implemented in `glyph validate-output`. These di
 | `G::expand::procedure-duplicate` | error |
 | `G::expand::procedure-order` | error |
 
-**Total: 77 compiler-scope diagnostic IDs** (17 Parse + 27 Analyze + 1 Imports + 5 Validate + 1 Build + 26 Validate-output).
+**Total: 80 compiler-scope diagnostic IDs** (20 Parse + 27 Analyze + 1 Imports + 5 Validate + 1 Build + 26 Validate-output).
 
 ### 4.2 Agent-scope diagnostics (not in compiler)
 

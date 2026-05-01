@@ -1,4 +1,4 @@
-text some_text = "This is a text declaration, not a block."
+const some_text = "This is a text declaration, not a block."
 
 skill main()
     description: "Main skill."

@@ -99,6 +99,9 @@ Representative diagnostics implied by the current design.
 | `G::parse::multiple-skills` | error | A `.glyph.md` file contains more than one `skill` declaration; MVP requires exactly one skill per file because compiled output is named after the skill (`language-surface.md` §File-Level Rules) |
 | `G::parse::applies-no-parens` | error | `BLOCKNAME.applies` appears without `()`; the trigger predicate form requires explicit parentheses (`ir-and-semantics.md` §Block Trigger Predicate) |
 | `G::parse::applies-with-args` | error | `BLOCKNAME.applies(...)` is called with arguments; the trigger predicate is zero-arity (`ir-and-semantics.md` §Block Trigger Predicate) |
+| `G::parse::legacy-type-keyword` | error | `text`/`int`/`float` (bare or `export`-prefixed) appears in declaration position; the unified `const` keyword replaces all primitive-typed declarations and the compiler infers the value kind from the literal RHS (`language-surface.md`, `values-and-names.md`) |
+| `G::parse::leading-zero` | error | Integer literal has a disallowed leading zero (e.g. `03`); use `0` for zero or drop the leading zero (`values-and-names.md` §Integers) |
+| `G::parse::malformed-float` | error | Float literal is missing digits on one side of the `.` (e.g. `3.` or `.5`); floats require digits on both sides (`values-and-names.md` §Floats) |
 
 ### Analyze phase
 

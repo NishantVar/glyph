@@ -175,7 +175,7 @@ pub fn lower_with_imports(
     // Collect text declarations into a name → value map.
     let mut texts: BTreeMap<String, String> = imported_texts.clone();
     for d in &file.decls {
-        if let Decl::Text(t) = d {
+        if let Decl::Const(t) = d {
             texts.insert(t.node.name.clone(), t.node.value.clone());
         }
     }
@@ -265,7 +265,7 @@ pub fn lower_with_imports(
     // Lower flow → Step nodes. Constraint/context markers at flow top-level
     // are hoisted into the declaration's constraint/context lists (Phase 4 Lower
     // per pipeline.md). BareName flow statements are skipped (they are caught
-    // by Analyze as G::analyze::text-in-flow before reaching Lower).
+    // by Analyze as G::analyze::const-in-flow before reaching Lower).
     let mut step_ids: Vec<NodeId> = Vec::new();
     let mut flow_hoisted_constraint_ids: Vec<NodeId> = Vec::new();
     let mut flow_hoisted_context_ids: Vec<NodeId> = Vec::new();

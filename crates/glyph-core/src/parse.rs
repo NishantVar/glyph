@@ -4,9 +4,9 @@
 //! `update_docs.glyph.md` per `design/mvp-acceptance.md` §1.
 
 use crate::ast::{
-    BlockDecl, ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl, ElifBranch,
-    ExportBlockDecl, FlowStmt, ImportDecl, ImportKind, ImportName, Param, ReturnExpr, Skill,
-    SourceFile, TextDecl,
+    BlockDecl, ConstDecl, ConstKind, ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl,
+    ElifBranch, ExportBlockDecl, FlowStmt, ImportDecl, ImportKind, ImportName, Param, ReturnExpr,
+    Skill, SourceFile,
 };
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::slot::scan_slots;
@@ -143,6 +143,30 @@ pub fn parse_with_diagnostics_opts(
                         "rewrite using a call expression or inline instruction string".into(),
                     ],
                 },
+                span,
+            );
+            return None;
+        }
+        Err(TokenizeError::LeadingZero { byte_offset }) => {
+            let span = Span::new(file_id, byte_offset, byte_offset + 1);
+            bag.push(
+                Diagnostic::error(
+                    "G::parse::leading-zero",
+                    "numeric literal has a leading zero; write `0` for zero or drop the leading zero",
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+            return None;
+        }
+        Err(TokenizeError::BadFloat { byte_offset }) => {
+            let span = Span::new(file_id, byte_offset, byte_offset + 1);
+            bag.push(
+                Diagnostic::error(
+                    "G::parse::malformed-float",
+                    "malformed float literal; a `.` must be followed by at least one digit (e.g., `3.0`)",
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
                 span,
             );
             return None;
@@ -356,9 +380,9 @@ impl<'a> Parser<'a> {
                     let d = self.parse_skill()?;
                     decls.push(Decl::Skill(d));
                 }
-                "text" => {
-                    let d = self.parse_text_decl()?;
-                    decls.push(Decl::Text(d));
+                "const" => {
+                    let d = self.parse_const_decl()?;
+                    decls.push(Decl::Const(d));
                 }
                 "block" => {
                     let d = self.parse_block_decl()?;
@@ -369,7 +393,7 @@ impl<'a> Parser<'a> {
                     decls.push(Decl::Import(d));
                 }
                 "export" => {
-                    // Peek at the word after `export` to decide: `export block` or `export text`.
+                    // Peek at the word after `export` to decide: `export block` or `export const`.
                     let saved = self.pos;
                     self.pos += 1; // skip `export`
                     let next_kw = match &self.peek().kind {
@@ -377,7 +401,7 @@ impl<'a> Parser<'a> {
                         _ => {
                             return Err(ParseError::Unexpected {
                                 span: self.peek().span,
-                                message: "expected `block` or `text` after `export`".into(),
+                                message: "expected `block` or `const` after `export`".into(),
                             });
                         }
                     };
@@ -387,17 +411,59 @@ impl<'a> Parser<'a> {
                             let d = self.parse_export_block()?;
                             decls.push(Decl::ExportBlock(d));
                         }
-                        "text" => {
-                            let d = self.parse_export_text()?;
-                            decls.push(Decl::Text(d));
+                        "const" => {
+                            let d = self.parse_export_const()?;
+                            decls.push(Decl::Const(d));
+                        }
+                        "text" | "int" | "float" => {
+                            // `export text|int|float` — surface the same migration
+                            // diagnostic we produce for the bare legacy form so
+                            // existing library files don't silently lose their hint.
+                            // Span covers the legacy keyword (skip past `export`).
+                            let kw_span = self.tokens[self.pos + 1].span;
+                            let message = format!(
+                                "`export {}` is not a declaration form; use `export const` (the compiler infers the value kind from the literal)",
+                                next_kw
+                            );
+                            self.bag.push(
+                                Diagnostic::error(
+                                    "G::parse::legacy-type-keyword",
+                                    &message,
+                                    SourceSpan::from_byte_span(self.file_label, kw_span, self.line_index),
+                                ),
+                                kw_span,
+                            );
+                            return Err(ParseError::Unexpected {
+                                span: kw_span,
+                                message,
+                            });
                         }
                         _ => {
                             return Err(ParseError::Unexpected {
                                 span: self.peek().span,
-                                message: format!("expected `block` or `text` after `export`, found `{}`", next_kw),
+                                message: format!("expected `block` or `const` after `export`, found `{}`", next_kw),
                             });
                         }
                     }
+                }
+                "text" | "int" | "float" => {
+                    let kw_span = self.peek().span;
+                    let message = format!(
+                        "`{}` is not a declaration keyword; use `const` (the compiler infers the value kind from the literal)",
+                        kw
+                    );
+                    self.bag.push(
+                        Diagnostic::error(
+                            "G::parse::legacy-type-keyword",
+                            &message,
+                            SourceSpan::from_byte_span(self.file_label, kw_span, self.line_index),
+                        ),
+                        kw_span,
+                    );
+                    return Err(ParseError::Unexpected {
+                        span: kw_span,
+                        message,
+                    });
                 }
                 other => {
                     return Err(ParseError::Unexpected {
@@ -541,28 +607,16 @@ impl<'a> Parser<'a> {
         Ok(Spanned::new(ImportDecl { path, kind }, span))
     }
 
-    /// Parse `export text <name> = "<value>"`.
-    fn parse_export_text(&mut self) -> Result<Spanned<TextDecl>, ParseError> {
+    /// Parse `export const <name> = <literal>`.
+    fn parse_export_const(&mut self) -> Result<Spanned<ConstDecl>, ParseError> {
         let (_, kw_span) = self.expect_ident(Some("export"))?;
-        let (_, _) = self.expect_ident(Some("text"))?;
+        let (_, _) = self.expect_ident(Some("const"))?;
         let (name, _) = self.expect_ident(None)?;
         self.expect(&TokenKind::Equals)?;
-        let value = match &self.peek().kind {
-            TokenKind::StringLit(s) => {
-                let v = s.clone();
-                self.pos += 1;
-                v
-            }
-            _ => {
-                return Err(ParseError::Unexpected {
-                    span: self.peek().span,
-                    message: "expected string literal as `export text` value".into(),
-                });
-            }
-        };
+        let (value, kind) = self.expect_const_literal("export const")?;
         let end_span = self.tokens[self.pos - 1].span;
         let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
-        Ok(Spanned::new(TextDecl { name, value, exported: true }, span))
+        Ok(Spanned::new(ConstDecl { name, value, kind, exported: true }, span))
     }
 
     /// Parse `export block <name>(<params>)` header only (slice 4 placeholder).
@@ -592,7 +646,7 @@ impl<'a> Parser<'a> {
             "flow", "return", "description", "effects", "constraints",
             "context", "require", "avoid", "must", "if", "elif", "else",
             "none", "with", "as", "import", "export", "block", "skill",
-            "text", "int", "float",
+            "const",
         ];
         loop {
             match self.current_line_indent() {
@@ -1662,6 +1716,10 @@ impl<'a> Parser<'a> {
                     parts.push("}".into());
                     self.pos += 1;
                 }
+                TokenKind::IntLit(s) | TokenKind::FloatLit(s) => {
+                    parts.push(s.clone());
+                    self.pos += 1;
+                }
             }
         }
         if parts.is_empty() {
@@ -1747,26 +1805,44 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_text_decl(&mut self) -> Result<Spanned<TextDecl>, ParseError> {
-        let (_, kw_span) = self.expect_ident(Some("text"))?;
+    fn parse_const_decl(&mut self) -> Result<Spanned<ConstDecl>, ParseError> {
+        let (_, kw_span) = self.expect_ident(Some("const"))?;
         let (name, _) = self.expect_ident(None)?;
         self.expect(&TokenKind::Equals)?;
-        let value = match &self.peek().kind {
+        let (value, kind) = self.expect_const_literal("const")?;
+        let end_span = self.tokens[self.pos - 1].span;
+        let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
+        Ok(Spanned::new(ConstDecl { name, value, kind, exported: false }, span))
+    }
+
+    /// Consume the literal RHS of a `const` / `export const` declaration and
+    /// classify its inferred kind. Accepts string, integer, and float literals
+    /// per `language-surface.md` §3.4.
+    fn expect_const_literal(&mut self, label: &str) -> Result<(String, ConstKind), ParseError> {
+        match &self.peek().kind {
             TokenKind::StringLit(s) => {
                 let v = s.clone();
                 self.pos += 1;
-                v
+                Ok((v, ConstKind::String))
             }
-            _ => {
-                return Err(ParseError::Unexpected {
-                    span: self.peek().span,
-                    message: "expected string literal as `text` value".into(),
-                });
+            TokenKind::IntLit(s) => {
+                let v = s.clone();
+                self.pos += 1;
+                Ok((v, ConstKind::Int))
             }
-        };
-        let end_span = self.tokens[self.pos - 1].span;
-        let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
-        Ok(Spanned::new(TextDecl { name, value, exported: false }, span))
+            TokenKind::FloatLit(s) => {
+                let v = s.clone();
+                self.pos += 1;
+                Ok((v, ConstKind::Float))
+            }
+            _ => Err(ParseError::Unexpected {
+                span: self.peek().span,
+                message: format!(
+                    "expected string, integer, or float literal as `{}` value",
+                    label
+                ),
+            }),
+        }
     }
 }
 

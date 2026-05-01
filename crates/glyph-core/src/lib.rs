@@ -190,7 +190,7 @@ fn resolve_import_path(importer: &Path, import_path: &str) -> Option<PathBuf> {
 /// Describes what a file exports — used for cross-file name resolution.
 #[derive(Clone, Debug)]
 pub struct ExportedNames {
-    /// Names of exported `text` declarations.
+    /// Names of exported `const` declarations.
     pub texts: HashSet<String>,
     /// Names of exported `block` declarations.
     pub blocks: HashSet<String>,
@@ -210,7 +210,7 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
     };
     for decl in &file.decls {
         match decl {
-            Decl::Text(t) => {
+            Decl::Const(t) => {
                 if t.node.exported {
                     exports.texts.insert(t.node.name.clone());
                 } else {
@@ -1028,7 +1028,7 @@ fn extract_and_store_exports(
     let exports = extract_exports(&parsed);
     // Store text values.
     for decl in &parsed.decls {
-        if let Decl::Text(t) = decl {
+        if let Decl::Const(t) = decl {
             if t.node.exported {
                 file_text_values.insert((file.to_path_buf(), t.node.name.clone()), t.node.value.clone());
             }
@@ -2090,7 +2090,7 @@ skill main()
     fn applies_on_non_block_fires_error() {
         // AC7: applies-on-non-block fires when receiver is a text declaration.
         let src = "\
-text my_text = \"Some text.\"
+const my_text = \"Some text.\"
 
 skill main()
     description: \"Main skill.\"
@@ -2156,7 +2156,7 @@ skill main()
     fn context_in_branch_stays_inline() {
         // AC9: context marker inside a branch body stays inline, does not surface in ### Context.
         let src = "\
-text project_info = \"This is a monorepo project.\"
+const project_info = \"This is a monorepo project.\"
 
 skill main()
     description: \"Main skill.\"
@@ -2195,7 +2195,7 @@ skill main()
     fn constraint_in_branch_stays_inline() {
         // AC9-parallel: constraint marker inside a branch body stays inline.
         let src = "\
-text no_breaking_changes = \"Do not break backwards compatibility.\"
+const no_breaking_changes = \"Do not break backwards compatibility.\"
 
 skill main()
     description: \"Main skill.\"
@@ -2610,7 +2610,7 @@ skill fix_bug()
 
         // prefs.glyph.md — export text
         let prefs_path = dir.path().join("prefs.glyph.md");
-        std::fs::write(&prefs_path, r#"export text preserve_existing_patterns = "Prefer existing patterns."
+        std::fs::write(&prefs_path, r#"export const preserve_existing_patterns = "Prefer existing patterns."
 "#).unwrap();
 
         // repo_tools.glyph.md — export block
@@ -2666,7 +2666,7 @@ skill main()
 
         std::fs::write(&b_path, r#"import "./a.glyph.md" { something }
 
-export text something = "Hello."
+export const something = "Hello."
 "#).unwrap();
 
         let bag = check_file(&a_path);
@@ -2693,8 +2693,8 @@ export text something = "Hello."
         let dir = tempfile::tempdir().unwrap();
 
         let lib_path = dir.path().join("lib.glyph.md");
-        std::fs::write(&lib_path, r#"text private_text = "This is private."
-export text public_text = "This is public."
+        std::fs::write(&lib_path, r#"const private_text = "This is private."
+export const public_text = "This is public."
 "#).unwrap();
 
         let main_path = dir.path().join("main.glyph.md");
@@ -2750,7 +2750,7 @@ skill main()
         let dir = tempfile::tempdir().unwrap();
 
         let lib_path = dir.path().join("lib.glyph.md");
-        std::fs::write(&lib_path, r#"export text greeting = "Hello."
+        std::fs::write(&lib_path, r#"export const greeting = "Hello."
 "#).unwrap();
 
         let main_path = dir.path().join("main.glyph.md");
@@ -2780,8 +2780,8 @@ skill main()
         let dir = tempfile::tempdir().unwrap();
 
         let lib_path = dir.path().join("lib.glyph.md");
-        std::fs::write(&lib_path, r#"export text greeting = "Hello."
-export text farewell = "Goodbye."
+        std::fs::write(&lib_path, r#"export const greeting = "Hello."
+export const farewell = "Goodbye."
 "#).unwrap();
 
         let main_path = dir.path().join("main.glyph.md");
@@ -2840,6 +2840,197 @@ skill main()
         assert!(ids.contains(&"G::parse::tab-indent"), "ids: {:?}", ids);
     }
 
+    #[test]
+    fn check_source_flags_legacy_text_keyword() {
+        let src = "text foo = \"x\"\n";
+        let bag = check_source(src, 0, "legacy.glyph.md");
+        assert_eq!(bag.exit_code(), 1, "expected exit 1 for legacy `text` keyword");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::legacy-type-keyword"),
+            "ids: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn check_source_flags_legacy_int_and_float_keywords() {
+        for kw in ["int", "float"] {
+            let src = format!("{} n = 1\n", kw);
+            let bag = check_source(&src, 0, "legacy.glyph.md");
+            assert_eq!(bag.exit_code(), 1, "expected exit 1 for `{}`", kw);
+            let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+            assert!(
+                ids.contains(&"G::parse::legacy-type-keyword"),
+                "kw={} ids: {:?}",
+                kw,
+                ids
+            );
+        }
+    }
+
+    #[test]
+    fn check_source_flags_leading_zero_in_const_int() {
+        let src = "const x = 03\n";
+        let bag = check_source(src, 0, "lz.glyph.md");
+        assert_eq!(bag.exit_code(), 1, "expected exit 1 for leading-zero literal");
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::parse::leading-zero")
+            .expect("leading-zero diagnostic missing");
+        // The reported column should land on the malformed literal (`03` starts at byte 10),
+        // not at column 1/2 where `const` lives.
+        assert_eq!(
+            diag.span.start.col, 11,
+            "expected caret at column 11 (the `0`), got col={} (line={})",
+            diag.span.start.col, diag.span.start.line
+        );
+    }
+
+    #[test]
+    fn check_source_flags_malformed_float_in_const() {
+        let src = "const y = 3.\n";
+        let bag = check_source(src, 0, "bf.glyph.md");
+        assert_eq!(bag.exit_code(), 1, "expected exit 1 for malformed float");
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::parse::malformed-float")
+            .expect("malformed-float diagnostic missing");
+        // `3.` — the `.` lives at byte 12 (1-indexed col 12).
+        assert_eq!(
+            diag.span.start.col, 12,
+            "expected caret at column 12 (the `.`), got col={}",
+            diag.span.start.col
+        );
+    }
+
+    #[test]
+    fn check_source_flags_leading_dot_float_as_malformed() {
+        // `.5` is not a valid float (no integer part). Per
+        // `values-and-names.md` this should surface as `G::parse::malformed-float`,
+        // not silently tokenize as `Dot` + `IntLit("5")`.
+        let src = "const z = .5\n";
+        let bag = check_source(src, 0, "leading_dot.glyph.md");
+        assert_eq!(bag.exit_code(), 1, "expected exit 1 for leading-dot float");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::malformed-float"),
+            "ids: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn check_source_flags_legacy_export_text_keyword() {
+        let src = "export text foo = \"x\"\n";
+        let bag = check_source(src, 0, "legacy_export.glyph.md");
+        assert_eq!(bag.exit_code(), 1, "expected exit 1 for `export text`");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::legacy-type-keyword"),
+            "ids: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn compile_source_compiles_skill_with_numeric_consts() {
+        // Happy-path coverage: tokenize → parse → lower → emit must all succeed
+        // when a skill is paired with private numeric `const` declarations.
+        // This is the only end-to-end test that exercises an `IntLit`/`FloatLit`
+        // surviving past the parser into the lower/emit phases.
+        let src = "\
+skill demo()
+    description: \"Demo skill for numeric consts.\"
+
+    flow:
+        \"Greet the user.\"
+
+const max_attempts = 3
+const threshold = 0.8
+";
+        let outcome = compile_source(src, 0, "numeric.glyph.md")
+            .expect("compile_source must not error on numeric consts");
+        match outcome {
+            CompileOutcome::Compiled { markdown, .. } => {
+                assert!(
+                    markdown.contains("Greet the user."),
+                    "expected emitted markdown to contain skill flow text:\n{}",
+                    markdown
+                );
+            }
+            CompileOutcome::Diagnostics(bag) => {
+                let ids: Vec<&str> =
+                    bag.iter().map(|d| d.id.as_str()).collect();
+                panic!(
+                    "expected compiled output for numeric-const skill, got diagnostics: {:?}",
+                    ids
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn check_source_flags_subtraction_in_branch_condition() {
+        // `retries-1 == 0` must NOT be silently tokenized as `Ident("retries")`
+        // + `IntLit("-1")`. Glyph has no value-level subtraction operator, so
+        // this should surface as `G::parse::operator-in-expression`.
+        let src = "\
+skill demo()
+    description: \"Demo.\"
+
+    flow:
+        if retries-1 == 0
+            \"retry\"
+        else
+            \"stop\"
+";
+        let bag = check_source(src, 0, "sub.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::operator-in-expression"),
+            "expected operator-in-expression diagnostic for `retries-1`; ids: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn check_source_accepts_negative_literal_in_const() {
+        // Negative literals at the start of an expression remain valid:
+        // the disambiguator only suppresses leading-`-` numeric scanning when
+        // the previous token can be a binary LHS. (Use `export const` so the
+        // file passes the library-must-have-exports check; the assertion here
+        // is specifically that no parse-phase diagnostic fires for `-5`.)
+        let src = "export const offset = -5\n";
+        let bag = check_source(src, 0, "neg.glyph.md");
+        let parse_diags: Vec<&str> = bag
+            .iter()
+            .filter(|d| d.id.starts_with("G::parse::"))
+            .map(|d| d.id.as_str())
+            .collect();
+        assert!(
+            parse_diags.is_empty(),
+            "expected no parse-phase diagnostics for legit negative literal; got: {:?}",
+            parse_diags
+        );
+    }
+
+    #[test]
+    fn check_source_flags_legacy_export_int_and_float_keywords() {
+        for kw in ["int", "float"] {
+            let src = format!("export {} n = 1\n", kw);
+            let bag = check_source(&src, 0, "legacy_export.glyph.md");
+            assert_eq!(bag.exit_code(), 1, "expected exit 1 for `export {}`", kw);
+            let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+            assert!(
+                ids.contains(&"G::parse::legacy-type-keyword"),
+                "kw=export {} ids: {:?}",
+                kw,
+                ids
+            );
+        }
+    }
+
     // --- Slice 12: Multi-file build orchestration tests ---
 
     #[test]
@@ -2895,9 +3086,9 @@ skill gamma()
         // list is reversed.
         let dir = tempfile::tempdir().unwrap();
 
-        // lib.glyph.md — standalone (no skill, just an export text — library)
+        // lib.glyph.md — standalone (no skill, just an export const — library)
         std::fs::write(dir.path().join("lib.glyph.md"), "\
-export text greeting = \"Hello from lib.\"
+export const greeting = \"Hello from lib.\"
 ").unwrap();
 
         // consumer.glyph.md — imports from lib but is self-contained for compile
@@ -3067,7 +3258,7 @@ this is broken!!!
     fn ac4_library_with_zero_exports_fires_no_exports_in_library() {
         // A file with zero skills AND zero exports is an error.
         let src = "\
-text private_text = \"This is private.\"
+const private_text = \"This is private.\"
 block helper()
     \"Do something.\"
 ";
@@ -3083,14 +3274,14 @@ block helper()
 
     #[test]
     fn ac1_export_text_only_library_compiles_exit_zero() {
-        // A library file with only export text declarations should compile
+        // A library file with only export const declarations should compile
         // successfully (exit 0) and produce zero .md output.
         let dir = tempfile::tempdir().unwrap();
 
         let prefs_path = dir.path().join("prefs.glyph.md");
         std::fs::write(&prefs_path, "\
-export text terminal_mux = \"tmux\"
-export text validation_strictness = \"high\"
+export const terminal_mux = \"tmux\"
+export const validation_strictness = \"high\"
 ").unwrap();
 
         let sources: Vec<PathBuf> = vec![prefs_path];
@@ -3109,8 +3300,8 @@ export text validation_strictness = \"high\"
         // check_source on a library file with exports should produce zero
         // errors (no no-exports-in-library, no other issues).
         let src = "\
-export text terminal_mux = \"tmux\"
-export text validation_strictness = \"high\"
+export const terminal_mux = \"tmux\"
+export const validation_strictness = \"high\"
 ";
         let bag = check_source(src, 0, "prefs.glyph.md");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
@@ -3150,7 +3341,7 @@ export block shared_util(x = \"default\")
         // Export block referencing its own params and exported text should
         // NOT fire closure-violation.
         let src = "\
-export text greeting = \"Hello.\"
+export const greeting = \"Hello.\"
 
 export block shared_util(x = \"default\")
     flow:
@@ -3170,8 +3361,8 @@ export block shared_util(x = \"default\")
     fn name_collision_fires_for_duplicate_export_names() {
         // Two exports sharing the same name should fire G::analyze::name-collision.
         let src = "\
-export text greeting = \"Hello.\"
-export text greeting = \"Hi.\"
+export const greeting = \"Hello.\"
+export const greeting = \"Hi.\"
 ";
         let bag = check_source(src, 0, "lib.glyph.md");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
@@ -3187,9 +3378,9 @@ export text greeting = \"Hi.\"
     fn ac5_exports_visited_in_source_order() {
         // Exports should be extracted in source order for deterministic output.
         let src = "\
-export text zebra = \"Z.\"
-export text alpha = \"A.\"
-export text middle = \"M.\"
+export const zebra = \"Z.\"
+export const alpha = \"A.\"
+export const middle = \"M.\"
 ";
         let (file, _) = parse::parse(src, 0).expect("should parse");
         let exports = extract_exports(&file);
@@ -3201,7 +3392,7 @@ export text middle = \"M.\"
 
         // Verify source-order by walking decls directly.
         let names: Vec<&str> = file.decls.iter().filter_map(|d| match d {
-            ast::Decl::Text(t) if t.node.exported => Some(t.node.name.as_str()),
+            ast::Decl::Const(t) if t.node.exported => Some(t.node.name.as_str()),
             _ => None,
         }).collect();
         assert_eq!(names, vec!["zebra", "alpha", "middle"],

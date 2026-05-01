@@ -20,8 +20,8 @@ fn ac1_export_text_only_library_cli() {
     let dir = tempfile::tempdir().unwrap();
 
     std::fs::write(dir.path().join("prefs.glyph.md"), "\
-export text terminal_mux = \"tmux\"
-export text validation_strictness = \"high\"
+export const terminal_mux = \"tmux\"
+export const validation_strictness = \"high\"
 ").unwrap();
 
     let output = Command::new(glyph_bin())
@@ -49,7 +49,7 @@ fn ac4_no_exports_in_library_cli() {
     let dir = tempfile::tempdir().unwrap();
 
     std::fs::write(dir.path().join("empty_lib.glyph.md"), "\
-text private_only = \"This is private.\"
+const private_only = \"This is private.\"
 ").unwrap();
 
     let output = Command::new(glyph_bin())

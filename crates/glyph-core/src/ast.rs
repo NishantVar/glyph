@@ -14,7 +14,10 @@ pub struct SourceFile {
 #[derive(Clone, Debug)]
 pub enum Decl {
     Skill(Spanned<Skill>),
-    Text(Spanned<TextDecl>),
+    /// `const <name> = <literal>` / `export const <name> = <literal>`.
+    /// Replaces the earlier `text`/`int`/`float` declaration keywords —
+    /// the compiler infers the value kind (string/int/float) from the literal.
+    Const(Spanned<ConstDecl>),
     /// Minimal `export block` placeholder — slice 4 only needs to identify the
     /// declaration shape and its parameter list so it can validate
     /// `G::analyze::missing-param-default`. Body content (flow, return,
@@ -76,7 +79,7 @@ pub struct Skill {
     pub flow_present: bool,
     /// Bare names at body level (indent 1) that don't match any recognized
     /// keyword. Used by analyze to fire `G::analyze::ambiguous-role` when
-    /// the name resolves to a `text` declaration.
+    /// the name resolves to a `const` declaration.
     pub body_bare_names: Vec<String>,
 }
 
@@ -152,7 +155,7 @@ pub enum FlowStmt {
     /// A `context` marker inside `flow:` (e.g., `context project_conventions`).
     ContextMarker(ContextEntry),
     /// A bare name in `flow:` that is not preceded by a keyword prefix.
-    /// Detected during analyze as `G::analyze::text-in-flow`.
+    /// Detected during analyze as `G::analyze::const-in-flow`.
     BareName(String),
     /// A call expression: `name()` or `name(arg1, arg2)`, with optional
     /// `with "modifier"` site modifier.
@@ -189,7 +192,7 @@ pub enum ReturnExpr {
 }
 
 /// An entry inside the `context:` sub-section or a body-level `context` marker.
-/// Can be a bare-name reference to a `text` declaration or an inline string.
+/// Can be a bare-name reference to a `const` declaration or an inline string.
 #[derive(Clone, Debug)]
 pub enum ContextEntry {
     /// Bare name reference (e.g., `project_conventions`).
@@ -212,9 +215,33 @@ pub struct BlockDecl {
 }
 
 #[derive(Clone, Debug)]
-pub struct TextDecl {
+pub struct ConstDecl {
     pub name: String,
+    /// Canonical string representation of the literal RHS. For string literals
+    /// this is the unquoted content; for int/float literals it is the literal
+    /// as it appeared in source (e.g. `"3"`, `"-1"`, `"0.8"`). Downstream
+    /// consumers that resolve `const` names into compiled-output text use this
+    /// field directly.
     pub value: String,
-    /// Whether this text was declared with `export`.
+    /// Inferred value kind per `language-surface.md` §3.4 (compiler infers
+    /// from the literal on the RHS).
+    pub kind: ConstKind,
+    /// Whether this `const` was declared with `export`.
     pub exported: bool,
+}
+
+/// Inferred value kind of a `const` declaration's RHS literal.
+///
+/// Captured at parse time for every `const` declaration. Currently only the
+/// raw `value` text is consumed by `lower.rs` (which threads the literal
+/// straight into compiled output); `kind` is **reserved** for a future
+/// type-check phase that will compare against domain-type annotations
+/// (`types.md`). Until that phase lands, `String` / `Int` / `Float` flow
+/// through identically, but the discrimination is captured here so the
+/// later phase can use it without re-tokenising.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConstKind {
+    String,
+    Int,
+    Float,
 }
