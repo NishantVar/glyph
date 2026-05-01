@@ -1,0 +1,41 @@
+================================================================================
+Skill with multiple parameters and string interpolation
+================================================================================
+
+skill summarize_dir(scope = ".", target)
+    description: "Summarize a directory's contents."
+    flow:
+        "Inspect files under {scope}."
+        "Write the summary to {target}."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        default: (string_literal
+          (string_content)))
+      (parameter
+        name: (identifier)))
+    (declaration_body
+      (description_section
+        content: (string_literal
+          (string_content)))
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content)
+              (interpolation
+                (identifier))
+              (string_content))))
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content)
+              (interpolation
+                (identifier))
+              (string_content))))))))

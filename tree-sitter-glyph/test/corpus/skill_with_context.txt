@@ -1,0 +1,51 @@
+================================================================================
+Skill with context section
+================================================================================
+
+skill fix_bug(scope = ".")
+    description: "Debug and fix a bug in the codebase."
+    context:
+        project_layout
+        "The bug is assumed to be reproducible locally."
+    flow:
+        "Inspect the failure in the codebase."
+        "Identify the root cause."
+        "Apply a minimal fix."
+
+text project_layout = "This codebase uses a monorepo layout with per-crate Cargo.toml files."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        default: (string_literal
+          (string_content))))
+    (declaration_body
+      (description_section
+        content: (string_literal
+          (string_content)))
+      (context_section
+        (identifier)
+        (string_literal
+          (string_content)))
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content)))))))
+  (text_declaration
+    name: (identifier)
+    (string_literal
+      (string_content))))

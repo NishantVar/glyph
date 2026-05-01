@@ -1,0 +1,49 @@
+================================================================================
+Skill with context markers inside flow
+================================================================================
+
+skill deploy_app()
+    description: "Deploy an application."
+    flow:
+        context deployment_rules
+        context "This is a production deployment."
+        "Build the application."
+        "Run tests."
+        "Deploy to production."
+
+text deployment_rules = "Follow the deployment checklist before deploying."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (description_section
+        content: (string_literal
+          (string_content)))
+      (flow_section
+        (flow_statement
+          (context_marker
+            (identifier)))
+        (flow_statement
+          (context_marker
+            (string_literal
+              (string_content))))
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content)))))))
+  (text_declaration
+    name: (identifier)
+    (string_literal
+      (string_content))))
