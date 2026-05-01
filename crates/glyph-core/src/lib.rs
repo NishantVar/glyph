@@ -146,12 +146,16 @@ pub fn check_source_with_effects(source: &str, file_id: u32, file_label: &str, e
 /// either the compiled output or a `DiagBag`; the CLI is responsible for
 /// rendering and exit-code mapping.
 pub fn compile_file(path: &Path) -> Result<CompileOutcome, CompileError> {
+    compile_file_with_effects(path, false)
+}
+
+pub fn compile_file_with_effects(path: &Path, enable_effects: bool) -> Result<CompileOutcome, CompileError> {
     let source = std::fs::read_to_string(path).map_err(|e| CompileError::Read {
         path: path.display().to_string(),
         source: e,
     })?;
     let label = path.display().to_string();
-    let outcome = compile_source(&source, 0, &label)?;
+    let outcome = compile_source_with_effects(&source, 0, &label, enable_effects)?;
     if let CompileOutcome::Compiled { ref markdown, ref arena, .. } = outcome {
         let out_path = compiled_output_path(path);
         let _ = arena; // arena available for --emit-ir; unused in compile_file
@@ -1051,7 +1055,7 @@ fn compile_file_with_resolved_imports(
     enable_effects: bool,
 ) -> Result<CompileOutcome, CompileError> {
     if imported_procedure_paths.is_empty() && resolved_imports.text_names.is_empty() && resolved_imports.block_names.is_empty() {
-        return compile_file(path);
+        return compile_file_with_effects(path, enable_effects);
     }
 
     let source = std::fs::read_to_string(path).map_err(|e| CompileError::Read {
