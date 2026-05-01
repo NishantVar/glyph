@@ -4,7 +4,6 @@ import "./repo_tools.glyph.md" { inspect_repo }
 skill fix_bug(scope = ".")
     description: "Fix a bug in the codebase."
     require preserve_existing_patterns
-    effects: reads_files
     flow:
         ctx = inspect_repo(scope)
         return ctx

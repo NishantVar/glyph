@@ -5,7 +5,6 @@ expression: md
 ---
 name: review_pr
 description: Review a pull request for correctness, style, and safety.
-effects: [reads_files, runs_commands]
 ---
 
 ## Parameters

@@ -30,7 +30,7 @@ Every source form maps to exactly one compiled location. This is the authoritati
 |-------------|-------------------|
 | `skill <name>` | Frontmatter `name` |
 | `description:` | Frontmatter `description` |
-| `effects:` (declared or inferred) | Frontmatter `effects` (YAML list) |
+| `effects:` (declared or inferred) | Frontmatter `effects` (YAML list) — *gated, requires `--enable-effects`; field absent when gate is off* |
 | `flow:` steps (non-`return`) | `### Steps` under `## Instructions` |
 | `return <expr>` in flow | Closing sentence of the final `### Steps` item |
 | `constraints:` content + body-level markers | `### Constraints` under `## Instructions` |
@@ -41,19 +41,19 @@ Constraint strength (`soft`/`hard`) and polarity (`require`/`avoid`) affect comp
 
 ## Frontmatter
 
-Every compiled file starts with YAML frontmatter. Three fields in MVP:
+Every compiled file starts with YAML frontmatter. Two fields in MVP (three when `--enable-effects` is passed):
 
 ```yaml
 ---
 name: <skill-name>
 description: <when this skill should be used>
-effects: [<effect-keyword>, <effect-keyword>, ...]
+# effects: [<effect-keyword>, ...]   ← only when --enable-effects
 ---
 ```
 
 - `name` — the skill identifier, taken from the `skill` declaration name. Machine-readable, used for skill selection and referencing.
 - `description` — a concise statement of when and why an agent should use this skill. Primary trigger for coding agents that select skills from frontmatter. Sourced from the `description:` sub-section (see [ir-and-semantics.md](ir-and-semantics.md)). If the source omits `description:`, Repair (Phase 3) generates one from the skill name and body and adds it to the source as a `description:` sub-section.
-- `effects` — YAML flow-sequence list of the skill's full inferred effect set. **Omitted unconditionally when the effect set is empty** — that is, when the skill has no meaningful effects or is explicitly `effects: none`. The compiler never emits `effects: none`, `effects: []`, or any other "no effects" placeholder; the field is simply absent. An absent `effects` key and `effects: none` are operationally identical for the consuming agent, and omitting is one fewer surface and one fewer ambiguity. Effects live in frontmatter so selectors and routing tools can read them without parsing the body; they are not repeated in the prose.
+- `effects` — *(Gated — requires `--enable-effects`; field omitted entirely when the gate is off.)* YAML flow-sequence list of the skill's full inferred effect set. **Omitted unconditionally when the effect set is empty** — that is, when the skill has no meaningful effects or is explicitly `effects: none`. The compiler never emits `effects: none`, `effects: []`, or any other "no effects" placeholder; the field is simply absent. An absent `effects` key and `effects: none` are operationally identical for the consuming agent, and omitting is one fewer surface and one fewer ambiguity. Effects live in frontmatter so selectors and routing tools can read them without parsing the body; they are not repeated in the prose.
 
 The compiled file does not emit a `# <Skill Name>` heading. The frontmatter `name` is the authoritative title.
 
@@ -119,7 +119,7 @@ Compiled output projects from the typed IR role model defined in [ir-and-semanti
 |--------------------|-----------------|--------|
 | Skill name | Frontmatter `name` | String |
 | Skill description | Frontmatter `description` | String |
-| Effect set | Frontmatter `effects` | YAML list; field omitted if effect set is empty or `none` |
+| Effect set | Frontmatter `effects` | YAML list; field omitted if effect set is empty or `none`. *Gated — requires `--enable-effects`; omitted entirely when gate is off.* |
 | `Context` | `### Context` | Bulleted list, passive informational text — no strength/polarity wording |
 | `Step` | `### Steps` | Numbered list, one concrete instruction per item |
 | `Constraint` | `### Constraints` | Bulleted list, wording shaped by constraint keyword (`require`/`avoid`/`must`/`must avoid`) |

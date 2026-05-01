@@ -9,8 +9,6 @@ skill fix_bug(scope = ".")
         codebase_assumptions
         "The bug is assumed to be reproducible locally."
 
-    effects: reads_files, writes_files, runs_commands
-
     flow:
         inspect_repo(scope) with "focus on the area where the bug was reported"
         if deep_investigation.applies()
