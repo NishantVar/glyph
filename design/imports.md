@@ -29,14 +29,10 @@ Only explicitly exported declarations are importable (foundations: only exports 
 | Declaration | Importable? | Access via |
 |---|---|---|
 | `export block` | Yes | Selective import or `M.name` call |
-| `export text` | Yes | Selective import or `M.name` reference |
-| `export int` | Yes | Selective import or `M.name` reference |
-| `export float` | Yes | Selective import or `M.name` reference |
+| `export const` | Yes | Selective import or `M.name` reference |
 | `block` | No -- private | Compile error if named in a selective import |
-| `text` | No -- private | Compile error if named in a selective import |
-| `int` | No -- private | Compile error if named in a selective import |
-| `float` | No -- private | Compile error if named in a selective import |
-| `generated text` | No -- private | Compile error if named in a selective import |
+| `const` | No -- private | Compile error if named in a selective import |
+| `generated const` | No -- private | Compile error if named in a selective import |
 | `skill` | Special | Accessible only via `M.skill_name` on whole-module imports |
 
 ### Skill Accessibility
@@ -45,7 +41,7 @@ The `skill` entrypoint of an imported module is accessible through whole-module 
 
 ### Private Declarations
 
-Attempting to selectively import a private `block` or `text` is a compile error. The diagnostic names the declaration and notes that it is not exported.
+Attempting to selectively import a private `block` or `const` is a compile error. The diagnostic names the declaration and notes that it is not exported.
 
 ### Library Files As Import Targets
 
@@ -55,7 +51,7 @@ Library files must have at least one `export` declaration (`G::analyze::no-expor
 
 ## 3. Name Collision Rules
 
-Imported names participate in the universal no-shadowing rule defined in `values-and-names.md`. That rule is the single authoritative source for collision semantics across all name sources (locals, parameters, text declarations, imports). Key import-specific points:
+Imported names participate in the universal no-shadowing rule defined in `values-and-names.md`. That rule is the single authoritative source for collision semantics across all name sources (locals, parameters, const declarations, imports). Key import-specific points:
 
 **Selective imports.** Each imported name (or its `as` alias) enters the importing file's flat namespace. If it collides with any other visible name after case normalization, the compiler emits a collision error. The fix is to alias on the import side or rename the local declaration.
 

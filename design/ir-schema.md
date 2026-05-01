@@ -101,7 +101,7 @@ InlineInstruction {
 ```
 InstructionRef {
   name:              String                // resolved name
-  resolved_text:     String                // content of the referenced text/generated text
+  resolved_text:     String                // content of the referenced const/generated const
   role:              Role
   constraint_attrs:  ConstraintAttrs?      // present only when role is Constraint
 }
@@ -236,7 +236,7 @@ Lower assigns IDs in **pre-order source traversal**: container nodes (`Skill`, `
 
 ### Scope
 
-IDs are **per-file**. Each file's counter starts at `n0`. No global uniqueness across a project. Cross-file node references do not arise in the MVP pipeline — importers interact with the dependency's validated declarative contract (parameters, types, effects), not with individual IR node IDs. `InstructionRef` nodes that reference a `text` declaration in another file use the declaration's **name**, not a remote node ID — the reference is resolved by name during Analyze, and the resolved content is inlined by Expand Step 1.
+IDs are **per-file**. Each file's counter starts at `n0`. No global uniqueness across a project. Cross-file node references do not arise in the MVP pipeline — importers interact with the dependency's validated declarative contract (parameters, types, effects), not with individual IR node IDs. `InstructionRef` nodes that reference a `const` declaration in another file use the declaration's **name**, not a remote node ID — the reference is resolved by name during Analyze, and the resolved content is inlined by Expand Step 1.
 
 If a future multi-file IR view requires cross-file addressing, the scheme is `(file_path, node_id)`.
 

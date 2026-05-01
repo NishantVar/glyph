@@ -70,7 +70,7 @@ Emitted when the skill declares one or more parameters. Omitted for parameterles
 A skill parameter is rendered in one of two forms:
 
 - **Optional parameter (has a default):** `(default: <value>)` trailer.
-- **Required parameter (no default):** `(required)` trailer. The consuming LLM must extract this value from the user's request context; there is no fallback. See [language-surface.md](language-surface.md) §3.10.
+- **Required parameter (no default):** `(required)` trailer. The consuming LLM must extract this value from the user's request context; there is no fallback. See [language-surface.md](language-surface.md) §3.8.
 
 ```md
 ## Parameters
@@ -319,8 +319,8 @@ There is no separate `## Output` section in MVP.
 Most authoring machinery does not survive into compiled output:
 
 - **Imports** resolve and either inline (Tier 1/2) or become file-path references (Tier 3). No import paths, module references, or `@glyph/` namespaces appear — only procedure-file paths for Tier 3 projections.
-- **Text references** resolve and inline. A bare name like `preserve_existing_patterns` becomes its full text content.
-- **Generated text / generated block** declarations resolve and inline. The `generated` marker is stripped; only the expanded content appears.
+- **Const references** resolve and inline. A bare name like `preserve_existing_patterns` becomes its full string content.
+- **Generated const / generated block** declarations resolve and inline. The `generated` marker is stripped; only the expanded content appears.
 - **`with` modifiers** are consumed by the expand pass. Their prompt text shapes the Step wording but does not appear in the compiled file.
 - **Parameters** resolve to concrete values during expand. No variable names survive.
 - **No provenance markers.** No comments like `<!-- expanded from repo_tools.unrelated_edits -->`.
@@ -376,8 +376,8 @@ skill fix_bug(scope = ".")
         validate_before_success()
         return summarize_changes()
 
-generated text unrelated_edits = "Making changes outside the requested scope."
-generated text preserve_existing_patterns = "Follow the repository's existing patterns before introducing new abstractions."
+generated const unrelated_edits = "Making changes outside the requested scope."
+generated const preserve_existing_patterns = "Follow the repository's existing patterns before introducing new abstractions."
 
 generated block validate_before_success()
     "Validate that the fix works before reporting success."

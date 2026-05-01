@@ -11,11 +11,11 @@ This folder is the working source of truth for Glyph system design. The reposito
 - [primitives.md](primitives.md) — five semantic primitives that all Glyph source forms decompose into: instruction, constraint, context, interface, and binding
 
 ### Language
-- [language-surface.md](language-surface.md) — source syntax: declarations (`skill`, `block`, `export block`, `text`, `int`, `float`, `import` and their `export`/`generated` variants), header grammar, indentation, sub-section syntax, authoring model, source-to-IR pipeline
+- [language-surface.md](language-surface.md) — source syntax: declarations (`skill`, `block`, `export block`, `const`, `import` and their `export`/`generated` variants), header grammar, indentation, sub-section syntax, authoring model, source-to-IR pipeline
 - [values-and-names.md](values-and-names.md) — primitive values, identifiers, reserved keywords, name resolution, no-shadowing rule
 - [data-flow.md](data-flow.md) — parameters, bindings, calls, arguments, control flow (`if`/`elif`/`else`), return semantics, closure and scope
-- [types.md](types.md) — semantic type labels, primitives (`String`, `Int`, `Float`, `Bool`, `None`), named domain types, nominal matching
-- [preferences.md](preferences.md) — preferences as ordinary exported constants (`export text`/`export int`/`export float`), no `pref(...)` call, no special effect, compile-time resolution
+- [types.md](types.md) — semantic domain types (no author-facing primitives), implicit type declaration, nominal matching
+- [preferences.md](preferences.md) — preferences as ordinary exported constants (`export const`), no `pref(...)` call, no special effect, compile-time resolution
 
 ### IR and Semantics
 - [ir-and-semantics.md](ir-and-semantics.md) — IR roles (`InputContract`, `Step`, `Constraint`, `Context`, `OutputContract`), constraint keywords (`require`/`avoid`/`must`, 4-form model with `soft`/`hard` strength), `context` marker, effects (9 keywords, propagation, validation), section vocabulary
@@ -31,7 +31,7 @@ This folder is the working source of truth for Glyph system design. The reposito
 ### Compilation
 - [pipeline.md](pipeline.md) — **canonical compiler pipeline**: 7 phases (Parse, Analyze, Repair, Lower, Validate, Expand, Emit), Safety Sandwich, multi-file order, cacheability
 - [diagnostics.md](diagnostics.md) — structured diagnostic shape, classification tiers (`error`/`repairable`/`warning`), ID scheme, representative catalog
-- [repair.md](repair.md) — LLM repair pass, generated definitions (text and block), comment syntax, intent potency, idempotence
+- [repair.md](repair.md) — LLM repair pass, generated definitions (const and block), comment syntax, intent potency, idempotence
 - [expand.md](expand.md) — Expand pass Step 2 (LLM reshaping) and Phase 6b validation gate: input schema, output contract, role-preservation check, retry / deterministic-fallback / hard-fail policy, non-idempotence
 - [compiled-output.md](compiled-output.md) — compiled Markdown shape: YAML frontmatter, `## Parameters` (conditional), `## Instructions` (`### Context` + `### Steps` + `### Constraints`), parameterless compilation model
 

@@ -25,7 +25,7 @@ Source-level parameters may be duck-typed. The IR resolves each parameter to an 
 
 ## Global Preferences
 
-Skills may depend on user or project preferences such as terminal multiplexer, communication style, validation strictness, preferred tools, or project conventions. In Glyph, these are ordinary `export text`, `export int`, or `export float` declarations in a preferences file, imported like any other name.
+Skills may depend on user or project preferences such as terminal multiplexer, communication style, validation strictness, preferred tools, or project conventions. In Glyph, these are ordinary `export const` declarations in a preferences file, imported like any other name.
 
 ```glyph
 import "./prefs.glyph.md" { terminal_mux, validation_strictness }
@@ -176,7 +176,7 @@ A zero-argument call uses empty parentheses to distinguish it from a bare name r
 
 ```glyph
 summarize()                    // zero-argument call
-summarize                      // bare name reference (text, parameter, binding)
+summarize                      // bare name reference (const, parameter, binding)
 ```
 
 See `values-and-names.md` for the full name resolution rules, reserved keywords, and identifier conventions.
@@ -401,7 +401,7 @@ Rules:
 - `return <expr>` where `<expr>` is a call, binding reference, dot access, literal, or `none`.
 - `return` alone (no expression) is equivalent to `return none`.
 - **Single, terminal-only.** Exactly **one** `return` statement per `skill`, `block`, or `export block`, and it must appear as the **last statement at the top level of `flow:`**. `return` is **not** allowed inside `if`/`elif`/`else` branch bodies (no early return). Multiple `return` statements in a single `flow:` are a parse error.
-- **Implicit vs. explicit:** If `return` is omitted, the body implicitly returns `none`. This applies to `skill` and private `block` declarations. **`export block` requires an explicit `return`** (even `return none`) because its output is a public contract visible to importers (see `language-surface.md` §3.3). The compiler inserts an implicit `Return { value: none }` during Lower only for `skill` and `block` — omitting `return` in an `export block` is a repairable diagnostic (`G::analyze::missing-return`). There is no per-path return-coverage analysis, because `return` is forbidden in branches and only appears once at the end of `flow:` (or not at all).
+- **Implicit vs. explicit:** If `return` is omitted, the body implicitly returns `none`. This applies to `skill` and private `block` declarations. **`export block` requires an explicit `return`** (even `return none`) because its output is a public contract visible to importers (see `language-surface.md` §3.3). Export blocks with a meaningful return must also declare `-> DomainType` on the header; export blocks with no meaningful return omit `->` entirely. The compiler inserts an implicit `Return { value: none }` during Lower only for `skill` and `block` — omitting `return` in an `export block` is a repairable diagnostic (`G::analyze::missing-return`). There is no per-path return-coverage analysis, because `return` is forbidden in branches and only appears once at the end of `flow:` (or not at all).
 
 Parse-level diagnostics enforcing this rule:
 
@@ -431,7 +431,7 @@ A closed exported block may depend on:
 
 - its parameters;
 - local bindings declared inside the block;
-- same-file `text` declarations;
+- same-file `const` declarations;
 - explicit imports;
 - standard primitives or standard-library entries;
 - declared constraints, outputs, and effects.

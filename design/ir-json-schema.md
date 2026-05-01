@@ -206,8 +206,8 @@ Here `{scope}` is a parameter slot (not in `local_refs`) and `{diagnosis}` is a 
 |---|---|---|---|
 | `node_id` | string | yes | |
 | `kind` | string | yes | Always `"instruction_ref"`. |
-| `name` | string | yes | Resolved name of the referenced text declaration. |
-| `resolved_text` | string | yes | Content of the referenced `text`/`generated text`. |
+| `name` | string | yes | Resolved name of the referenced const declaration. |
+| `resolved_text` | string | yes | Content of the referenced `const`/`generated const`. |
 | `role` | string | yes | Role enum value. |
 | `constraint_attrs` | object or null | yes | Present only when `role` is `"constraint"`. Shape: `{"strength": "...", "polarity": "..."}`. |
 

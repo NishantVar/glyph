@@ -6,15 +6,15 @@ This document is the single authoritative reference for Glyph source syntax: dec
 
 A `.glyph.md` file is a Glyph source module. It is either a **skill file** (contains exactly one `skill` declaration, compiles to a same-basename `.md`) or a **library file** (contains zero `skill` declarations, may emit standalone procedure `.md` files for qualifying `export block` declarations — see §File-Level Rules). The entire file is Glyph source; there is no Markdown passthrough. Markdown structure lives in the compiled output, not in the source.
 
-A skill file contains one `skill` declaration plus supporting imports, value-binding declarations (`text`, `int`, `float`), blocks, and exported blocks. A library file contains only imports, value-binding declarations, and blocks (some exported) — no skill. Both file types compile through the same 7-phase pipeline. The MVP base declaration kinds are `skill`, `block`, `text`, `int`, and `float`, with `export` as visibility modifier on value-binding and block kinds, and `generated` as repair-authorship modifier on both `text` and `block`.
+A skill file contains one `skill` declaration plus supporting imports, value-binding declarations (`const`), blocks, and exported blocks. A library file contains only imports, value-binding declarations, and blocks (some exported) — no skill. Both file types compile through the same 7-phase pipeline. The MVP base declaration kinds are `skill`, `block`, and `const`, with `export` as visibility modifier on value-binding and block kinds, and `generated` as repair-authorship modifier on both `const` and `block`.
 
-The conceptual distinction between `text` and `block` is deliberate and load-bearing:
+The conceptual distinction between `const` and `block` is deliberate and load-bearing:
 
-- **`text`** — a named passive string constant with no callable interface. Referenced by bare name (e.g., `avoid unrelated_edits`). Carries no instructions of its own; it is a value, not a procedure. May serve as constraint content (in `constraints:`) or context content (in `context:`). A bare `text` name is **not** legal as an instruction step in `flow:` — for instructions, use `block`.
+- **`const`** — a named passive constant with no callable interface. Referenced by bare name (e.g., `avoid unrelated_edits`). Carries no instructions of its own; it is a value, not a procedure. May serve as constraint content (in `constraints:`) or context content (in `context:`). A bare `const` name is **not** legal as an instruction step in `flow:` — for instructions, use `block`. The compiler infers the value kind (string, integer, float) from the literal on the right side.
 - **`block`** — callable. Has parentheses, is invoked at call sites, and its body directs the agent to perform actions.
-- **A string in a block body (with or without an explicit `flow:` header) is always an instruction (`Step`) — never context or background.** For context or metadata about the block itself, use `description:`. For named string constants that are not instructions, use `text`.
+- **A string in a block body (with or without an explicit `flow:` header) is always an instruction (`Step`) — never context or background.** For context or metadata about the block itself, use `description:`. For named string constants that are not instructions, use `const`.
 
-**Novice kernel.** A new author only needs a small subset to write useful skills: `skill`, `require`/`avoid`, `flow:`, quoted inline strings, calls with parentheses, and the `with` modifier on calls (see [data-flow.md](data-flow.md)). Blocks, named text, types, effects, and imports are discoverable later; repair materializes `generated block` definitions for undefined names so novice skills compile without those constructs present in source.
+**Novice kernel.** A new author only needs a small subset to write useful skills: `skill`, `require`/`avoid`, `flow:`, quoted inline strings, calls with parentheses, and the `with` modifier on calls (see [data-flow.md](data-flow.md)). Blocks, named constants, types, effects, and imports are discoverable later; repair materializes `generated block` definitions for undefined names so novice skills compile without those constructs present in source.
 
 Glyph source optimizes for easy readability, easy maintenance, and forgiving authoring. The source surface may be duck-typed and partially inferred; the compiler is responsible for turning that into a strict IR. The split is: source can be ergonomic; IR and compiled output must be explicit.
 
@@ -26,9 +26,9 @@ A `.glyph.md` file is a unit of compilation. The following rules apply at the fi
 
 - **Non-empty.** A file containing only whitespace or comments emits `G::parse::empty-file` (error). There is nothing to compile.
 - **At most one `skill` declaration per file.** A file may contain zero or one `skill` declarations. A second `skill` in the same file emits `G::parse::multiple-skills` (error). The reason is pragmatic: compiled output is named after the skill (`<skill_name>.md`), and most coding-agent ecosystems expect one skill per file (e.g., `SKILL.md`). Multi-skill files would collide on output naming. Cross-skill composition is via `import`, not by co-locating skills in one source file.
-- **Library files (zero `skill` declarations).** A file containing only `import`, `text` / `int` / `float`, and `block` / `export block` declarations — no `skill` — is a **library file** (e.g., `prefs.glyph.md`, `repo_tools.glyph.md`). Library files are consumed by sibling skill files via `import`. Formal rules:
+- **Library files (zero `skill` declarations).** A file containing only `import`, `const`, and `block` / `export block` declarations — no `skill` — is a **library file** (e.g., `prefs.glyph.md`, `repo_tools.glyph.md`). Library files are consumed by sibling skill files via `import`. Formal rules:
 
-  - **At least one `export` declaration required.** A file with zero skills AND zero exports has no consumer-visible contribution. This emits `G::analyze::no-exports-in-library` (error). Private helpers (`block`, `text`, `int`, `float`) alongside exports are fine — they support the exports internally.
+  - **At least one `export` declaration required.** A file with zero skills AND zero exports has no consumer-visible contribution. This emits `G::analyze::no-exports-in-library` (error). Private helpers (`block`, `const`) alongside exports are fine — they support the exports internally.
   - **Compilation.** Library files compile through the same 7-phase pipeline as skill files. The DAG-driven multi-file compile (see `pipeline.md` §Multi-File Compilation Order) runs Phases 1–7 on every file in dependency order; a library file is a DAG node like any other, it just has no `skill` to project.
   - **Emission rules — per-declaration, not per-file.** What a library file emits depends on what it exports:
 
@@ -36,14 +36,14 @@ A `.glyph.md` file is a unit of compilation. The following rules apply at the fi
     |---|---|---|
     | `export block` whose expanded prose is **>= 150 words** (above the Tier 1 inline threshold; see `compiled-output.md` §Three-Tier Block Projection) | **Yes** — one procedure `.md` per qualifying block | Library's own Phase 7 emits it into a subdirectory named after the source file (e.g., `repo_tools.glyph.md` → `repo_tools/inspect-repo.md`) |
     | `export block` whose expanded prose is **< 150 words** (Tier 1 — small, inlinable) | **No** — consumers inline the body at each call site | No emission from the library |
-    | `export text` / `export int` / `export float` | **No** — compile-time constants, always inlined into consumers | No emission |
-    | Private `block`, `text`, `int`, `float`, `import` | **No** — contribute to other compilations only | Validation only |
+    | `export const` | **No** — compile-time constants, always inlined into consumers | No emission |
+    | Private `block`, `const`, `import` | **No** — contribute to other compilations only | Validation only |
 
-  - **Empty emission is normal.** A library file that compiles successfully but produces zero `.md` files (e.g., `prefs.glyph.md` with only `export text` constants) is not an error or warning. It contributes names and values to consumers through the validated IR.
+  - **Empty emission is normal.** A library file that compiles successfully but produces zero `.md` files (e.g., `prefs.glyph.md` with only `export const` declarations) is not an error or warning. It contributes names and values to consumers through the validated IR.
   - **Zero consumers.** In DAG-driven compilation, unreferenced library files are never visited — no diagnostic. If a user explicitly compiles a library file (`glyph compile prefs.glyph.md`), it compiles and emits whatever qualifies, succeeding silently even if zero files are produced.
   - **Tier ownership.** Whether an `export block` qualifies for a standalone procedure `.md` is a property of the block itself, decided when the library compiles. Whether a *specific call site* in a consumer inlines that block or references the procedure file is a per-call-site decision in the consumer's Expand Step 1 (the `ResolvedCall.projection_mode` field in `ir-schema.md`). A procedure `.md` may exist but go unused at a call site that projects the block as Tier 1 (inline) or Tier 2 (same-file procedure) — this is intentional, not an error.
   - **Consumer guarantees.** DAG order (libraries compile before consumers) ensures procedure `.md` files exist before consumers reference them via `load`. If a library failed to compile, the consumer's Phase 5 (Validate) catches the missing dependency.
-  - **Mixed library files.** A file exporting both `export block` and `export text` declarations is common (e.g., a `repo_tools.glyph.md` exporting both procedures and constants). The emission rules apply per-declaration — blocks may emit procedure files while constants are inlined. No special handling needed.
+  - **Mixed library files.** A file exporting both `export block` and `export const` declarations is common (e.g., a `repo_tools.glyph.md` exporting both procedures and constants). The emission rules apply per-declaration — blocks may emit procedure files while constants are inlined. No special handling needed.
 - **Skill body must contain at least one of `flow:` (with statements) or `constraints:` (with markers).** A skill with empty `description:`, no `flow:`, no `constraints:`, no `effects:` emits `G::analyze::empty-skill-body` (error). A constraint-only skill (no `flow:` at all, but `constraints:` present) is **legal** — its compiled output omits `### Steps` per `compiled-output.md`. An empty `flow:` body (header present but zero statements) emits `G::parse::empty-flow` (error); the author should either remove the header or add a statement.
 
 ### 2.1 Significant Indentation
@@ -65,7 +65,7 @@ The indentation unit is **4 spaces**.
 
 Three primary indentation levels in practice:
 
-- **Level 0** (column 0): top-level declarations (`skill`, `block`, `text`, `int`, `float`, `import`).
+- **Level 0** (column 0): top-level declarations (`skill`, `block`, `const`, `import`).
 - **Level 1** (column 4): declaration body -- constraints, sub-section headers, bare instructions.
 - **Level 2** (column 8): sub-block body -- flow steps, effect list items, nested content.
 
@@ -157,7 +157,7 @@ skill implement_feature(scope = ".", risk = "medium")
 
 **Rules:**
 
-- Parentheses always required on callable declarations: `skill update_docs()` not `skill update_docs`. This applies to `skill`, `block`, `export block`, and `generated block`. Value-binding declarations (`text`, `int`, `float` and their `export`/`generated` variants) and `import` do not use parentheses.
+- Parentheses always required on callable declarations: `skill update_docs()` not `skill update_docs`. This applies to `skill`, `block`, `export block`, and `generated block`. Value-binding declarations (`const` and its `export`/`generated` variants) and `import` do not use parentheses.
 - Return type is optional. When present, it annotates the IR's `OutputContract`; in MVP compiled output, the `return` expression folds into the final Step rather than producing a separate section (see [compiled-output.md](compiled-output.md)).
 - Parameters are optional. In MVP, global preferences resolve at compile time as explicit inputs, not hidden state. Parameters appear in the compiled output's `## Parameters` section with names, descriptions, and optional defaults; the consuming LLM resolves them from user context at runtime.
 
@@ -189,7 +189,7 @@ block summarize_changes()
     "Summarize what was changed and why."
 ```
 
-The bare string is always treated as an instruction (`Step`). It is not context or background information — for that, use `description:`. For named string constants that are not instructions, use `text`.
+The bare string is always treated as an instruction (`Step`). It is not context or background information — for that, use `description:`. For named string constants that are not instructions, use `const`.
 
 **Rules:**
 
@@ -221,112 +221,58 @@ export block inspect_failure(scope) -> FailureReport
 
 **Rules:**
 
-- Every `export block` must have an explicit `-> ReturnType`, even `-> none`, so callers have a clear contract.
-- Must be **closed**: behavior determined by declared inputs, local bindings, explicit imports, same-file reusable text, standard primitives, declared constraints, declared outputs, and declared effects. Closed does not mean pure; an exported block may read files, run tools, or produce artifacts if those effects are declared.
+- Every `export block` with a meaningful return value must have an explicit `-> DomainType` so callers have a clear contract. Export blocks with no meaningful return omit `->` entirely.
+- Must be **closed**: behavior determined by declared inputs, local bindings, explicit imports, same-file reusable constants, standard primitives, declared constraints, declared outputs, and declared effects. Closed does not mean pure; an exported block may read files, run tools, or produce artifacts if those effects are declared.
 - An `export block` may call imported `export block`s or same-file private blocks if the compiler can prove those private blocks are closed under the exported block's contract.
 - Every `export block` must end in an explicit `return`. Instruction-only exported blocks should still return `none`.
 - `effects:` appears in the body, not on the header line.
 - MVP effects: `none`, `reads_files`, `reads_env`, `writes_files`, `runs_commands`, `uses_network`, `asks_user`, `creates_artifacts`, `spawns_agent`.
-- The single-string shorthand (omitting `flow:`) is available on `export block` under the same conditions as `block`: one instruction string, no other sub-sections. When the shorthand form is used, Lower implicitly supplies `return none` — the author does not need to write it, and `G::analyze::missing-return` is suppressed for this form. The `-> None` return type on the header is still required (it is part of the export contract). The shorthand therefore only applies to instruction-only export blocks that return `none`; blocks that return a meaningful value must use the full `flow:` form with an explicit `return` expression.
+- The single-string shorthand (omitting `flow:`) is available on `export block` under the same conditions as `block`: one instruction string, no other sub-sections. When the shorthand form is used, Lower implicitly supplies `return none` — the author does not need to write it, and `G::analyze::missing-return` is suppressed for this form. The shorthand therefore only applies to instruction-only export blocks that return `none` (i.e., omit `->` on the header); blocks that return a meaningful value must use the full `flow:` form with an explicit `return` expression.
 
-### 3.4 `text` / `export text`
+### 3.4 `const` / `export const`
 
-Named passive text. `text` is file-private; `export text` is importable.
+Named passive constant. `const` is file-private; `export const` is importable. A single `const` keyword replaces the earlier `text`, `int`, and `float` declaration keywords — the compiler infers the value kind from the literal on the right side.
 
 **Grammar:**
 
 ```
-text <name> = <string-rhs>
-export text <name> = <string-rhs>
+const <name> = <literal-rhs>
+export const <name> = <literal-rhs>
 
-<string-rhs> = <string-literal>
-             | <bare-name>            // resolves to a same-file `text` / `export text`
-             | <qualified-name>       // resolves to an imported `export text` via whole-module alias
+<literal-rhs> = <string-literal>       // inferred as string
+              | <int-literal>          // inferred as integer
+              | <float-literal>        // inferred as float
+              | <bare-name>            // resolves to a same-file `const` / `export const`
+              | <qualified-name>       // resolves to an imported `export const` via whole-module alias
 ```
 
 **Example:**
 
 ```glyph
-text preserve_existing_patterns = """
+const preserve_existing_patterns = """
 Prefer the repository's existing patterns, helper APIs, naming, and file organization
 before introducing a new abstraction or style.
 """
 
-export text safety_rules = """
+const max_attempts = 3
+const threshold = 0.8
+
+export const safety_rules = """
 Never execute destructive operations without confirmation.
 """
 ```
 
 **Rules:**
 
-- No parameters, no return type. A `text` declaration is a named constant, not a callable. See §1 for the full text/block distinction and when to choose one over the other.
-- `text` declarations are not legal in `flow:` as bare-name instruction steps. A bare `text` name in `flow:` without a keyword prefix (`context`, `require`, `avoid`, `must`) is a compile error (`G::analyze::text-in-flow`). For instruction steps, use `block`. `text` declarations may be referenced in `constraints:` (as constraint content) or `context:` (as context content); the role is determined by sub-section placement.
+- No parameters, no return type. A `const` declaration is a named constant, not a callable. See §1 for the full const/block distinction and when to choose one over the other.
+- `const` declarations are not legal in `flow:` as bare-name instruction steps. A bare `const` name in `flow:` without a keyword prefix (`context`, `require`, `avoid`, `must`) is a compile error (`G::analyze::const-in-flow`). For instruction steps, use `block`. `const` declarations may be referenced in `constraints:` (as constraint content) or `context:` (as context content); the role is determined by sub-section placement.
 - The `=` is required and separates the name from its value.
-- String literals follow `values-and-names.md`: inline `"..."` or block `"""..."""`.
-- The RHS may be a string literal or a static reference to another `text` / `export text` (same-file bare name or imported via whole-module alias). Lower resolves the reference at compile time and inlines the underlying string content into the IR; the binding is not re-resolved at runtime. References to non-`text` declarations, parameters, locals, or anything that produces a value at flow time are rejected (a `text` body is fixed at compile time, not computed).
-- These bindings are not arbitrary string interpolation. The compiler treats them as named constant resources resolved into IR nodes.
+- String literals follow `values-and-names.md`: inline `"..."` or block `"""..."""`. Integer and float literals follow `values-and-names.md`, Numbers section.
+- The compiler infers the value kind from the literal: string from `"..."` or `"""..."""`, integer from `3` or `-1`, float from `0.8` or `3.14`.
+- The RHS may be a literal or a static reference to another `const` / `export const` (same-file bare name or imported via whole-module alias). Lower resolves the reference at compile time and inlines the underlying value into the IR; the binding is not re-resolved at runtime. References to non-`const` declarations, parameters, locals, or anything that produces a value at flow time are rejected (a `const` body is fixed at compile time, not computed).
+- These bindings are not arbitrary expressions. The compiler treats them as named constant resources resolved into IR nodes.
 
-### 3.5 `int` / `export int`
-
-Named integer constant. `int` is file-private; `export int` is importable.
-
-**Grammar:**
-
-```
-int <name> = <int-rhs>
-export int <name> = <int-rhs>
-
-<int-rhs> = <int-literal>
-          | <bare-name>            // resolves to a same-file `int` / `export int`
-          | <qualified-name>       // resolves to an imported `export int` via whole-module alias
-```
-
-**Example:**
-
-```glyph
-int max_attempts = 3
-export int default_max_attempts = 3
-```
-
-**Rules:**
-
-- No parameters, no return type. An `int` declaration is a named constant, not a callable.
-- The `=` is required and separates the name from its value.
-- The RHS may be an integer literal or a static reference to another `int` / `export int` (same-file bare name or imported via whole-module alias). No cross-assignment from `float` declarations or from float literals; lossless coercion at call boundaries is per [values-and-names.md](values-and-names.md). References to parameters, locals, or any non-`int` declaration are rejected.
-- Lower resolves the reference at compile time and inlines the underlying integer value into the IR; the binding is not re-resolved at runtime.
-- These bindings are not arbitrary numeric expressions. The compiler treats them as named constant resources resolved into IR nodes.
-
-### 3.6 `float` / `export float`
-
-Named floating-point constant. `float` is file-private; `export float` is importable.
-
-**Grammar:**
-
-```
-float <name> = <float-rhs>
-export float <name> = <float-rhs>
-
-<float-rhs> = <float-literal>
-            | <bare-name>            // resolves to a same-file `float` / `export float`
-            | <qualified-name>       // resolves to an imported `export float` via whole-module alias
-```
-
-**Example:**
-
-```glyph
-float threshold = 0.8
-export float default_temperature = 0.7
-```
-
-**Rules:**
-
-- No parameters, no return type. A `float` declaration is a named constant, not a callable.
-- The `=` is required and separates the name from its value.
-- The RHS may be a float literal or a static reference to another `float` / `export float` (same-file bare name or imported via whole-module alias). No cross-assignment from `int` declarations or from integer literals; lossless coercion at call boundaries is per [values-and-names.md](values-and-names.md). References to parameters, locals, or any non-`float` declaration are rejected.
-- Lower resolves the reference at compile time and inlines the underlying float value into the IR; the binding is not re-resolved at runtime.
-- These bindings are not arbitrary numeric expressions. The compiler treats them as named constant resources resolved into IR nodes.
-
-### 3.7 `import`
+### 3.5 `import`
 
 Brings exported declarations from another `.glyph.md` file into scope. Two forms.
 
@@ -362,41 +308,41 @@ import "./coding_agent_safety.glyph.md" {
 
 - Path is always a quoted string.
 - Whole-module import requires `as <alias>`. No bare module imports.
-- Whole-module import exposes: the file's `skill` entrypoint, all `export block` declarations, and all exported value-binding declarations (`export text`, `export int`, `export float`). Private `text`, `int`, `float`, and private `block` stay hidden.
+- Whole-module import exposes: the file's `skill` entrypoint, all `export block` declarations, and all exported value-binding declarations (`export const`). Private `const` and private `block` stay hidden.
 - Selective import uses `{ name, name as alias, ... }`. Trailing comma allowed. Only explicitly exported declarations may be named.
 - A single import statement is either whole-module or selective, not both.
 - Circular imports are rejected in the MVP.
 - MVP imports are path-based. Package names, registries, and versioned imports are deferred.
 
-### 3.8 `generated text`
+### 3.6 `generated const`
 
-Repair-materialized instruction text. Structurally identical to `text` with a `generated` prefix. Only the LLM repair pass emits this form; authors who want to define bare names manually use `text`.
+Repair-materialized constant. Structurally identical to `const` with a `generated` prefix. Only the LLM repair pass emits this form; authors who want to define bare names manually use `const`.
 
 **Grammar:**
 
 ```
-generated text <name> = <string-literal>
+generated const <name> = <string-literal>
 ```
 
 **Example:**
 
 ```glyph
-generated text root_cause_before_fix = """
+generated const root_cause_before_fix = """
     Identify the root cause before proposing or applying a fix.
 """
 ```
 
 **Rules:**
 
-- Same shape as `text`. No parameters, no return type, no body with sub-sections.
+- Same shape as `const`. No parameters, no return type, no body with sub-sections.
 - The `=` is required and separates the name from its value.
 - String literals follow `values-and-names.md`: inline `"..."` or block `"""..."""`.
 - Not a callable. A bare name resolves to its string content; a parenthesized form is a compile error.
-- Not exportable. `export generated text` is invalid. To share, promote to `export text`.
-- All `generated text` declarations must appear after all non-generated top-level declarations in the source file.
+- Not exportable. `export generated const` is invalid. To share, promote to `export const`.
+- All `generated const` declarations must appear after all non-generated top-level declarations in the source file.
 - Full rules for authorship, stability, placement, promotion, and the no-shadowing interaction are in [repair.md](repair.md).
 
-### 3.9 `generated block`
+### 3.7 `generated block`
 
 Repair-materialized block. Structurally a minimal `block` with a `generated` prefix. Only the LLM repair pass emits this form; authors who want to define blocks manually use `block` or `export block`.
 
@@ -421,12 +367,12 @@ generated block summarize_changes()
 
 - Same header shape as `block` (parameters allowed, no return type in the generated form).
 - Body is a single inline or block string, using the same single-string shorthand available to hand-authored simple blocks (§3.2 above). Compound sentences are allowed; multi-statement `flow:` bodies are not. This keeps the machine-generated definition close to the name's meaning and minimizes drift from author intent.
-- Used for undefined names in `flow:`. Both parens-calls and bare names without parens materialize as `generated block` (bare text names in flow are a compile error, so undefined bare names in flow are treated as intended callable instructions).
+- Used for undefined names in `flow:`. Both parens-calls and bare names without parens materialize as `generated block` (bare const names in flow are a compile error, so undefined bare names in flow are treated as intended callable instructions).
 - Not exportable. `export generated block` is invalid. To share, promote to `block` or `export block`.
-- All `generated block` declarations must appear after all non-generated top-level declarations, alongside `generated text`.
+- All `generated block` declarations must appear after all non-generated top-level declarations, alongside `generated const`.
 - Full rules for authorship, the single-string constraint, placement, promotion, and the no-shadowing interaction are in [repair.md](repair.md).
 
-### 3.10 Parameter Syntax
+### 3.8 Parameter Syntax
 
 Parameters appear inside parentheses on `skill`, `block`, and `export block` headers. Four forms:
 
@@ -439,7 +385,7 @@ name: Type = default_value    // typed, with default
 - **`export block` parameter defaults are mandatory.** Export blocks project to standalone procedure `.md` files at Tier 3, but their parameter slots are filled by the caller's `call` expression at compile time, not by the consuming LLM at runtime. Defaults exist for caller ergonomics: a caller may omit an argument and inherit the default. A parameter without a default on an `export block` emits `G::analyze::missing-param-default` (**compile error**, not repairable). Author must add an explicit default; the compiler does not synthesize defaults — there is no principled non-LLM repair, and LLM-guessed defaults would introduce non-determinism into a value that ships in compiled output. (Post-MVP we may relax this to allow required export-block parameters, mirroring ordinary function-call semantics; see [todo.md](todo.md).)
 - **Private `block` parameters may omit defaults.** Private blocks never compile to standalone files — their parameters are resolved at call sites within the same file. A private block parameter without a default is legal; the caller must supply the argument.
 - Type annotations use the `name: Type` slot. The full type system is a Tier 2 concern; this reserves the syntactic position.
-- Default values are either Tier 0 literals (strings, numbers, booleans, `none`) **or** a name reference to an in-scope value-binding declaration (`text` / `int` / `float`, including imported ones). Named references must be type-compatible with the parameter and must resolve at compile time — since `text`/`int`/`float` declarations are compile-time constants, this is always satisfied. The compiled `## Parameters` section emits the **resolved literal value**, not the name; consumers see the concrete default at runtime. This makes preferences (`preferences.md`) usable directly as parameter defaults: `summarize(temperature: Float = default_temperature)` resolves to the prefs library's current value at compile time. References to other parameters or to `block` declarations are not permitted; calls and arbitrary expressions are not permitted. A default that is neither a literal nor a name reference to a value-binding is a parse error.
+- Default values are either Tier 0 literals (strings, numbers, booleans, `none`) **or** a name reference to an in-scope value-binding declaration (`const`, including imported ones). Named references must be type-compatible with the parameter and must resolve at compile time — since `const` declarations are compile-time constants, this is always satisfied. The compiled `## Parameters` section emits the **resolved literal value**, not the name; consumers see the concrete default at runtime. This makes preferences (`preferences.md`) usable directly as parameter defaults: `summarize(temperature: Temperature = default_temperature)` resolves to the prefs library's current value at compile time. References to other parameters or to `block` declarations are not permitted; calls and arbitrary expressions are not permitted. A default that is neither a literal nor a name reference to a value-binding is a parse error.
 - The compiler infers types for untyped parameters from usage context and repairs source when inference fails.
 
 ## 4. Authoring Model
@@ -464,7 +410,7 @@ Inference uses: position in the skill, metadata from bindings/imports/standard-l
 
 ### 4.3 Bare Names and Generated Definitions
 
-Bare instruction names are allowed. Resolution order: (1) same-file binding, (2) explicit import, (3) standard library vocabulary, (4) MVP repair materializes a stable generated definition when context is clear. Bare names in `flow:` without parentheses that are undefined generate `generated block` (with parentheses), not `generated text` — bare text names in flow are a compile error, so an undefined bare name in flow must be intended as a callable instruction. Generated definitions are cached in source, reviewable, and validated before compilation continues. Expansion happens during repair, not at runtime.
+Bare instruction names are allowed. Resolution order: (1) same-file binding, (2) explicit import, (3) standard library vocabulary, (4) MVP repair materializes a stable generated definition when context is clear. Bare names in `flow:` without parentheses that are undefined generate `generated block` (with parentheses), not `generated const` — bare const names in flow are a compile error, so an undefined bare name in flow must be intended as a callable instruction. Generated definitions are cached in source, reviewable, and validated before compilation continues. Expansion happens during repair, not at runtime.
 
 ### 4.4 Semantic Shortcuts
 
@@ -491,16 +437,16 @@ skill update_docs(scope = ".")
         "Mention any docs you could not verify locally."
 ```
 
-If the same text appears repeatedly, promote it to a `text` declaration for use in `constraints:` or `context:`, or to a `block` declaration for use in `flow:`.
+If the same text appears repeatedly, promote it to a `const` declaration for use in `constraints:` or `context:`, or to a `block` declaration for use in `flow:`.
 
 ## 5. Source-to-IR Pipeline
 
-Glyph source may contain shorthand, omitted annotations, text aliases, imported names, and inline natural-language instructions. The compiler resolves them through a 7-phase pipeline: **Parse → Analyze → Repair → Lower → Validate → Expand → Emit**. See [pipeline.md](pipeline.md) for the canonical reference covering phase responsibilities, the Safety Sandwich pattern, the repair loop, multi-file compilation order, and cacheability.
+Glyph source may contain shorthand, omitted annotations, named constants, imported names, and inline natural-language instructions. The compiler resolves them through a 7-phase pipeline: **Parse → Analyze → Repair → Lower → Validate → Expand → Emit**. See [pipeline.md](pipeline.md) for the canonical reference covering phase responsibilities, the Safety Sandwich pattern, the repair loop, multi-file compilation order, and cacheability.
 
 Source-level takeaways that shape authoring:
 
 - Deterministic parsing and analysis run first; the LLM repair pass runs only when repairable diagnostics remain and is bounded by re-parse + re-analyze cycles.
-- Repair is source-to-source: it may rewrite your `.glyph.md`, materialize `generated text` / `generated block` definitions, add minimal markers, and fix structural issues. It does not expand shorthand into agent-facing prose.
+- Repair is source-to-source: it may rewrite your `.glyph.md`, materialize `generated const` / `generated block` definitions, add minimal markers, and fix structural issues. It does not expand shorthand into agent-facing prose.
 - Lower converts the repaired source into the typed IR (resolving positional args to named, desugaring nested calls, filling defaults, propagating effects).
 - Expand is parameterless: compilation produces one `.md` output per source file. Parameters appear in a `## Parameters` section with defaults; the consuming LLM resolves them from context at runtime. `{param}` references in Steps and Constraints are preserved as named slots.
 
@@ -508,8 +454,8 @@ If ergonomic source does not compile directly, the LLM repair pass rewrites it i
 
 ## 6. Maintenance Rules
 
-- Prefer named `text` blocks for repeated instruction text; prefer imports for team-wide vocabulary.
-- Import only explicitly exported declarations; keep `block`s and non-exported `text` private.
+- Prefer named `const` declarations for repeated instruction text; prefer imports for team-wide vocabulary.
+- Import only explicitly exported declarations; keep `block`s and non-exported `const` private.
 - Use aliases when an imported name would collide or read poorly.
 - Make every `export block` self-contained (inputs, outputs, constraints, effects declared).
 - Use semantic shortcuts when the name communicates intent; use inline quotes for one-off guidance.

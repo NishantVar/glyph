@@ -42,7 +42,7 @@ Two-phase approach:
 - Build line-offset table for span-to-line/col conversion.
 
 **Phase B — Token-level scanning within lines:**
-- Keywords: `skill`, `block`, `export`, `import`, `text`, `int`, `float`, `generated`, `if`, `elif`, `else`, `return`, `require`, `avoid`, `must`, `soft`, `hard`, `with`, `none`.
+- Keywords: `skill`, `block`, `export`, `import`, `const`, `generated`, `if`, `elif`, `else`, `return`, `require`, `avoid`, `must`, `soft`, `hard`, `with`, `none`.
 - Identifiers: `[a-zA-Z_][a-zA-Z0-9_]*`.
 - Literals: quoted strings (`"..."`, `"""..."""`), integers, floats, booleans.
 - Punctuation: `(`, `)`, `,`, `:`, `=`, `.`.

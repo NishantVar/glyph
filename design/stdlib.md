@@ -4,7 +4,7 @@ This document defines the MVP standard library for Glyph: what ships with the co
 
 ## Design Posture
 
-The MVP stdlib is **minimal by intent**. Glyph is an authoring language, not a runtime — most reusable instruction patterns are better expressed as user-authored `export block` and `export text` declarations in project libraries. The stdlib exists only for primitives that require compiler-known types or effects that cannot be expressed in user code.
+The MVP stdlib is **minimal by intent**. Glyph is an authoring language, not a runtime — most reusable instruction patterns are better expressed as user-authored `export block` and `export const` declarations in project libraries. The stdlib exists only for primitives that require compiler-known types or effects that cannot be expressed in user code.
 
 For MVP, the stdlib contains **three entries**: `subagent`, `send`, and `load`. The first two are author-facing; `load` is compiler-internal (see §The `load` Primitive). There is no concurrency primitive — multiple `subagent(...)` calls in source compile to multiple "Spawn a subagent..." instructions, and the consuming agent decides whether to dispatch them concurrently or sequentially. Concurrency as a guaranteed language feature is deferred.
 
@@ -84,7 +84,7 @@ If there is no binding (bare `subagent(scope)` without `x = ...`), the template 
 
 ### Parameters
 
-- `task` (`String`) — a description of what the subagent should do.
+- `task` — a description of what the subagent should do.
 
 ### Return Type
 
@@ -95,7 +95,7 @@ If there is no binding (bare `subagent(scope)` without `x = ...`), the template 
 ### Declaration
 
 ```glyph
-export block send(agent: Agent, message) -> None
+export block send(agent: Agent, message)
     effects: spawns_agent
 
     flow:
@@ -148,19 +148,19 @@ A `send` call compiles to a prose instruction in `### Steps`:
 
 ### Parameters
 
-- `agent` (`Agent`) — the target subagent, obtained from a prior `subagent()` call.
-- `message` (`String`) — the follow-up instruction to send.
+- `agent` (`: Agent`) — the target subagent, obtained from a prior `subagent()` call.
+- `message` — the follow-up instruction to send.
 
 ### Return Type
 
-`None` — `send` is a side-effecting operation with no return value.
+`send` is a side-effecting operation with no meaningful return value (omits `->`).
 
 ## The `load` Primitive
 
 ### Declaration
 
 ```glyph
-export block load(path: String) -> None
+export block load(path: FilePath)
     effects: reads_files
 
     flow:
@@ -192,11 +192,11 @@ The file path is a relative path from the compiled output directory to the proce
 
 ### Parameters
 
-- `path` (`String`) — relative path to the compiled procedure file.
+- `path` (`FilePath`) — relative path to the compiled procedure file.
 
 ### Return Type
 
-`None` — `load` directs the agent to follow instructions in another file; it does not produce a return value.
+`load` directs the agent to follow instructions in another file; it does not produce a meaningful return value (omits `->`).
 
 ### Not Author-Facing
 
@@ -204,7 +204,7 @@ Unlike `subagent` and `send`, `load` is not imported by authors. It has no sourc
 
 ## The `Agent` Type
 
-`Agent` is a **compiler-known primitive type**, joining `String`, `Int`, `Float`, `Bool`, and `None` in the type vocabulary defined by `types.md`.
+`Agent` is a **compiler-known type**. It is the only non-domain type that the compiler treats specially, alongside the internal value kinds (string, integer, float, boolean, none) defined by `types.md`.
 
 | Value kind | Type name |
 |---|---|
@@ -281,7 +281,7 @@ Stdlib imports follow the same resolution rules as all other imports (`imports.m
 
 ## Interaction With Repair
 
-Stdlib names resolve during Phase 2 (Analyze) through normal name resolution — if the author has imported them, they resolve; if not, Analyze emits a `G::analyze::stdlib-missing-import` diagnostic (repairable). Repair may then add the missing `import "@glyph/std" { ... }` statement. **Stdlib names never trigger `generated text` or `generated block` materialization** because either they resolve (import present) or their diagnostic is specifically `stdlib-missing-import` (not `undefined-name`/`undefined-call`). Misuse of a resolved stdlib name (wrong argument count, bare-name reference to a block, missing effect declaration) is a normal compile error, not a repair target.
+Stdlib names resolve during Phase 2 (Analyze) through normal name resolution — if the author has imported them, they resolve; if not, Analyze emits a `G::analyze::stdlib-missing-import` diagnostic (repairable). Repair may then add the missing `import "@glyph/std" { ... }` statement. **Stdlib names never trigger `generated const` or `generated block` materialization** because either they resolve (import present) or their diagnostic is specifically `stdlib-missing-import` (not `undefined-name`/`undefined-call`). Misuse of a resolved stdlib name (wrong argument count, bare-name reference to a block, missing effect declaration) is a normal compile error, not a repair target.
 
 ## Interaction With Closure
 
@@ -296,7 +296,7 @@ The `import "@glyph/std" { subagent }` statement compiles away like all imports 
 - **Types** (`types.md`): `Agent` joins the primitive type vocabulary.
 - **Effects** (`ir-and-semantics.md`): `spawns_agent` extends the effect keyword set.
 - **Imports** (`imports.md`): `@glyph/std` follows standard import semantics with a compiler-resolved path prefix.
-- **Repair** (`repair.md`): Repair prefers stdlib resolution over `generated text` materialization.
+- **Repair** (`repair.md`): Repair prefers stdlib resolution over `generated const` materialization.
 - **Compiled output** (`compiled-output.md`): Stdlib imports compile away completely.
 - **Preferences** (`preferences.md`): `@glyph/prefs` and `@glyph/std` share the `@glyph/` namespace convention.
 

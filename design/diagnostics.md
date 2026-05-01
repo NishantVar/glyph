@@ -125,11 +125,11 @@ Representative diagnostics implied by the current design.
 | `G::analyze::unknown-param-slot` | error | A `{name}` slot in an instruction-bearing string does not resolve to a parameter or local binding in scope at the slot's source position (`values-and-names.md`) |
 | `G::analyze::nested-branch` | repairable | A `Branch` appears inside another `Branch`'s arm body; Repair will auto-extract it into a `generated block` (`repair.md` §4.9) |
 | `G::analyze::empty-skill-body` | error | A `skill` declaration has no `description:`, no `flow:`, no `constraints:`, no `effects:` — there is nothing to project. A skill must have at least one of `flow:` (with statements) or `constraints:` (with markers); a constraint-only skill is legal (`compiled-output.md`) |
-| `G::analyze::no-exports-in-library` | error | A library file (zero `skill` declarations) has zero `export` declarations — it has no consumer-visible contribution. Add at least one `export block`, `export text`, `export int`, or `export float` (`language-surface.md` §File-Level Rules) |
-| `G::analyze::missing-param-default` | error | An `export block` parameter lacks a default value; export-block parameter defaults are mandatory in MVP because their slots are filled by callers at compile time, not by the consuming LLM at runtime (`language-surface.md` §3.10). Author must add an explicit default; the compiler does not synthesize defaults. **Does not apply to `skill` parameters** — those without defaults are runtime-required inputs and surface as such in the compiled `## Parameters` section. |
+| `G::analyze::no-exports-in-library` | error | A library file (zero `skill` declarations) has zero `export` declarations — it has no consumer-visible contribution. Add at least one `export block` or `export const` (`language-surface.md` §File-Level Rules) |
+| `G::analyze::missing-param-default` | error | An `export block` parameter lacks a default value; export-block parameter defaults are mandatory in MVP because their slots are filled by callers at compile time, not by the consuming LLM at runtime (`language-surface.md` §3.8). Author must add an explicit default; the compiler does not synthesize defaults. **Does not apply to `skill` parameters** — those without defaults are runtime-required inputs and surface as such in the compiled `## Parameters` section. |
 | `G::analyze::missing-description` | repairable | A `skill` declaration omits `description:`; Repair generates one from the skill name and body and adds it as a `description:` sub-section in the source (`ir-and-semantics.md` §4, `compiled-output.md` §Frontmatter) |
-| `G::analyze::text-in-flow` | repairable | A bare name (or undefined identifier) appears in `flow:` without a keyword prefix (`require`/`avoid`/`must`/`context`); `text` declarations are passive constants and are not legal as flow instruction steps. Repair adds parentheses and materializes a `generated block` (`language-surface.md` §3.4, `repair.md` §5) |
-| `G::analyze::applies-on-non-block` | error | `NAME.applies()` was called where `NAME` resolves to something other than a `block` or `export block` declaration (e.g., a `text`, an `import` alias, a parameter). The trigger predicate is defined only on blocks (`ir-and-semantics.md` §Block Trigger Predicate) |
+| `G::analyze::const-in-flow` | repairable | A bare name (or undefined identifier) appears in `flow:` without a keyword prefix (`require`/`avoid`/`must`/`context`); `const` declarations are passive constants and are not legal as flow instruction steps. Repair adds parentheses and materializes a `generated block` (`language-surface.md` §3.4, `repair.md` §5) |
+| `G::analyze::applies-on-non-block` | error | `NAME.applies()` was called where `NAME` resolves to something other than a `block` or `export block` declaration (e.g., a `const`, an `import` alias, a parameter). The trigger predicate is defined only on blocks (`ir-and-semantics.md` §Block Trigger Predicate) |
 | `G::analyze::applies-on-undescribed-block` | repairable / error | `BLOCKNAME.applies()` is called on a block that lacks a `description:` sub-section. **Repairable** when the block is defined in the same file under compilation; Repair adds a trigger-shaped `description:` to the block. **Error** when the block is imported from another file; the author must edit the source library directly because Repair is single-file (`ir-and-semantics.md` §Block Trigger Predicate, `repair.md` §9) |
 
 ### Validate phase
@@ -189,7 +189,7 @@ Phase 6b structural validation, implemented in the `glyph validate-output` subco
 
 | ID | Classification | Trigger |
 |---|---|---|
-| `G::repair::generated-text` | warning | A `generated text` was materialized for an undefined bare name (`repair.md` §5) |
+| `G::repair::generated-const` | warning | A `generated const` was materialized for an undefined bare name (`repair.md` §5) |
 | `G::repair::generated-block` | warning | A `generated block` was materialized for an undefined parens-call (`repair.md` §5) |
 | `G::repair::branch-extracted` | warning | A nested `Branch` was auto-extracted into a `generated block` to keep compiled output at one level of sub-steps (`repair.md` §4.9) |
 | `G::repair::inferred-effects` | warning | Phase 3a deterministically inferred and auto-added an `effects:` sub-section for a declaration that omitted it; informational — the author should review the added effects (`ir-and-semantics.md` §3, `pipeline.md` Phase 3a) |
@@ -219,7 +219,7 @@ The repair pass (Phase 3) receives the full `Diagnostic[]` array as a snapshot, 
 
 ## Interaction With Compiled Output
 
-Diagnostics are internal compiler artifacts. They do not appear in compiled `.md` files. Warning-level diagnostics (like `G::repair::generated-text`) are surfaced to the author through compiler CLI output or IDE integration, not through the compiled skill.
+Diagnostics are internal compiler artifacts. They do not appear in compiled `.md` files. Warning-level diagnostics (like `G::repair::generated-const`) are surfaced to the author through compiler CLI output or IDE integration, not through the compiled skill.
 
 ## Cross-References
 

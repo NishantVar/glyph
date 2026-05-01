@@ -46,7 +46,7 @@ Parse turns raw text into structure without understanding meaning.
 
 - Reads the `.glyph.md` file and tracks indentation levels (4-space units per `language-surface.md`).
 - Flags tabs and mixed indentation as repairable diagnostics (repair may auto-fix to 4-space indentation).
-- Identifies top-level declarations: `skill`, `block`, `export block`, `text`, `export text`, `int`, `float`, `import`, `generated text`, `generated block` (and their `export` variants where valid).
+- Identifies top-level declarations: `skill`, `block`, `export block`, `const`, `export const`, `import`, `generated const`, `generated block` (and their `export` variants where valid).
 - Identifies declaration headers: name, parameters, return types.
 - Identifies sub-section headers: `description:`, `flow:`, `effects:`, `constraints:`.
 - Identifies body content: bare names, inline strings, calls with arguments (including UFCS calls like `x.foo(args)`), `with` modifiers on calls, `if`/`elif`/`else`, `return`, constraint markers (`require`, `avoid`, `must`).
@@ -71,11 +71,11 @@ Parse turns raw text into structure without understanding meaning.
 
 Analyze tries to understand the source as deeply as it can using deterministic rules alone. Where it cannot figure something out, it emits a structured diagnostic.
 
-- **Name resolution.** For every name in the source, checks in order: (1) same-file parameter or local binding, (2) same-file `text`/`int`/`float` declaration, (3) selectively imported name, (4) qualified name via whole-module import, (5) standard library entry (see `stdlib.md`). Unresolved names are marked and a repairable diagnostic is emitted.
+- **Name resolution.** For every name in the source, checks in order: (1) same-file parameter or local binding, (2) same-file `const` declaration, (3) selectively imported name, (4) qualified name via whole-module import, (5) standard library entry (see `stdlib.md`). Unresolved names are marked and a repairable diagnostic is emitted.
 
 - **UFCS disambiguation.** For dot-syntax calls (`x.foo(args)`), determines whether the left side is a whole-module import alias (→ qualified callee), a value binding/parameter (→ UFCS call, desugared to `foo(x, args)` in Lower), or a `block` / `export block` declaration (or `module_alias.block_name`) with method `applies` and zero arguments (→ block trigger predicate, not UFCS — kept as a special syntactic form on the Branch's condition string per `ir-and-semantics.md` §Block Trigger Predicate). See `data-flow.md` §UFCS.
 
-- **Block trigger predicate resolution.** For every `BLOCKNAME.applies()` invocation in a Branch condition (top-level or `elif`), Analyze resolves `BLOCKNAME` against the same name-resolution chain as ordinary call targets and validates the kind: a non-block target (e.g., a `text`, parameter, or alias) emits `G::analyze::applies-on-non-block` (error); a block target without a `description:` sub-section emits `G::analyze::applies-on-undescribed-block`, classified `repairable` when the block is in the same file under compilation and `error` when the block is imported (matching `repair.md` §9 single-file scope). Resolution succeeds without rewriting the condition string — the side-map population happens at Expand Step 1.
+- **Block trigger predicate resolution.** For every `BLOCKNAME.applies()` invocation in a Branch condition (top-level or `elif`), Analyze resolves `BLOCKNAME` against the same name-resolution chain as ordinary call targets and validates the kind: a non-block target (e.g., a `const`, parameter, or alias) emits `G::analyze::applies-on-non-block` (error); a block target without a `description:` sub-section emits `G::analyze::applies-on-undescribed-block`, classified `repairable` when the block is in the same file under compilation and `error` when the block is imported (matching `repair.md` §9 single-file scope). Resolution succeeds without rewriting the condition string — the side-map population happens at Expand Step 1.
 
 - **Role inference.** For every instruction, determines its IR role (`InputContract`, `Step`, `Constraint`, `Context`, `OutputContract` — the five MVP roles per `ir-and-semantics.md`). Uses the evidence chain: explicit marker → metadata from declarations → metadata from imports/stdlib → position (e.g., inside `flow:` implies `Step`) → compound-name cues (`avoid_*` implies Constraint). Emits a repairable diagnostic when role is ambiguous.
 
@@ -119,7 +119,7 @@ Mechanical transformations where the correct fix is unambiguous:
 
 The LLM receives the source, the remaining diagnostics, and the compiler's rules. It makes the smallest changes needed:
 
-- **Unresolved bare names** (no parens at use site): generates a `generated text` definition — a single-string expansion — and appends it to the end of the file.
+- **Unresolved bare names** (no parens at use site): generates a `generated const` definition — a single-string expansion — and appends it to the end of the file.
 - **Unresolved parens-calls** (parentheses at use site): generates a `generated block` definition — a single-string body — and appends it to the end of the file. Parameters are inferred from the call site.
 - **Ambiguous roles:** adds the minimal marker needed (e.g., adds `avoid` in front of an ambiguous instruction).
 - **Missing type annotations:** adds `: Type` where inference failed and the compiler requires it.
@@ -244,7 +244,7 @@ All mechanical substitutions happen first, before any LLM is involved:
 - **Parameter reference preservation.** `{param}` placeholders in `generated block` bodies and parameter references in the IR are **not** substituted — they are preserved as named slots for the consuming LLM to resolve at runtime. `"Inspect the failure in {area}"` stays as `"Inspect the failure in {area}"`.
 - **Local binding reference tagging.** `{name}` slots that resolve to local bindings (e.g., `{diagnosis}` where `diagnosis = analyze_error(...)`) are tagged as `local_ref` on the resolved IR node. Unlike parameter references, local-ref slots are **not** preserved as literal `{name}` tokens — Step 2 resolves them into natural-language cross-references in the compiled prose. The consuming LLM already produced the referenced value in a prior step and does not need a placeholder for its own output.
 - **Parameter metadata assembly.** For each parameter in the skill's `InputContract`, Step 1 collects the name, type annotation (if any), and default value (if any) into a parameter list for the `## Parameters` section.
-- **Bare name inlining.** Bare names that resolve to `text` or `generated text` are replaced with their string content as-is.
+- **Bare name inlining.** Bare names that resolve to `const` or `generated const` are replaced with their string content as-is.
 - **Inline string passthrough.** Inline strings like `"Don't propose a fix until you've confirmed the root cause."` pass through unchanged.
 - **Effect keyword passthrough.** The inferred effect set is prepared for frontmatter as a YAML list.
 - **Block projection tier assignment.** For each `Call` node targeting a block, Step 1 selects a projection tier (inline, same-file procedure, or external file) based on callee complexity, conditionality, and reuse. The tier is stored on the `ResolvedCall` node as `projection_mode`. For `same_file_procedure` and `external_file` tiers, Step 1 also attaches the callee's resolved flow nodes and constraints to the `ResolvedCall`. See `compiled-output.md` §Three-Tier Block Projection for the heuristic.
@@ -263,7 +263,7 @@ The LLM receives the resolved IR nodes and produces natural-language prose. It d
 - **Return folding.** The `return` expression becomes the closing sentence of the final numbered step.
 - **Description generation.** `description:` should always be present after Repair (Phase 3 generates it if the author omitted it). If Repair fails to converge (e.g., `G::analyze::missing-description` persists after 3 iterations), the build hard-fails via `G::repair::no-convergence` — the missing description never reaches Expand. There is no separate `G::validate::missing-description` diagnostic; the Repair convergence check is the safety net.
 
-Not every node needs the LLM. After Step 1, nodes that are already complete prose (inline strings, resolved `text` references) skip Step 2 entirely. The LLM only touches nodes that need reshaping: call expansions, `with`-modified calls, constraint rewording, conditional flattening, return folding, and parameter description generation for the `## Parameters` section.
+Not every node needs the LLM. After Step 1, nodes that are already complete prose (inline strings, resolved `const` references) skip Step 2 entirely. The LLM only touches nodes that need reshaping: call expansions, `with`-modified calls, constraint rewording, conditional flattening, return folding, and parameter description generation for the `## Parameters` section.
 
 ### How `with` works: the modifier as a reshaping prompt
 
@@ -415,7 +415,7 @@ Emit is pure formatting. The IR has all the content; Emit arranges it into the f
   - `### Procedure: <name>` — zero or more procedure sections for blocks projected at the same-file procedure tier. Each contains the callee's expanded flow as a numbered list with an optional constraint preamble. See `compiled-output.md` §Three-Tier Block Projection.
   - At least one of `### Steps` or `### Constraints` must be present. `### Context` is supplementary and does not satisfy this requirement alone.
 
-- **Authoring construct erasure.** All imports, text references, `generated text`/`generated block` markers, comments, module paths, `with` modifiers — everything from the authoring world is gone. Parameter names survive only as `{param}` references in Steps/Constraints and as entries in the `## Parameters` section. The compiled file is self-contained for Tier 1/2 projections; Tier 3 projections retain procedure file paths as runtime references (per `compiled-output.md` §Three-Tier Block Projection).
+- **Authoring construct erasure.** All imports, const references, `generated const`/`generated block` markers, comments, module paths, `with` modifiers — everything from the authoring world is gone. Parameter names survive only as `{param}` references in Steps/Constraints and as entries in the `## Parameters` section. The compiled file is self-contained for Tier 1/2 projections; Tier 3 projections retain procedure file paths as runtime references (per `compiled-output.md` §Three-Tier Block Projection).
 
 - **Formatting rules** (per `compiled-output.md`):
   1. One instruction per list item (except the final Step, which may include the return sentence).
@@ -430,7 +430,7 @@ Emit is pure formatting. The IR has all the content; Emit arranges it into the f
 
 - **Startup cleanup of stale `.tmp` siblings.** At the very start of Phase 7, before writing any new `.tmp` file, the compiler scans the output paths it is about to write and deletes any pre-existing `.tmp` siblings (`foo.md.tmp`, `foo.ir.json.tmp`, and the `.tmp` companions of any procedure files this build will emit). This handles leftovers from a prior run that crashed, was SIGINT-killed, or was otherwise terminated between writing a `.tmp` and renaming it. There is no lockfile and no separate process supervisor — the sweep is idempotent (deleting a non-existent `.tmp` is a no-op) and self-contained per file. A `.tmp` belonging to a *different* output path (one this build is not about to produce) is left untouched.
 
-- **Library file emission.** A library file (zero `skill` declarations) runs through the same Emit phase. Since there is no skill to project, Emit produces no skill-level `.md` file. However, each `export block` in the library whose expanded prose is >= 150 words (above the Tier 1 inline threshold; see `compiled-output.md` §Three-Tier Block Projection) emits a standalone procedure `.md` file into a subdirectory named after the library source file (e.g., `repo_tools.glyph.md` with `export block inspect_repo` → `repo_tools/inspect-repo.md`). Export blocks below the threshold and all `export text`/`int`/`float` constants emit nothing — they contribute to consumers only through the validated IR. A library that produces zero `.md` files compiles successfully with no output; this is normal, not an error (see `language-surface.md` §File-Level Rules). Sibling exports within a single library file are visited in **source order** (top-to-bottom as they appear in the `.glyph.md`); this fixes diagnostic ordering and on-disk write order for reproducibility. Forward references between sibling exports are legal — same-file blocks have no declaration-order requirement (`data-flow.md`).
+- **Library file emission.** A library file (zero `skill` declarations) runs through the same Emit phase. Since there is no skill to project, Emit produces no skill-level `.md` file. However, each `export block` in the library whose expanded prose is >= 150 words (above the Tier 1 inline threshold; see `compiled-output.md` §Three-Tier Block Projection) emits a standalone procedure `.md` file into a subdirectory named after the library source file (e.g., `repo_tools.glyph.md` with `export block inspect_repo` → `repo_tools/inspect-repo.md`). Export blocks below the threshold and all `export const` values emit nothing — they contribute to consumers only through the validated IR. A library that produces zero `.md` files compiles successfully with no output; this is normal, not an error (see `language-surface.md` §File-Level Rules). Sibling exports within a single library file are visited in **source order** (top-to-bottom as they appear in the `.glyph.md`); this fixes diagnostic ordering and on-disk write order for reproducibility. Forward references between sibling exports are legal — same-file blocks have no declaration-order requirement (`data-flow.md`).
 
 **What Emit does not do:** No LLM involvement. No content generation. No decisions about what to say. If Expand did its job, Emit is trivial.
 
@@ -513,7 +513,7 @@ Key clarifications this reconciliation makes:
 | Unused import removal | 3a | Yes |
 | Duplicate import merging | 3a | Yes |
 | Section reorder to convention | 3a | Yes |
-| `generated text` materialization | 3b | Yes |
+| `generated const` materialization | 3b | Yes |
 | `generated block` materialization | 3b | Yes |
 | Missing `description:` generation | 3b | Yes |
 | Missing `effects:` generation | 3b | Yes |
@@ -554,7 +554,7 @@ Incremental compilation and build caching are **deferred** from MVP (per `todo.m
 - **Foundations:** `foundations.md` — #18 (deterministic passes own correctness), #33 (novice learnability).
 - **Source syntax:** `language-surface.md` — declaration forms, indentation, sub-sections. §5 lists the 9-step pipeline that this document supersedes.
 - **IR and roles:** `ir-and-semantics.md` — five MVP roles, constraint model, effects, section vocabulary.
-- **Repair:** `repair.md` — full repair rules, generated definitions (text and block), single-string rule, idempotence, intent potency.
+- **Repair:** `repair.md` — full repair rules, generated definitions (const and block), single-string rule, idempotence, intent potency.
 - **Data flow:** `data-flow.md` — parameters, calls, `with` modifier, control flow, return semantics, closure.
 - **Compiled output:** `compiled-output.md` — frontmatter shape, `## Parameters` section, `## Instructions` structure, projection rules, parameterless compilation model.
 - **Imports:** `imports.md` — path resolution, cycle rejection, effect propagation, multi-file compilation order.

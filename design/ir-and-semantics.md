@@ -156,7 +156,7 @@ Authors should be able to write terse source. The compiler infers role, strength
 Evidence order:
 
 1. Explicit marker in source.
-2. Metadata from same-file `text` or block declarations.
+2. Metadata from same-file `const` or block declarations.
 3. Metadata from imported or standard-library declarations.
 4. Position and structure (e.g., inside `flow:` or as a bare block-body string using the single-string shorthand implies `Step`; inside `description:` is context metadata and carries no instruction role).
 5. Compound-name cues (`avoid_*`, `must_*`, `never_*`, `must_never_*`) — used as evidence for role/polarity inference; no forced splitting.
@@ -265,9 +265,9 @@ Five colon-terminated headers are available inside `skill`, `block`, and `export
 
 | Section | Spelling | Content |
 |---------|----------|---------|
-| `description:` | singular | One-line summary of when/why to use this skill; compiles to frontmatter `description`. Body is a single quoted string literal (`"..."` or `"""..."""`) or a bare-name reference to a `text` / `export text` declaration |
+| `description:` | singular | One-line summary of when/why to use this skill; compiles to frontmatter `description`. Body is a single quoted string literal (`"..."` or `"""..."""`) or a bare-name reference to a `const` / `export const` declaration |
 | `effects:` | plural | Effect keywords (see section 3); compiles to frontmatter `effects` |
-| `context:` | singular | Background information the agent should understand while executing. Body contains bare-name references to `text`/`export text` declarations, inline string literals, or `context`-prefixed markers |
+| `context:` | singular | Background information the agent should understand while executing. Body contains bare-name references to `const`/`export const` declarations, inline string literals, or `context`-prefixed markers |
 | `constraints:` | plural | Constraint markers: `require`, `avoid`, `must` + concept |
 | `flow:` | singular | Ordered steps: calls, bindings, `return`, `if`, bare names, inline strings |
 
@@ -279,13 +279,13 @@ Five colon-terminated headers are available inside `skill`, `block`, and `export
 
 `description:` provides a concise, one-line summary of when and why a skill should be used. It compiles to the `description` field in YAML frontmatter (see `compiled-output.md`), which is the primary trigger for coding agents that select skills.
 
-**Body grammar.** The body is **exactly one quoted string literal** — either an inline `"..."` or a block `"""..."""` — or a **bare name** that resolves to a same-file `text` / `export text` declaration. Concatenation, multiple literals, and arbitrary expressions are forbidden (consistent with the no-string-concatenation foundation in `foundations.md`). For long descriptions, extract to a `text` declaration and reference it by name. Both the short form (content on the same line) and the long form (keyword alone, indented body below) are accepted, per the generic sub-section rule in `language-surface.md` §2.5.
+**Body grammar.** The body is **exactly one quoted string literal** — either an inline `"..."` or a block `"""..."""` — or a **bare name** that resolves to a same-file `const` / `export const` declaration. Concatenation, multiple literals, and arbitrary expressions are forbidden (consistent with the no-string-concatenation foundation in `foundations.md`). For long descriptions, extract to a `const` declaration and reference it by name. Both the short form (content on the same line) and the long form (keyword alone, indented body below) are accepted, per the generic sub-section rule in `language-surface.md` §2.5.
 
 **Parameter slots.** `{name}` parameter references inside the description body are **illegal** and emit `G::parse::param-slot-in-non-instruction-string` (see `values-and-names.md` §No Interpolation). The compiled frontmatter `description` is a literal string, not an instruction with runtime substitutions.
 
 **Singular.** `description:` is set-like neither in source nor in IR — exactly one description per skill. A second `description:` sub-section in the same `skill` body emits `G::parse::duplicate-subsection`, classified **repairable**: Phase 3 Repair merges compatible duplicates into one combined description (and emits a hard error if they contradict). After repair re-parses, only one `description:` is accepted.
 
-**Availability.** `description:` is available on `skill`, `block`, and `export block` declarations. It remains N/A for value-binding declarations (`text`, `int`, `float` and their `export`/`generated` variants). On a `skill`, the description compiles to frontmatter and is read by the outer agent that picks the skill. On a `block` or `export block`, the description is the natural-language predicate consulted by `BLOCKNAME.applies()` (see §Block Trigger Predicate below); it does not surface in frontmatter.
+**Availability.** `description:` is available on `skill`, `block`, and `export block` declarations. It remains N/A for value-binding declarations (`const` and its `export`/`generated` variants). On a `skill`, the description compiles to frontmatter and is read by the outer agent that picks the skill. On a `block` or `export block`, the description is the natural-language predicate consulted by `BLOCKNAME.applies()` (see §Block Trigger Predicate below); it does not surface in frontmatter.
 
 ```glyph
 skill fix_bug(scope = ".")
@@ -305,11 +305,11 @@ On a `block` / `export block`, `description:` is **optional**. It is required on
 
 **Compilation target.** `context:` compiles to `### Context` under `## Instructions` in compiled output, before `### Steps` (see `compiled-output.md`).
 
-**Body grammar.** The body contains **bare-name references** to same-file `text` / `export text` declarations, **inline quoted strings** (`"..."` or `"""..."""`), or **`context`-prefixed markers** that resolve to declarations. Multiple entries are permitted (unlike `description:`, which is singular). Both the short form (content on the same line) and the long form (keyword alone, indented body below) are accepted, per the generic sub-section rule in `language-surface.md` §2.5.
+**Body grammar.** The body contains **bare-name references** to same-file `const` / `export const` declarations, **inline quoted strings** (`"..."` or `"""..."""`), or **`context`-prefixed markers** that resolve to declarations. Multiple entries are permitted (unlike `description:`, which is singular). Both the short form (content on the same line) and the long form (keyword alone, indented body below) are accepted, per the generic sub-section rule in `language-surface.md` §2.5.
 
 **Parameter slots.** `{name}` parameter references inside `context:` body content are **illegal** and emit `G::parse::param-slot-in-non-instruction-string` (same restriction as `description:`). Context is informational framing, not parameterized instruction prose.
 
-**Availability.** `context:` is available on `skill`, `block`, and `export block` declarations. It remains N/A for value-binding declarations (`text`, `int`, `float` and their `export`/`generated` variants).
+**Availability.** `context:` is available on `skill`, `block`, and `export block` declarations. It remains N/A for value-binding declarations (`const` and its `export`/`generated` variants).
 
 **Optional on all declaration kinds.** `context:` is never required. Omitting it simply means the compiled output has no `### Context` section.
 
@@ -345,9 +345,9 @@ skill fix_bug(scope = ".")
 
 **IR representation.** `Branch.condition` remains a String (`ir-schema.md` §Branch). The literal source `block_x.applies()` survives unchanged into the condition text — no new `Expression` variant is introduced. Phase 4 (Lower) recognizes the form during condition tokenization and validates the shape; Expand Step 1 resolves each `block_x.applies()` invocation by reading `block_x`'s `description:` and populating a side map `applies_descriptions: {block_name: resolved_description}` on the Branch node (`ir-schema.md` §Resolved IR). Expand Step 2 reads both the condition string and the side map to render the conditional Step prose (see `compiled-output.md` §Description-Driven Branch Projection).
 
-**Body grammar inheritance.** The body grammar of `description:` on a block is identical to a skill's: exactly one quoted string literal (`"..."` or `"""..."""`), or a bare-name reference to a same-file `text` / `export text` declaration. The same parameter-slot rule (`G::parse::param-slot-in-non-instruction-string`) and singularity rule (`G::parse::duplicate-subsection`) apply.
+**Body grammar inheritance.** The body grammar of `description:` on a block is identical to a skill's: exactly one quoted string literal (`"..."` or `"""..."""`), or a bare-name reference to a same-file `const` / `export const` declaration. The same parameter-slot rule (`G::parse::param-slot-in-non-instruction-string`) and singularity rule (`G::parse::duplicate-subsection`) apply.
 
-**Style relief — extract long descriptions.** When a block's `description:` grows long (e.g., trigger phrases, multi-clause "use when" guidance), the bare-name reference form is the recommended pattern: declare a `text` constant and reference it from `description:`. Block declarations stay tight; trigger prose lives next to other constants as data. Length-based linter nudges are a post-MVP `glyph fmt` / `glyph check` concern (see `todo.md`).
+**Style relief — extract long descriptions.** When a block's `description:` grows long (e.g., trigger phrases, multi-clause "use when" guidance), the bare-name reference form is the recommended pattern: declare a `const` and reference it from `description:`. Block declarations stay tight; trigger prose lives next to other constants as data. Length-based linter nudges are a post-MVP `glyph fmt` / `glyph check` concern (see `todo.md`).
 
 **Composition with regular booleans.** `applies()` calls compose with the existing condition operators (`and`, `or`, `not`, parenthesization). For a condition that is *purely* one or more `applies()` calls combined by `or` (or a chain of `if`/`elif` arms each guarded by a single `applies()` call), Expand Step 2 emits the "decide which applies" prose form. For mixed conditions (e.g., `block_x.applies() and not is_dry_run`), the description inlines into the larger condition prose: "If the user wants a structured plan and this is not a dry run, ...". See `compiled-output.md` §Description-Driven Branch Projection.
 

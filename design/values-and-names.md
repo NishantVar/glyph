@@ -19,7 +19,7 @@ MVP escape sequences are limited to `\"` for a literal double quote and `\\` for
 Block strings use triple double quotes for multiline instruction text.
 
 ```glyph
-text preserve_existing_patterns = """
+const preserve_existing_patterns = """
     Prefer the repository's existing patterns, helper APIs, naming,
     and file organization before introducing a new abstraction or style.
 """
@@ -38,11 +38,11 @@ This follows foundations: not a prompt template system and foundations: text reu
 - **Parameter references** (`{name}` resolves to a declared parameter) are preserved verbatim as runtime slots in the compiled Markdown for the consuming LLM to fill from user context at runtime (`compiled-output.md` §Parameter References In Steps). The compiler never substitutes the slot's value.
 - **Local binding references** (`{name}` resolves to a local binding from an assignment like `diagnosis = analyze_error(...)`) are resolved by the Expand pass (Step 2) into natural-language cross-references in the compiled prose. They do **not** survive as literal `{name}` slots — the consuming LLM already produced the referenced value in a prior step and does not need a placeholder for its own output. For example, `"Apply the fix based on {diagnosis}"` might compile to "Apply the fix based on the diagnosis from your earlier analysis."
 
-Slots are legal **only inside instruction-bearing string positions**: `text` / `generated text` bodies, `generated block` body strings, inline instruction strings inside `flow:`, constraint texts, and string arguments to stdlib calls whose body becomes a compiled instruction (`subagent`, `send`). A `{name}` token in any other string position (a parameter default value, a `description:` field, etc.) emits `G::parse::param-slot-in-non-instruction-string` (repairable: the braces are stripped and the content is treated as literal).
+Slots are legal **only inside instruction-bearing string positions**: `const` / `generated const` bodies, `generated block` body strings, inline instruction strings inside `flow:`, constraint texts, and string arguments to stdlib calls whose body becomes a compiled instruction (`subagent`, `send`). A `{name}` token in any other string position (a parameter default value, a `description:` field, etc.) emits `G::parse::param-slot-in-non-instruction-string` (repairable: the braces are stripped and the content is treated as literal).
 
 The slot grammar is strict: `{IDENTIFIER}` only. Anything else with braces — `{ "key": "value" }`, `{x, y}`, `if x { ... }`, or any other non-identifier content — is literal text and is parsed as such. There is no escape mechanism; an author who wants the literal text `{name}` where `name` happens to also be an in-scope parameter or binding must rephrase the instruction.
 
-A slot whose `name` does not resolve to a parameter or a local binding in scope at the slot's source position is a hard error (`G::analyze::unknown-param-slot`, not repairable). The resolution scope is the enclosing declaration's parameters plus the local bindings visible at that point; neither imports nor `text` declarations participate in slot resolution (those are reused via bare-name reference, a separate mechanism).
+A slot whose `name` does not resolve to a parameter or a local binding in scope at the slot's source position is a hard error (`G::analyze::unknown-param-slot`, not repairable). The resolution scope is the enclosing declaration's parameters plus the local bindings visible at that point; neither imports nor `const` declarations participate in slot resolution (those are reused via bare-name reference, a separate mechanism).
 
 ### No Value-Level Operators
 
@@ -135,7 +135,7 @@ If two declarations in different files or scopes use different casings for the s
 
 The following are reserved keywords and cannot be used as identifiers:
 
-`skill`, `block`, `export`, `import`, `text`, `int`, `float`, `flow`, `call`, `if`, `elif`, `else`, `return`, `true`, `false`, `none`, `effects`, `constraints`, `inputs`, `outputs`, `when_to_use`, `description`, `as`, `generated`, `input`, `output`, `must`, `require`, `avoid`, `context`, `and`, `or`, `not`.
+`skill`, `block`, `export`, `import`, `const`, `flow`, `call`, `if`, `elif`, `else`, `return`, `true`, `false`, `none`, `effects`, `constraints`, `inputs`, `outputs`, `when_to_use`, `description`, `as`, `generated`, `input`, `output`, `must`, `require`, `avoid`, `context`, `and`, `or`, `not`.
 
 This list grows with the language. New keywords should be added conservatively.
 
@@ -145,18 +145,18 @@ This list grows with the language. New keywords should be added conservatively.
 
 A bare identifier such as `make_plan` may resolve to:
 
-- a value-binding declaration (`text`, `int`, or `float`) in the current file;
+- a value-binding declaration (`const`) in the current file;
 - a parameter of the enclosing skill or block;
 - a local binding;
 - an imported name;
 - a standard-library entry;
-- a repair-generated definition (MVP: `generated text` only).
+- a repair-generated definition (MVP: `generated const` only).
 
 A parenthesized form such as `make_plan()` or `make_plan(ctx)` is always a block call.
 
 | Form | Resolves to |
 |---|---|
-| `make_plan` (bare) | text, parameter, local binding, import, or generated definition |
+| `make_plan` (bare) | const, parameter, local binding, import, or generated definition |
 | `make_plan()` (with parens) | block call (zero arguments) |
 | `make_plan(ctx)` (with arguments) | block call |
 
@@ -168,7 +168,7 @@ If the same normalized name is visible from multiple sources in overlapping scop
 
 Examples of conflicts that produce hard errors:
 
-- A parameter shares a name with a `text` declaration in the same file.
+- A parameter shares a name with a `const` declaration in the same file.
 - A local binding shares a name with a parameter in the same block.
 - An import collides with a same-file declaration.
 

@@ -26,7 +26,7 @@ Step 2 must not:
 - invent sections beyond `## Instructions` with its `### Context`, `### Steps`, and `### Constraints` sub-sections (see `compiled-output.md`);
 - invent new `{param}` references that do not correspond to declared parameters (declared parameter references must be preserved), or fail to resolve `local_ref` slots into natural-language prose;
 - change effects, types, or the call graph;
-- re-materialize content that was already prose after Step 1 (inline strings and resolved `text` references pass through untouched);
+- re-materialize content that was already prose after Step 1 (inline strings and resolved `const` references pass through untouched);
 - serve as a second repair loop; it has no access to diagnostics and no ability to rewrite source.
 
 If Step 2 cannot cleanly reshape a node, that is a Phase 6b failure (see §4), not an opportunity for Step 2 to be more creative.
@@ -167,7 +167,7 @@ For the Markdown returned by Step 2:
 
 - **Parameters section shape.**
   - If the skill has parameters, `## Parameters` must be present and contain exactly one bulleted item per `InputContract` parameter.
-  - Each item must include the parameter name in bold and a brief description. Each item must end with either a `(default: <value>)` trailer (when the parameter has a default) or a `(required)` trailer (when it does not). Skill parameters use both forms; export-block parameters always carry a default per `language-surface.md` §3.10.
+  - Each item must include the parameter name in bold and a brief description. Each item must end with either a `(default: <value>)` trailer (when the parameter has a default) or a `(required)` trailer (when it does not). Skill parameters use both forms; export-block parameters always carry a default per `language-surface.md` §3.8.
   - If the skill has no parameters, `## Parameters` must not be present.
 
 - **Content shape.**
