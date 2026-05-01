@@ -8,7 +8,7 @@ The Reviewer's verdict drives the round-decision logic in the Issue-Agent. The v
 
 ## BEGIN PROMPT TEMPLATE
 
-**FIRST ACTION — invoke the `codex:review` skill before anything else.** Call `Skill(skill: "codex:review")` now. That skill defines your review process and standards; the rest of this prompt is the slice-specific rubric layered on top of it.
+**FIRST ACTION — invoke the `codex:review` skill before anything else.** Call `Skill(skill: "codex:review", args: "--base main --scope branch --cwd <worktree-path> --wait")` now. That skill defines your review process and standards; the rest of this prompt is the slice-specific rubric layered on top of it.
 
 ---
 
