@@ -1,0 +1,102 @@
+================================================================================
+Whole-module import with alias
+================================================================================
+
+import "./repo_tools.glyph.md" as repo_tools
+
+skill main()
+    description: "x"
+    flow:
+        repo_tools.inspect_repo()
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_statement
+    path: (import_path
+      (string_literal
+        (string_content)))
+    alias: (identifier))
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (description_section
+        content: (string_literal
+          (string_content)))
+      (flow_section
+        (flow_statement
+          (call_expression
+            function: (qualified_name
+              module: (identifier)
+              member: (identifier))
+            (argument_list)))))))
+
+================================================================================
+Selective import (single-line)
+================================================================================
+
+import "./prefs.glyph.md" { preserve_existing_patterns }
+
+skill foo()
+    flow:
+        "x"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_statement
+    path: (import_path
+      (string_literal
+        (string_content)))
+    list: (import_list
+      (import_specifier
+        name: (identifier))))
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))
+
+================================================================================
+Selective import with multi-line list and alias
+================================================================================
+
+import "./safety.glyph.md" {
+    unrelated_edits,
+    preserve_existing_patterns as existing_patterns,
+    validate_before_success,
+}
+
+skill bar()
+    flow:
+        "x"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_statement
+    path: (import_path
+      (string_literal
+        (string_content)))
+    list: (import_list
+      (import_specifier
+        name: (identifier))
+      (import_specifier
+        name: (identifier)
+        alias: (identifier))
+      (import_specifier
+        name: (identifier))))
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))

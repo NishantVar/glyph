@@ -1,0 +1,75 @@
+================================================================================
+Comments inside a multi-line parameter list
+================================================================================
+
+skill summarize(
+    // the working directory
+    scope = ".",
+    // where to write the result
+    target,
+)
+    flow:
+        "x"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list
+      (comment)
+      (parameter
+        name: (identifier)
+        default: (string_literal
+          (string_content)))
+      (comment)
+      (parameter
+        name: (identifier)))
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))
+
+================================================================================
+Mid-body comments between sections
+================================================================================
+
+skill foo()
+    description: "Hello."
+
+    // mid-body explanatory comment
+
+    require accuracy
+    // another comment between marker and flow
+    flow:
+        // comment inside flow
+        "x"
+
+text accuracy = "x"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (description_section
+        content: (string_literal
+          (string_content)))
+      (comment)
+      (require_marker
+        (identifier))
+      (comment)
+      (flow_section
+        (comment)
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content)))))))
+  (text_declaration
+    name: (identifier)
+    value: (string_literal
+      (string_content))))
