@@ -1,0 +1,21 @@
+{
+  "name": "tree-sitter-glyph",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Glyph agent skill DSL",
+  "main": "bindings/node",
+  "keywords": ["tree-sitter", "glyph", "parser"],
+  "license": "MIT",
+  "dependencies": {
+    "nan": "^2.18.0"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.26.0"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.glyph",
+      "file-types": ["glyph", "glyph.md"],
+      "highlights": "queries/highlights.scm"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "grammars": [
+    {
+      "name": "glyph",
+      "camelcase": "Glyph",
+      "scope": "source.glyph",
+      "path": ".",
+      "file-types": ["glyph", "glyph.md"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT"
+  }
+}
