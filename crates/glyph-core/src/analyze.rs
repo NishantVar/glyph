@@ -43,12 +43,12 @@ pub fn analyze_with_diagnostics(
     bag: &mut DiagBag,
     enable_effects: bool,
 ) -> SourceFile {
-    // Collect text declaration names for bare-name detection in flow.
-    let text_names: HashSet<&str> = file
+    // Collect const declaration names for bare-name detection in flow.
+    let const_names: HashSet<&str> = file
         .decls
         .iter()
         .filter_map(|d| match d {
-            Decl::Text(t) => Some(t.node.name.as_str()),
+            Decl::Const(t) => Some(t.node.name.as_str()),
             _ => None,
         })
         .collect();
@@ -78,7 +78,7 @@ pub fn analyze_with_diagnostics(
         .decls
         .iter()
         .filter_map(|d| match d {
-            Decl::Text(t) if !t.node.exported => Some(t.node.name.as_str()),
+            Decl::Const(t) if !t.node.exported => Some(t.node.name.as_str()),
             Decl::Block(b) => Some(b.node.name.as_str()),
             _ => None,
         })
@@ -87,13 +87,13 @@ pub fn analyze_with_diagnostics(
     for decl in &file.decls {
         match decl {
             Decl::Skill(spanned) => {
-                analyze_skill(spanned, file_id, file_label, line_index, bag, &text_names, &block_names, &block_decls, &HashMap::new(), enable_effects)
+                analyze_skill(spanned, file_id, file_label, line_index, bag, &const_names, &block_names, &block_decls, &HashMap::new(), enable_effects)
             }
             Decl::ExportBlock(spanned) => {
                 analyze_export_block(spanned, file_label, line_index, bag, &private_names);
             }
             Decl::Block(_) => {}
-            Decl::Text(_) => {}
+            Decl::Const(_) => {}
             Decl::Import(_) => {}
         }
     }
@@ -104,7 +104,7 @@ pub fn analyze_with_diagnostics(
         for decl in &file.decls {
             let (name, span) = match decl {
                 Decl::ExportBlock(b) => (b.node.name.as_str(), b.span),
-                Decl::Text(t) if t.node.exported => (t.node.name.as_str(), t.span),
+                Decl::Const(t) if t.node.exported => (t.node.name.as_str(), t.span),
                 _ => continue,
             };
             if let Some(_prev_span) = seen_exports.get(name) {
@@ -127,7 +127,7 @@ pub fn analyze_with_diagnostics(
     if !has_skill {
         let has_export = file.decls.iter().any(|d| {
             matches!(d, Decl::ExportBlock(_))
-                || matches!(d, Decl::Text(t) if t.node.exported)
+                || matches!(d, Decl::Const(t) if t.node.exported)
         });
         if !has_export {
             let span = crate::span::Span::new(file_id, 0, 0);
@@ -162,12 +162,12 @@ pub fn analyze_with_imports(
     imported_block_descriptions: &HashMap<String, String>,
     enable_effects: bool,
 ) -> SourceFile {
-    // Collect local text declaration names.
-    let local_text_names: HashSet<&str> = file
+    // Collect local const declaration names.
+    let local_const_names: HashSet<&str> = file
         .decls
         .iter()
         .filter_map(|d| match d {
-            Decl::Text(t) => Some(t.node.name.as_str()),
+            Decl::Const(t) => Some(t.node.name.as_str()),
             _ => None,
         })
         .collect();
@@ -183,10 +183,10 @@ pub fn analyze_with_imports(
         .collect();
 
     // Combined sets including imports.
-    let mut text_names: HashSet<&str> = local_text_names;
-    let imported_text_refs: Vec<String> = imported_texts.iter().cloned().collect();
-    for t in &imported_text_refs {
-        text_names.insert(t.as_str());
+    let mut const_names: HashSet<&str> = local_const_names;
+    let imported_const_refs: Vec<String> = imported_texts.iter().cloned().collect();
+    for t in &imported_const_refs {
+        const_names.insert(t.as_str());
     }
 
     let mut block_names: HashSet<&str> = local_block_names;
@@ -210,7 +210,7 @@ pub fn analyze_with_imports(
         .decls
         .iter()
         .filter_map(|d| match d {
-            Decl::Text(t) if !t.node.exported => Some(t.node.name.as_str()),
+            Decl::Const(t) if !t.node.exported => Some(t.node.name.as_str()),
             Decl::Block(b) => Some(b.node.name.as_str()),
             _ => None,
         })
@@ -221,7 +221,7 @@ pub fn analyze_with_imports(
             Decl::Skill(spanned) => {
                 analyze_skill_with_usage_tracking(
                     spanned, file_id, file_label, line_index, bag,
-                    &text_names, &block_names, &block_decls,
+                    &const_names, &block_names, &block_decls,
                     imported_texts, imported_blocks, used_import_names,
                     imported_block_descriptions,
                     enable_effects,
@@ -230,7 +230,7 @@ pub fn analyze_with_imports(
             Decl::ExportBlock(spanned) => {
                 analyze_export_block(spanned, file_label, line_index, bag, &private_names);
             }
-            Decl::Block(_) | Decl::Text(_) | Decl::Import(_) => {}
+            Decl::Block(_) | Decl::Const(_) | Decl::Import(_) => {}
         }
     }
 
@@ -240,7 +240,7 @@ pub fn analyze_with_imports(
         for decl in &file.decls {
             let (name, span) = match decl {
                 Decl::ExportBlock(b) => (b.node.name.as_str(), b.span),
-                Decl::Text(t) if t.node.exported => (t.node.name.as_str(), t.span),
+                Decl::Const(t) if t.node.exported => (t.node.name.as_str(), t.span),
                 _ => continue,
             };
             if let Some(_prev_span) = seen_exports.get(name) {
@@ -263,7 +263,7 @@ pub fn analyze_with_imports(
     if !has_skill {
         let has_export = file.decls.iter().any(|d| {
             matches!(d, Decl::ExportBlock(_))
-                || matches!(d, Decl::Text(t) if t.node.exported)
+                || matches!(d, Decl::Const(t) if t.node.exported)
         });
         if !has_export {
             let span = crate::span::Span::new(file_id, 0, 0);
@@ -288,7 +288,7 @@ fn analyze_skill_with_usage_tracking(
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
-    text_names: &HashSet<&str>,
+    const_names: &HashSet<&str>,
     block_names: &HashSet<&str>,
     block_decls: &HashMap<&str, &crate::ast::BlockDecl>,
     imported_texts: &HashSet<String>,
@@ -298,7 +298,7 @@ fn analyze_skill_with_usage_tracking(
     enable_effects: bool,
 ) {
     // Run the normal analysis.
-    analyze_skill(spanned, file_id, file_label, line_index, bag, text_names, block_names, block_decls, imported_block_descriptions, enable_effects);
+    analyze_skill(spanned, file_id, file_label, line_index, bag, const_names, block_names, block_decls, imported_block_descriptions, enable_effects);
 
     // Track usage: walk flow/constraints/context to see which imported names are referenced.
     let skill = &spanned.node;
@@ -375,7 +375,7 @@ fn analyze_skill(
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
-    text_names: &HashSet<&str>,
+    const_names: &HashSet<&str>,
     block_names: &HashSet<&str>,
     block_decls: &HashMap<&str, &BlockDecl>,
     imported_block_descriptions: &HashMap<String, String>,
@@ -417,12 +417,12 @@ fn analyze_skill(
             }
             FlowStmt::BareName(name) => {
                 // A bare name in flow: without a keyword prefix is a compile error.
-                // Per spec: `G::analyze::text-in-flow` (repairable — Repair adds
+                // Per spec: `G::analyze::const-in-flow` (repairable — Repair adds
                 // parens and materializes a `generated block`).
                 let span = spanned.span;
                 bag.push(
                     crate::diagnostic::Diagnostic {
-                        id: "G::analyze::text-in-flow".into(),
+                        id: "G::analyze::const-in-flow".into(),
                         classification: crate::diagnostic::Classification::Repairable,
                         message: format!(
                             "bare name `{}` in `flow:` is not a valid statement; add a keyword prefix (`require`/`avoid`/`must`/`context`) or parentheses for a call",
@@ -482,7 +482,7 @@ fn analyze_skill(
             }
             FlowStmt::ConstraintMarker(marker) => {
                 // Check that the constraint name resolves to a text declaration.
-                if !text_names.contains(marker.name.as_str()) {
+                if !const_names.contains(marker.name.as_str()) {
                     let span = spanned.span;
                     bag.push(
                         Diagnostic::error(
@@ -498,7 +498,7 @@ fn analyze_skill(
                 }
             }
             FlowStmt::ContextMarker(entry) => {
-                check_context_entry_name(entry, text_names, spanned.span, file_label, line_index, bag);
+                check_context_entry_name(entry, const_names, spanned.span, file_label, line_index, bag);
             }
             FlowStmt::Return(_) => {
                 // Return statements are validated structurally by the parser
@@ -516,22 +516,22 @@ fn analyze_skill(
                 // Check applies() calls in condition.
                 check_applies_in_condition(
                     condition, spanned.span, file_id, file_label, line_index, bag,
-                    &text_names, &block_names, &block_decls, imported_block_descriptions,
+                    &const_names, &block_names, &block_decls, imported_block_descriptions,
                 );
                 // Check elif conditions too.
                 for elif in elif_branches {
                     check_applies_in_condition(
                         &elif.condition, spanned.span, file_id, file_label, line_index, bag,
-                        &text_names, &block_names, &block_decls, imported_block_descriptions,
+                        &const_names, &block_names, &block_decls, imported_block_descriptions,
                     );
                 }
                 // Check flow statements inside branch bodies for name resolution.
-                check_branch_body_names(then_body, spanned.span, file_label, line_index, bag, &text_names, &block_names);
+                check_branch_body_names(then_body, spanned.span, file_label, line_index, bag, &const_names, &block_names);
                 for elif in elif_branches {
-                    check_branch_body_names(&elif.body, spanned.span, file_label, line_index, bag, &text_names, &block_names);
+                    check_branch_body_names(&elif.body, spanned.span, file_label, line_index, bag, &const_names, &block_names);
                 }
                 if let Some(eb) = else_body {
-                    check_branch_body_names(eb, spanned.span, file_label, line_index, bag, &text_names, &block_names);
+                    check_branch_body_names(eb, spanned.span, file_label, line_index, bag, &const_names, &block_names);
                 }
             }
         }
@@ -539,7 +539,7 @@ fn analyze_skill(
 
     // Check body-level constraint name refs.
     for marker in &skill.body_constraints {
-        if !text_names.contains(marker.name.as_str()) {
+        if !const_names.contains(marker.name.as_str()) {
             let span = spanned.span;
             bag.push(
                 Diagnostic::error(
@@ -557,19 +557,19 @@ fn analyze_skill(
 
     // Check body-level context name refs.
     for entry in &skill.body_context {
-        check_context_entry_name(entry, text_names, spanned.span, file_label, line_index, bag);
+        check_context_entry_name(entry, const_names, spanned.span, file_label, line_index, bag);
     }
 
     // Check context: section name refs.
     for entry in &skill.context_section {
-        check_context_entry_name(entry, text_names, spanned.span, file_label, line_index, bag);
+        check_context_entry_name(entry, const_names, spanned.span, file_label, line_index, bag);
     }
 
     // Check body-level bare names against text declarations.
     // A bare text name at body level (no keyword prefix) is ambiguous — the
     // compiler doesn't know if the author meant constraint, context, or step.
     for name in &skill.body_bare_names {
-        if text_names.contains(name.as_str()) {
+        if const_names.contains(name.as_str()) {
             let span = spanned.span;
             bag.push(
                 crate::diagnostic::Diagnostic {
@@ -779,14 +779,14 @@ fn infer_effects_for_skill(
 
 fn check_context_entry_name(
     entry: &ContextEntry,
-    text_names: &HashSet<&str>,
+    const_names: &HashSet<&str>,
     span: crate::span::Span,
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
 ) {
     if let ContextEntry::NameRef(name) = entry {
-        if !text_names.contains(name.as_str()) {
+        if !const_names.contains(name.as_str()) {
             bag.push(
                 Diagnostic::error(
                     "G::analyze::undefined-name",
@@ -835,7 +835,7 @@ fn check_applies_in_condition(
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
-    text_names: &HashSet<&str>,
+    const_names: &HashSet<&str>,
     block_names: &HashSet<&str>,
     block_decls: &HashMap<&str, &BlockDecl>,
     imported_block_descriptions: &HashMap<String, String>,
@@ -850,7 +850,7 @@ fn check_applies_in_condition(
         let receiver = &condition[..abs_pos];
         let receiver_name = receiver.rsplit(|c: char| !c.is_alphanumeric() && c != '_').next().unwrap_or("");
         if !receiver_name.is_empty() {
-            if text_names.contains(receiver_name) {
+            if const_names.contains(receiver_name) {
                 // Receiver is a text declaration — not a block.
                 bag.push(
                     Diagnostic::error(
@@ -922,7 +922,7 @@ fn check_branch_body_names(
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
-    text_names: &HashSet<&str>,
+    const_names: &HashSet<&str>,
     block_names: &HashSet<&str>,
 ) {
     for stmt in body {
@@ -967,7 +967,7 @@ fn check_branch_body_names(
                 }
             }
             FlowStmt::ConstraintMarker(marker) => {
-                if !text_names.contains(marker.name.as_str()) {
+                if !const_names.contains(marker.name.as_str()) {
                     bag.push(
                         Diagnostic::error(
                             "G::analyze::undefined-name",
@@ -979,7 +979,7 @@ fn check_branch_body_names(
                 }
             }
             FlowStmt::ContextMarker(entry) => {
-                check_context_entry_name(entry, text_names, span, file_label, line_index, bag);
+                check_context_entry_name(entry, const_names, span, file_label, line_index, bag);
             }
             _ => {}
         }
@@ -1133,7 +1133,7 @@ mod tests {
         let source = "imported_block.applies()";
         let line_index = LineIndex::new(source);
         let span = Span::new(0, 0, source.len() as u32);
-        let text_names: HashSet<&str> = HashSet::new();
+        let const_names: HashSet<&str> = HashSet::new();
         let mut block_names: HashSet<&str> = HashSet::new();
         block_names.insert("imported_block");
         let block_decls: HashMap<&str, &BlockDecl> = HashMap::new(); // not in decls = imported
@@ -1145,7 +1145,7 @@ mod tests {
             "test.glyph.md",
             &line_index,
             &mut bag,
-            &text_names,
+            &const_names,
             &block_names,
             &block_decls,
             &HashMap::new(),

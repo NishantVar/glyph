@@ -4,4 +4,4 @@ skill empty_flow_skill()
 
     flow:
 
-text placeholder = "Placeholder constraint text."
+const placeholder = "Placeholder constraint text."

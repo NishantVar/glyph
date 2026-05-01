@@ -4,9 +4,9 @@
 //! `update_docs.glyph.md` per `design/mvp-acceptance.md` §1.
 
 use crate::ast::{
-    BlockDecl, ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl, ElifBranch,
-    ExportBlockDecl, FlowStmt, ImportDecl, ImportKind, ImportName, Param, ReturnExpr, Skill,
-    SourceFile, TextDecl,
+    BlockDecl, ConstDecl, ConstKind, ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl,
+    ElifBranch, ExportBlockDecl, FlowStmt, ImportDecl, ImportKind, ImportName, Param, ReturnExpr,
+    Skill, SourceFile,
 };
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::slot::scan_slots;
@@ -356,9 +356,9 @@ impl<'a> Parser<'a> {
                     let d = self.parse_skill()?;
                     decls.push(Decl::Skill(d));
                 }
-                "text" => {
-                    let d = self.parse_text_decl()?;
-                    decls.push(Decl::Text(d));
+                "const" => {
+                    let d = self.parse_const_decl()?;
+                    decls.push(Decl::Const(d));
                 }
                 "block" => {
                     let d = self.parse_block_decl()?;
@@ -369,7 +369,7 @@ impl<'a> Parser<'a> {
                     decls.push(Decl::Import(d));
                 }
                 "export" => {
-                    // Peek at the word after `export` to decide: `export block` or `export text`.
+                    // Peek at the word after `export` to decide: `export block` or `export const`.
                     let saved = self.pos;
                     self.pos += 1; // skip `export`
                     let next_kw = match &self.peek().kind {
@@ -377,7 +377,7 @@ impl<'a> Parser<'a> {
                         _ => {
                             return Err(ParseError::Unexpected {
                                 span: self.peek().span,
-                                message: "expected `block` or `text` after `export`".into(),
+                                message: "expected `block` or `const` after `export`".into(),
                             });
                         }
                     };
@@ -387,17 +387,73 @@ impl<'a> Parser<'a> {
                             let d = self.parse_export_block()?;
                             decls.push(Decl::ExportBlock(d));
                         }
-                        "text" => {
-                            let d = self.parse_export_text()?;
-                            decls.push(Decl::Text(d));
+                        "const" => {
+                            let d = self.parse_export_const()?;
+                            decls.push(Decl::Const(d));
+                        }
+                        legacy @ ("text" | "int" | "float") => {
+                            return Err(ParseError::Unexpected {
+                                span: self.peek().span,
+                                message: format!(
+                                    "`export {}` is no longer supported; use `export const` instead",
+                                    legacy
+                                ),
+                            });
                         }
                         _ => {
                             return Err(ParseError::Unexpected {
                                 span: self.peek().span,
-                                message: format!("expected `block` or `text` after `export`, found `{}`", next_kw),
+                                message: format!("expected `block` or `const` after `export`, found `{}`", next_kw),
                             });
                         }
                     }
+                }
+                "generated" => {
+                    // Peek at the word after `generated` to support `generated const`
+                    // (the only generated-form value binding). `generated block` is
+                    // a separate slice and not yet implemented in the parser.
+                    let saved = self.pos;
+                    self.pos += 1; // skip `generated`
+                    let next_kw = match &self.peek().kind {
+                        TokenKind::Ident(s) => s.clone(),
+                        _ => {
+                            return Err(ParseError::Unexpected {
+                                span: self.peek().span,
+                                message: "expected `const` after `generated`".into(),
+                            });
+                        }
+                    };
+                    self.pos = saved; // restore
+                    match next_kw.as_str() {
+                        "const" => {
+                            let d = self.parse_generated_const()?;
+                            decls.push(Decl::Const(d));
+                        }
+                        legacy @ ("text" | "int" | "float") => {
+                            return Err(ParseError::Unexpected {
+                                span: self.peek().span,
+                                message: format!(
+                                    "`generated {}` is no longer supported; use `generated const` instead",
+                                    legacy
+                                ),
+                            });
+                        }
+                        _ => {
+                            return Err(ParseError::Unexpected {
+                                span: self.peek().span,
+                                message: format!("expected `const` after `generated`, found `{}`", next_kw),
+                            });
+                        }
+                    }
+                }
+                legacy @ ("text" | "int" | "float") => {
+                    return Err(ParseError::Unexpected {
+                        span: self.peek().span,
+                        message: format!(
+                            "`{}` is no longer a value-binding keyword; use `const` instead",
+                            legacy
+                        ),
+                    });
                 }
                 other => {
                     return Err(ParseError::Unexpected {
@@ -541,10 +597,10 @@ impl<'a> Parser<'a> {
         Ok(Spanned::new(ImportDecl { path, kind }, span))
     }
 
-    /// Parse `export text <name> = "<value>"`.
-    fn parse_export_text(&mut self) -> Result<Spanned<TextDecl>, ParseError> {
+    /// Parse `export const <name> = "<value>"`.
+    fn parse_export_const(&mut self) -> Result<Spanned<ConstDecl>, ParseError> {
         let (_, kw_span) = self.expect_ident(Some("export"))?;
-        let (_, _) = self.expect_ident(Some("text"))?;
+        let (_, _) = self.expect_ident(Some("const"))?;
         let (name, _) = self.expect_ident(None)?;
         self.expect(&TokenKind::Equals)?;
         let value = match &self.peek().kind {
@@ -556,13 +612,43 @@ impl<'a> Parser<'a> {
             _ => {
                 return Err(ParseError::Unexpected {
                     span: self.peek().span,
-                    message: "expected string literal as `export text` value".into(),
+                    message: "expected string literal as `export const` value".into(),
                 });
             }
         };
         let end_span = self.tokens[self.pos - 1].span;
         let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
-        Ok(Spanned::new(TextDecl { name, value, exported: true }, span))
+        Ok(Spanned::new(
+            ConstDecl { name, value, kind: ConstKind::String, exported: true },
+            span,
+        ))
+    }
+
+    /// Parse `generated const <name> = "<value>"`.
+    fn parse_generated_const(&mut self) -> Result<Spanned<ConstDecl>, ParseError> {
+        let (_, kw_span) = self.expect_ident(Some("generated"))?;
+        let (_, _) = self.expect_ident(Some("const"))?;
+        let (name, _) = self.expect_ident(None)?;
+        self.expect(&TokenKind::Equals)?;
+        let value = match &self.peek().kind {
+            TokenKind::StringLit(s) => {
+                let v = s.clone();
+                self.pos += 1;
+                v
+            }
+            _ => {
+                return Err(ParseError::Unexpected {
+                    span: self.peek().span,
+                    message: "expected string literal as `generated const` value".into(),
+                });
+            }
+        };
+        let end_span = self.tokens[self.pos - 1].span;
+        let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
+        Ok(Spanned::new(
+            ConstDecl { name, value, kind: ConstKind::String, exported: false },
+            span,
+        ))
     }
 
     /// Parse `export block <name>(<params>)` header only (slice 4 placeholder).
@@ -592,7 +678,7 @@ impl<'a> Parser<'a> {
             "flow", "return", "description", "effects", "constraints",
             "context", "require", "avoid", "must", "if", "elif", "else",
             "none", "with", "as", "import", "export", "block", "skill",
-            "text", "int", "float",
+            "const",
         ];
         loop {
             match self.current_line_indent() {
@@ -1747,8 +1833,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_text_decl(&mut self) -> Result<Spanned<TextDecl>, ParseError> {
-        let (_, kw_span) = self.expect_ident(Some("text"))?;
+    fn parse_const_decl(&mut self) -> Result<Spanned<ConstDecl>, ParseError> {
+        let (_, kw_span) = self.expect_ident(Some("const"))?;
         let (name, _) = self.expect_ident(None)?;
         self.expect(&TokenKind::Equals)?;
         let value = match &self.peek().kind {
@@ -1760,13 +1846,16 @@ impl<'a> Parser<'a> {
             _ => {
                 return Err(ParseError::Unexpected {
                     span: self.peek().span,
-                    message: "expected string literal as `text` value".into(),
+                    message: "expected string literal as `const` value".into(),
                 });
             }
         };
         let end_span = self.tokens[self.pos - 1].span;
         let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
-        Ok(Spanned::new(TextDecl { name, value, exported: false }, span))
+        Ok(Spanned::new(
+            ConstDecl { name, value, kind: ConstKind::String, exported: false },
+            span,
+        ))
     }
 }
 

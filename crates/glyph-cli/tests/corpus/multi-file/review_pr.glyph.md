@@ -16,6 +16,6 @@ skill review_pr(scope = ".", risk = "medium")
         "Summarize findings with actionable feedback."
         return "Produce a structured review with approval status and comments."
 
-text thorough_review = "Review every changed file, not just the ones that look interesting."
-text check_tests = "Verify that tests exist for changed behavior and that they pass."
-text security_note = "This is a high-risk change that may affect security-sensitive code paths."
+const thorough_review = "Review every changed file, not just the ones that look interesting."
+const check_tests = "Verify that tests exist for changed behavior and that they pass."
+const security_note = "This is a high-risk change that may affect security-sensitive code paths."

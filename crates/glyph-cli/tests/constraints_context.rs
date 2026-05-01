@@ -1,4 +1,4 @@
-//! Slice 5 integration tests — constraints, context, text declarations, and
+//! Slice 5 integration tests — constraints, context, const declarations, and
 //! `### Constraints` + `### Context` sections.
 //!
 //! Covers the acceptance criteria from `mvp-issues.md` slice 5.
@@ -293,10 +293,10 @@ fn param_slot_in_context_fires_diagnostic() {
     assert_has_diagnostic_id(&stdout, "G::parse::param-slot-in-non-instruction-string");
 }
 
-// --- Acceptance criterion 9: bare name in flow fires G::analyze::text-in-flow ---
+// --- Acceptance criterion 9: bare name in flow fires G::analyze::const-in-flow ---
 
 #[test]
-fn bare_name_in_flow_fires_text_in_flow_diagnostic() {
+fn bare_name_in_flow_fires_const_in_flow_diagnostic() {
     let src = fixture("repairable", "bare_name_in_flow.glyph.md");
     let result = run_check(src, "json");
     assert_eq!(
@@ -307,7 +307,7 @@ fn bare_name_in_flow_fires_text_in_flow_diagnostic() {
         String::from_utf8_lossy(&result.stderr),
     );
     let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
-    assert_has_diagnostic_id(&stdout, "G::analyze::text-in-flow");
+    assert_has_diagnostic_id(&stdout, "G::analyze::const-in-flow");
 }
 
 // --- Acceptance criterion 10: all listed diagnostics fire on corpus triggers ---

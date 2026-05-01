@@ -128,9 +128,9 @@ Skill parameters with defaults per `language-surface.md`. `{param}` slot recogni
 
 **Context (parallel pipeline).** Implement the `Context` IR role and `ContextNode` (`ir-schema.md`, `ir-and-semantics.md`). The `context:` sub-section parses on `skill`/`block`/`export block` bodies; the `context` marker is legal at body level and as a flow statement (per `data-flow.md` §Statement Forms). Lower hoists body-level and flow-top-level `context` markers into the declaration's `context: [ContextNode]` list (deduped by canonical text); branch-scoped `context` markers stay inline (parallel handling to constraints). `text` declarations referenced inside `context:` resolve the same way as inside `constraints:` — placement, not declaration kind, decides the role (`primitives.md` §`text` duality). Phase 7 Emit renders the declaration's `context` list as `### Context` (bulleted, before `### Steps`); the section is conditional and omitted when no context is declared. `### Context` alone is not sufficient — at least one of `### Steps` or `### Constraints` must still be present. `{param}` slots inside `context:` body content emit `G::parse::param-slot-in-non-instruction-string` (same restriction as `description:`).
 
-**`text`-in-flow tightening.** A bare `text` name (or any undefined bare name) appearing in `flow:` without a keyword prefix (`require`/`avoid`/`must`/`context`) is now a compile error: new diagnostic `G::analyze::text-in-flow` (repairable — Repair adds parens and materializes a `generated block`, per `repair.md` §5). Bare names with a keyword prefix continue to materialize as `generated text`.
+**`const`-in-flow tightening.** A bare `const` name (or any undefined bare name) appearing in `flow:` without a keyword prefix (`require`/`avoid`/`must`/`context`) is now a compile error: new diagnostic `G::analyze::const-in-flow` (repairable — Repair adds parens and materializes a `generated block`, per `repair.md` §5). Bare names with a keyword prefix continue to materialize as `generated const`.
 
-Diagnostics: `G::analyze::undefined-name`, `G::analyze::ambiguous-role`, `G::analyze::missing-description`, `G::analyze::text-in-flow`, `G::parse::param-slot-in-non-instruction-string` (extends to `context:` bodies).
+Diagnostics: `G::analyze::undefined-name`, `G::analyze::ambiguous-role`, `G::analyze::missing-description`, `G::analyze::const-in-flow`, `G::parse::param-slot-in-non-instruction-string` (extends to `context:` bodies).
 
 ### Acceptance criteria
 
@@ -142,7 +142,7 @@ Diagnostics: `G::analyze::undefined-name`, `G::analyze::ambiguous-role`, `G::ana
 - [ ] Branch-scoped `context` marker stays inline (does not surface in `### Context`)
 - [ ] A `text` name referenced from `context:` resolves and renders the underlying string in `### Context`
 - [ ] `{param}` inside `context:` body fires `G::parse::param-slot-in-non-instruction-string`
-- [ ] Bare `foo` in `flow:` (no parens, no keyword prefix) fires `G::analyze::text-in-flow` (repairable)
+- [ ] Bare `foo` in `flow:` (no parens, no keyword prefix) fires `G::analyze::const-in-flow` (repairable)
 - [ ] All listed diagnostics fire on their corpus triggers
 
 ---
@@ -516,7 +516,7 @@ This slice is purely integration: it adds no new compiler features; it confirms 
 
 ### What to build
 
-Backfill any diagnostic IDs not already triggered by an earlier slice. Walk the `mvp-acceptance.md` §4.1 catalog (77 IDs total: 17 Parse + 27 Analyze + 1 Imports + 5 Validate + 1 Build + 26 Validate-output) and confirm each has a triggering test. The Analyze count includes `G::analyze::text-in-flow` (added in #14, repairable — bare name in `flow:` without keyword prefix). The Validate-output count includes `G::expand::context-count-mismatch` (added in #30, error — `### Context` bullet count disagrees with IR `context` array length). Add missing corpus files in `tests/corpus/repairable/` and `tests/corpus/invalid/`. Add unit tests with hand-crafted IR for any Validate diagnostics not exercised by corpus runs (per `mvp-acceptance.md` §4.4). Add the warning triggers (`effects-over-declared`, `repair::inferred-effects`) via `valid/` corpus files that compile successfully with stderr warnings.
+Backfill any diagnostic IDs not already triggered by an earlier slice. Walk the `mvp-acceptance.md` §4.1 catalog (77 IDs total: 17 Parse + 27 Analyze + 1 Imports + 5 Validate + 1 Build + 26 Validate-output) and confirm each has a triggering test. The Analyze count includes `G::analyze::const-in-flow` (added in #14, repairable — bare name in `flow:` without keyword prefix). The Validate-output count includes `G::expand::context-count-mismatch` (added in #30, error — `### Context` bullet count disagrees with IR `context` array length). Add missing corpus files in `tests/corpus/repairable/` and `tests/corpus/invalid/`. Add unit tests with hand-crafted IR for any Validate diagnostics not exercised by corpus runs (per `mvp-acceptance.md` §4.4). Add the warning triggers (`effects-over-declared`, `repair::inferred-effects`) via `valid/` corpus files that compile successfully with stderr warnings.
 
 ### Acceptance criteria
 
