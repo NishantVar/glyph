@@ -20,7 +20,13 @@ pub struct FmtResult {
 }
 
 /// Format a Glyph source string. Returns the formatted output and metadata.
-pub fn fmt_source(source: &str) -> FmtResult {
+///
+/// `enable_effects` gates the parser: when `false`, any `effects:` sub-section
+/// in the source produces a `G::parse::effects-disabled` parse error and the
+/// formatter falls back to the pre-parse stratum only (no AST rewrite). When
+/// `true`, the parser accepts `effects:` and the AST stratum reorders sections
+/// canonically (placing `effects:` between `description:` and `context:`).
+pub fn fmt_source(source: &str, enable_effects: bool) -> FmtResult {
     let mut bag = DiagBag::new();
 
     // Stratum 1: pre-parse text-level rewrites.
@@ -28,12 +34,13 @@ pub fn fmt_source(source: &str) -> FmtResult {
 
     // Try to parse for stratum 2.
     let line_index = LineIndex::new(&after_preparse);
-    let parsed = parse::parse_with_diagnostics(
+    let parsed = parse::parse_with_diagnostics_opts(
         &after_preparse,
         0,
         "<fmt>",
         &line_index,
         &mut bag,
+        enable_effects,
     );
 
     match parsed {
