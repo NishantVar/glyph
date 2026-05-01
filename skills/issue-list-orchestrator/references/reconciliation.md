@@ -52,7 +52,7 @@ For halt-state issues with **null** `pr_url` (user might have opened a PR for th
 
 ```bash
 bash skills/issue-list-orchestrator/scripts/gh_retry.sh \
-  gh pr list --base main --head <branch> --state merged --json url,mergedAt
+  gh pr list --base $TARGET_BRANCH --head <branch> --state merged --json url,mergedAt
 ```
 
 If a merged PR exists for the branch, upgrade to `merged` and capture the URL.
@@ -72,14 +72,14 @@ For each issue, check `<worktree-path>` exists on disk:
 | `merged` | yes | Remove the worktree, then delete the local branch (idempotent — tolerate either being already gone): `bash` `if git worktree list | grep -q "<worktree-path>"; then git worktree remove --force "<worktree-path>"; fi; if git rev-parse --verify --quiet "<branch>" >/dev/null; then git branch -D "<branch>" 2>/dev/null || true; fi`. PR is squash-merged; branch is dead. |
 | `merged` | no | Fine — already cleaned up. Continue. |
 | halt state (`failed-round-4`/`gate-failed`/`escalated`/`timed-out`) | yes | Keep. The user inspects it. |
-| halt state | no | Flag inconsistency. Print a warning row in the table: "slice <id>: halt-state but worktree missing". Do not auto-create. The user must `retry <id>` to redo, or `skip <id>` if they handled it manually. |
+| halt state | no | Flag inconsistency. Print a warning row in the table: "issue <id>: halt-state but worktree missing". Do not auto-create. The user must `retry <id>` to redo, or `skip <id>` if they handled it manually. |
 | `ready` / `pending` | yes | Stale worktree from a prior run that didn't get cleaned up. Remove: `git worktree remove --force <worktree-path>`. The next dispatch will create a fresh one. |
 | `ready` / `pending` | no | Fine — nothing to clean. |
 | `dispatching` | (already downgraded to `ready` by Rule 3 — re-evaluate as `ready`) | |
 
 ### Rule 5 — Branch consistency (lightweight)
 
-Run `git branch --list 'slice-*'` once. For each branch: it should correspond to either a halt-state issue (worktree exists) or a recently-merged issue not yet cleaned up.
+Run `git branch --list 'issue-*'` once. For each branch: it should correspond to either a halt-state issue (worktree exists) or a recently-merged issue not yet cleaned up.
 
 For branches that don't match any issue in state.json: warn but don't auto-delete. They might be the user's own work.
 

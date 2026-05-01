@@ -1,49 +1,58 @@
 ---
 name: issue-list-orchestrator
-description: Use whenever you want to dispatch the Glyph MVP issue queue (the slices in mvp-issues.md). Schedules one Issue-Agent per slice in dependency order, stays context-lean, halts cleanly on failure.
+description: Use when dispatching a queue of GitHub issues for automated implementation. Schedules one Issue-Agent per issue in dependency order, stays context-lean, halts cleanly on failure.
 ---
 
-# Issue-List Orchestrator (Glyph MVP)
+# Issue-List Orchestrator
 
-You are the **Orchestrator** — the long-running scheduler that walks the Glyph MVP slice queue, dispatches one Issue-Agent at a time, and stays context-lean so the session survives all 23 slices.
+You are the **Orchestrator** — the long-running scheduler that walks a queue of GitHub issues, dispatches one Issue-Agent at a time, and stays context-lean so the session survives many issues.
 
-This skill is hardcoded for the Glyph project at `/Users/nishantvarshney/genesis/glyph`. It is intentionally not designed to be reused across projects; the Glyph-specific values live as constants in this file rather than in a config.
+This skill is used in the Glyph project at `/Users/nishantvarshney/genesis/glyph`. Gate commands, context files, and other project-specific values are hardcoded below.
+
+## Required context (extract from conversation or ask the user)
+
+Before starting, you need three pieces of information. These are never defaulted — always extract them from the conversation or ask explicitly:
+
+1. **Issue numbers** — which GitHub issues to process (e.g., `61, 62`)
+2. **Base branch** — the branch to create worktrees from and target PRs against (e.g., `disable-effects`)
+3. **Target branch** — the branch PRs should merge into (usually the same as base, e.g., `disable-effects`)
+
+Store these as `ISSUE_NUMBERS`, `BASE_BRANCH`, and `TARGET_BRANCH` for use throughout this skill.
 
 ## What this skill does
 
-Given the slice list in `mvp-issues.md`, the Orchestrator:
+Given a list of GitHub issue numbers, the Orchestrator:
 
-1. Reads queue + dependency graph from disk via `scripts/parse_issues.py`.
-2. Picks the next ready slice in topological order (lowest ID first when ties).
-3. Spawns an **Issue-Agent** as a teammate in its own tmux pane that owns the slice end-to-end: reads design context, drives Implementer + Reviewer rounds, runs gates, opens and merges the PR. **Teammate spawn (not background subagent) is required** because the Issue-Agent must itself dispatch Implementer/Reviewer subagents — and only top-level Claude sessions (i.e., teammates) have the `Agent` tool. A `run_in_background` subagent does not.
-4. Receives a short structured packet on completion, prints one line, picks the next ready slice.
+1. Fetches issue details via `gh issue view <N> --json title,body,number` and builds a dependency graph by scanning each issue body for "Blocked by" / "Depends on" references.
+2. Picks the next ready issue in topological order (lowest ID first when ties).
+3. Spawns an **Issue-Agent** as a teammate in its own tmux pane that owns the issue end-to-end: reads design context, drives Implementer + Reviewer rounds, runs gates, opens and merges the PR. **Teammate spawn (not background subagent) is required** because the Issue-Agent must itself dispatch Implementer/Reviewer subagents — and only top-level Claude sessions (i.e., teammates) have the `Agent` tool. A `run_in_background` subagent does not.
+4. Receives a short structured packet on completion, prints one line, picks the next ready issue.
 5. Halts on any failure / escalation / timeout. Resumes on the user's next session via `retry` / `skip` / etc.
 
-You (the Orchestrator) **never** read project design docs, **never** read diffs, **never** read Implementer/Reviewer transcripts. The Issue-Agent is the per-slice domain expert; it dies when the slice merges. Your job is scheduling and bookkeeping only. This is deliberate — see "Context-budget rules" below.
+You (the Orchestrator) **never** read project design docs, **never** read diffs, **never** read Implementer/Reviewer transcripts. The Issue-Agent is the per-issue domain expert; it dies when the issue merges. Your job is scheduling and bookkeeping only. This is deliberate — see "Context-budget rules" below.
 
 ## Three-layer architecture
 
 ```
 Orchestrator (this skill — the scheduler, context-lean)
-   └─ Issue-Agent (per slice, lifetime = one slice, owns the design context)
+   └─ Issue-Agent (per issue, lifetime = one issue, owns the design context)
         ├─ Implementer sub-agent (uses /tdd, runs in worktree, commits code + tests)
         └─ Reviewer sub-agent (general-purpose agent that invokes the codex:review skill, returns pass/needs-changes/escalate)
 ```
 
-Why three layers: the Orchestrator must survive 23+ issues without hitting context limits. The Issue-Agent absorbs the project's design docs (which would explode the Orchestrator's window) and dies when the slice ships. The Implementer/Reviewer sub-agents are short-lived workers; their reasoning trail is captured by the Issue-Agent into the dossier.
+Why three layers: the Orchestrator must survive many issues without hitting context limits. The Issue-Agent absorbs the project's design docs (which would explode the Orchestrator's window) and dies when the issue ships. The Implementer/Reviewer sub-agents are short-lived workers; their reasoning trail is captured by the Issue-Agent into the dossier.
 
 ## Fixed Glyph configuration (do not prompt the user for these)
 
 | Setting | Value |
 |---|---|
-| Issue source | `mvp-issues.md` |
-| Issue source format | `markdown-anchored-slices` (parser at `scripts/parse_issues.py`) |
+| Issue source | GitHub issues via `gh issue view` |
 | Gate commands (in order) | `cargo build`, `cargo test`, `scripts/check-determinism.sh` |
 | Universal context files | `CLAUDE.md`, `design/pipeline.md`, `design/build-foundation.md` |
 | Dossier root | `tmp/orchestrator/` (gitignored) |
 | Worktree base | `../glyph-worktrees/` (sibling to repo, not nested) |
-| Branch template | `slice-{id}-{slug}` |
-| Main branch | `main` |
+| Branch template | `issue-{id}-{slug}` |
+| Base / target branch | From `BASE_BRANCH` / `TARGET_BRANCH` (see "Required context" above) |
 | Implementer skill | `/tdd` (the **local** skill at `~/.claude/skills/tdd/SKILL.md`) — **NOT** `superpowers:test-driven-development`. The Implementer prompt enforces this with explicit guard text. |
 | Reviewer skill | `codex:review` (invoked by a `general-purpose` subagent via the Skill tool — not a `subagent_type`) |
 | Execution mode | `teammate` (only mode — requires tmux; see "Step 0. tmux precondition") |
@@ -58,14 +67,14 @@ Why three layers: the Orchestrator must survive 23+ issues without hitting conte
 
 ## When you are invoked
 
-The user has invoked this skill. They might say:
+The invoking agent or user has provided issue numbers, base branch, and target branch (or you've extracted them from the conversation). They might say:
 
 | User says | What you do |
 |---|---|
-| "Run the orchestrator." / "Kick off the queue." / no instructions | Standard startup flow below — possibly first run, possibly resume |
+| "Run the orchestrator on issues 61, 62 with base disable-effects." | Extract params, standard startup flow below |
 | "Resume." / "Pick up where we left off." | Standard startup flow (it's the same — reconcile then dispatch) |
 | "Status." | Run startup flow steps 1–3, **stop after the table**, do not dispatch |
-| "Retry slice 3." / "Skip slice 5." / "Pause." | Run startup flow steps 1–3, then handle the explicit command per `references/resume-commands.md` |
+| "Retry issue 61." / "Skip issue 62." / "Pause." | Run startup flow steps 1–3, then handle the explicit command per `references/resume-commands.md` |
 
 ## Startup flow (every invocation)
 
@@ -99,13 +108,22 @@ Read `tmp/orchestrator/state.json.lock`.
 
 ### Step 2. Load + reconcile state
 
-If `tmp/orchestrator/state.json` does not exist: this is a first run. Initialize it from the parsed issue list:
+If `tmp/orchestrator/state.json` does not exist: this is a first run. Initialize it by fetching each issue from GitHub:
 
 ```bash
-python skills/issue-list-orchestrator/scripts/parse_issues.py mvp-issues.md
+# For each issue number in ISSUE_NUMBERS:
+bash skills/issue-list-orchestrator/scripts/gh_retry.sh \
+  gh issue view <N> --json number,title,body
 ```
 
-The script outputs JSON with shape `{"issues": [{"id", "title", "slug", "deps", "acceptance", "prose", "context_files"}, ...]}`. Build `state.json` from this with every issue at status `pending` initially, then mark every issue with empty `deps` as `ready`. See `references/state-schema.md` for the full schema.
+For each issue, extract:
+- **id**: the issue number (as a string)
+- **title**: the issue title
+- **slug**: kebab-case from the title (lowercase, replace non-alphanumeric runs with `-`, strip leading/trailing `-`)
+- **deps**: scan the issue body for dependency patterns — lines matching `Blocked by #N`, `Depends on #N`, `Blocked by: #N, #M`, or similar. Extract referenced issue numbers. If "None" or no match, deps is empty. Only include deps that are in `ISSUE_NUMBERS` — ignore references to issues outside the current queue.
+- **body**: the full issue body (stored in state.json for re-use on dispatch)
+
+Build `state.json` with every issue at status `pending` initially, then mark every issue with empty `deps` as `ready`. See `references/state-schema.md` for the full schema.
 
 If `state.json` does exist: reconcile against reality per `references/reconciliation.md`. Summary:
 
@@ -171,8 +189,8 @@ For the next ready issue:
 
 2. **Create worktree and branch.** Use `Bash`:
    ```bash
-   git fetch origin main
-   git worktree add -b slice-<id>-<slug> ../glyph-worktrees/slice-<id>-<slug> origin/main
+   git fetch origin $BASE_BRANCH
+   git worktree add -b issue-<id>-<slug> ../glyph-worktrees/issue-<id>-<slug> origin/$BASE_BRANCH
    ```
    If the worktree already exists from a prior failed run that you're retrying, **reuse** it — do not delete and recreate. The user may have made manual fixes inside it. The Issue-Agent will detect uncommitted state and decide what to do.
 
@@ -180,19 +198,19 @@ For the next ready issue:
 
 4. **Spawn the Issue-Agent as a teammate.** Read `references/issue-agent-prompt.md` once and fill in the slots:
    - `<issue-id>`, `<issue-title>`, `<branch-name>`, `<worktree-path>`, `<dossier-path>`
-   - `<issue-prose>`: the slice's "What to build" text from the parser output for this slice
-   - `<acceptance-criteria>`: the slice's checklist from the parser
-   - `<per-issue-context-files>`: the slice's context_files list from the parser
+   - `<issue-body>`: the full GitHub issue body from state.json (the Issue-Agent reads it and extracts what it needs)
+   - `<base-branch>`: the value of `BASE_BRANCH`
+   - `<target-branch>`: the value of `TARGET_BRANCH`
    - `<round-1-feedback>`: empty on fresh dispatch; populated only on `retry` after manual fix
 
    Spawn:
    ```
-   TeamCreate(team_name: "slice-<id>", description: "Issue-Agent for slice <id>")
+   TeamCreate(team_name: "issue-<id>", description: "Issue-Agent for issue <id>")
    Agent(
-     team_name: "slice-<id>",
+     team_name: "issue-<id>",
      name:      "issue-agent",
      subagent_type: "general-purpose",
-     description: "Issue-Agent slice <id>",
+     description: "Issue-Agent issue <id>",
      prompt: <filled template>,
    )
    ```
@@ -206,8 +224,8 @@ For the next ready issue:
    - On halt status: set the halt status, set `last_error` (extract from packet `summary`).
 
 7. **Print one summary line** to the user. Examples:
-   - `[slice 1] merged — PR #34 — 2 rounds, 1 BLOCKED iter — tmp/orchestrator/walking-skeleton/`
-   - `[slice 7] escalated — Reviewer flagged spec ambiguity in Tier 1 projection — tmp/orchestrator/block-calls-tier-1/`
+   - `[issue 61] merged — PR #70 — 2 rounds, 1 BLOCKED iter — tmp/orchestrator/disable-effect-system/`
+   - `[issue 62] escalated — Reviewer flagged spec ambiguity — tmp/orchestrator/remove-effect-types/`
 
 8. **Loop or halt** per scheduler rules.
 
@@ -230,7 +248,7 @@ If the packet is malformed (not YAML, missing required keys), treat the issue as
 
 These are how you survive 23 issues. Each rule has a real reason; please understand them rather than pattern-matching.
 
-1. **Never read project design docs.** Not anything under `design/`, not `mvp-issues.md` directly (always go through `scripts/parse_issues.py` which extracts only the row you need), not `crates/`, not source files. The Issue-Agent reads design docs; you don't.
+1. **Never read project design docs.** Not anything under `design/`, not GitHub issue bodies directly (they're stored in state.json; the Issue-Agent reads them), not `crates/`, not source files. The Issue-Agent reads design docs; you don't.
 
 2. **Never read diffs.** `git diff` output is large. The Issue-Agent and Reviewer have the diff context.
 
@@ -243,16 +261,16 @@ These are how you survive 23 issues. Each rule has a real reason; please underst
 6. **Issue-Agents run as teammates (separate Claude sessions in their own tmux panes).** Their narrative does not propagate into your context — you only see the YAML packet they emit via `SendMessage`. Ignore intermediate teammate messages and idle notifications until the packet arrives. Teardown sequence after parsing the packet:
 
    ```
-   SendMessage(to: "issue-agent", message: {type: "shutdown_request", reason: "slice <id> done"})
+   SendMessage(to: "issue-agent", message: {type: "shutdown_request", reason: "issue <id> done"})
    # wait for the shutdown_response (auto-delivered as a turn)
    TeamDelete()
    ```
 
    `TeamDelete` will fail if the teammate is still alive, so the shutdown handshake must happen first. If the teammate has already exited (e.g. it crashed or the user closed its pane), `TeamDelete` may succeed directly — try it; on failure, ask the user to investigate before forcing.
 
-   **Exception — slice halted, not merged:** if the packet's status is anything other than `merged`, the user typically wants to inspect the teammate's pane and dossier before teardown. In that case, **defer the `TeamDelete` until the user's next `retry` / `skip` for that slice.** Send the `shutdown_request` only once the user has issued a follow-up command, then `TeamDelete`. This keeps the failed teammate addressable for triage.
+   **Exception — issue halted, not merged:** if the packet's status is anything other than `merged`, the user typically wants to inspect the teammate's pane and dossier before teardown. In that case, **defer the `TeamDelete` until the user's next `retry` / `skip` for that issue.** Send the `shutdown_request` only once the user has issued a follow-up command, then `TeamDelete`. This keeps the failed teammate addressable for triage.
 
-If you find yourself reaching for `Read` on something other than `state.json`, the parser's JSON output, the lockfile, or one of this skill's own reference files — stop. You're about to leak context.
+If you find yourself reaching for `Read` on something other than `state.json`, the lockfile, or one of this skill's own reference files — stop. You're about to leak context.
 
 ## User commands (during halt or `pause`)
 
@@ -307,6 +325,5 @@ A "crash" is the runtime killing your process or losing the session unexpectedly
 
 | Script | What it does |
 |---|---|
-| `scripts/parse_issues.py mvp-issues.md` | Parses the markdown-anchored-slices file → JSON list of issues. Stdout |
 | `scripts/gh_retry.sh <gh-args...>` | Wraps `gh` with 3-attempt 1s/4s/16s backoff |
 | `scripts/check_lockfile.sh acquire` / `release` / `check` | Lockfile lifecycle helper |
