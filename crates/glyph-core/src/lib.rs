@@ -1155,6 +1155,115 @@ mod tests {
         assert_eq!(p, Path::new("tests/corpus/valid/update_docs.md"));
     }
 
+    // --- Issue #72: const keyword parsing ----------------------------------
+
+    /// AC1+AC3: a top-level `const` declaration parses with a string literal RHS.
+    #[test]
+    fn const_decl_parses_with_string_literal() {
+        let src = "const greeting = \"hello\"\n";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let c = file.decls.iter().find_map(|d| match d {
+            ast::Decl::Const(c) => Some(&c.node),
+            _ => None,
+        }).expect("const decl should be present");
+        assert_eq!(c.name, "greeting");
+        assert_eq!(c.value, "hello");
+        assert!(!c.exported);
+    }
+
+    /// AC3: `export const` parses and is flagged as exported.
+    #[test]
+    fn export_const_decl_parses() {
+        let src = "export const farewell = \"goodbye\"\n";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let c = file.decls.iter().find_map(|d| match d {
+            ast::Decl::Const(c) => Some(&c.node),
+            _ => None,
+        }).expect("const decl should be present");
+        assert_eq!(c.name, "farewell");
+        assert_eq!(c.value, "goodbye");
+        assert!(c.exported);
+    }
+
+    /// AC3: `generated const` parses (compiler-materialized form).
+    #[test]
+    fn generated_const_decl_parses() {
+        let src = "generated const root_cause = \"the bug is here\"\n";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let c = file.decls.iter().find_map(|d| match d {
+            ast::Decl::Const(c) => Some(&c.node),
+            _ => None,
+        }).expect("const decl should be present");
+        assert_eq!(c.name, "root_cause");
+        assert_eq!(c.value, "the bug is here");
+        assert!(!c.exported, "generated const is not exported");
+    }
+
+    /// AC4: the parser tags a string-literal RHS with `ConstKind::String`.
+    /// Today only string literals are tokenized; the kind retention proves the
+    /// IR carries the literal kind for future coercion checks.
+    #[test]
+    fn const_decl_records_string_kind_from_literal_rhs() {
+        let src = "const greeting = \"hello\"\n";
+        let (file, _) = parse::parse(src, 0).expect("should parse");
+        let c = file.decls.iter().find_map(|d| match d {
+            ast::Decl::Const(c) => Some(&c.node),
+            _ => None,
+        }).expect("const decl should be present");
+        assert_eq!(c.kind, ast::ConstKind::String);
+    }
+
+    /// Helper: assert that parsing `src` fails with a `ParseError::Unexpected`
+    /// whose message contains both `expected_keyword` and `const` (the
+    /// replacement).
+    fn assert_legacy_keyword_rejected(src: &str, expected_keyword: &str) {
+        let msg = match parse::parse(src, 0) {
+            Err(parse::ParseError::Unexpected { message, .. }) => message,
+            Err(other) => panic!("expected ParseError::Unexpected, got {:?}", other),
+            Ok(_) => panic!("expected parse failure for legacy keyword `{}`", expected_keyword),
+        };
+        assert!(
+            msg.contains("const"),
+            "error message should mention `const`, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains(expected_keyword),
+            "error message should mention the offending keyword `{}`, got: {}",
+            expected_keyword,
+            msg
+        );
+    }
+
+    /// AC7: a top-level `text` declaration is rejected with a message that
+    /// names `const` as the replacement.
+    #[test]
+    fn legacy_text_keyword_rejected_with_const_redirect() {
+        assert_legacy_keyword_rejected("text foo = \"x\"\n", "text");
+    }
+
+    /// AC7: a top-level `int` declaration is rejected with a message that
+    /// names `const` as the replacement. The RHS is a string literal because
+    /// the tokenizer does not yet accept integer literals — the rejection
+    /// must fire on the leading `int` keyword regardless of RHS shape.
+    #[test]
+    fn legacy_int_keyword_rejected_with_const_redirect() {
+        assert_legacy_keyword_rejected("int foo = \"3\"\n", "int");
+    }
+
+    /// AC7: a top-level `float` declaration is rejected with a message that
+    /// names `const` as the replacement.
+    #[test]
+    fn legacy_float_keyword_rejected_with_const_redirect() {
+        assert_legacy_keyword_rejected("float pi = \"3.14\"\n", "float");
+    }
+
+    /// AC7: `export text` is also redirected to `export const`.
+    #[test]
+    fn legacy_export_text_keyword_rejected_with_const_redirect() {
+        assert_legacy_keyword_rejected("export text foo = \"x\"\n", "text");
+    }
+
     #[test]
     fn check_source_returns_empty_bag_on_empty_file_repairs_skipped() {
         // An empty file produces `G::parse::empty-file` (error). check_source
