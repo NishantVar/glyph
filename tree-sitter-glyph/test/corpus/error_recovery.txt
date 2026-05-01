@@ -1,0 +1,145 @@
+================================================================================
+Tab indent — scanner treats tabs as 4 spaces and parses cleanly
+================================================================================
+
+skill tab_indent_fixture()
+	flow:
+		"do something"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))
+
+================================================================================
+Missing description — body parses without it
+================================================================================
+
+skill fix_bug()
+    flow:
+        "Fix the bug."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))
+
+================================================================================
+Slot in description — interpolation parsed structurally; semantic check is compiler's job
+================================================================================
+
+skill demo(scope = ".")
+    description: "Operates on the {scope} directory."
+
+    flow:
+        "Walk every file under {scope}."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        default: (string_literal
+          (string_content))))
+    (declaration_body
+      (description_section
+        content: (string_literal
+          (string_content)
+          (interpolation
+            (identifier))
+          (string_content)))
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content)
+              (interpolation
+                (identifier))
+              (string_content))))))))
+
+================================================================================
+Bare name in flow — parsed as identifier; semantic resolution deferred to compiler
+================================================================================
+
+skill check_code()
+    description: "Check code quality."
+    flow:
+        validate_style
+        "Review the code."
+
+text validate_style = "Ensure consistent formatting."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (description_section
+        content: (string_literal
+          (string_content)))
+      (flow_section
+        (flow_statement
+          (identifier))
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content)))))))
+  (text_declaration
+    name: (identifier)
+    value: (string_literal
+      (string_content))))
+
+================================================================================
+Bare body-position identifier — ERROR node, declaration recovers around it
+================================================================================
+
+text accuracy = "Ensure all documentation accurately reflects the current code."
+
+skill review_docs()
+    description: "Review documentation for accuracy."
+    accuracy
+    flow:
+        "Check all links and references."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (text_declaration
+    name: (identifier)
+    value: (string_literal
+      (string_content)))
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (description_section
+        content: (string_literal
+          (string_content)))
+      (ERROR
+        (identifier))
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))
