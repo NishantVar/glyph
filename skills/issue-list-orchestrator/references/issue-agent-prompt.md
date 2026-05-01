@@ -121,10 +121,14 @@ After every Implementer return (BLOCKED or done), append a structured entry to `
 ```markdown
 ## Round <R>, iteration <I> — Implementer return — <ISO-8601 timestamp>
 
+**Addressing:** <round 2+: one-line summary of the prior round's reviewer findings that this round addresses, e.g. "Round 1 reviewer: missing test for criterion 3, scope creep in parser.rs"> | <round 1: "N/A — first round">
+
 **Outcome:** BLOCKED | done
 
 **Body:** <verbatim final message from Implementer, or its summary if it was very long>
 ```
+
+The **Addressing** line creates an explicit forward link from codex reviewer findings to the implementer work that addressed them. For round 1, write "N/A — first round". For round 2+, summarize the prior round's `FINDINGS:` bullets in one line — enough to trace back to the full verdict in `review.md`.
 
 #### qa-log.md entry schema (append-only, one block per BLOCKED iteration)
 
