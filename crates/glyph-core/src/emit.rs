@@ -7,7 +7,7 @@
 use crate::ir::{IrArena, IrBranch, IrNode, NodeId, Polarity};
 use std::collections::HashSet;
 
-pub fn emit(arena: &IrArena) -> String {
+pub fn emit(arena: &IrArena, enable_effects: bool) -> String {
     let root_id = arena
         .root_skill()
         .expect("validate guarantees a root skill before emit");
@@ -22,7 +22,7 @@ pub fn emit(arena: &IrArena) -> String {
     out.push_str("---\n");
     out.push_str(&format!("name: {}\n", skill.name));
     out.push_str(&format!("description: {}\n", skill.description));
-    if !skill.effects.is_empty() {
+    if enable_effects && !skill.effects.is_empty() {
         let mut sorted_effects = skill.effects.clone();
         sorted_effects.sort();
         out.push_str(&format!("effects: [{}]\n", sorted_effects.join(", ")));
@@ -350,6 +350,7 @@ pub fn emit_procedure(
     effects: &[String],
     params: &[(String, Option<String>)],
     flow_strings: &[String],
+    enable_effects: bool,
 ) -> String {
     let kebab_name = name.replace('_', "-");
     let mut out = String::new();
@@ -359,7 +360,7 @@ pub fn emit_procedure(
     out.push_str(&format!("name: {}\n", kebab_name));
     out.push_str("kind: procedure\n");
     out.push_str(&format!("description: {}\n", description));
-    if !effects.is_empty() {
+    if enable_effects && !effects.is_empty() {
         let mut sorted = effects.to_vec();
         sorted.sort();
         out.push_str(&format!("effects: [{}]\n", sorted.join(", ")));
@@ -409,5 +410,58 @@ mod tests {
     fn avoid_phrasing_walking_skeleton() {
         let s = avoid_phrasing("Leaving references to removed or renamed symbols.");
         assert_eq!(s, "Do not leave references to removed or renamed symbols.");
+    }
+
+    use crate::ir::{IrArena, IrNode, IrSkill, NodeId};
+
+    /// Build a minimal arena with a skill that has effects.
+    fn arena_with_effects() -> IrArena {
+        let mut arena = IrArena::new();
+        let step_id = arena.push(IrNode::InlineInstruction(crate::ir::IrInlineInstruction {
+            node_id: NodeId(0),
+            text: "Do something.".into(),
+            role: crate::ir::Role::Step,
+        }));
+        let skill_id = arena.push(IrNode::Skill(IrSkill {
+            node_id: NodeId(1),
+            name: "test_skill".into(),
+            description: "A test skill.".into(),
+            effects: vec!["fs:write".into(), "net:http".into()],
+            params: vec![],
+            steps: vec![step_id],
+            context: vec![],
+            constraints: vec![],
+            return_text: None,
+        }));
+        arena.set_root_skill(skill_id);
+        arena
+    }
+
+    #[test]
+    fn emit_skips_effects_when_disabled() {
+        let arena = arena_with_effects();
+        let output = emit(&arena, false);
+        assert!(!output.contains("effects:"), "effects line should be omitted when enable_effects is false");
+        assert!(output.contains("name: test_skill"), "name should still be present");
+    }
+
+    #[test]
+    fn emit_includes_effects_when_enabled() {
+        let arena = arena_with_effects();
+        let output = emit(&arena, true);
+        assert!(output.contains("effects: [fs:write, net:http]"), "effects line should be present when enable_effects is true");
+    }
+
+    #[test]
+    fn emit_procedure_skips_effects_when_disabled() {
+        let output = emit_procedure("my_proc", "A procedure.", &["fs:read".to_string()], &[], &["Step one.".into()], false);
+        assert!(!output.contains("effects:"), "effects line should be omitted when enable_effects is false");
+        assert!(output.contains("name: my-proc"), "name should still be present");
+    }
+
+    #[test]
+    fn emit_procedure_includes_effects_when_enabled() {
+        let output = emit_procedure("my_proc", "A procedure.", &["fs:read".to_string()], &[], &["Step one.".into()], true);
+        assert!(output.contains("effects: [fs:read]"), "effects line should be present when enable_effects is true");
     }
 }
