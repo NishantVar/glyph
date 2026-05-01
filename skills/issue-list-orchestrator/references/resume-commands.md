@@ -21,20 +21,20 @@ Re-dispatch the issue from round 1.
 5. Persist state.json.
 6. Re-enter dispatch loop. The next dispatch will pick this issue up.
 
-If the user says "retry slice 3 with a note" or similar, capture the note and inject it into the round-1 Implementer prompt's `<reviewer-feedback-or-empty>` slot. Otherwise the slot is empty.
+If the user says "retry issue 61 with a note" or similar, capture the note and inject it into the round-1 Implementer prompt's `<reviewer-feedback-or-empty>` slot. Otherwise the slot is empty.
 
 ### `skip <issue-id>`
 
 Mark the issue `merged` artificially (the user merged manually outside the orchestrator).
 
 1. Look up the issue in state.json.
-2. Run `bash skills/issue-list-orchestrator/scripts/gh_retry.sh gh pr list --base main --head <branch>` — try to find a corresponding PR. If found and merged, capture the URL.
+2. Run `bash skills/issue-list-orchestrator/scripts/gh_retry.sh gh pr list --base $TARGET_BRANCH --head <branch>` — try to find a corresponding PR. If found and merged, capture the URL.
 3. Set `status: "merged"`, `pr_url` to the captured URL (or null if no PR), `finished_at` to current time, `last_error: null`.
 4. Persist state.json.
 5. Recompute which issues are now `ready` (any with all deps now merged).
 6. Re-enter dispatch loop.
 
-If the user says `skip <id>` but the branch doesn't appear merged, ask before proceeding: "Branch `<branch>` does not appear merged on GitHub. Are you sure you want to mark slice <id> as merged anyway? (yes/no)"
+If the user says `skip <id>` but the branch doesn't appear merged, ask before proceeding: "Branch `<branch>` does not appear merged on GitHub. Are you sure you want to mark issue <id> as merged anyway? (yes/no)"
 
 ### `pause`
 
@@ -63,12 +63,12 @@ Issue-Agents always run as teammates (top-level Claude sessions in their own tmu
 Spawn sequence:
 
 ```
-TeamCreate(team_name: "slice-<id>", description: "Issue-Agent for slice <id>")
+TeamCreate(team_name: "issue-<id>", description: "Issue-Agent for issue <id>")
 Agent(
-  team_name:     "slice-<id>",
+  team_name:     "issue-<id>",
   name:          "issue-agent",
   subagent_type: "general-purpose",
-  description:   "Issue-Agent slice <id>",
+  description:   "Issue-Agent issue <id>",
   prompt:        <filled template>,
 )
 ```
@@ -78,7 +78,7 @@ Notes:
 - **`team_name` is what makes the spawn a teammate.** Without it, you'd get a regular subagent that lacks the `Agent` tool and cannot dispatch Implementer/Reviewer.
 - **Do not pass `run_in_background: true`** — that's the subagent path.
 - The teammate's terminal narrative does not propagate into your context. You only ingest the YAML packet it sends via `SendMessage`. Ignore intermediate messages and idle notifications.
-- After the slice completes (merged or halted) and you've parsed the packet, tear the team down with the shutdown handshake described in `SKILL.md` "Context-budget rules" item 6: send a `shutdown_request` to the `issue-agent`, wait for the `shutdown_response`, then call `TeamDelete()`. This keeps `~/.claude/teams/` and `~/.claude/tasks/` from accumulating dead per-slice directories. If the slice halted (not merged), the user may want to inspect the teammate's pane first — defer the `TeamDelete` until the user issues the next `retry`/`skip` for that slice.
+- After the issue completes (merged or halted) and you've parsed the packet, tear the team down with the shutdown handshake described in `SKILL.md` "Context-budget rules" item 6: send a `shutdown_request` to the `issue-agent`, wait for the `shutdown_response`, then call `TeamDelete()`. This keeps `~/.claude/teams/` and `~/.claude/tasks/` from accumulating dead per-issue directories. If the issue halted (not merged), the user may want to inspect the teammate's pane first — defer the `TeamDelete` until the user issues the next `retry`/`skip` for that issue.
 
 ## Unknown commands
 
