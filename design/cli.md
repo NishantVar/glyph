@@ -58,7 +58,7 @@ If Phase 1 succeeds (after the pre-Parse pass), both strata run and the file is 
 
 1. `description:`
 2. Body-level constraint markers (`require` / `avoid` / `must`) — present only briefly; the unconditional-constraint hoisting step in stratum 2 moves them into the `constraints:` section in the same `fmt` invocation.
-3. `effects:`
+3. `effects:` *(only when `--enable-effects` is passed; otherwise `effects:` is rejected at parse time)*
 4. `constraints:` (post-hoist form, after marker hoisting has folded body-level and flow-top-level markers in)
 5. `flow:` (always last)
 
@@ -77,6 +77,7 @@ Analogous to `rustfmt` / `gofmt`. Fast, offline, idempotent.
 | `-v` | | Set log level to info (phase boundaries, file processing) |
 | `-vv` | | Set log level to debug (IR diffs, detailed phase output) |
 | `--color <when>` | | Terminal color mode: `always`, `never`, `auto` (default: `auto`). Also respects `NO_COLOR` and `CLICOLOR` environment variables. |
+| `--enable-effects` | | Enable the effects subsystem (parsing, inference, validation, output emission). Default: **off**. When off, `effects:` sub-sections are rejected at parse time (`G::parse::effects-disabled`), all effect-related diagnostics are suppressed, and the `effects` frontmatter field is omitted from compiled output. See `ir-and-semantics.md` §3. |
 
 Logging uses verbosity-gated `eprintln!` to stderr. Default level is warn (errors and warnings only). `-v` adds info (phase start/end, files processed). `-vv` adds debug (IR snapshots, diagnostic details). No `RUST_LOG` or `tracing` dependency in v0; structured logging may be added post-MVP when incremental builds or watch mode warrant it.
 

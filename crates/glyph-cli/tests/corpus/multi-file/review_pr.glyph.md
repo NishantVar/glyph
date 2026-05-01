@@ -5,8 +5,6 @@ skill review_pr(scope = ".", risk = "medium")
     require thorough_review
     require check_tests
 
-    effects: reads_files, runs_commands
-
     flow:
         inspect_repo(scope) with "focus on changed files in the PR"
         if risk == "high"

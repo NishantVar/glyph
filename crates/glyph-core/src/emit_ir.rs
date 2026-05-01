@@ -320,7 +320,7 @@ fn find_block_by_name<'a>(arena: &'a IrArena, name: &str) -> Option<&'a crate::i
 ///
 /// Returns the JSON string. The arena must have a root skill set.
 /// Returns `None` if the arena has no root skill (library file — no IR JSON produced).
-pub fn serialize_ir_json(arena: &IrArena, source_file: &str) -> Option<String> {
+pub fn serialize_ir_json(arena: &IrArena, source_file: &str, enable_effects: bool) -> Option<String> {
     let root_id = arena.root_skill()?;
     let skill = match arena.get(root_id) {
         IrNode::Skill(s) => s,
@@ -359,11 +359,11 @@ pub fn serialize_ir_json(arena: &IrArena, source_file: &str) -> Option<String> {
     skill_obj.insert("params".into(), Value::Array(params));
 
     // effects
-    let effects: Vec<Value> = skill
-        .effects
-        .iter()
-        .map(|e| Value::String(e.clone()))
-        .collect();
+    let effects: Vec<Value> = if enable_effects {
+        skill.effects.iter().map(|e| Value::String(e.clone())).collect()
+    } else {
+        Vec::new()
+    };
     skill_obj.insert("effects".into(), Value::Array(effects));
 
     // context
@@ -408,4 +408,52 @@ pub fn serialize_ir_json(arena: &IrArena, source_file: &str) -> Option<String> {
     // We build maps in spec-defined insertion order. serde_json::Map preserves
     // insertion order, giving deterministic output across runs.
     Some(serde_json::to_string_pretty(&Value::Object(envelope)).unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::{IrArena, IrNode, IrSkill, IrInlineInstruction, NodeId, Role};
+
+    fn arena_with_effects() -> IrArena {
+        let mut arena = IrArena::new();
+        let step_id = arena.push(IrNode::InlineInstruction(IrInlineInstruction {
+            node_id: NodeId(0),
+            text: "Do something.".into(),
+            role: Role::Step,
+        }));
+        let skill_id = arena.push(IrNode::Skill(IrSkill {
+            node_id: NodeId(1),
+            name: "test_skill".into(),
+            description: "A test skill.".into(),
+            effects: vec!["fs:write".into(), "net:http".into()],
+            params: vec![],
+            steps: vec![step_id],
+            context: vec![],
+            constraints: vec![],
+            return_text: None,
+        }));
+        arena.set_root_skill(skill_id);
+        arena
+    }
+
+    #[test]
+    fn serialize_ir_json_emits_empty_effects_when_disabled() {
+        let arena = arena_with_effects();
+        let json_str = serialize_ir_json(&arena, "test.glyph.md", false).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let effects = v["skill"]["effects"].as_array().unwrap();
+        assert!(effects.is_empty(), "effects should be empty when enable_effects is false");
+    }
+
+    #[test]
+    fn serialize_ir_json_emits_actual_effects_when_enabled() {
+        let arena = arena_with_effects();
+        let json_str = serialize_ir_json(&arena, "test.glyph.md", true).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let effects = v["skill"]["effects"].as_array().unwrap();
+        assert_eq!(effects.len(), 2, "effects should contain 2 entries when enable_effects is true");
+        assert_eq!(effects[0], "fs:write");
+        assert_eq!(effects[1], "net:http");
+    }
 }

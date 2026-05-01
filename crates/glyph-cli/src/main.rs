@@ -26,6 +26,11 @@ use std::process::ExitCode;
 #[derive(Parser, Debug)]
 #[command(name = "glyph", about = "Glyph compiler", version)]
 struct Cli {
+    /// Enable the `effects:` sub-section in `skill`, `block`, and `export block`
+    /// declarations. When omitted (default), any `effects:` usage produces a
+    /// `G::parse::effects-disabled` error.
+    #[arg(long, global = true)]
+    enable_effects: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -102,11 +107,12 @@ enum OutputFormat {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let enable_effects = cli.enable_effects;
     match cli.command {
-        Command::Compile { path, format, emit_ir, strict } => run_compile(path, format, emit_ir, strict),
-        Command::Check { path, format, strict } => run_check(path, format, strict),
+        Command::Compile { path, format, emit_ir, strict } => run_compile(path, format, emit_ir, strict, enable_effects),
+        Command::Check { path, format, strict } => run_check(path, format, strict, enable_effects),
         Command::ValidateOutput { ir_json_path, md_path, format } => run_validate_output(ir_json_path, md_path, format),
-        Command::Fmt { path, check } => run_fmt(path, check),
+        Command::Fmt { path, check } => run_fmt(path, check, enable_effects),
     }
 }
 
@@ -145,7 +151,7 @@ fn run_validate_output(ir_json_path: PathBuf, md_path: PathBuf, format: OutputFo
     }
 }
 
-fn run_fmt(path: PathBuf, check: bool) -> ExitCode {
+fn run_fmt(path: PathBuf, check: bool, enable_effects: bool) -> ExitCode {
     let files = match collect_glyph_sources(&path) {
         Ok(v) => v,
         Err(code) => return code,
@@ -165,7 +171,7 @@ fn run_fmt(path: PathBuf, check: bool) -> ExitCode {
             }
         };
 
-        let result = glyph_core::fmt::fmt_source(&source);
+        let result = glyph_core::fmt::fmt_source(&source, enable_effects);
 
         if result.changed {
             any_changed = true;
@@ -193,7 +199,7 @@ fn run_fmt(path: PathBuf, check: bool) -> ExitCode {
 ///
 /// Never writes output files, regardless of outcome. Diagnostics are rendered
 /// per the requested `--format`.
-fn run_check(path: PathBuf, format: OutputFormat, strict: bool) -> ExitCode {
+fn run_check(path: PathBuf, format: OutputFormat, strict: bool, enable_effects: bool) -> ExitCode {
     let files = match collect_glyph_sources(&path) {
         Ok(v) => v,
         Err(code) => return code,
@@ -218,7 +224,7 @@ fn run_check(path: PathBuf, format: OutputFormat, strict: bool) -> ExitCode {
         };
         let label = file.display().to_string();
         // Use import-aware check when the file path is available.
-        let bag = glyph_core::check_file(&file);
+        let bag = glyph_core::check_file_with_effects(&file, enable_effects);
         emit_diagnostics(&bag, &label, &source, format);
         let code = bag.exit_code();
         worst = combine_exit_codes(worst, code);
@@ -304,7 +310,7 @@ fn collect_glyph_sources(path: &std::path::Path) -> Result<Vec<PathBuf>, ExitCod
     Err(ExitCode::from(3))
 }
 
-fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool) -> ExitCode {
+fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool, enable_effects: bool) -> ExitCode {
     let metadata = match std::fs::metadata(&path) {
         Ok(m) => m,
         Err(e) => {
@@ -314,7 +320,7 @@ fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool)
     };
 
     if metadata.is_dir() {
-        return run_compile_directory(path, format, emit_ir, strict);
+        return run_compile_directory(path, format, emit_ir, strict, enable_effects);
     }
 
     // Single-file compile (existing behavior).
@@ -327,7 +333,7 @@ fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool)
     };
 
     let label = path.display().to_string();
-    let outcome = match glyph_core::compile_source(&source, 0, &label) {
+    let outcome = match glyph_core::compile_source_with_effects(&source, 0, &label, enable_effects) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("glyph: compile failed: {:?}", e);
@@ -354,7 +360,7 @@ fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool)
                     .file_name()
                     .and_then(|s| s.to_str())
                     .unwrap_or("");
-                if let Some(ir_json) = glyph_core::emit_ir::serialize_ir_json(&arena, source_file) {
+                if let Some(ir_json) = glyph_core::emit_ir::serialize_ir_json(&arena, source_file, enable_effects) {
                     let ir_path = ir_json_output_path(&path);
                     if let Err(e) = glyph_core::atomic_write(&ir_path, &ir_json) {
                         eprintln!("glyph: cannot write `{}`: {}", ir_path.display(), e);
@@ -378,7 +384,7 @@ fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool)
 
 /// Directory-mode compile: collect all `.glyph.md` files, build DAG, compile
 /// in topological order with partial failure.
-fn run_compile_directory(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool) -> ExitCode {
+fn run_compile_directory(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool, enable_effects: bool) -> ExitCode {
     let files = match collect_glyph_sources(&path) {
         Ok(v) => v,
         Err(code) => return code,
@@ -388,7 +394,7 @@ fn run_compile_directory(path: PathBuf, format: OutputFormat, emit_ir: bool, str
         return ExitCode::from(0);
     }
 
-    let result = glyph_core::compile_directory_with_options(&files, emit_ir);
+    let result = glyph_core::compile_directory_with_options(&files, emit_ir, enable_effects);
 
     // Emit diagnostics and stderr notes for each file outcome.
     for (file_path, outcome) in &result.outcomes {

@@ -2,6 +2,10 @@
 
 Items deferred from MVP decisions that should be revisited in future tiers.
 
+## Effects (Gated)
+
+- **Effect inference for call-graph-free skills.** The effects subsystem is gated behind `--enable-effects` (default: off) because effect inference only walks `FlowStmt::Call` targets. Skills that perform effectful actions directly via inline instructions (no block calls) get an empty inferred set, causing all declared effects to be spuriously flagged as over-declared (`G::analyze::effects-over-declared`). To re-enable effects: (1) fix inference to handle skills with no call graph (e.g., trust author declarations when there are zero calls, or infer from instruction text), (2) flip the `--enable-effects` default to on. The full effects design in `ir-and-semantics.md` §3 remains the target — only the implementation gate needs removal.
+
 ## Values & Literals
 
 - **Extended escape sequences in inline strings.** MVP supports only `\"` and `\\`. Consider adding `\n`, `\t`, and Unicode escapes (`\uXXXX`) post-MVP if real authoring needs emerge.
@@ -19,7 +23,7 @@ Items deferred from MVP decisions that should be revisited in future tiers.
 
 ## Compiled Output Sections (Deferred From MVP)
 
-MVP compiled output contains YAML frontmatter (`name`, `description`, `effects`), a conditional `## Parameters` section, and `## Instructions` (with `### Context`, `### Steps`, and `### Constraints`). The following sections were removed from MVP but may be restored post-MVP if author or agent-consumption needs emerge:
+MVP compiled output contains YAML frontmatter (`name`, `description`, and `effects` when `--enable-effects` is on), a conditional `## Parameters` section, and `## Instructions` (with `### Context`, `### Steps`, and `### Constraints`). The following sections were removed from MVP but may be restored post-MVP if author or agent-consumption needs emerge:
 
 - **`## Inputs` section.** Removed in favor of the `## Parameters` section, which lists parameter names, descriptions, and optional defaults. Parameters appear as `{param}` references in Steps and Constraints, resolved by the consuming LLM at runtime. The `inputs:` source sub-section header remains deferred; parameter declarations in the skill header are sufficient for MVP.
 - **`## Output` section.** Removed because `return` folds into the final Step. Restore if output contracts become rich enough (typed return shapes, post-conditions) that folding them into prose loses information. Also revisit the `outputs:` source sub-section header.

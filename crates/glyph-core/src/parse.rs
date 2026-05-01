@@ -40,6 +40,7 @@ pub fn parse(source: &str, file_id: u32) -> Result<(SourceFile, LineIndex), Pars
         file_label: "<source>",
         line_index: &line_index,
         bag: &mut sink,
+        enable_effects: true,
     };
     let file = p.parse_file()?;
     Ok((file, line_index))
@@ -64,6 +65,22 @@ pub fn parse_with_diagnostics(
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
+) -> Option<SourceFile> {
+    parse_with_diagnostics_opts(source, file_id, file_label, line_index, bag, false)
+}
+
+/// Diagnostic-aware Phase 1 entry point with effects gate.
+///
+/// When `enable_effects` is false, any `effects:` sub-section on `skill`,
+/// `block`, or `export block` declarations produces a `G::parse::effects-disabled`
+/// error diagnostic and parsing halts.
+pub fn parse_with_diagnostics_opts(
+    source: &str,
+    file_id: u32,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+    enable_effects: bool,
 ) -> Option<SourceFile> {
     // Tokenize. Indent-shape failures (`TabIndent`, `MixedIndent`) are wired to
     // **repairable** structured diagnostics here per `pipeline.md` Phase 1
@@ -160,6 +177,7 @@ pub fn parse_with_diagnostics(
         file_label,
         line_index,
         bag,
+        enable_effects,
     };
     let file = match p.parse_file() {
         Ok(f) => f,
@@ -234,6 +252,7 @@ struct Parser<'a> {
     file_label: &'a str,
     line_index: &'a LineIndex,
     bag: &'a mut DiagBag,
+    enable_effects: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -585,7 +604,20 @@ impl<'a> Parser<'a> {
                         match kw.as_str() {
                             "return" => has_return = true,
                             "description" => { current_section = Some("description"); }
-                            "effects" => { current_section = Some("effects"); }
+                            "effects" => {
+                                if !self.enable_effects {
+                                    let eff_span = self.peek().span;
+                                    self.bag.push(
+                                        Diagnostic::error(
+                                            "G::parse::effects-disabled",
+                                            "effects are not enabled; pass `--enable-effects` to use this feature",
+                                            SourceSpan::from_byte_span(self.file_label, eff_span, self.line_index),
+                                        ),
+                                        eff_span,
+                                    );
+                                }
+                                current_section = Some("effects");
+                            }
                             "flow" => { current_section = Some("flow"); }
                             "constraints" | "context" => { current_section = Some("other"); }
                             _ => {}
@@ -670,29 +702,47 @@ impl<'a> Parser<'a> {
                                     description = Some(s);
                                 }
                                 "effects" => {
-                                    self.pos += 1;
-                                    let colon_span = self.expect(&TokenKind::Colon)?;
-                                    loop {
-                                        let (eff, _) = self.expect_ident(None)?;
-                                        effects.push(eff);
-                                        match &self.peek().kind {
-                                            TokenKind::Comma => {
-                                                self.pos += 1;
-                                            }
-                                            _ => break,
-                                        }
-                                    }
-                                    // Validate `none` exclusivity for blocks too.
-                                    if effects.contains(&"none".to_string()) && effects.len() > 1 {
-                                        let span = Span::new(self.file_id, colon_span.start, colon_span.end);
+                                    if !self.enable_effects {
+                                        let eff_span = self.peek().span;
                                         self.bag.push(
                                             Diagnostic::error(
-                                                "G::parse::none-with-effects",
-                                                "`effects: none` must not appear alongside other effect keywords",
-                                                SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                                "G::parse::effects-disabled",
+                                                "effects are not enabled; pass `--enable-effects` to use this feature",
+                                                SourceSpan::from_byte_span(self.file_label, eff_span, self.line_index),
                                             ),
-                                            span,
+                                            eff_span,
                                         );
+                                        // Skip the rest of the line.
+                                        while !self.at_eof()
+                                            && !matches!(self.peek().kind, TokenKind::LineStart { .. })
+                                        {
+                                            self.pos += 1;
+                                        }
+                                    } else {
+                                        self.pos += 1;
+                                        let colon_span = self.expect(&TokenKind::Colon)?;
+                                        loop {
+                                            let (eff, _) = self.expect_ident(None)?;
+                                            effects.push(eff);
+                                            match &self.peek().kind {
+                                                TokenKind::Comma => {
+                                                    self.pos += 1;
+                                                }
+                                                _ => break,
+                                            }
+                                        }
+                                        // Validate `none` exclusivity for blocks too.
+                                        if effects.contains(&"none".to_string()) && effects.len() > 1 {
+                                            let span = Span::new(self.file_id, colon_span.start, colon_span.end);
+                                            self.bag.push(
+                                                Diagnostic::error(
+                                                    "G::parse::none-with-effects",
+                                                    "`effects: none` must not appear alongside other effect keywords",
+                                                    SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                                ),
+                                                span,
+                                            );
+                                        }
                                     }
                                 }
                                 "flow" => {
@@ -908,31 +958,49 @@ impl<'a> Parser<'a> {
                 }
             }
             "effects" => {
-                self.pos += 1;
-                let colon_span = self.expect(&TokenKind::Colon)?;
-                // Short form only — comma-separated idents on the same line.
-                loop {
-                    let (eff, _) = self.expect_ident(None)?;
-                    effects.push(eff);
-                    match &self.peek().kind {
-                        TokenKind::Comma => {
-                            self.pos += 1;
-                        }
-                        _ => break,
-                    }
-                }
-                // Validate `none` exclusivity: `none` must not appear alongside
-                // other effect keywords → G::parse::none-with-effects (error).
-                if effects.contains(&"none".to_string()) && effects.len() > 1 {
-                    let span = Span::new(self.file_id, colon_span.start, colon_span.end);
+                if !self.enable_effects {
+                    let span = kw_span;
                     self.bag.push(
                         Diagnostic::error(
-                            "G::parse::none-with-effects",
-                            "`effects: none` must not appear alongside other effect keywords",
+                            "G::parse::effects-disabled",
+                            "effects are not enabled; pass `--enable-effects` to use this feature",
                             SourceSpan::from_byte_span(self.file_label, span, self.line_index),
                         ),
                         span,
                     );
+                    // Skip the rest of the line.
+                    while !self.at_eof()
+                        && !matches!(self.peek().kind, TokenKind::LineStart { .. })
+                    {
+                        self.pos += 1;
+                    }
+                } else {
+                    self.pos += 1;
+                    let colon_span = self.expect(&TokenKind::Colon)?;
+                    // Short form only — comma-separated idents on the same line.
+                    loop {
+                        let (eff, _) = self.expect_ident(None)?;
+                        effects.push(eff);
+                        match &self.peek().kind {
+                            TokenKind::Comma => {
+                                self.pos += 1;
+                            }
+                            _ => break,
+                        }
+                    }
+                    // Validate `none` exclusivity: `none` must not appear alongside
+                    // other effect keywords → G::parse::none-with-effects (error).
+                    if effects.contains(&"none".to_string()) && effects.len() > 1 {
+                        let span = Span::new(self.file_id, colon_span.start, colon_span.end);
+                        self.bag.push(
+                            Diagnostic::error(
+                                "G::parse::none-with-effects",
+                                "`effects: none` must not appear alongside other effect keywords",
+                                SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                            ),
+                            span,
+                        );
+                    }
                 }
             }
             "require" | "avoid" | "must" => {
