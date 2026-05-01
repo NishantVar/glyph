@@ -22,13 +22,16 @@ manifest. The mapping looks like:
   language config.
 - `languages/glyph/highlights.scm`,
   `languages/glyph/locals.scm`,
-  `languages/glyph/injections.scm` — copied from the grammar's
-  `queries/` directory at extension-build time. Until the
-  extension is built, these are intentionally absent here; copy
-  them in (or symlink) when packaging:
+  `languages/glyph/injections.scm` — **symlinked** to the
+  grammar's top-level `queries/` directory so the extension
+  layout exposes the files at the paths Zed reads from while
+  preserving a single source of truth. Edit the top-level
+  `queries/*.scm`; the symlinks pick up changes automatically.
+  When packaging the extension archive, dereference the
+  symlinks (`cp -L`) so the bundle carries real files:
 
 ```sh
-cp queries/*.scm editors/zed/languages/glyph/
+cp -L queries/*.scm editors/zed/languages/glyph/
 ```
 
 ## Why this is only a scaffold
@@ -40,7 +43,8 @@ have been done in M3 — only the on-disk layout is in place.
 
 ## Next steps
 
-1. Copy the queries (`cp queries/*.scm editors/zed/languages/glyph/`).
-2. Submit the extension to Zed's index per
-   [Zed's extension docs](https://zed.dev/docs/extensions).
-3. Once published, users install via `zed: install extension`.
+1. Submit the extension to Zed's index per
+   [Zed's extension docs](https://zed.dev/docs/extensions). The
+   queries are already in place via symlinks; the packager just
+   needs to dereference them when archiving.
+2. Once published, users install via `zed: install extension`.

@@ -8,16 +8,13 @@ highlighting working once the parser is built locally.
 ## Files in this directory
 
 - [`runtime/queries/glyph/`](runtime/queries/glyph/) — drop-in
-  queries directory. At packaging time, copy the grammar's
-  `queries/highlights.scm`, `queries/locals.scm`, and
-  `queries/injections.scm` here:
-
-  ```sh
-  cp queries/*.scm editors/helix/runtime/queries/glyph/
-  ```
-
-  These are not pre-copied so the queries have a single source
-  of truth (the top-level `queries/` directory).
+  queries directory. The three query files
+  (`highlights.scm`, `locals.scm`, `injections.scm`) are
+  **symlinked** to the grammar's top-level `queries/` directory,
+  so a single source of truth is preserved while Helix sees
+  files at the path it expects. Treat the top-level
+  `queries/*.scm` as the canonical files to edit; the symlinks
+  pick up changes automatically.
 - [`languages.toml`](languages.toml) — user-config snippet to
   append to `~/.config/helix/languages.toml`. Declares the
   `glyph` language, file extension, comment marker, and
@@ -25,10 +22,11 @@ highlighting working once the parser is built locally.
 
 ## Install (once packaged)
 
-1. Copy the queries:
+1. Copy the queries (symlinks resolved to real files):
    ```sh
    mkdir -p ~/.config/helix/runtime/queries/glyph
-   cp queries/*.scm ~/.config/helix/runtime/queries/glyph/
+   cp -L editors/helix/runtime/queries/glyph/*.scm \
+        ~/.config/helix/runtime/queries/glyph/
    ```
 2. Append `editors/helix/languages.toml` to your
    `~/.config/helix/languages.toml`.
