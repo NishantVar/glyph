@@ -84,7 +84,8 @@ Representative diagnostics implied by the current design.
 | `G::parse::tab-indent` | repairable | Tabs used instead of 4-space indentation (`language-surface.md` §2.2) |
 | `G::parse::mixed-indent` | repairable | Tabs and spaces on the same line (`language-surface.md` §2.2) |
 | `G::parse::nested-flow` | error | `flow:` inside `flow:` (`data-flow.md`) |
-| `G::parse::none-with-effects` | error | `effects: none, reads_files` — `none` alongside other keywords (`ir-and-semantics.md` §3). Detectable in Parse because the token sequence is unambiguous, but semantically an error — `none` exclusivity is a hard rule, not repairable. |
+| `G::parse::effects-disabled` | error | `effects:` sub-section used without `--enable-effects`. The effects subsystem is gated; remove the `effects:` line or pass `--enable-effects` (`ir-and-semantics.md` §3). |
+| `G::parse::none-with-effects` | error | *(Gated — requires `--enable-effects`.)* `effects: none, reads_files` — `none` alongside other keywords (`ir-and-semantics.md` §3). Detectable in Parse because the token sequence is unambiguous, but semantically an error — `none` exclusivity is a hard rule, not repairable. |
 | `G::parse::multiple-with` | error | Chained `with ... with ...` on a single call (`data-flow.md`) |
 | `G::parse::with-on-bare-name` | error | `with` modifier on a non-call statement (`data-flow.md`) |
 | `G::parse::operator-in-expression` | repairable | Operator token (`+`, `-`, `*`, `/`, etc.) in expression position; MVP has no value-level operators (`values-and-names.md`) |
@@ -113,9 +114,9 @@ Representative diagnostics implied by the current design.
 | `G::analyze::duplicate-import` | repairable | Same file imported twice; merged (`imports.md` §6) |
 | `G::analyze::unused-import` | repairable | Imported name never referenced; removed (`imports.md` §7) |
 | `G::analyze::ambiguous-role` | repairable | Can't determine instruction role from context (`ir-and-semantics.md` §2) |
-| `G::analyze::effects-under-declared` | error | Declared effects are a subset of inferred effects (`ir-and-semantics.md` §3) |
-| `G::analyze::effects-over-declared` | warning | Declared effects include keywords not inferred from the body; non-blocking, surfaced for author cleanup (`ir-and-semantics.md` §3) |
-| `G::analyze::missing-effects` | repairable | A declaration (skill, block, or export block) omits `effects:` entirely and the inferred set is non-empty; Phase 3a auto-adds the inferred effects (`ir-and-semantics.md` §3) |
+| `G::analyze::effects-under-declared` | error | *(Gated — requires `--enable-effects`.)* Declared effects are a subset of inferred effects (`ir-and-semantics.md` §3) |
+| `G::analyze::effects-over-declared` | warning | *(Gated — requires `--enable-effects`.)* Declared effects include keywords not inferred from the body; non-blocking, surfaced for author cleanup (`ir-and-semantics.md` §3) |
+| `G::analyze::missing-effects` | repairable | *(Gated — requires `--enable-effects`.)* A declaration (skill, block, or export block) omits `effects:` entirely and the inferred set is non-empty; Phase 3a auto-adds the inferred effects (`ir-and-semantics.md` §3) |
 | `G::analyze::nominal-mismatch` | error | Type name mismatch at a call boundary (`types.md`) |
 | `G::analyze::lossy-coercion` | error | Lossy numeric conversion, e.g. `3.7` where integer expected (`values-and-names.md`) |
 | `G::analyze::missing-return` | repairable | Export block lacks `return` on a code path (`language-surface.md` §3.3) |
@@ -124,7 +125,7 @@ Representative diagnostics implied by the current design.
 | `G::imports::unknown-stdlib-module` | error | An import path under the reserved `@glyph/` virtual namespace does not resolve to a known compiler-embedded stdlib module. The MVP recognises only `@glyph/std`; any other `@glyph/*` path fires this diagnostic (`stdlib.md`, `imports.md`). |
 | `G::analyze::unknown-param-slot` | error | A `{name}` slot in an instruction-bearing string does not resolve to a parameter or local binding in scope at the slot's source position (`values-and-names.md`) |
 | `G::analyze::nested-branch` | repairable | A `Branch` appears inside another `Branch`'s arm body; Repair will auto-extract it into a `generated block` (`repair.md` §4.9) |
-| `G::analyze::empty-skill-body` | error | A `skill` declaration has no `description:`, no `flow:`, no `constraints:`, no `effects:` — there is nothing to project. A skill must have at least one of `flow:` (with statements) or `constraints:` (with markers); a constraint-only skill is legal (`compiled-output.md`) |
+| `G::analyze::empty-skill-body` | error | A `skill` declaration has no `description:`, no `flow:`, no `constraints:` — there is nothing to project. A skill must have at least one of `flow:` (with statements) or `constraints:` (with markers); a constraint-only skill is legal (`compiled-output.md`). *(When `--enable-effects` is on, a lone `effects:` also counts.)* |
 | `G::analyze::no-exports-in-library` | error | A library file (zero `skill` declarations) has zero `export` declarations — it has no consumer-visible contribution. Add at least one `export block`, `export text`, `export int`, or `export float` (`language-surface.md` §File-Level Rules) |
 | `G::analyze::missing-param-default` | error | An `export block` parameter lacks a default value; export-block parameter defaults are mandatory in MVP because their slots are filled by callers at compile time, not by the consuming LLM at runtime (`language-surface.md` §3.10). Author must add an explicit default; the compiler does not synthesize defaults. **Does not apply to `skill` parameters** — those without defaults are runtime-required inputs and surface as such in the compiled `## Parameters` section. |
 | `G::analyze::missing-description` | repairable | A `skill` declaration omits `description:`; Repair generates one from the skill name and body and adds it as a `description:` sub-section in the source (`ir-and-semantics.md` §4, `compiled-output.md` §Frontmatter) |
@@ -192,7 +193,7 @@ Phase 6b structural validation, implemented in the `glyph validate-output` subco
 | `G::repair::generated-text` | warning | A `generated text` was materialized for an undefined bare name (`repair.md` §5) |
 | `G::repair::generated-block` | warning | A `generated block` was materialized for an undefined parens-call (`repair.md` §5) |
 | `G::repair::branch-extracted` | warning | A nested `Branch` was auto-extracted into a `generated block` to keep compiled output at one level of sub-steps (`repair.md` §4.9) |
-| `G::repair::inferred-effects` | warning | Phase 3a deterministically inferred and auto-added an `effects:` sub-section for a declaration that omitted it; informational — the author should review the added effects (`ir-and-semantics.md` §3, `pipeline.md` Phase 3a) |
+| `G::repair::inferred-effects` | warning | *(Gated — requires `--enable-effects`.)* Phase 3a deterministically inferred and auto-added an `effects:` sub-section for a declaration that omitted it; informational — the author should review the added effects (`ir-and-semantics.md` §3, `pipeline.md` Phase 3a) |
 | `G::repair::constraint-tension` | warning | Phase 3c LLM scan identified two constraints in the same declaration that are in friction but both reasonable to hold (`repair.md` §4.10). Build proceeds; both constraints survive into compiled output. |
 
 ### Repair execution failures

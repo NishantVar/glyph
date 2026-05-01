@@ -167,6 +167,8 @@ Evidence order:
 
 ## 3. Effects
 
+> **Gated: `--enable-effects` (default: off).** The entire effects subsystem — parsing, inference, validation, repair auto-fill, and output emission — is disabled unless the `--enable-effects` flag is passed. When the flag is off the parser rejects any `effects:` sub-section with `G::parse::effects-disabled` (error). All design in this section remains the intended target; the gate is temporary until effect inference handles skills without a call graph (see `todo.md`).
+
 ### MVP Keywords
 
 Nine `verb_noun` snake_case effect keywords:

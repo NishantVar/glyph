@@ -235,6 +235,8 @@ An `Agent` value behaves like any other typed value once obtained from `subagent
 
 ## The `spawns_agent` Effect
 
+> **Gated: `--enable-effects` (default: off).** The effect declarations on stdlib entries (`spawns_agent`, `reads_files`) and the propagation rules below are inactive unless `--enable-effects` is passed. When the gate is off, stdlib entries still function normally — only the effect metadata is suppressed.
+
 `spawns_agent` is a new effect keyword added to the MVP vocabulary, extending the set from 8 to 9 keywords.
 
 | Keyword | Meaning |
