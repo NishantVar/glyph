@@ -35,7 +35,7 @@ Expected: `state == "MERGED"`. If the PR is anything else (`OPEN`, `CLOSED`):
 
 ### Rule 2 — Detect manual-merge upgrade
 
-For every issue in `escalated`, `failed-round-4`, `gate-failed`, or `timed-out` with a non-null `pr_url` (the Issue-Agent opens a PR on `escalated`; the others have null `pr_url` unless the user opened one manually):
+For every issue in `escalated`, `failed-round-4`, `gate-failed`, or `timed-out` with a non-null `pr_url` (the Planner opens a PR on `escalated`; the others have null `pr_url` unless the user opened one manually):
 
 ```bash
 bash skills/issue-list-orchestrator/scripts/gh_retry.sh \
@@ -59,9 +59,9 @@ If a merged PR exists for the branch, upgrade to `merged` and capture the URL.
 
 ### Rule 3 — Recover `dispatching` stuck state
 
-Any issue in `dispatching` means the previous session crashed or was killed mid-dispatch. The Issue-Agent is gone; the spawn was never completed. Downgrade to `ready` for retry.
+Any issue in `dispatching` means the previous session crashed or was killed mid-dispatch. The Planner+Implementer team is gone; the spawn was never completed. Downgrade to `ready` for retry.
 
-Also clear `started_at` (it's stale) and reset `rounds_used: 0`, `blocked_iterations_in_last_round: 0`. Leave the worktree alone — the Issue-Agent on next dispatch will adapt to whatever state it's in.
+Also clear `started_at` (it's stale) and reset `rounds_used: 0`. Leave the worktree alone — the next dispatch's Planner will inspect it and adapt to whatever state it's in.
 
 ### Rule 4 — Worktree consistency
 

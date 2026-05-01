@@ -32,7 +32,6 @@ Issue IDs are stringified integers (`"1"`, `"2"`, etc.) for deterministic JSON s
   "worktree": "../glyph-worktrees/issue-61-disable-effect-system",
   "pr_url": "https://github.com/NishantVar/glyph/pull/70",
   "rounds_used": 1,
-  "blocked_iterations_in_last_round": 0,
   "started_at": "2026-04-28T22:10:00Z",
   "finished_at": "2026-04-28T22:54:00Z",
   "last_error": null
@@ -49,11 +48,10 @@ Issue IDs are stringified integers (`"1"`, `"2"`, etc.) for deterministic JSON s
 | `deps` | string[] | yes | Issue IDs this issue is blocked by |
 | `branch` | string | yes | Always `issue-{id}-{slug}` |
 | `worktree` | string | yes | Path under `../glyph-worktrees/` |
-| `pr_url` | string \| null | yes | Set when Issue-Agent opens a PR; null otherwise |
+| `pr_url` | string \| null | yes | Set when the Planner opens a PR; null otherwise |
 | `rounds_used` | int | yes | 0 before first dispatch; 1–4 thereafter |
-| `blocked_iterations_in_last_round` | int | yes | 0–3; useful for diagnosis |
 | `started_at` | ISO 8601 \| null | yes | Set on first dispatch |
-| `finished_at` | ISO 8601 \| null | yes | Set on Issue-Agent return |
+| `finished_at` | ISO 8601 \| null | yes | Set on Planner packet return |
 | `body` | string | yes | Full GitHub issue body, fetched on initialization |
 | `last_error` | string \| null | yes | One-sentence error from packet `summary`, on halt |
 
@@ -63,11 +61,11 @@ Issue IDs are stringified integers (`"1"`, `"2"`, etc.) for deterministic JSON s
 |---|---|---|
 | `pending` | Some dependency isn't `merged` yet | — |
 | `ready` | All deps merged, not yet dispatched | — |
-| `dispatching` | Issue-Agent is currently in flight | No |
+| `dispatching` | Planner+Implementer team is currently in flight | No |
 | `merged` | PR merged on target branch | **Yes** |
-| `failed-round-4` | Reviewer wouldn't pass after round 4 | No (halt) |
+| `failed-round-4` | codex:review wouldn't pass after round 4 | No (halt) |
 | `gate-failed` | Gates failed twice in same round | No (halt) |
-| `escalated` | Reviewer escalated, OR 3 BLOCKED iters in one round, OR `gh pr create` failed permanently | No (halt) |
+| `escalated` | codex:review escalated, OR Planner self-escalated, OR `gh pr create` failed permanently | No (halt) |
 | `timed-out` | 30-min wall clock exceeded | No (halt) |
 
 ## Initialization (first run)
@@ -94,7 +92,7 @@ Build `state.json` by mapping each issue to the per-issue object, with:
 - `worktree: "../glyph-worktrees/issue-{id}-{slug}"`
 - everything else `null` / `0`
 
-The `body` field **is** persisted to state.json so it can be passed to the Issue-Agent on dispatch without re-fetching from GitHub.
+The `body` field **is** persisted to state.json so it can be passed to the Planner on dispatch without re-fetching from GitHub.
 
 ## Validation rules (enforce on every read)
 
@@ -104,7 +102,7 @@ If state.json fails any of these on read, halt and tell the user (do not auto-re
 2. Every issue's `deps` must reference existing issue IDs.
 3. The dependency graph must be acyclic.
 4. Every issue's `status` must be one of the enum values.
-5. `rounds_used` ∈ [0, 4]; `blocked_iterations_in_last_round` ∈ [0, 3].
+5. `rounds_used` ∈ [0, 4].
 6. If `status == "merged"`, `pr_url` must be non-null.
 7. If `status == "merged"`, `finished_at` must be non-null.
 
@@ -117,8 +115,8 @@ Persist immediately on:
 - After reconciliation upgrades/downgrades.
 - After a packet is parsed (status update + `pr_url` + `finished_at` etc.).
 
-Do **not** persist mid-dispatch (e.g., during a round). The Issue-Agent's progress lives in the dossier, not in state.json. state.json is per-issue terminal-state only.
+Do **not** persist mid-dispatch (e.g., during a round). The Planner's progress lives in the dossier, not in state.json. state.json is per-issue terminal-state only.
 
 ## Concurrency
 
-The lockfile (`tmp/orchestrator/state.json.lock`) ensures only one Orchestrator session writes to `state.json` at a time. The Issue-Agent never writes `state.json` — only the Orchestrator does, on packet receipt.
+The lockfile (`tmp/orchestrator/state.json.lock`) ensures only one Orchestrator session writes to `state.json` at a time. The Planner and Implementer teammates never write `state.json` — only the Orchestrator does, on packet receipt.

@@ -9,8 +9,8 @@ When the Orchestrator is parked at a halt (or the user issues a command at start
 Re-dispatch the issue from round 1.
 
 1. Look up the issue in `state.json`. It should be in a halt state (`failed-round-4`, `gate-failed`, `escalated`, `timed-out`). If not, tell the user the issue is in `<status>` and `retry` doesn't apply.
-2. Set `status` back to `ready`. Reset `rounds_used: 0`, `blocked_iterations_in_last_round: 0`, `last_error: null`.
-3. **Do NOT delete the worktree.** It may contain manual fixes from the user. The Issue-Agent will inspect it on dispatch.
+2. Set `status` back to `ready`. Reset `rounds_used: 0`, `last_error: null`.
+3. **Do NOT delete the worktree.** It may contain manual fixes from the user. The next dispatch's Planner will inspect it.
 4. **Do NOT delete the dossier folder.** Append a delimiter to each log file:
    ```
    ---
@@ -58,27 +58,35 @@ Rule of thumb: don't leak the lockfile across an end-of-session. If you're unsur
 
 ## Teammate spawn (always — this is the only mode)
 
-Issue-Agents always run as teammates (top-level Claude sessions in their own tmux panes). This is required because the Issue-Agent must itself dispatch Implementer/Reviewer subagents via `Agent`, and only top-level sessions have `Agent` in their tool roster — not subagents spawned via `Agent(run_in_background: true)`.
+The Planner and Implementer always run as peer teammates (top-level Claude sessions in their own tmux panes, in the same team). This is required because they communicate via `SendMessage`, and only top-level teammates can address each other by name; subagents spawned via `Agent(run_in_background: true)` cannot.
 
-Spawn sequence:
+Spawn sequence (issue both `Agent` calls in the same dispatch turn so they run concurrently):
 
 ```
-TeamCreate(team_name: "issue-<id>", description: "Issue-Agent for issue <id>")
+TeamCreate(team_name: "issue-<id>", description: "Planner+Implementer team for issue <id>")
 Agent(
   team_name:     "issue-<id>",
-  name:          "issue-agent",
+  name:          "planner-<id>",
   subagent_type: "general-purpose",
-  description:   "Issue-Agent issue <id>",
-  prompt:        <filled template>,
+  description:   "Planner issue <id>",
+  prompt:        <filled planner template>,
+)
+Agent(
+  team_name:     "issue-<id>",
+  name:          "implementer-<id>",
+  subagent_type: "general-purpose",
+  description:   "Implementer issue <id>",
+  prompt:        <filled implementer template>,
 )
 ```
 
 Notes:
 
-- **`team_name` is what makes the spawn a teammate.** Without it, you'd get a regular subagent that lacks the `Agent` tool and cannot dispatch Implementer/Reviewer.
+- **`team_name` is what makes both spawns peer teammates.** Without it, you'd get regular subagents that cannot `SendMessage` each other.
 - **Do not pass `run_in_background: true`** — that's the subagent path.
-- The teammate's terminal narrative does not propagate into your context. You only ingest the YAML packet it sends via `SendMessage`. Ignore intermediate messages and idle notifications.
-- After the issue completes (merged or halted) and you've parsed the packet, tear the team down with the shutdown handshake described in `SKILL.md` "Context-budget rules" item 6: send a `shutdown_request` to the `issue-agent`, wait for the `shutdown_response`, then call `TeamDelete()`. This keeps `~/.claude/teams/` and `~/.claude/tasks/` from accumulating dead per-issue directories. If the issue halted (not merged), the user may want to inspect the teammate's pane first — defer the `TeamDelete` until the user issues the next `retry`/`skip` for that issue.
+- Names are deterministic per issue (`planner-<id>` / `implementer-<id>`); each teammate's prompt embeds the *other's* name so they can use `SendMessage(to: <other>, ...)`.
+- The teammates' terminal narrative does not propagate into your context. You only ingest the YAML packet the **Planner** sends via `SendMessage(to: "team-lead", ...)` — the Implementer never talks to team-lead. Ignore intermediate messages and idle notifications.
+- After the issue completes (merged or halted) and you've parsed the packet, tear the team down per the shutdown handshake in `SKILL.md` "Context-budget rules" item 6. The Planner shuts down the Implementer *before* emitting the packet, so your remaining responsibility is: send a `shutdown_request` to the `planner-<id>`, wait for the `shutdown_response`, then call `TeamDelete()`. This keeps `~/.claude/teams/` and `~/.claude/tasks/` from accumulating dead per-issue directories. If the issue halted (not merged), the user may want to inspect both teammates' panes first — defer the `TeamDelete` (and the Planner `shutdown_request`) until the user issues the next `retry`/`skip` for that issue.
 
 ## Unknown commands
 
