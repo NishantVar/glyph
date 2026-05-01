@@ -23,8 +23,27 @@ fn run_fmt(file: &PathBuf) -> Output {
         .expect("failed to spawn glyph binary")
 }
 
+fn run_fmt_with_effects(file: &PathBuf) -> Output {
+    Command::new(glyph_bin())
+        .arg("--enable-effects")
+        .arg("fmt")
+        .arg(file)
+        .output()
+        .expect("failed to spawn glyph binary")
+}
+
 fn run_fmt_check(file: &PathBuf) -> Output {
     Command::new(glyph_bin())
+        .arg("fmt")
+        .arg("--check")
+        .arg(file)
+        .output()
+        .expect("failed to spawn glyph binary")
+}
+
+fn run_fmt_check_with_effects(file: &PathBuf) -> Output {
+    Command::new(glyph_bin())
+        .arg("--enable-effects")
         .arg("fmt")
         .arg("--check")
         .arg(file)
@@ -126,17 +145,18 @@ fn fmt_reorders_sections_to_canonical_layout() {
     let tmp_path = tmp.path().to_path_buf();
     std::fs::copy(&src, &tmp_path).unwrap();
 
-    let output = run_fmt(&tmp_path);
+    let output = run_fmt_with_effects(&tmp_path);
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 
     let result = std::fs::read_to_string(&tmp_path).unwrap();
-    // Canonical order: description, context, constraints, flow.
-    // (effects removed — disabled by default)
+    // Canonical order: description, effects, context, constraints, flow.
     let desc_pos = result.find("    description:").expect("should have description:");
+    let effects_pos = result.find("    effects:").expect("should have effects:");
     let context_pos = result.find("    context:").expect("should have context:");
     let constraints_pos = result.find("    constraints:").expect("should have constraints:");
     let flow_pos = result.find("    flow:").expect("should have flow:");
-    assert!(desc_pos < context_pos, "description should come before context");
+    assert!(desc_pos < effects_pos, "description should come before effects");
+    assert!(effects_pos < context_pos, "effects should come before context");
     assert!(context_pos < constraints_pos, "context should come before constraints");
     assert!(constraints_pos < flow_pos, "constraints should come before flow");
 }
@@ -181,18 +201,74 @@ fn fmt_is_idempotent() {
     let tmp_path = tmp.path().to_path_buf();
     std::fs::copy(&src, &tmp_path).unwrap();
 
-    // First format.
-    let output = run_fmt(&tmp_path);
+    // First format. Fixture contains an `effects:` section, so we need
+    // `--enable-effects` for the parser to accept it.
+    let output = run_fmt_with_effects(&tmp_path);
     assert!(output.status.success());
     let first_result = std::fs::read_to_string(&tmp_path).unwrap();
 
     // Second format.
-    let output = run_fmt(&tmp_path);
+    let output = run_fmt_with_effects(&tmp_path);
     assert!(output.status.success());
     let second_result = std::fs::read_to_string(&tmp_path).unwrap();
 
     assert_eq!(first_result, second_result, "formatting should be idempotent");
     // --check should confirm no changes needed.
-    let output = run_fmt_check(&tmp_path);
+    let output = run_fmt_check_with_effects(&tmp_path);
     assert_eq!(output.status.code(), Some(0), "--check after two formats should exit 0");
+}
+
+/// Regression: `glyph fmt --enable-effects` must preserve `effects:` sections.
+///
+/// Prior to the fix, `run_fmt` did not thread `--enable-effects` into
+/// `fmt_source`, which in turn called `parse::parse_with_diagnostics` (the
+/// legacy entry that hardcodes `enable_effects=false`). The parser rejected
+/// `effects:`, returned `None`, and fmt silently fell back to the pre-parse
+/// stratum — causing canonical reorder to skip and leaving the effects
+/// section intact only because no AST rewrite happened. Worse, on a tabs
+/// fixture or any fixture needing AST rewrite, the effects section would be
+/// dropped on the next round-trip through fmt.
+///
+/// This test exercises the full path: fmt with `--enable-effects` over a
+/// noncanonical-order source containing `effects:`. It must (a) succeed,
+/// (b) preserve the `effects:` section, and (c) place it in the canonical
+/// position between `description:` and `context:`.
+#[test]
+fn fmt_with_enable_effects_preserves_effects_section() {
+    let src = fmt_corpus_path("noncanonical_order.glyph.md");
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let tmp_path = tmp.path().to_path_buf();
+    std::fs::copy(&src, &tmp_path).unwrap();
+
+    // Sanity: fixture must contain `effects:` for this regression to be
+    // meaningful.
+    let before = std::fs::read_to_string(&tmp_path).unwrap();
+    assert!(
+        before.contains("effects:"),
+        "fixture must contain `effects:` for this regression test to be meaningful",
+    );
+
+    let output = run_fmt_with_effects(&tmp_path);
+    assert!(
+        output.status.success(),
+        "glyph fmt --enable-effects should exit 0; stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let after = std::fs::read_to_string(&tmp_path).unwrap();
+    assert!(
+        after.contains("    effects:"),
+        "effects: section must be preserved after fmt --enable-effects; got:\n{}",
+        after,
+    );
+
+    // Effects must be in canonical position (between description: and context:).
+    let desc_pos = after.find("    description:").expect("should have description:");
+    let effects_pos = after.find("    effects:").expect("should have effects:");
+    let context_pos = after.find("    context:").expect("should have context:");
+    assert!(
+        desc_pos < effects_pos && effects_pos < context_pos,
+        "effects: must be between description: and context: after canonical reorder; got:\n{}",
+        after,
+    );
 }

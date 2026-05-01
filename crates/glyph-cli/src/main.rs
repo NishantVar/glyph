@@ -112,7 +112,7 @@ fn main() -> ExitCode {
         Command::Compile { path, format, emit_ir, strict } => run_compile(path, format, emit_ir, strict, enable_effects),
         Command::Check { path, format, strict } => run_check(path, format, strict, enable_effects),
         Command::ValidateOutput { ir_json_path, md_path, format } => run_validate_output(ir_json_path, md_path, format),
-        Command::Fmt { path, check } => run_fmt(path, check),
+        Command::Fmt { path, check } => run_fmt(path, check, enable_effects),
     }
 }
 
@@ -151,7 +151,7 @@ fn run_validate_output(ir_json_path: PathBuf, md_path: PathBuf, format: OutputFo
     }
 }
 
-fn run_fmt(path: PathBuf, check: bool) -> ExitCode {
+fn run_fmt(path: PathBuf, check: bool, enable_effects: bool) -> ExitCode {
     let files = match collect_glyph_sources(&path) {
         Ok(v) => v,
         Err(code) => return code,
@@ -171,7 +171,7 @@ fn run_fmt(path: PathBuf, check: bool) -> ExitCode {
             }
         };
 
-        let result = glyph_core::fmt::fmt_source(&source);
+        let result = glyph_core::fmt::fmt_source(&source, enable_effects);
 
         if result.changed {
             any_changed = true;
