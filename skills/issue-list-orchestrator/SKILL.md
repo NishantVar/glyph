@@ -63,7 +63,7 @@ Why three layers: the Orchestrator must survive many issues without hitting cont
 | Gate retries per round | 1 |
 | Max BLOCKED iterations per round | 3 |
 
-**Determinism gate behavior:** `scripts/check-determinism.sh` is *written by slice 1 itself*. Until that file exists on disk and is executable, the gate runner skips it silently and continues. From the moment it exists, every subsequent issue runs it. The Issue-Agent's gate runner handles this — you don't.
+**Determinism gate behavior:** `scripts/check-determinism.sh` may not exist yet. Until that file exists on disk and is executable, the gate runner skips it silently and continues. From the moment it exists, every subsequent issue runs it. The Issue-Agent's gate runner handles this — you don't.
 
 ## When you are invoked
 
