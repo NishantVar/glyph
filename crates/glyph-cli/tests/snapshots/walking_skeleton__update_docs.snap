@@ -5,7 +5,6 @@ expression: emitted
 ---
 name: update_docs
 description: Update repository documentation to match current code.
-effects: [reads_files, writes_files]
 ---
 
 ## Instructions
