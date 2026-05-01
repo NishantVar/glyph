@@ -23,15 +23,22 @@ When opening the PR, follow the
 1. Provide samples — copy 5–10 representative `.glyph` files from
    `crates/glyph-cli/tests/corpus/valid/` and the multi-file
    examples into `samples/Glyph/` in the Linguist repo.
-2. Reference this tree-sitter grammar from the PR description so
-   reviewers can verify `tm_scope: source.glyph` is real.
+2. Reference this tree-sitter grammar from the PR description.
+   The entry uses `tm_scope: none` because Glyph does not ship a
+   TextMate grammar — Linguist will fall back to the tree-sitter
+   grammar repo URL passed in the PR body. Replace the URL
+   placeholder in `languages.yml.patch` with the canonical
+   tree-sitter-glyph repo before submission.
 3. Pick a `language_id`. The placeholder `999100001` in
    `languages.yml.entry` is unlikely to collide; the Linguist
    maintainers will assign a final value at review time.
-4. The chosen `color` (`#7B68EE`, medium-slate-blue) is
-   uncontested across Linguist's current palette — it visually
-   separates Glyph from existing DSLs (Cypher, Cuda, Rouge) on
-   the language-distribution bar.
+4. The chosen `color` (`#1FA9A0`, teal) matches the `@label`
+   accent in this grammar's `queries/highlights.scm` — section
+   headers (`description:`, `context:`, `constraints:`, `flow:`)
+   highlight teal, so the language-distribution bar reads as the
+   same color as a `.glyph` file's anchor headers. Linguist's
+   current palette has no other teal entries near
+   `#1FA9A0`, so the color is unambiguous.
 
 ## 2. Repository-level fallback (`.gitattributes`)
 

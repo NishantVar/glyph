@@ -12,10 +12,10 @@ on the top-level keys, so place `Glyph:` between `Glsl:` and
    language_id: 137
 +Glyph:
 +  type: programming
-+  color: "#7B68EE"
++  color: "#1FA9A0"
 +  extensions:
 +  - ".glyph"
-+  tm_scope: source.glyph
++  tm_scope: none
 +  ace_mode: text
 +  language_id: 999100001
  Glyph Bitmap Distribution Format:
