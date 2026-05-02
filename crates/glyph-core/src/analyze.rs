@@ -74,6 +74,125 @@ fn warn_if_banned_return_type(
     }
 }
 
+/// Issue #84 Chunk 3 (AC5): post-hoc sweep that flags any domain-type name
+/// (registered via `-> DomainType` on a header) that collides — after
+/// canonicalization (D6) — with a parameter or `const` declaration in the
+/// same file. Emits `G::analyze::name-collision` Error per collision; the
+/// primary span pins the `-> Type` annotation that introduced the type, the
+/// related span pins the offending param / const.
+///
+/// File-level scope (not per-decl): a type registered on one decl can collide
+/// with a param on a different decl, since the `-> Type` annotation puts the
+/// name in scope across the whole file. Banned-generic names (#83) skip
+/// registration (D8) and so cannot collide via this path.
+///
+/// D10 scope-defer: type-vs-import collisions are out of scope for this
+/// chunk; only param and const collisions are emitted here.
+fn sweep_name_collisions(
+    file: &SourceFile,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+    registry: &crate::domain_registry::Registry,
+) {
+    if registry.iter().next().is_none() {
+        return;
+    }
+
+    // Collect every parameter (across all decl kinds) and every const at
+    // file level, paired with the span we want pinned in the `related`
+    // field of the collision diagnostic.
+    let mut params: Vec<(&str, Span)> = Vec::new();
+    let mut consts: Vec<(&str, Span)> = Vec::new();
+    for decl in &file.decls {
+        match decl {
+            Decl::Skill(s) => {
+                for p in &s.node.params {
+                    params.push((p.name.as_str(), p.span));
+                }
+            }
+            Decl::ExportBlock(e) => {
+                for p in &e.node.params {
+                    params.push((p.name.as_str(), p.span));
+                }
+            }
+            Decl::Block(b) => {
+                for p in &b.node.params {
+                    params.push((p.name.as_str(), p.span));
+                }
+            }
+            Decl::Const(c) => {
+                consts.push((c.node.name.as_str(), c.span));
+            }
+            Decl::Import(_) => {}
+        }
+    }
+
+    for entry in registry.iter() {
+        for (param_raw, param_span) in &params {
+            if crate::domain_registry::canonicalize_identifier(param_raw)
+                == entry.canonical_name
+            {
+                emit_name_collision(
+                    "parameter",
+                    entry,
+                    param_raw,
+                    *param_span,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+            }
+        }
+        for (const_raw, const_span) in &consts {
+            if crate::domain_registry::canonicalize_identifier(const_raw)
+                == entry.canonical_name
+            {
+                emit_name_collision(
+                    "const",
+                    entry,
+                    const_raw,
+                    *const_span,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+            }
+        }
+    }
+}
+
+/// Construct and push one `G::analyze::name-collision` Error diagnostic.
+///
+/// `kind` is the human-readable noun for the offending site (`"parameter"`
+/// or `"const"`). `entry.raw_first_use` is what the author wrote at the
+/// first `-> Type` annotation; `offender_raw` is the param/const spelling.
+/// The `Diagnostic::error` constructor seeds an empty `related` vec, which
+/// we then populate in-place — this mirrors the existing convention in
+/// `analyze.rs` (no `with_related` builder method exists in `diagnostic.rs`).
+fn emit_name_collision(
+    kind: &str,
+    entry: &crate::domain_registry::RegistryEntry,
+    offender_raw: &str,
+    offender_span: Span,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    let primary = SourceSpan::from_byte_span(file_label, entry.first_use_span, line_index);
+    let related = SourceSpan::from_byte_span(file_label, offender_span, line_index);
+    let mut diag = Diagnostic::error(
+        "G::analyze::name-collision",
+        format!(
+            "domain type `{}` collides with {} `{}`",
+            entry.raw_first_use, kind, offender_raw
+        ),
+        primary,
+    );
+    diag.related.push(related);
+    bag.push(diag, entry.first_use_span);
+}
+
 /// Run Phase 2 with diagnostic emission.
 ///
 /// Pushes any structured diagnostics onto `bag` and returns the AST unchanged.
@@ -181,6 +300,9 @@ pub fn analyze_with_diagnostics(
             }
         }
     }
+
+    // Issue #84 Chunk 3 (AC5): domain-type-vs-param/const collision sweep.
+    sweep_name_collisions(&file, file_label, line_index, bag, registry);
 
     // Library detection: file with zero skills.
     let has_skill = file.decls.iter().any(|d| matches!(d, Decl::Skill(_)));
@@ -330,6 +452,10 @@ pub fn analyze_with_imports(
             }
         }
     }
+
+    // Issue #84 Chunk 3 (AC5): domain-type-vs-param/const collision sweep.
+    // Imports-path parity with `analyze_with_diagnostics`.
+    sweep_name_collisions(file, file_label, line_index, bag, registry);
 
     // Library detection: file with zero skills.
     let has_skill = file.decls.iter().any(|d| matches!(d, Decl::Skill(_)));
@@ -1477,5 +1603,308 @@ mod tests {
             registry.lookup("foo").is_none(),
             "registry must not pick up the skill name as a domain type"
         );
+    }
+
+    // --- Issue #84 Chunk 3: no-shadowing enforcement (AC5) ---
+    //
+    // The post-hoc sweep at the end of analyze runs the registry against the
+    // file's parameters and consts (case-normalized). Any collision emits
+    // `G::analyze::name-collision` Error with a primary span at the `-> Type`
+    // annotation that introduced the type and a related span at the offending
+    // identifier. Banned generic names (#83) skip registration (D8), so they
+    // can't collide via this path even if a param shares the spelling.
+
+    /// Helper: count `G::analyze::name-collision` diagnostics whose message
+    /// matches the chunk-3 collision shape (mentions "domain type"). The
+    /// duplicate-export sweep reuses the same id but says "duplicate export
+    /// name", so we filter on substring instead of id alone.
+    fn collision_diags(bag: &DiagBag) -> Vec<&Diagnostic> {
+        bag.iter()
+            .filter(|d| d.id == "G::analyze::name-collision" && d.message.contains("domain type"))
+            .collect()
+    }
+
+    #[test]
+    fn t1_skill_return_type_collides_with_skill_param() {
+        // Tracer: skill `foo(report = "x") -> Report` collides — the param
+        // `report` and the return type `Report` canonicalize to the same key.
+        // Emits one `G::analyze::name-collision` Error; primary span covers
+        // the `-> Report` annotation, related span covers the `report` param.
+        let src = "skill foo(report = \"x\") -> Report\n    description: \"Foo.\"\n    flow:\n        \"do\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let diags = collision_diags(&bag);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly one domain-type collision diagnostic, got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+        let d = diags[0];
+        assert_eq!(d.classification, crate::diagnostic::Classification::Error);
+        assert!(
+            d.message.contains("Report") && d.message.contains("report"),
+            "message must name both sides of the collision, got: {:?}",
+            d.message
+        );
+        assert!(
+            d.message.contains("parameter"),
+            "message must say `parameter` for param-side collision, got: {:?}",
+            d.message
+        );
+
+        // Primary span: the `-> Report` annotation.
+        let arrow_byte = src.find("->").unwrap();
+        let report_byte = src.find("Report").unwrap();
+        let primary_start_col = (arrow_byte + 1) as u32; // 1-indexed col on line 1
+        let primary_end_col = (report_byte + "Report".len()) as u32; // inclusive
+        assert_eq!(d.span.start.line, 1);
+        assert_eq!(d.span.start.col, primary_start_col);
+        assert_eq!(d.span.end.line, 1);
+        assert_eq!(d.span.end.col, primary_end_col);
+
+        // Related span: the `report` param identifier inside `foo(...)`.
+        assert_eq!(d.related.len(), 1, "expected exactly one related span");
+        let related_param_start = (src.find("report").unwrap() + 1) as u32;
+        // The Param.span is the parameter's full header position (name plus
+        // optional default). We don't want to pin its exact end here — the
+        // start-of-line marker is enough to prove the param-side span lands.
+        assert_eq!(d.related[0].start.line, 1);
+        assert_eq!(d.related[0].start.col, related_param_start);
+    }
+
+    #[test]
+    fn t2_export_block_return_type_collides_with_export_block_param() {
+        // Export-block visit site: `export block bar(report = "x") -> Report`
+        // — both the param and the return type canonicalize to `report`. The
+        // sweep must enumerate `Decl::ExportBlock` params (not just skill
+        // params), so this pinpoints the export-block branch of the match.
+        let src = "export block bar(report = \"x\") -> Report\n    flow:\n        \"x\"\n        return report\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let diags = collision_diags(&bag);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly one domain-type collision diagnostic, got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+        let d = diags[0];
+        assert_eq!(d.classification, crate::diagnostic::Classification::Error);
+        assert!(d.message.contains("Report"));
+        assert!(d.message.contains("report"));
+        assert!(d.message.contains("parameter"));
+    }
+
+    #[test]
+    fn t4_cross_decl_collision_uses_file_level_scope() {
+        // File-level scope: a `-> Report` annotation on the skill collides
+        // with a param `report` on a *different* decl. Catches a regression
+        // where the sweep is per-decl instead of file-level.
+        let src = "skill main() -> Report\n    description: \"Main.\"\n    flow:\n        helper()\n\nblock helper(report = \"x\")\n    description: \"Helper.\"\n    flow:\n        \"work\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let diags = collision_diags(&bag);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly one cross-decl collision diagnostic, got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn t5_underscore_cross_spelling_collision_via_canonicalization() {
+        // D6 canonicalization (ASCII-lower + strip `_`): `makePlan` and
+        // `make_plan` share canonical key `makeplan`. The skill's return
+        // type and the block's param spell it differently in source — the
+        // sweep must canonicalize before comparing or this regresses.
+        let src = "skill main() -> makePlan\n    description: \"Main.\"\n    flow:\n        helper()\n\nblock helper(make_plan = \"x\")\n    description: \"Helper.\"\n    flow:\n        \"work\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let diags = collision_diags(&bag);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected one canonicalized collision (`makePlan` vs `make_plan`), got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+        // Message must use raw author spellings on both sides, not the
+        // canonicalized `makeplan` form.
+        let msg = &diags[0].message;
+        assert!(
+            msg.contains("makePlan"),
+            "message must use raw type spelling `makePlan`, got: {:?}",
+            msg
+        );
+        assert!(
+            msg.contains("make_plan"),
+            "message must use raw param spelling `make_plan`, got: {:?}",
+            msg
+        );
+    }
+
+    #[test]
+    fn t6_skill_return_type_collides_with_const() {
+        // Const-side enumeration: `const report = "x"` collides with skill
+        // return type `-> Report`. Pinpoints the `Decl::Const` branch of the
+        // sweep's enumeration loop and exercises the `"const"` arm of the
+        // emit helper (message must say `const`, not `parameter`).
+        let src = "skill main() -> Report\n    description: \"Main.\"\n    flow:\n        \"do\"\n\nconst report = \"x\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let diags = collision_diags(&bag);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly one type-vs-const collision, got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+        assert!(
+            diags[0].message.contains("const"),
+            "message must say `const` for const-side collision, got: {:?}",
+            diags[0].message
+        );
+        assert!(
+            !diags[0].message.contains("parameter"),
+            "const-side collision message must not say `parameter`, got: {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn t7_no_collision_when_canonical_names_differ() {
+        // Negative control: param `repository` does NOT collide with type
+        // `Report` — different canonical keys. Catches a substring-instead-of-
+        // equality regression in the canonical comparison.
+        let src = "skill main(repository = \"x\") -> Report\n    description: \"Main.\"\n    flow:\n        \"do\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let diags = collision_diags(&bag);
+        assert!(
+            diags.is_empty(),
+            "expected zero collision diagnostics for distinct canonical names, got: {:?}",
+            diags.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn t8_banned_return_type_skips_collision_per_d8() {
+        // D8: banned generic names (`-> String`) skip registry registration,
+        // so a param `string` cannot collide via this path. The existing #83
+        // banned-warning still fires; the chunk-3 collision does NOT.
+        let src = "skill foo(string = \"x\") -> String\n    description: \"Foo.\"\n    flow:\n        \"do\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        // #83 banned-warning still fires.
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::generic-type-name"),
+            "banned `-> String` must still fire #83 generic-type-name warning, got: {:?}",
+            ids
+        );
+        // Chunk-3 collision does NOT fire — banned name was never registered.
+        let diags = collision_diags(&bag);
+        assert!(
+            diags.is_empty(),
+            "banned name must not produce a chunk-3 collision diagnostic (D8), got: {:?}",
+            diags.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn t9_empty_registry_yields_zero_collision_diagnostics() {
+        // No `-> DomainType` annotations anywhere → registry empty → sweep
+        // produces zero collision diagnostics, even when params and consts
+        // are present. Catches a regression where the sweep emits collisions
+        // against an empty registry (would be an infinite false-positive).
+        let src = "skill main(report = \"x\")\n    description: \"Main.\"\n    flow:\n        \"do\"\n\nconst report_doc = \"y\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let diags = collision_diags(&bag);
+        assert!(
+            diags.is_empty(),
+            "empty registry must yield zero collision diagnostics, got: {:?}",
+            diags.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn t10_imports_path_parity_emits_collision() {
+        // Imports-path parity with T1: when analyze runs through
+        // `analyze_with_imports` (used for files that import other files),
+        // the chunk-3 sweep must fire there too. Catches a regression where
+        // the sweep landed in `analyze_with_diagnostics` only.
+        let src = "skill foo(report = \"x\") -> Report\n    description: \"Foo.\"\n    flow:\n        \"do\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let mut used: HashSet<String> = HashSet::new();
+        let _ = analyze_with_imports(
+            &file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut used,
+            &HashMap::new(),
+            &mut registry,
+        );
+
+        let diags = collision_diags(&bag);
+        assert_eq!(
+            diags.len(),
+            1,
+            "imports-path must also emit chunk-3 collision diagnostic, got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn t3_private_block_return_type_collides_with_block_param() {
+        // Private-block visit site (D7: in scope for header `-> DomainType`):
+        // `block helper(report = "x") -> Report` — param `report` collides
+        // with return type `Report` after canonicalization. Pinpoints the
+        // `Decl::Block` branch of the param-enumeration match.
+        let src = "skill main()\n    description: \"Main.\"\n    flow:\n        helper()\n\nblock helper(report = \"x\") -> Report\n    description: \"Helper.\"\n    flow:\n        \"work\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let diags = collision_diags(&bag);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly one domain-type collision diagnostic from private block, got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+        assert!(diags[0].message.contains("parameter"));
     }
 }

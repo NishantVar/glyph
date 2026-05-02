@@ -16,10 +16,13 @@ use std::collections::HashMap;
 
 /// One entry in a per-file [`Registry`]. Stores the canonical form of the
 /// identifier (the form that lands in IR per F12) plus the source span of
-/// the *first* use that introduced it.
+/// the *first* use that introduced it. Also retains the verbatim author
+/// spelling at first use, so downstream diagnostics (e.g. AC5 name-collision
+/// in chunk 3) can name the type as the author wrote it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistryEntry {
     pub canonical_name: String,
+    pub raw_first_use: String,
     pub first_use_span: Span,
 }
 
@@ -45,6 +48,7 @@ impl Registry {
             .entry(canonical.clone())
             .or_insert(RegistryEntry {
                 canonical_name: canonical,
+                raw_first_use: raw_name.to_string(),
                 first_use_span: span,
             })
     }
@@ -54,6 +58,14 @@ impl Registry {
     /// with a name that canonicalizes to the same key.
     pub fn lookup(&self, raw_name: &str) -> Option<&RegistryEntry> {
         self.entries.get(&canonicalize_identifier(raw_name))
+    }
+
+    /// Iterate all registered entries. Iteration order is unspecified
+    /// (matches the underlying `HashMap`); callers that need stable order
+    /// must sort by their own key. Used by analyze's AC5 name-collision
+    /// sweep to walk every registered domain type once.
+    pub fn iter(&self) -> impl Iterator<Item = &RegistryEntry> {
+        self.entries.values()
     }
 
     /// Pure canonicalized-string equality between two raw author identifiers.
@@ -121,6 +133,9 @@ mod tests {
         let entry = reg.register_first_use("Report", s);
         assert_eq!(entry.canonical_name, "report");
         assert_eq!(entry.first_use_span, s);
+        // Chunk 3: raw author spelling round-trips so downstream diagnostics
+        // can name the type as the author wrote it (not the canonical mush).
+        assert_eq!(entry.raw_first_use, "Report");
     }
 
     #[test]
