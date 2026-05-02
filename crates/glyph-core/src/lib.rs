@@ -18,6 +18,7 @@ pub mod parse;
 pub mod slot;
 pub mod span;
 pub mod tokenize;
+pub mod type_position;
 pub mod validate;
 pub mod validate_output;
 
@@ -1876,6 +1877,359 @@ export block compute(x = \"default\")
             !ids.contains(&"G::analyze::export-missing-return-type"),
             "must NOT fire export-missing-return-type when there is no return at all, got: {:?}",
             ids
+        );
+    }
+
+    // --- Issue #83: G::analyze::generic-type-name ---
+
+    #[test]
+    fn return_type_string_on_skill_fires_warning() {
+        // AC2 + AC3 (emit half): a skill header with `-> String` (banned
+        // generic type name) must fire `G::analyze::generic-type-name` at
+        // warning tier.
+        let src = "\
+skill foo() -> String
+    description: \"Foo.\"
+    flow:
+        \"do something\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::generic-type-name"),
+            "expected G::analyze::generic-type-name for `-> String` on skill, got: {:?}",
+            ids
+        );
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::generic-type-name")
+            .unwrap();
+        assert_eq!(
+            diag.classification,
+            diagnostic::Classification::Warning,
+            "generic-type-name must be Warning tier"
+        );
+        assert!(
+            diag.message.contains("String"),
+            "warning message should mention the offending identifier `String`, got: {:?}",
+            diag.message
+        );
+        assert!(
+            !diag.hints.is_empty(),
+            "warning should carry a hint suggesting domain types"
+        );
+    }
+
+    #[test]
+    fn return_type_string_on_export_block_fires_warning() {
+        // Banned `-> String` on an export-block header fires the warning.
+        let src = "\
+export block compute(x = \"d\") -> String
+    flow:
+        \"x\"
+        return x
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::generic-type-name"),
+            "expected G::analyze::generic-type-name for `-> String` on export block, got: {:?}",
+            ids
+        );
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::generic-type-name")
+            .unwrap();
+        assert_eq!(diag.classification, diagnostic::Classification::Warning);
+    }
+
+    #[test]
+    fn return_type_string_on_block_fires_warning() {
+        // Banned `-> String` on a private `block` header fires the warning.
+        // Per D7 (planner-83 decision): private blocks are in scope for AC2.
+        let src = "\
+skill main()
+    description: \"Main.\"
+    flow:
+        helper()
+
+block helper() -> String
+    description: \"Helper.\"
+    flow:
+        \"work\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::generic-type-name"),
+            "expected G::analyze::generic-type-name for `-> String` on private block, got: {:?}",
+            ids
+        );
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::generic-type-name")
+            .unwrap();
+        assert_eq!(diag.classification, diagnostic::Classification::Warning);
+    }
+
+    #[test]
+    fn valid_domain_return_type_emits_no_generic_warning() {
+        // Negative case: `-> BranchName` is a legitimate domain type and
+        // must NOT trigger generic-type-name.
+        let src = "\
+skill foo() -> BranchName
+    description: \"Foo.\"
+    flow:
+        \"do something\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::generic-type-name"),
+            "must NOT fire generic-type-name for valid domain type, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn compilation_continues_after_generic_type_name_warning() {
+        // AC4: warning is non-blocking — a banned `-> String` must NOT halt
+        // compilation. Fixture is a valid skill in every other respect; the
+        // only diagnostic should be the warning, and exit_code should be 0.
+        let src = "\
+skill foo() -> String
+    description: \"Foo.\"
+    flow:
+        \"do something\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::generic-type-name"),
+            "fixture should fire generic-type-name; got: {:?}",
+            ids
+        );
+        assert!(
+            !bag.has_error(),
+            "compilation must not halt on a generic-type-name warning, got errors: {:?}",
+            ids
+        );
+        assert!(
+            !bag.has_repairable(),
+            "generic-type-name must not be repairable-tier (would set exit 2), got: {:?}",
+            ids
+        );
+        assert_eq!(
+            bag.exit_code(),
+            0,
+            "warning-only bag must produce exit code 0 (`build-foundation.md` §A6), got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn multiple_banned_return_types_in_one_file_no_dedup() {
+        // No-dedup rule: every banned occurrence in source produces its own
+        // warning, each with its own span. Author needs to fix each one.
+        let src = "\
+skill main() -> String
+    description: \"Main.\"
+    flow:
+        helper()
+
+block helper() -> Int
+    description: \"Helper.\"
+    flow:
+        \"work\"
+
+export block compute(x = \"d\") -> Bool
+    flow:
+        \"x\"
+        return x
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let warnings: Vec<&Diagnostic> = bag
+            .iter()
+            .filter(|d| d.id == "G::analyze::generic-type-name")
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            3,
+            "expected 3 generic-type-name warnings (one per banned return type, no dedup), got {}: {:?}",
+            warnings.len(),
+            warnings.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
+        );
+        // Each warning carries a distinct span (no dedup means distinct origins).
+        let starts: HashSet<(u32, u32)> = warnings
+            .iter()
+            .map(|d| (d.span.start.line, d.span.start.col))
+            .collect();
+        assert_eq!(
+            starts.len(),
+            3,
+            "expected 3 distinct warning spans, got duplicates: {:?}",
+            warnings.iter().map(|d| &d.span).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn offender_appears_verbatim_in_warning_message() {
+        // Survives a refactor that mistakenly canonicalizes the offender
+        // (e.g. emits "String" in the message when source said "string").
+        let src = "\
+skill foo() -> string
+    description: \"Foo.\"
+    flow:
+        \"do something\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::generic-type-name")
+            .expect("expected generic-type-name warning for `-> string`");
+        assert!(
+            diag.message.contains("string"),
+            "warning message must echo the offender verbatim (lowercase `string`), got: {:?}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn return_type_warning_span_targets_the_annotation() {
+        // Pins span convention: warning span starts at the `->` arrow on
+        // the header line (mirrors `parse.rs::try_parse_return_type` and
+        // `G::parse::none-as-return-type`).
+        let src = "\
+skill foo() -> String
+    description: \"Foo.\"
+    flow:
+        \"do something\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::generic-type-name")
+            .expect("expected generic-type-name warning");
+        // Header is line 1; `->` starts at byte 12 (0-indexed) in
+        // "skill foo() -> String", which is col 13 (1-indexed).
+        assert_eq!(
+            diag.span.start.line, 1,
+            "warning span should start on the header line, got line {}",
+            diag.span.start.line
+        );
+        let arrow_col = src.lines().next().unwrap().find("->").unwrap() as u32 + 1;
+        assert_eq!(
+            diag.span.start.col, arrow_col,
+            "warning span should start at the `->` arrow (col {}), got col {}",
+            arrow_col, diag.span.start.col
+        );
+    }
+
+    #[test]
+    fn agent_return_type_does_not_warn() {
+        // `Agent` is a legitimate IR-internal `TypeTag` for stdlib
+        // `subagent()` — must NOT trigger generic-type-name.
+        let src = "\
+skill foo() -> Agent
+    description: \"Foo.\"
+    flow:
+        \"do something\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::generic-type-name"),
+            "must NOT fire generic-type-name for `-> Agent`, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn return_type_none_fires_parse_repairable_not_analyze_generic_warning() {
+        // D9: `-> None` in author-facing source is intercepted by
+        // `G::parse::none-as-return-type` (#82, repairable, Phase 3a auto-fix)
+        // and never reaches the analyze-tier validator. `None` stays in the
+        // banned list (defense in depth for any future call site that
+        // bypasses parse), but for the author-visible exit-code path the
+        // parse repairable always wins. This test pins the cross-issue
+        // precedence — if either diagnostic moves, it breaks loud.
+        let src = "\
+skill foo() -> None
+    description: \"Foo.\"
+    flow:
+        \"do something\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::none-as-return-type"),
+            "expected `-> None` to fire G::parse::none-as-return-type (repairable, #82); got: {:?}",
+            ids,
+        );
+        assert!(
+            !ids.contains(&"G::analyze::generic-type-name"),
+            "must NOT also fire G::analyze::generic-type-name — parse intercept takes precedence over the analyze warning; got: {:?}",
+            ids,
+        );
+    }
+
+    #[test]
+    fn banned_return_types_warn_on_imports_path() {
+        // AC2 imports-path parity: every header-bearing decl arm
+        // (skill / export block / private block) must fire the warning when
+        // analysis runs through `analyze_with_imports` (the path used by
+        // `check_file` whenever the file has any `import` declaration).
+        // Regression: the `Decl::Block` arm in `analyze_with_imports` was a
+        // no-op before this fix, silently skipping private blocks reached
+        // through the imports path.
+        let dir = tempfile::tempdir().unwrap();
+
+        // lib.glyph.md — exports a const so the importer has something to import.
+        let lib_path = dir.path().join("lib.glyph.md");
+        std::fs::write(
+            &lib_path,
+            r#"export const greeting = "hello"
+"#,
+        )
+        .unwrap();
+
+        // main.glyph.md — has an `import` (forces the imports path) and one
+        // banned return type per header-bearing decl kind.
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(
+            &main_path,
+            r#"import "./lib.glyph.md" { greeting }
+
+skill main() -> String
+    description: "Main."
+    require greeting
+    flow:
+        helper()
+
+block helper() -> Int
+    description: "Helper."
+    flow:
+        "work"
+
+export block compute(x = "d") -> Bool
+    flow:
+        "x"
+        return x
+"#,
+        )
+        .unwrap();
+
+        let bag = check_file(&main_path);
+        let warnings: Vec<&Diagnostic> = bag
+            .iter()
+            .filter(|d| d.id == "G::analyze::generic-type-name")
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            3,
+            "imports path must fire the warning at every header-bearing decl site (skill/block/export block); got {}: {:?}",
+            warnings.len(),
+            warnings.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
         );
     }
 
