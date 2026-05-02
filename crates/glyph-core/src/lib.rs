@@ -12,6 +12,7 @@ pub mod emit_ir;
 pub mod expand;
 pub mod fmt;
 pub mod ir;
+pub mod kind_infer;
 pub mod lower;
 pub mod parse;
 pub mod slot;
