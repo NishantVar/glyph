@@ -184,6 +184,12 @@ pub struct ExportedNames {
     pub skills: HashSet<String>,
     /// Names of private (non-exported) declarations.
     pub privates: HashSet<String>,
+    /// Issue #84 Chunk 4 (D15 / Option-Y): per-exported-block declared
+    /// `-> Type` annotation, keyed by the block's name. `Spanned<String>`
+    /// preserves the producer-file span (chunk-4 captures-but-does-not-render
+    /// per D15 — the consumer only renders the *caller's* `-> Type` span).
+    /// Absent when an exported block omits the annotation.
+    pub block_return_types: HashMap<String, crate::span::Spanned<String>>,
 }
 
 /// Extract the exported names from a parsed source file.
@@ -193,6 +199,7 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
         blocks: HashSet::new(),
         skills: HashSet::new(),
         privates: HashSet::new(),
+        block_return_types: HashMap::new(),
     };
     for decl in &file.decls {
         match decl {
@@ -208,6 +215,11 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
             }
             Decl::ExportBlock(b) => {
                 exports.blocks.insert(b.node.name.clone());
+                if let Some(rt) = b.node.return_type.as_ref() {
+                    exports
+                        .block_return_types
+                        .insert(b.node.name.clone(), rt.clone());
+                }
             }
             Decl::Block(b) => {
                 exports.privates.insert(b.node.name.clone());
@@ -342,6 +354,10 @@ fn check_file_recursive(
     let mut seen_import_paths: HashMap<PathBuf, Span> = HashMap::new();
     let mut used_import_names: HashSet<String> = HashSet::new();
     let mut all_import_names: Vec<(String, Span)> = Vec::new();
+    // Issue #84 Chunk 4 (D15 / Option-Y): per-import-statement aliased
+    // return-type map (consumer-local name → producer `Spanned<-> Type>`).
+    let mut imported_block_return_types: HashMap<String, crate::span::Spanned<String>> =
+        HashMap::new();
 
     for decl in &file.decls {
         if let Decl::Import(import_spanned) = decl {
@@ -461,6 +477,12 @@ fn check_file_recursive(
                             imported_texts.insert(local.to_string());
                         } else if dep_exports.blocks.contains(&imp_name.name) {
                             imported_blocks.insert(local.to_string());
+                            // Issue #84 Chunk 4: re-key the producer-side
+                            // block return type under the consumer-local name.
+                            if let Some(rt) = dep_exports.block_return_types.get(&imp_name.name) {
+                                imported_block_return_types
+                                    .insert(local.to_string(), rt.clone());
+                            }
                         } else {
                             bag.push(
                                 Diagnostic::error(
@@ -483,7 +505,14 @@ fn check_file_recursive(
                         imported_texts.insert(format!("{}.{}", alias, t));
                     }
                     for b in &dep_exports.blocks {
-                        imported_blocks.insert(format!("{}.{}", alias, b));
+                        let qualified = format!("{}.{}", alias, b);
+                        imported_blocks.insert(qualified.clone());
+                        // Issue #84 Chunk 4: prefix imported block return
+                        // types under `alias.name` to match the consumer's
+                        // call-site spelling.
+                        if let Some(rt) = dep_exports.block_return_types.get(b) {
+                            imported_block_return_types.insert(qualified, rt.clone());
+                        }
                     }
                 }
             }
@@ -503,6 +532,7 @@ fn check_file_recursive(
         &mut used_import_names,
         &HashMap::new(),
         &mut registry,
+        &imported_block_return_types,
     );
 
     // Unused import detection.
@@ -905,6 +935,10 @@ struct ResolvedImports {
     text_values: std::collections::BTreeMap<String, String>,
     block_bodies: HashMap<String, String>,
     block_descriptions: HashMap<String, String>,
+    /// Issue #84 Chunk 4 (D15 / Option-Y): aliased imported-block return
+    /// types. Keyed by the *consumer-side* local name (post-alias /
+    /// post-prefix), valued by the producer-file `Spanned<-> Type>`.
+    block_return_types: HashMap<String, crate::span::Spanned<String>>,
 }
 
 /// Build the full resolved import data for a consumer file.
@@ -921,6 +955,7 @@ fn build_resolved_imports(
         text_values: std::collections::BTreeMap::new(),
         block_bodies: HashMap::new(),
         block_descriptions: HashMap::new(),
+        block_return_types: HashMap::new(),
     };
 
     let source = match std::fs::read_to_string(consumer) {
@@ -965,6 +1000,14 @@ fn build_resolved_imports(
                             if let Some(desc) = file_block_descriptions.get(&(resolved.clone(), imp_name.name.clone())) {
                                 result.block_descriptions.insert(local.to_string(), desc.clone());
                             }
+                            // Issue #84 Chunk 4 (D15 / Option-Y): re-key the
+                            // exporter-side block return type under the
+                            // consumer-side local (post-alias) name so the
+                            // chunk-4 check resolves callees by the spelling
+                            // the consumer actually wrote.
+                            if let Some(rt) = exports.block_return_types.get(&imp_name.name) {
+                                result.block_return_types.insert(local.to_string(), rt.clone());
+                            }
                         }
                     }
                 }
@@ -983,7 +1026,13 @@ fn build_resolved_imports(
                             result.block_bodies.insert(qualified.clone(), body.clone());
                         }
                         if let Some(desc) = file_block_descriptions.get(&(resolved.clone(), name.clone())) {
-                            result.block_descriptions.insert(qualified, desc.clone());
+                            result.block_descriptions.insert(qualified.clone(), desc.clone());
+                        }
+                        // Issue #84 Chunk 4 (D15 / Option-Y): whole-module
+                        // imports prefix every block name with `alias.` —
+                        // mirror the same prefix on return types.
+                        if let Some(rt) = exports.block_return_types.get(name) {
+                            result.block_return_types.insert(qualified, rt.clone());
                         }
                     }
                 }
@@ -1106,11 +1155,16 @@ fn compile_source_with_resolved_imports(
     let mut used_import_names: HashSet<String> = HashSet::new();
 
     let mut registry = domain_registry::Registry::new();
+    // Issue #84 Chunk 4 (D15 / Option-Y): the per-file
+    // `ResolvedImports.block_return_types` map carries the producer-side
+    // `Spanned<-> Type>` for every imported (selective + whole-module)
+    // exported block, re-keyed under the consumer's local spelling.
     let file = analyze::analyze_with_imports(
         &file, file_id, file_label, &line_index, &mut bag,
         &resolved_imports.text_names, &all_imported_blocks, &mut used_import_names,
         &resolved_imports.block_descriptions,
         &mut registry,
+        &resolved_imports.block_return_types,
     );
     if bag.has_error() || bag.has_repairable() {
         return Ok(CompileOutcome::Diagnostics(bag));
@@ -4079,5 +4133,53 @@ skill foo()
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(ids.contains(&"G::parse::mixed-indent"), "ids: {:?}", ids);
         assert_eq!(bag.exit_code(), 2, "mixed-indent is repairable (exit 2)");
+    }
+
+    #[test]
+    fn cross_file_nominal_mismatch_fires_via_check_file() {
+        // Issue #84 Chunk 4: end-to-end Option-Y plumbing test. Two files —
+        // a library exports `do_thing() -> Plan`; a consumer skill declares
+        // `-> Report` and `return do_thing()`. The cross-file
+        // `nominal-mismatch` diagnostic must fire through the import-aware
+        // pipeline, not just from manually-constructed maps in unit tests.
+        //
+        // Without the Option-Y plumbing
+        // (`ExportedNames.block_return_types` populated from `extract_exports`
+        // and threaded through `ResolvedImports` / `check_file_recursive`),
+        // the consumer's check sees an empty imported-return-types map and
+        // silently skips the mismatch.
+        let dir = tempfile::tempdir().unwrap();
+
+        let lib_path = dir.path().join("lib.glyph.md");
+        std::fs::write(&lib_path, "export block do_thing() -> Plan\n    description: \"Make a plan.\"\n    flow:\n        return \"a plan was made\"\n").unwrap();
+
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(
+            &main_path,
+            "import \"./lib.glyph.md\" { do_thing }\n\nskill main() -> Report\n    description: \"Main.\"\n    flow:\n        return do_thing()\n",
+        )
+        .unwrap();
+
+        let bag = check_file(&main_path);
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::nominal-mismatch"),
+            "expected G::analyze::nominal-mismatch from cross-file pipeline, got: {:?}",
+            ids
+        );
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::nominal-mismatch")
+            .unwrap();
+        assert!(
+            diag.message.contains("Report") && diag.message.contains("Plan"),
+            "message must name both caller's `Report` and callee's `Plan`, got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("do_thing"),
+            "message must name the call target `do_thing`, got: {}",
+            diag.message
+        );
     }
 }

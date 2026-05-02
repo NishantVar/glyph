@@ -193,6 +193,123 @@ fn emit_name_collision(
     bag.push(diag, entry.first_use_span);
 }
 
+/// Issue #84 Chunk 4 (AC4 / D14): emit `G::analyze::nominal-mismatch` Error
+/// at a return-position call boundary when the callee's declared `-> Type`
+/// does not canonical-match the enclosing callable's declared `-> Type`.
+///
+/// `primary_span` is the enclosing decl's span — synthetic-fallback option
+/// (3) per `design/diagnostics.md` §Span Semantics. The AST has no
+/// per-statement span (`flow: Vec<FlowStmt>`, not `Vec<Spanned<FlowStmt>>`;
+/// `FlowStmt` itself has no span field), so we cannot pin the actual
+/// `return foo()` line. `related_span` is the enclosing callable's
+/// `-> Type` annotation — the contract being violated (D14).
+///
+/// Parallel to [`emit_nominal_mismatch`] (placeholder — analyze.rs ~1207):
+/// the placeholder predates this work and its lone unit test does not
+/// exercise the `related` path; left untouched per surgical-changes
+/// principle. A future codex-pass cleanup may fold the two into one helper.
+fn emit_nominal_mismatch_at_return(
+    call_target: &str,
+    expected_type_raw: &str,
+    actual_type_raw: &str,
+    primary_span: Span,
+    related_span: Span,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    let primary = SourceSpan::from_byte_span(file_label, primary_span, line_index);
+    let related = SourceSpan::from_byte_span(file_label, related_span, line_index);
+    let mut diag = Diagnostic::error(
+        "G::analyze::nominal-mismatch",
+        format!(
+            "type mismatch at call boundary for `{}`: expected `{}`, got `{}`",
+            call_target, expected_type_raw, actual_type_raw
+        ),
+        primary,
+    );
+    diag.related.push(related);
+    bag.push(diag, primary_span);
+}
+
+/// Issue #84 Chunk 4 (AC4 / D13, D16): single-statement nominal check.
+///
+/// Inspect one `FlowStmt`. If it is a `Return(Call { target })` and the
+/// enclosing callable declares `-> Type`, look up the callee's `-> Type`
+/// (local first, then imports), and emit `G::analyze::nominal-mismatch`
+/// when the canonical forms differ. Untyped caller / untyped callee /
+/// undefined callee → no check, no diagnostic (`types.md` line 67-76).
+///
+/// Shared by the skill flow walk in `analyze_skill` and the BlockDecl
+/// flow walk in [`check_block_return_calls`]. `decl_span` is the
+/// enclosing callable's declaration span (D14 primary, synthetic
+/// fallback option 3 per `design/diagnostics.md` §Span Semantics).
+fn check_return_call_nominal(
+    caller_return_type: Option<&Spanned<String>>,
+    stmt: &FlowStmt,
+    decl_span: Span,
+    registry: &crate::domain_registry::Registry,
+    local_callee_return_types: &HashMap<&str, &Spanned<String>>,
+    imported_block_return_types: &HashMap<String, Spanned<String>>,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    let (Some(caller_rt), FlowStmt::Return(crate::ast::ReturnExpr::Call { target, .. })) =
+        (caller_return_type, stmt)
+    else {
+        return;
+    };
+    let callee_rt = local_callee_return_types
+        .get(target.as_str())
+        .copied()
+        .or_else(|| imported_block_return_types.get(target.as_str()));
+    let Some(callee_rt) = callee_rt else { return };
+    if registry.nominal_match(&caller_rt.node, &callee_rt.node) {
+        return;
+    }
+    emit_nominal_mismatch_at_return(
+        target,
+        &caller_rt.node,
+        &callee_rt.node,
+        decl_span,
+        caller_rt.span,
+        file_label,
+        line_index,
+        bag,
+    );
+}
+
+/// Issue #84 Chunk 4 (AC4 / D13, D16): walk a `BlockDecl`'s `flow:` for
+/// `return foo()` statements and delegate each to
+/// [`check_return_call_nominal`]. ExportBlockDecl is deliberately not
+/// handled — its AST has no `flow: Vec<FlowStmt>`, so cross-file
+/// ExportBlock-as-caller is deferred per AST limitation (D16).
+fn check_block_return_calls(
+    block: &BlockDecl,
+    decl_span: Span,
+    registry: &crate::domain_registry::Registry,
+    local_callee_return_types: &HashMap<&str, &Spanned<String>>,
+    imported_block_return_types: &HashMap<String, Spanned<String>>,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    for stmt in &block.flow {
+        check_return_call_nominal(
+            block.return_type.as_ref(),
+            stmt,
+            decl_span,
+            registry,
+            local_callee_return_types,
+            imported_block_return_types,
+            file_label,
+            line_index,
+            bag,
+        );
+    }
+}
+
 /// Run Phase 2 with diagnostic emission.
 ///
 /// Pushes any structured diagnostics onto `bag` and returns the AST unchanged.
@@ -253,10 +370,34 @@ pub fn analyze_with_diagnostics(
         })
         .collect();
 
+    // Issue #84 Chunk 4 (AC4 / D13): per-file local-callee return-type map.
+    // Same shape as the imports-path computation in `analyze_with_imports` —
+    // skill / block / export-block all contribute callees with `-> Type`.
+    // The no-imports path has no cross-file map, so we pass an empty one.
+    let local_callee_return_types: HashMap<&str, &Spanned<String>> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Block(b) => b.node.return_type.as_ref().map(|rt| (b.node.name.as_str(), rt)),
+            Decl::ExportBlock(eb) => eb
+                .node
+                .return_type
+                .as_ref()
+                .map(|rt| (eb.node.name.as_str(), rt)),
+            Decl::Skill(s) => s.node.return_type.as_ref().map(|rt| (s.node.name.as_str(), rt)),
+            _ => None,
+        })
+        .collect();
+    let empty_imported_block_return_types: HashMap<String, Spanned<String>> = HashMap::new();
+
     for decl in &file.decls {
         match decl {
             Decl::Skill(spanned) => {
-                analyze_skill(spanned, file_id, file_label, line_index, bag, registry, &text_names, &block_names, &block_decls, &HashMap::new())
+                analyze_skill(
+                    spanned, file_id, file_label, line_index, bag, registry,
+                    &text_names, &block_names, &block_decls, &HashMap::new(),
+                    &local_callee_return_types, &empty_imported_block_return_types,
+                )
             }
             Decl::ExportBlock(spanned) => {
                 analyze_export_block(spanned, file_label, line_index, bag, registry, &private_names);
@@ -270,6 +411,23 @@ pub fn analyze_with_diagnostics(
                     line_index,
                     bag,
                     registry,
+                );
+
+                // Issue #84 Chunk 4 (AC4 / D13): a `block` may itself be a
+                // caller via a `return foo()`. Mirror the skill arm — walk
+                // `flow` for `FlowStmt::Return(ReturnExpr::Call)` and check
+                // the callee's `-> Type` against this block's caller `-> Type`.
+                // ExportBlock-as-caller is deferred per AST limitation
+                // (no `flow: Vec<FlowStmt>` on ExportBlockDecl — D16).
+                check_block_return_calls(
+                    &spanned.node,
+                    spanned.span,
+                    registry,
+                    &local_callee_return_types,
+                    &empty_imported_block_return_types,
+                    file_label,
+                    line_index,
+                    bag,
                 );
             }
             Decl::Const(_) => {}
@@ -343,6 +501,7 @@ pub fn analyze_with_imports(
     used_import_names: &mut HashSet<String>,
     imported_block_descriptions: &HashMap<String, String>,
     registry: &mut crate::domain_registry::Registry,
+    imported_block_return_types: &HashMap<String, Spanned<String>>,
 ) -> SourceFile {
     // Collect local value-binding names (post-#81: `const` is the sole form;
     // the `local_text_names` variable name is kept for parity with the legacy
@@ -400,6 +559,28 @@ pub fn analyze_with_imports(
         })
         .collect();
 
+    // Issue #84 Chunk 4 (AC4 / D13): per-file local-callee return-type map.
+    // Keyed by callable name; valued by the `-> Type` annotation. Populated
+    // for callables that declare a return type only — absence means
+    // "skip the type-check" (covers undefined-callee and untyped-callee).
+    // Skill / BlockDecl / ExportBlockDecl all have an `Option<Spanned<String>>`
+    // `return_type` field (ast.rs:89, 130, 238). The borrowed-string keys
+    // tie this map's lifetime to the file AST, same pattern as `block_decls`.
+    let local_callee_return_types: HashMap<&str, &Spanned<String>> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Block(b) => b.node.return_type.as_ref().map(|rt| (b.node.name.as_str(), rt)),
+            Decl::ExportBlock(eb) => eb
+                .node
+                .return_type
+                .as_ref()
+                .map(|rt| (eb.node.name.as_str(), rt)),
+            Decl::Skill(s) => s.node.return_type.as_ref().map(|rt| (s.node.name.as_str(), rt)),
+            _ => None,
+        })
+        .collect();
+
     for decl in &file.decls {
         match decl {
             Decl::Skill(spanned) => {
@@ -408,6 +589,7 @@ pub fn analyze_with_imports(
                     &text_names, &block_names, &block_decls,
                     imported_texts, imported_blocks, used_import_names,
                     imported_block_descriptions,
+                    &local_callee_return_types, imported_block_return_types,
                 );
             }
             Decl::ExportBlock(spanned) => {
@@ -423,6 +605,21 @@ pub fn analyze_with_imports(
                     line_index,
                     bag,
                     registry,
+                );
+
+                // Issue #84 Chunk 4 (AC4 / D13, D16): BlockDecl-as-caller
+                // walk on the imports path. ExportBlock-as-caller deferred
+                // per AST limitation (no `flow: Vec<FlowStmt>` on
+                // ExportBlockDecl).
+                check_block_return_calls(
+                    &spanned.node,
+                    spanned.span,
+                    registry,
+                    &local_callee_return_types,
+                    imported_block_return_types,
+                    file_label,
+                    line_index,
+                    bag,
                 );
             }
             Decl::Const(_) | Decl::Import(_) => {}
@@ -495,9 +692,15 @@ fn analyze_skill_with_usage_tracking(
     imported_blocks: &HashSet<String>,
     used_import_names: &mut HashSet<String>,
     imported_block_descriptions: &HashMap<String, String>,
+    local_callee_return_types: &HashMap<&str, &Spanned<String>>,
+    imported_block_return_types: &HashMap<String, Spanned<String>>,
 ) {
     // Run the normal analysis.
-    analyze_skill(spanned, file_id, file_label, line_index, bag, registry, text_names, block_names, block_decls, imported_block_descriptions);
+    analyze_skill(
+        spanned, file_id, file_label, line_index, bag, registry,
+        text_names, block_names, block_decls, imported_block_descriptions,
+        local_callee_return_types, imported_block_return_types,
+    );
 
     // Track usage: walk flow/constraints/context to see which imported names are referenced.
     let skill = &spanned.node;
@@ -579,6 +782,8 @@ fn analyze_skill(
     block_names: &HashSet<&str>,
     block_decls: &HashMap<&str, &BlockDecl>,
     imported_block_descriptions: &HashMap<String, String>,
+    local_callee_return_types: &HashMap<&str, &Spanned<String>>,
+    imported_block_return_types: &HashMap<String, Spanned<String>>,
 ) {
     let skill = &spanned.node;
     let declared: HashSet<&str> = skill.params.iter().map(|p| p.name.as_str()).collect();
@@ -706,7 +911,20 @@ fn analyze_skill(
             }
             FlowStmt::Return(_) => {
                 // Return statements are validated structurally by the parser
-                // (check_return_rules). No analyze-phase checks needed.
+                // (check_return_rules). Issue #84 Chunk 4 (AC4 / D13):
+                // delegate the cross-/same-file nominal-mismatch check to
+                // the shared helper used by the BlockDecl-as-caller walk.
+                check_return_call_nominal(
+                    skill.return_type.as_ref(),
+                    stmt,
+                    spanned.span,
+                    registry,
+                    local_callee_return_types,
+                    imported_block_return_types,
+                    file_label,
+                    line_index,
+                    bag,
+                );
             }
             FlowStmt::Branch { condition, then_body, elif_branches, else_body } => {
                 // Check for nested branches.
@@ -1502,6 +1720,7 @@ mod tests {
             &mut used,
             &HashMap::new(),
             &mut registry,
+            &HashMap::new(),
         );
         let entry = registry.lookup("Report").expect("`Report` must be registered (imports path)");
         assert_eq!(entry.canonical_name, "report");
@@ -1875,6 +2094,7 @@ mod tests {
             &mut used,
             &HashMap::new(),
             &mut registry,
+            &HashMap::new(),
         );
 
         let diags = collision_diags(&bag);
@@ -1906,5 +2126,429 @@ mod tests {
             bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
         );
         assert!(diags[0].message.contains("parameter"));
+    }
+
+    // --- Issue #84 Chunk 4: cross-file nominal matching at return-position ---
+    //
+    // AC4 (per D13): when a callable declares `-> Type` and its body's
+    // `return foo()` calls a callee whose declared `-> Type` canonical-matches
+    // a *different* type, fire `G::analyze::nominal-mismatch` Error. Same-file
+    // and cross-file callees both go through `Registry::nominal_match`. Banned
+    // generic type names (#83) and untyped sides skip the check.
+    //
+    // Scope (D16): only return-position is in scope. ExportBlock-as-caller
+    // is deferred — the AST lacks `flow: Vec<FlowStmt>` for ExportBlockDecl.
+
+    /// Helper: count `G::analyze::nominal-mismatch` diagnostics in the bag.
+    /// The existing placeholder `emit_nominal_mismatch` (analyze.rs:1207)
+    /// uses the same id for unit-test purposes, so any nominal-mismatch in a
+    /// chunk-4 analyze run came from the chunk-4 path.
+    fn nominal_mismatches(bag: &DiagBag) -> Vec<&Diagnostic> {
+        bag.iter()
+            .filter(|d| d.id == "G::analyze::nominal-mismatch")
+            .collect()
+    }
+
+    #[test]
+    fn t1_cross_file_mismatch_fires_with_related_span() {
+        // Tracer: caller `skill main() -> RepoContext` body `return foo()`.
+        // Imported map declares `foo: -> Plan`. Different canonical forms
+        // (`repocontext` vs `plan`) → exactly one `G::analyze::nominal-mismatch`
+        // Error. The diagnostic's `related[0]` pins the caller's
+        // `-> RepoContext` annotation (the contract being violated). Per
+        // planner note 1: assert byte offsets, not just length, so a
+        // future change moving the related span fails loudly.
+        let src = "skill main() -> RepoContext\n    description: \"Main.\"\n    flow:\n        return foo()\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let mut used: HashSet<String> = HashSet::new();
+
+        let mut imported_blocks: HashSet<String> = HashSet::new();
+        imported_blocks.insert("foo".to_string());
+
+        // Construct the cross-file return-type map manually (per FC5 Q4).
+        // The `Plan` span here is irrelevant to chunk-4 (D14 related-span is
+        // local-only); chunk-4 captures-but-does-not-render the span per D15.
+        let plan_span = Span::new(0, 0, 0);
+        let mut imported_block_return_types: HashMap<String, Spanned<String>> = HashMap::new();
+        imported_block_return_types.insert(
+            "foo".to_string(),
+            Spanned::new("Plan".to_string(), plan_span),
+        );
+
+        let _ = analyze_with_imports(
+            &file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &HashSet::new(),
+            &imported_blocks,
+            &mut used,
+            &HashMap::new(),
+            &mut registry,
+            &imported_block_return_types,
+        );
+
+        let mismatches = nominal_mismatches(&bag);
+        assert_eq!(
+            mismatches.len(),
+            1,
+            "expected exactly one nominal-mismatch diagnostic, got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+        let d = mismatches[0];
+        assert_eq!(d.classification, Classification::Error);
+        // Message must name caller's expected type, callee's actual type, and
+        // the call target so authors can locate the offending site.
+        assert!(
+            d.message.contains("RepoContext"),
+            "message must name caller's expected type `RepoContext`, got: {:?}",
+            d.message
+        );
+        assert!(
+            d.message.contains("Plan"),
+            "message must name callee's actual type `Plan`, got: {:?}",
+            d.message
+        );
+        assert!(
+            d.message.contains("foo"),
+            "message must name the call target `foo`, got: {:?}",
+            d.message
+        );
+
+        // Related span pins the caller's `-> RepoContext` annotation. Byte
+        // offsets are computed from the test source string; line is 1-based.
+        assert_eq!(
+            d.related.len(),
+            1,
+            "expected exactly one related span (caller's -> Type annotation)"
+        );
+        let arrow_byte = src.find("->").unwrap();
+        let repo_context_end = src.find("RepoContext").unwrap() + "RepoContext".len();
+        assert_eq!(d.related[0].start.line, 1);
+        assert_eq!(
+            d.related[0].start.col,
+            (arrow_byte + 1) as u32,
+            "related span must start at the `->` token (1-indexed col)"
+        );
+        assert_eq!(d.related[0].end.line, 1);
+        assert_eq!(
+            d.related[0].end.col,
+            repo_context_end as u32,
+            "related span must end at the end of the `RepoContext` identifier"
+        );
+    }
+
+    #[test]
+    fn t2_cross_file_match_emits_no_diagnostic() {
+        // Positive control: caller `-> RepoContext`, imported `foo: -> RepoContext`.
+        // Same canonical form on both sides → zero nominal-mismatch diagnostics.
+        // Catches a regression where the check fires on every return-call
+        // regardless of canonical equality.
+        let src = "skill main() -> RepoContext\n    description: \"Main.\"\n    flow:\n        return foo()\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let mut used: HashSet<String> = HashSet::new();
+
+        let mut imported_blocks: HashSet<String> = HashSet::new();
+        imported_blocks.insert("foo".to_string());
+
+        let mut imported_block_return_types: HashMap<String, Spanned<String>> = HashMap::new();
+        imported_block_return_types.insert(
+            "foo".to_string(),
+            Spanned::new("RepoContext".to_string(), Span::new(0, 0, 0)),
+        );
+
+        let _ = analyze_with_imports(
+            &file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &HashSet::new(),
+            &imported_blocks,
+            &mut used,
+            &HashMap::new(),
+            &mut registry,
+            &imported_block_return_types,
+        );
+
+        let mismatches = nominal_mismatches(&bag);
+        assert!(
+            mismatches.is_empty(),
+            "expected zero nominal-mismatch for canonical-equal types, got: {:?}",
+            mismatches.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn t9_blockdecl_as_caller_export_block_caller_deferred() {
+        // BlockDecl-as-caller (private block body): local `block helper() ->
+        // Report` body returns `foo()`. Local `block foo() -> Plan` is the
+        // callee. Pinpoints the BlockDecl-flow-walk path that Skill-only flow
+        // walking misses.
+        //
+        // D16 (deferred): ExportBlock-as-caller is **not** covered today — the
+        // AST has no `flow: Vec<FlowStmt>` for `ExportBlockDecl` (only
+        // `flow_strings: Vec<String>` + `has_return: bool`), so a structured
+        // `Return(Call)` walk isn't reachable. Future fix: grow
+        // `ExportBlockDecl.flow` or add a structured return-target field.
+        // Test name encodes this scope-pin so the deferral stays visible.
+        let src = "skill main()\n    description: \"Main.\"\n    flow:\n        helper()\n\nblock helper() -> Report\n    description: \"Helper.\"\n    flow:\n        return foo()\n\nblock foo() -> Plan\n    description: \"Foo.\"\n    flow:\n        \"do\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let mismatches = nominal_mismatches(&bag);
+        assert_eq!(
+            mismatches.len(),
+            1,
+            "expected one nominal-mismatch from BlockDecl-as-caller, got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+        let d = mismatches[0];
+        assert!(d.message.contains("Report"));
+        assert!(d.message.contains("Plan"));
+        assert!(d.message.contains("foo"));
+    }
+
+    #[test]
+    fn t8_stdlib_callee_skips_check() {
+        // Stdlib blocks (`subagent`, `send`) carry no declared `-> Type` in
+        // scope of the user file → not in the local-callee map → skip. The
+        // skill imports `subagent` from `@glyph/std`, the body returns
+        // `subagent()`. Zero nominal-mismatch even though the caller has a
+        // `-> Report` annotation.
+        let src = "import \"@glyph/std\" { subagent }\n\nskill main() -> Report\n    description: \"Main.\"\n    flow:\n        return subagent()\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let mut used: HashSet<String> = HashSet::new();
+        let mut imported_blocks: HashSet<String> = HashSet::new();
+        imported_blocks.insert("subagent".to_string());
+        let _ = analyze_with_imports(
+            &file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &HashSet::new(),
+            &imported_blocks,
+            &mut used,
+            &HashMap::new(),
+            &mut registry,
+            &HashMap::new(),
+        );
+
+        let mismatches = nominal_mismatches(&bag);
+        assert!(
+            mismatches.is_empty(),
+            "stdlib callee must skip the type check (no declared `-> Type` in scope), got: {:?}",
+            mismatches.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn t7_cross_spelling_canonical_match_emits_no_diagnostic() {
+        // D6 canonicalization in the chunk-4 check: caller `-> RepoContext`,
+        // callee `-> repo_context`. Both canonicalize to `repocontext` →
+        // `Registry::nominal_match` returns true → zero nominal-mismatch.
+        // Catches a regression where the check uses raw-string equality
+        // instead of `nominal_match` / `canonicalize_identifier`.
+        let src = "skill main() -> RepoContext\n    description: \"Main.\"\n    flow:\n        return helper()\n\nblock helper() -> repo_context\n    description: \"Helper.\"\n    flow:\n        \"do\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let mismatches = nominal_mismatches(&bag);
+        assert!(
+            mismatches.is_empty(),
+            "cross-spelling canonical match must skip the diagnostic, got: {:?}",
+            mismatches.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn t6_callee_untyped_skips_check() {
+        // Callee side has no `-> Type` annotation → not in the local-callee
+        // map → naturally absent → skip. Same `types.md` rule symmetric to T5.
+        let src = "skill main() -> Report\n    description: \"Main.\"\n    flow:\n        return helper()\n\nblock helper()\n    description: \"Helper.\"\n    flow:\n        \"do\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let mismatches = nominal_mismatches(&bag);
+        assert!(
+            mismatches.is_empty(),
+            "expected zero nominal-mismatch when callee is untyped, got: {:?}",
+            mismatches.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn t5_caller_untyped_skips_check() {
+        // Caller side has no `-> Type` annotation → no contract to violate.
+        // Skill `main()` (no return type) body returns `helper()`, callee
+        // `helper() -> Plan`. Zero nominal-mismatch — per `types.md` line
+        // 67-76 ("If either side omits the type annotation, no check").
+        let src = "skill main()\n    description: \"Main.\"\n    flow:\n        return helper()\n\nblock helper() -> Plan\n    description: \"Helper.\"\n    flow:\n        \"do\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let mismatches = nominal_mismatches(&bag);
+        assert!(
+            mismatches.is_empty(),
+            "expected zero nominal-mismatch when caller is untyped, got: {:?}",
+            mismatches.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn t4_same_file_match_emits_no_diagnostic() {
+        // Positive control for same-file path: caller `-> RepoContext`,
+        // local callee `-> RepoContext`. Zero nominal-mismatch.
+        let src = "skill main() -> RepoContext\n    description: \"Main.\"\n    flow:\n        return helper()\n\nblock helper() -> RepoContext\n    description: \"Helper.\"\n    flow:\n        \"do\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let mismatches = nominal_mismatches(&bag);
+        assert!(
+            mismatches.is_empty(),
+            "expected zero nominal-mismatch for same-canonical types, got: {:?}",
+            mismatches.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn t3_same_file_mismatch_via_analyze_with_diagnostics() {
+        // Same-file path: `block helper() -> Plan` is a local callee. Skill
+        // `main() -> RepoContext` body returns `helper()`. The same-file
+        // local-callee map must be populated in `analyze_with_diagnostics`
+        // (the no-imports entry point) for the check to fire here.
+        let src = "skill main() -> RepoContext\n    description: \"Main.\"\n    flow:\n        return helper()\n\nblock helper() -> Plan\n    description: \"Helper.\"\n    flow:\n        \"do\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let mismatches = nominal_mismatches(&bag);
+        assert_eq!(
+            mismatches.len(),
+            1,
+            "expected one nominal-mismatch for same-file mismatched types, got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+        let d = mismatches[0];
+        assert!(d.message.contains("RepoContext"));
+        assert!(d.message.contains("Plan"));
+        assert!(d.message.contains("helper"));
+    }
+
+    #[test]
+    fn t11_imports_path_blockdecl_as_caller_parity() {
+        // Parity test on the imports-path: a local `block helper() -> Report`
+        // returns `imported_foo()`, where the imports map declares
+        // `imported_foo -> Plan`. The chunk-4 check must fire from the
+        // BlockDecl-flow walk on the imports path (analyze_with_imports),
+        // mirroring the same-file BlockDecl-as-caller behaviour T9' covers
+        // for `analyze_with_diagnostics`.
+        //
+        // Without this parity walk, a mismatched cross-file return on the
+        // imports path through a private-block caller would silently pass.
+        let src = "skill main()\n    description: \"Main.\"\n    flow:\n        helper()\n\nblock helper() -> Report\n    description: \"Helper.\"\n    flow:\n        return imported_foo()\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let mut used: HashSet<String> = HashSet::new();
+
+        let mut imported_blocks: HashSet<String> = HashSet::new();
+        imported_blocks.insert("imported_foo".to_string());
+
+        let mut imported_block_return_types: HashMap<String, Spanned<String>> = HashMap::new();
+        imported_block_return_types.insert(
+            "imported_foo".to_string(),
+            Spanned::new("Plan".to_string(), Span::new(0, 0, 0)),
+        );
+
+        let _ = analyze_with_imports(
+            &file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &HashSet::new(),
+            &imported_blocks,
+            &mut used,
+            &HashMap::new(),
+            &mut registry,
+            &imported_block_return_types,
+        );
+
+        let mismatches = nominal_mismatches(&bag);
+        assert_eq!(
+            mismatches.len(),
+            1,
+            "expected one nominal-mismatch for imports-path BlockDecl-as-caller, got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+        let d = mismatches[0];
+        assert!(d.message.contains("Report"));
+        assert!(d.message.contains("Plan"));
+        assert!(d.message.contains("imported_foo"));
+    }
+
+    #[test]
+    fn t10_same_file_mismatch_pins_related_to_caller_arrow_type() {
+        // Canonical related-span pin on the same-file path. T1 covers this on
+        // the imports-path (`analyze_with_imports`); this test asserts the
+        // identical `related[0]` contract holds when the diagnostic is fired
+        // from `analyze_with_diagnostics` (no-imports entry point).
+        //
+        // Per D14: `related[0]` must point at the **caller's** `-> Type`
+        // annotation (the contract being violated), not the callee's. Byte
+        // offsets are pinned (not just lengths) so a future refactor that
+        // shifts the related-span source fails loudly.
+        let src = "skill main() -> RepoContext\n    description: \"Main.\"\n    flow:\n        return helper()\n\nblock helper() -> Plan\n    description: \"Helper.\"\n    flow:\n        \"do\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let mismatches = nominal_mismatches(&bag);
+        assert_eq!(mismatches.len(), 1);
+        let d = mismatches[0];
+
+        assert_eq!(
+            d.related.len(),
+            1,
+            "expected exactly one related span (caller's -> Type annotation)"
+        );
+        // Caller's `-> RepoContext` is on line 1; pin both line and column.
+        // Source is the test string above; `find` returns the first occurrence,
+        // which is the caller's annotation (callee uses `-> Plan`).
+        let arrow_byte = src.find("->").unwrap();
+        let repo_context_end = src.find("RepoContext").unwrap() + "RepoContext".len();
+        assert_eq!(d.related[0].start.line, 1);
+        assert_eq!(
+            d.related[0].start.col,
+            (arrow_byte + 1) as u32,
+            "related span must start at the caller's `->` token (1-indexed col)"
+        );
+        assert_eq!(d.related[0].end.line, 1);
+        assert_eq!(
+            d.related[0].end.col,
+            repo_context_end as u32,
+            "related span must end at the end of the caller's `RepoContext` identifier"
+        );
     }
 }
