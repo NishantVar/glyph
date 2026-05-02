@@ -7,6 +7,7 @@
 pub mod analyze;
 pub mod ast;
 pub mod diagnostic;
+pub mod domain_registry;
 pub mod emit;
 pub mod emit_ir;
 pub mod expand;
