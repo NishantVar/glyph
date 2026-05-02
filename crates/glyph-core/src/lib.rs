@@ -18,6 +18,7 @@ pub mod parse;
 pub mod slot;
 pub mod span;
 pub mod tokenize;
+pub mod type_position;
 pub mod validate;
 pub mod validate_output;
 
