@@ -40,6 +40,7 @@ pub fn parse(source: &str, file_id: u32) -> Result<(SourceFile, LineIndex), Pars
         file_label: "<source>",
         line_index: &line_index,
         bag: &mut sink,
+        consumed_arrow_offsets: Vec::new(),
     };
     let file = p.parse_file()?;
     Ok((file, line_index))
@@ -177,15 +178,60 @@ pub fn parse_with_diagnostics(
         return None;
     }
 
-    let mut p = Parser {
-        tokens: &tokens,
-        pos: 0,
-        file_id,
-        file_label,
-        line_index,
-        bag,
+    // Run the parser. We intentionally hold its result before dropping the
+    // borrow on `bag` so we can scan for stray `Arrow` tokens against
+    // `consumed_arrow_offsets` below — and we want the post-parse scan to
+    // run whether `parse_file` succeeded or failed (a generic `ParseError`
+    // can leave a stray `->` in the stream that would otherwise be silently
+    // dropped, regressing the pre-#82-chunk-2 `G::parse::operator-in-expression`
+    // diagnostic that the byte-scan path used to emit on bare `-`).
+    let (parsed_result, consumed_arrows) = {
+        let mut p = Parser {
+            tokens: &tokens,
+            pos: 0,
+            file_id,
+            file_label,
+            line_index,
+            bag,
+            consumed_arrow_offsets: Vec::new(),
+        };
+        let parsed = p.parse_file();
+        (parsed, std::mem::take(&mut p.consumed_arrow_offsets))
     };
-    let file = match p.parse_file() {
+
+    // Post-parse Arrow scan. Any `Arrow` token whose start offset is NOT in
+    // `consumed_arrows` is a stray `->` in an expression position
+    // (`return x -> y`, `const a = b -> c`, `if x -> y`, etc.) — the parser
+    // could not legitimately use it. Emit `G::parse::operator-in-expression`
+    // Repairable per `design/language-surface.md` §3 (the `->` arrow is only
+    // valid as a return-type annotation on a declaration header) so callers
+    // see the same structured diagnostic that fired pre-#82-chunk-2 when the
+    // tokenizer flagged `-` as `UnexpectedChar`.
+    for tok in tokens.iter() {
+        if matches!(tok.kind, TokenKind::Arrow)
+            && !consumed_arrows.contains(&tok.span.start)
+        {
+            let span = tok.span;
+            bag.push(
+                Diagnostic {
+                    id: "G::parse::operator-in-expression".into(),
+                    classification: Classification::Repairable,
+                    message:
+                        "operator `->` is not supported in expressions; MVP Glyph has no value-level operators"
+                            .into(),
+                    span: SourceSpan::from_byte_span(file_label, span, line_index),
+                    related: Vec::new(),
+                    hints: vec![
+                        "the `->` arrow is only valid as a return-type annotation on a declaration header (e.g. `block foo() -> Path`); rewrite or remove it here"
+                            .into(),
+                    ],
+                },
+                span,
+            );
+        }
+    }
+
+    let file = match parsed_result {
         Ok(f) => f,
         Err(_e) => {
             // Other parse errors are not yet wired to structured diagnostic IDs
@@ -258,6 +304,15 @@ struct Parser<'a> {
     file_label: &'a str,
     line_index: &'a LineIndex,
     bag: &'a mut DiagBag,
+    /// Byte-offset (`Span.start`) of every `Arrow` token the parser has
+    /// legitimately consumed via `try_parse_return_type`. After parsing,
+    /// `parse_with_diagnostics` scans the token stream for any `Arrow`
+    /// whose offset is NOT in this set and emits the structured
+    /// `G::parse::operator-in-expression` Repairable diagnostic — the
+    /// post-#82-chunk-2 substitute for the previous byte-scan path that
+    /// fired on stray `-` characters before the tokenizer learned the
+    /// `Arrow` token.
+    consumed_arrow_offsets: Vec<u32>,
 }
 
 impl<'a> Parser<'a> {
@@ -354,6 +409,11 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
         let arrow_span = self.peek().span;
+        // Record this Arrow as legitimately consumed in a header
+        // return-type slot so the post-parse scan in
+        // `parse_with_diagnostics` does NOT flag it as a stray
+        // expression-position `->`.
+        self.consumed_arrow_offsets.push(arrow_span.start);
         self.pos += 1; // consume `->`
 
         let (name, name_span) = match &self.peek().kind {
@@ -2321,6 +2381,76 @@ skill foo()
         assert!(
             !ids.iter().any(|s| s == "G::parse::none-as-return-type"),
             "must NOT fire none-as-return-type for `-> nonexistent`, got: {:?}",
+            ids
+        );
+    }
+
+    // --- Issue #82 codex-pass-2 JOB A: stray `->` in expression positions ---
+    //
+    // Pre-#82-chunk-2, `-` was tokenized as `UnexpectedChar` and the
+    // parse_with_diagnostics tokenize-error arm (lines ~111–139) emitted
+    // `G::parse::operator-in-expression`. After chunk 2 promoted `->` to a
+    // real `Arrow` token, expression-position `->` was silently dropped by
+    // the parser body walkers, regressing the diagnostic. The post-parse
+    // Arrow scan introduced alongside these tests restores the structured
+    // diagnostic via `consumed_arrow_offsets`.
+
+    #[test]
+    fn parse_rejects_arrow_in_flow_return_expression() {
+        // Codex P1-tokenize regression: `return x -> y` in a skill flow
+        // body must surface `G::parse::operator-in-expression` as
+        // Repairable (exit 2). The Arrow is not in a header slot so the
+        // parser does not consume it via `try_parse_return_type`, and the
+        // post-parse Arrow scan flags it.
+        let src = "\
+skill foo()
+    description: \"d\"
+    flow:
+        return x -> y
+";
+        let (ids, code) = run(src);
+        assert!(
+            ids.iter().any(|s| s == "G::parse::operator-in-expression"),
+            "expected G::parse::operator-in-expression for `return x -> y`, got: {:?}",
+            ids
+        );
+        assert_eq!(code, 2, "operator-in-expression is repairable (exit 2)");
+    }
+
+    #[test]
+    fn parse_rejects_arrow_in_const_rhs_expression() {
+        // Codex P1-tokenize regression: `const a = b -> c` must surface
+        // `G::parse::operator-in-expression` even though
+        // `parse_const_literal_rhs` short-circuits on the bare-name `b`
+        // before ever seeing the Arrow — the post-parse scan walks the
+        // raw token stream and is independent of how far the recursive
+        // descent got.
+        let src = "const a = b -> c\n";
+        let (ids, code) = run(src);
+        assert!(
+            ids.iter().any(|s| s == "G::parse::operator-in-expression"),
+            "expected G::parse::operator-in-expression for `const a = b -> c`, got: {:?}",
+            ids
+        );
+        assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn parse_does_not_fire_arrow_diag_on_valid_header_return_type() {
+        // Regression guard: a valid `block foo() -> Path` header consumes
+        // the Arrow via `try_parse_return_type` (which records the offset
+        // in `consumed_arrow_offsets`), so the post-parse scan must NOT
+        // emit `G::parse::operator-in-expression` for it.
+        let src = "\
+block foo() -> Path
+    description: \"d\"
+    flow:
+        return \"x\"
+";
+        let (ids, _) = run(src);
+        assert!(
+            !ids.iter().any(|s| s == "G::parse::operator-in-expression"),
+            "must NOT fire operator-in-expression for valid header `-> Path`, got: {:?}",
             ids
         );
     }
