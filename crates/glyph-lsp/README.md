@@ -2,9 +2,11 @@
 
 A `tower-lsp`-based language server that wraps `glyph-core`'s Phase 1 (Parse) +
 Phase 2 (Analyze) phases and republishes the resulting `DiagBag` as LSP
-`publishDiagnostics` notifications. The M2 milestone adds
-`textDocument/definition` (same-file and cross-file) over the resolution
-table that `glyph_core::analyze::analyze_with_resolutions` exposes.
+`publishDiagnostics` notifications. M2 added `textDocument/definition`
+(same-file and cross-file) over the resolution table that
+`glyph_core::analyze::analyze_with_resolutions` exposes. M3 extends
+diagnostic publishing to cover imported deps and adds semantic-token
+highlighting via `textDocument/semanticTokens/full`.
 
 See [`design/glyph-lsp.md`](../../design/glyph-lsp.md) for the full design.
 
@@ -13,25 +15,35 @@ See [`design/glyph-lsp.md`](../../design/glyph-lsp.md) for the full design.
 - **Lifecycle:** `initialize`, `initialized`, `shutdown`, `exit`
 - **Document sync:** `didOpen`, `didChange`, `didClose`, `didSave` (Full text sync)
 - **Diagnostics:** republished on `didOpen` and `didSave` (save-only, per design §10.C)
+- **Cross-file diagnostics (M3 Phase A):** when an open buffer's analyze
+  walk visits an imported dep, that dep's diagnostics are published on
+  the dep's `file://` URI. If the import set changes between saves, the
+  previously-published dep URIs get a clearing publish.
 - **Go-to-definition (M2):** jumps to `block` / `text` / `export block`
   declarations and `{param}` slots in flow inline strings. Cross-file
   imports follow the `import "./<rel>.glyph.md" { name }` clause and jump
   to the declaration in the imported file. Stdlib targets (`subagent`,
   `send`) and unresolvable identifiers return `null`.
+- **Semantic tokens (M3 Phase B):** `textDocument/semanticTokens/full`.
+  Legend matches the tree-sitter `highlights.scm` grammar so VS Code,
+  Neovim, and Helix colorize Glyph identically. Token types: keyword,
+  type, function, method, parameter, variable, property, string,
+  namespace, number, comment.
 
 `didChange` updates the in-memory buffer text but does **not** re-lint. The next
 `didSave` runs the analyzer and publishes diagnostics. `didClose` clears any
-previously published diagnostics for the buffer.
+previously published diagnostics for the buffer (and any dep diagnostics
+that were attributed to it).
 
 The LSP introduces no new compiler behaviour; it republishes the same
 diagnostics `glyph check` would emit, in LSP shape.
 
 ## What is not yet implemented
 
-- Cross-file import-aware *diagnostics* publishing (M3 — currently we
-  parse imported files for go-to-def but only publish diagnostics for the
-  buffer that was saved)
-- Semantic tokens (M3 — needed for cross-editor highlighting parity)
+- FileGraph-style cross-buffer dep cache (M3 design §378 sharpening —
+  deferred per the M3 brief; currently every save re-walks imports).
+- `semanticTokens/range` and `semanticTokens/full/delta` (the `full`
+  request alone is fast enough for our file sizes).
 - Hover, completion, formatting, code actions, rename, references, etc.
 
 ## Build and install
