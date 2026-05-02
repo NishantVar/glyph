@@ -6,5 +6,5 @@ skill update_docs()
         "Scan for docs."
         "Update them."
 
-text accuracy = "Be accurate."
-text stale_references = "Stale refs."
+const accuracy = "Be accurate."
+const stale_references = "Stale refs."

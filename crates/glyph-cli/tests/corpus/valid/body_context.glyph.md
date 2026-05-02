@@ -6,4 +6,4 @@ skill review_code()
         "Scan the repository for issues."
         "Report findings."
 
-text project_conventions = "This project follows strict linting rules."
+const project_conventions = "This project follows strict linting rules."

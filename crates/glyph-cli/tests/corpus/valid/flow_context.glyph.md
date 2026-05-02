@@ -7,4 +7,4 @@ skill deploy_app()
         "Run tests."
         "Deploy to production."
 
-text deployment_rules = "Follow the deployment checklist before deploying."
+const deployment_rules = "Follow the deployment checklist before deploying."

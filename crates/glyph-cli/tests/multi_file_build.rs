@@ -57,7 +57,7 @@ fn ac2_topological_order() {
     let dir = tempfile::tempdir().unwrap();
 
     std::fs::write(dir.path().join("lib.glyph.md"), "\
-export text greeting = \"Hello.\"
+export const greeting = \"Hello.\"
 ").unwrap();
 
     std::fs::write(dir.path().join("consumer.glyph.md"), "\
