@@ -111,6 +111,56 @@ pub fn parse_with_diagnostics(
         Err(TokenizeError::UnexpectedChar { byte_offset, ch })
             if ch == '+' || ch == '-' || ch == '*' || ch == '/' =>
         {
+            // Special case: `-> none` (case-insensitive) is the legacy
+            // `-> None` return-type annotation, which is dropped from the
+            // language per `design/types.md` §none Value (No `None` Type
+            // Annotation), line 85: "`None` as a type annotation (`-> None`)
+            // is dropped. A block that produces no meaningful return value
+            // simply omits the `->` from its declaration header." The rule
+            // applies uniformly to `skill`, `block`, and `export block` per
+            // `design/language-surface.md` §3 (§3.1 line 161, §3.2 line 198,
+            // §3.3 lines 224/227/230). Emit a dedicated repairable
+            // diagnostic instead of the generic operator-in-expression so
+            // the author gets a precise repair (drop `->`).
+            if ch == '-' {
+                let off = byte_offset as usize;
+                let bytes = source.as_bytes();
+                if bytes.get(off + 1) == Some(&b'>') {
+                    // Skip ASCII spaces between `->` and the following ident.
+                    let mut p = off + 2;
+                    while p < bytes.len() && bytes[p] == b' ' {
+                        p += 1;
+                    }
+                    let end = p + 4;
+                    let matches_none = end <= bytes.len()
+                        && bytes[p..end].eq_ignore_ascii_case(b"none")
+                        && bytes
+                            .get(end)
+                            .is_none_or(|&b| !(b.is_ascii_alphanumeric() || b == b'_'));
+                    if matches_none {
+                        // Span the full offending construct (`->...none`)
+                        // so the repair pass has a precise replacement
+                        // target. Source is case-insensitive on the `none`
+                        // keyword per `design/values-and-names.md` §None.
+                        let span = Span::new(file_id, byte_offset, end as u32);
+                        bag.push(
+                            Diagnostic {
+                                id: "G::parse::none-as-return-type".into(),
+                                classification: Classification::Repairable,
+                                message: "`-> None` is not a valid return-type annotation; a block with no meaningful return value omits `->` entirely from its header".into(),
+                                span: SourceSpan::from_byte_span(file_label, span, line_index),
+                                related: Vec::new(),
+                                hints: vec![
+                                    "drop the `-> None` from the header — Glyph has no `None` type annotation; the absence of `->` already means \"no meaningful return value\"".into(),
+                                ],
+                            },
+                            span,
+                        );
+                        return None;
+                    }
+                }
+            }
+
             let span = Span::new(file_id, byte_offset, byte_offset + 1);
             bag.push(
                 Diagnostic {
@@ -2037,5 +2087,172 @@ skill demo()
         // Decl 0: Const, Decl 1: Skill.
         assert!(matches!(&file.decls[0], Decl::Const(_)));
         assert!(matches!(&file.decls[1], Decl::Skill(_)));
+    }
+}
+
+#[cfg(test)]
+mod none_return_tests {
+    //! Issue #82 chunk 1 — `G::parse::none-as-return-type`.
+    //!
+    //! Per `design/types.md` §none Value (No `None` Type Annotation), the
+    //! `-> None` return-type annotation is dropped: a block with no
+    //! meaningful return value simply omits `->` from its header. Per
+    //! `design/values-and-names.md` §None, source is case-insensitive on the
+    //! `none` keyword. Per `design/language-surface.md` §3, the rule applies
+    //! uniformly to `skill` (§3.1), private `block` (§3.2), and
+    //! `export block` (§3.3); `generated block` (§3.7) has no return-type
+    //! slot.
+    //!
+    //! Classification: `repairable` — Phase 3 Repair drops the `-> None`.
+    //! Per #82 AC1/AC4, this diagnostic must fire on all three block kinds
+    //! that admit a header arrow, and case variants must all be rejected
+    //! with the same ID.
+    //!
+    //! Negative regression: `return none` in a block body (with no `->` on
+    //! the header) is the value-position keyword and must continue to parse
+    //! cleanly — see `parse_accepts_return_none_in_body_no_arrow`.
+    use super::*;
+    use crate::span::LineIndex;
+    use crate::tokenize::tokenize;
+
+    /// Run `parse_with_diagnostics` and return (ids, exit_code).
+    fn run(src: &str) -> (Vec<String>, u8) {
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let _ = parse_with_diagnostics(src, 0, "t.glyph.md", &line_index, &mut bag);
+        let ids: Vec<String> = bag.iter().map(|d| d.id.clone()).collect();
+        (ids, bag.exit_code())
+    }
+
+    #[test]
+    fn parse_rejects_arrow_none_on_skill() {
+        // AC4(a): `skill foo() -> None` — repairable G::parse::none-as-return-type.
+        let src = "skill foo() -> None\n    flow:\n        \"x\"\n";
+        let (ids, code) = run(src);
+        assert!(
+            ids.iter().any(|s| s == "G::parse::none-as-return-type"),
+            "expected G::parse::none-as-return-type, got: {:?}",
+            ids
+        );
+        assert!(
+            !ids.iter().any(|s| s == "G::parse::operator-in-expression"),
+            "must NOT also fire operator-in-expression, got: {:?}",
+            ids
+        );
+        assert_eq!(code, 2, "none-as-return-type is repairable (exit 2)");
+    }
+
+    #[test]
+    fn parse_rejects_arrow_none_on_block() {
+        // AC4(b): `block foo() -> None`.
+        let src = "block foo() -> None\n    description: \"d\"\n";
+        let (ids, code) = run(src);
+        assert!(
+            ids.iter().any(|s| s == "G::parse::none-as-return-type"),
+            "expected G::parse::none-as-return-type, got: {:?}",
+            ids
+        );
+        assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn parse_rejects_arrow_none_on_export_block() {
+        // AC4(c): `export block foo() -> None`.
+        let src = "export block foo() -> None\n    description: \"d\"\n";
+        let (ids, code) = run(src);
+        assert!(
+            ids.iter().any(|s| s == "G::parse::none-as-return-type"),
+            "expected G::parse::none-as-return-type, got: {:?}",
+            ids
+        );
+        assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn parse_rejects_arrow_lowercase_none() {
+        // AC4(d): `-> none` (lowercase) — same diagnostic.
+        let src = "skill foo() -> none\n    flow:\n        \"x\"\n";
+        let (ids, _) = run(src);
+        assert!(
+            ids.iter().any(|s| s == "G::parse::none-as-return-type"),
+            "expected G::parse::none-as-return-type for `-> none`, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn parse_rejects_arrow_uppercase_none() {
+        // AC4(d): `-> NONE` (all-caps) — same diagnostic.
+        let src = "skill foo() -> NONE\n    flow:\n        \"x\"\n";
+        let (ids, _) = run(src);
+        assert!(
+            ids.iter().any(|s| s == "G::parse::none-as-return-type"),
+            "expected G::parse::none-as-return-type for `-> NONE`, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn parse_rejects_arrow_none_with_extra_spaces() {
+        // The `none` ident may be separated from `->` by whitespace; the
+        // detection must be insensitive to a single or multiple spaces.
+        let src = "skill foo() ->   None\n    flow:\n        \"x\"\n";
+        let (ids, _) = run(src);
+        assert!(
+            ids.iter().any(|s| s == "G::parse::none-as-return-type"),
+            "expected G::parse::none-as-return-type for `->   None`, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn parse_accepts_return_none_in_body_no_arrow() {
+        // AC4(e) regression: `return none` in body with NO `->` on header
+        // must continue to parse cleanly. The `none` value-position keyword
+        // is unaffected by issue #82.
+        let src = "\
+skill foo()
+    flow:
+        return none
+";
+        // Tokenize must succeed (no `-` at all).
+        let (toks, _) = tokenize(src, 0).expect("tokenize should succeed");
+        assert!(toks.iter().any(
+            |t| matches!(&t.kind, crate::tokenize::TokenKind::Ident(s) if s == "return")
+        ));
+        // And parse_with_diagnostics must NOT raise none-as-return-type.
+        let (ids, _) = run(src);
+        assert!(
+            !ids.iter().any(|s| s == "G::parse::none-as-return-type"),
+            "must NOT fire none-as-return-type for `return none` body, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn parse_arrow_followed_by_non_none_ident_does_not_fire_this_id() {
+        // Negative: `-> SomeOtherIdent` should NOT match this diagnostic
+        // (it falls through to the existing operator-in-expression path,
+        // since real return-type parsing is out of scope for this chunk).
+        let src = "skill foo() -> SomeType\n    flow:\n        \"x\"\n";
+        let (ids, _) = run(src);
+        assert!(
+            !ids.iter().any(|s| s == "G::parse::none-as-return-type"),
+            "must NOT fire none-as-return-type for `-> SomeType`, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn parse_arrow_followed_by_none_prefix_does_not_misfire() {
+        // Ident-boundary check: `-> nonexistent` must NOT match `none`
+        // (the `none` slice is a prefix of the longer ident).
+        let src = "skill foo() -> nonexistent\n    flow:\n        \"x\"\n";
+        let (ids, _) = run(src);
+        assert!(
+            !ids.iter().any(|s| s == "G::parse::none-as-return-type"),
+            "must NOT fire none-as-return-type for `-> nonexistent`, got: {:?}",
+            ids
+        );
     }
 }
