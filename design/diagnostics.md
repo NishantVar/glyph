@@ -98,6 +98,7 @@ Representative diagnostics implied by the current design.
 | `G::parse::multiple-skills` | error | A `.glyph.md` file contains more than one `skill` declaration; MVP requires exactly one skill per file because compiled output is named after the skill (`language-surface.md` §File-Level Rules) |
 | `G::parse::applies-no-parens` | error | `BLOCKNAME.applies` appears without `()`; the trigger predicate form requires explicit parentheses (`ir-and-semantics.md` §Block Trigger Predicate) |
 | `G::parse::applies-with-args` | error | `BLOCKNAME.applies(...)` is called with arguments; the trigger predicate is zero-arity (`ir-and-semantics.md` §Block Trigger Predicate) |
+| `G::parse::none-as-return-type` | repairable | A declaration header uses `-> None` as a return-type annotation (e.g., `block foo() -> None`, `export block foo() -> None`). The `None` type annotation has been removed in MVP; declarations with no meaningful return omit `->` entirely (`types.md` §`none` Value, `language-surface.md` §3.3). Phase 3a (pre-Parse text-level rewrite, `glyph fmt` stratum 1) deterministically strips the trailing ` -> None` from `skill` / `block` / `export block` / `generated block` declaration headers. Match is case-insensitive on `none` with identifier-boundary semantics; the value keyword `none` (in `return none`, `effects: none`, value positions) is preserved. |
 
 ### Analyze phase
 
@@ -119,6 +120,7 @@ Representative diagnostics implied by the current design.
 | `G::analyze::nominal-mismatch` | error | Type name mismatch at a call boundary (`types.md`) |
 | `G::analyze::lossy-coercion` | error | Lossy numeric conversion, e.g. `3.7` where integer expected (`values-and-names.md`) |
 | `G::analyze::missing-return` | repairable | Export block lacks `return` on a code path (`language-surface.md` §3.3) |
+| `G::analyze::export-missing-return-type` | repairable | An `export block` body has at least one `return <expr>` with a meaningful return value but the header lacks a `-> DomainType` annotation. Export-block return types must be explicit when the block has a meaningful return and omitted otherwise (`language-surface.md` §3.3, `types.md` §`none` Value). Bare `return` and `return none` do not trigger this diagnostic — those are the no-meaningful-return form, and the header correctly omits `->`. Reparability is via Phase 3b (LLM-assisted inference of the `DomainType` name from the body); Phase 3a's deterministic strata cannot synthesize a domain-type name. |
 | `G::analyze::closure-violation` | error | Export block depends on hidden caller context (`data-flow.md`) |
 | `G::analyze::stdlib-missing-import` | repairable | `subagent()` used without importing `@glyph/std` (`stdlib.md`) |
 | `G::imports::unknown-stdlib-module` | error | An import path under the reserved `@glyph/` virtual namespace does not resolve to a known compiler-embedded stdlib module. The MVP recognises only `@glyph/std`; any other `@glyph/*` path fires this diagnostic (`stdlib.md`, `imports.md`). |
