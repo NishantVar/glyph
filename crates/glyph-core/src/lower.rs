@@ -12,8 +12,46 @@ use crate::ir::{
     IrArena, IrBlock, IrBranch, IrCall, IrConstraint, IrContext, IrElifBranch,
     IrInlineInstruction, IrNode, IrParam, IrSkill, NodeId, Polarity, Role, Strength,
 };
+use crate::domain_registry::canonicalize_identifier;
 use crate::kind_infer::{infer_primitive, Literal as KindLiteral, TypeTag};
 use std::collections::BTreeMap;
+
+/// Map an identifier in type-position (the `<DomainType>` half of a
+/// `-> <DomainType>` annotation) to its `TypeTag`. Six built-in names match
+/// case-insensitive ASCII per `design/values-and-names.md` §Case
+/// Normalization; everything else lowers to
+/// `DomainType(canonicalize_identifier(name))` per D6.
+///
+/// **Banned-generic names like `List`/`Dict` are NOT special-cased here.** They
+/// lower to `DomainType(canonical_form)`, e.g. `name_to_typetag("List")` →
+/// `DomainType("list")`. The `G::analyze::generic-type-name` diagnostic
+/// (chunk 2 banned-list, issue #83 AC3) surfaces them upstream. This module
+/// records authorial intent in canonical form; analyze owns warnings.
+fn name_to_typetag(name: &str) -> TypeTag {
+    // Six built-ins (case-insensitive ASCII match per §Case Normalization).
+    if name.eq_ignore_ascii_case("String") {
+        return TypeTag::String;
+    }
+    if name.eq_ignore_ascii_case("Int") {
+        return TypeTag::Int;
+    }
+    if name.eq_ignore_ascii_case("Float") {
+        return TypeTag::Float;
+    }
+    if name.eq_ignore_ascii_case("Bool") {
+        return TypeTag::Bool;
+    }
+    if name.eq_ignore_ascii_case("None") {
+        return TypeTag::None;
+    }
+    if name.eq_ignore_ascii_case("Agent") {
+        return TypeTag::Agent;
+    }
+    // Everything else: canonicalize per D6 and lower to a DomainType. Banned
+    // generics (e.g. `List`, `Dict`) land here too — see module doc for the
+    // analyze-owns-warnings rationale.
+    TypeTag::DomainType(canonicalize_identifier(name))
+}
 
 /// Adapt a `ConstValue` into the `kind_infer::Literal` shape for the inferer.
 /// Adapter is one-to-one — variants carry the same source-text rendering.
@@ -155,6 +193,14 @@ fn lower_flow_body(
                 } else {
                     None
                 };
+                // Issue #84 chunk 6: same-file callee return-type lookup. Reads
+                // `BlockDecl::return_type` from the same `blocks` map used for
+                // body-text resolution; stdlib calls (no map entry) → None.
+                // Cross-file resolution is deferred to D17.
+                let return_type = blocks
+                    .get(target.as_str())
+                    .and_then(|b| b.return_type.as_ref())
+                    .map(|s| name_to_typetag(s.node.as_str()));
                 let next = NodeId(arena.len() as u32);
                 let id = arena.push(IrNode::Call(IrCall {
                     node_id: next,
@@ -164,6 +210,7 @@ fn lower_flow_body(
                     site_modifier: site_modifier.clone(),
                     projection_tier: None,
                     procedure_path: None,
+                    return_type,
                 }));
                 ids.push(id);
             }
@@ -284,6 +331,10 @@ pub fn lower_with_imports(
         context: Vec::new(),
         constraints: Vec::new(),
         return_text: None,
+        return_type: skill
+            .return_type
+            .as_ref()
+            .map(|s| name_to_typetag(s.node.as_str())),
     }));
 
     // Lower block declarations to IrBlock nodes.
@@ -323,6 +374,10 @@ pub fn lower_with_imports(
                 flow_statements,
                 resolved_word_count: None,
                 outgoing_calls,
+                return_type: block
+                    .return_type
+                    .as_ref()
+                    .map(|s| name_to_typetag(s.node.as_str())),
             }));
         }
     }
@@ -385,6 +440,13 @@ pub fn lower_with_imports(
                 } else {
                     None // Analyze already flagged undefined-call.
                 };
+                // Issue #84 chunk 6: same-file callee return-type lookup —
+                // see the matching site in `lower_flow_body` above for the
+                // shared rationale.
+                let return_type = blocks
+                    .get(target.as_str())
+                    .and_then(|b| b.return_type.as_ref())
+                    .map(|s| name_to_typetag(s.node.as_str()));
                 let next = NodeId(arena.len() as u32);
                 let id = arena.push(IrNode::Call(IrCall {
                     node_id: next,
@@ -394,6 +456,7 @@ pub fn lower_with_imports(
                     site_modifier: site_modifier.clone(),
                     projection_tier: None,
                     procedure_path: None,
+                    return_type,
                 }));
                 step_ids.push(id);
             }
@@ -538,6 +601,381 @@ pub fn lower_with_imports(
     arena.set_root_skill(skill_id);
 
     Ok(arena)
+}
+
+#[cfg(test)]
+mod name_to_typetag_tests {
+    //! Issue #84 chunk 6 — IR `return_type` propagation. Unit tests for the
+    //! lower-time identifier→`TypeTag` mapping. Built-in names (case-insensitive
+    //! ASCII, six total) lower to their corresponding TypeTag variant; everything
+    //! else lowers to `DomainType(canonicalize_identifier(name))` per
+    //! `design/values-and-names.md` §Case Normalization (D6).
+    //!
+    //! Per planner h.2: banned-generic identifiers (e.g. `List`, `Dict`) are NOT
+    //! special-cased here. They lower to `DomainType("list")` etc.; the
+    //! `G::analyze::generic-type-name` warning surfaces them upstream. This
+    //! module records authorial intent in canonical form; analyze owns warnings.
+    use super::*;
+
+    // f.4: built-in `String` is case-insensitive ASCII per §Case Normalization
+    // and the existing `eq_ignore_ascii_case` convention used by the chunk-2
+    // banned-generic check.
+    #[test]
+    fn name_to_typetag_string_is_case_insensitive() {
+        assert_eq!(name_to_typetag("String"), TypeTag::String);
+        assert_eq!(name_to_typetag("string"), TypeTag::String);
+        assert_eq!(name_to_typetag("STRING"), TypeTag::String);
+        assert_eq!(name_to_typetag("StRiNg"), TypeTag::String);
+    }
+
+    // f.5: domain-type names canonicalize per D6 — ASCII-lowercase + strip `_`.
+    // Cross-spelling identifiers (CamelCase + snake_case) must land on the
+    // same canonical form so chunk-1's registry treats them as the same name.
+    #[test]
+    fn name_to_typetag_domain_canonicalizes_per_d6() {
+        // CamelCase, snake_case, SHOUTY_SNAKE — all `repocontext`.
+        for variant in ["RepoContext", "repo_context", "REPO_CONTEXT", "repocontext"] {
+            assert_eq!(
+                name_to_typetag(variant),
+                TypeTag::DomainType("repocontext".into()),
+                "variant `{}` should canonicalize to `repocontext`",
+                variant
+            );
+        }
+    }
+
+    // f.6: `Agent` is a built-in `TypeTag` variant (legitimate IR-internal
+    // type for stdlib `subagent()` per #83 AC3). It must lower to
+    // `TypeTag::Agent`, *not* `DomainType("agent")`. Case-insensitive ASCII
+    // matches the convention for the other built-ins.
+    #[test]
+    fn name_to_typetag_agent_is_builtin_not_domain() {
+        assert_eq!(name_to_typetag("Agent"), TypeTag::Agent);
+        assert_eq!(name_to_typetag("agent"), TypeTag::Agent);
+        assert_eq!(name_to_typetag("AGENT"), TypeTag::Agent);
+    }
+}
+
+#[cfg(test)]
+mod return_type_lower_tests {
+    //! Issue #84 chunk 6 — `IrSkill`/`IrBlock`/`IrCall.return_type` propagation.
+    //! Parse a small source, lower it, then assert the new `return_type`
+    //! fields land in the arena. Cross-spelling tests use matching declarer/
+    //! caller spellings: per planner's micro-flag, `lower::blocks` (L249-254)
+    //! is keyed by raw block name, so cross-spelling at the *Call* level is
+    //! out-of-scope for this chunk (covered at *analyze* time in chunk 4 via
+    //! `G::analyze::nominal-mismatch`).
+    use super::*;
+    use crate::ir::IrNode;
+    use crate::parse;
+
+    fn parse_file(src: &str) -> SourceFile {
+        let (file, _) = parse::parse(src, 0).expect("source should parse");
+        file
+    }
+
+    fn lower_skill(src: &str) -> IrArena {
+        let file = parse_file(src);
+        lower(&file).expect("source should lower")
+    }
+
+    fn root_skill(arena: &IrArena) -> &IrSkill {
+        let root = arena.root_skill().expect("arena should have a root skill");
+        match arena.get(root) {
+            IrNode::Skill(s) => s,
+            other => panic!("root_skill node was not Skill: {:?}", other),
+        }
+    }
+
+    // f.7a: a skill declared with `-> Report` must surface
+    // `IrSkill.return_type == Some(TypeTag::DomainType("report"))` after
+    // lowering. Pins both the IR field exists AND the lower-time wiring
+    // through `name_to_typetag` (`Report` is not built-in → DomainType
+    // canonical form).
+    #[test]
+    fn skill_return_type_lowers_to_domain_type_some() {
+        let src = "\
+skill make_report() -> Report
+    flow:
+        \"do work\"
+";
+        let arena = lower_skill(src);
+        let skill = root_skill(&arena);
+        assert_eq!(
+            skill.return_type,
+            Some(TypeTag::DomainType("report".into()))
+        );
+    }
+
+    fn find_block<'a>(arena: &'a IrArena, name: &str) -> &'a crate::ir::IrBlock {
+        arena
+            .nodes()
+            .iter()
+            .find_map(|n| match n {
+                IrNode::Block(b) if b.name == name => Some(b),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected IrBlock named `{}` in arena", name))
+    }
+
+    fn find_call<'a>(arena: &'a IrArena, target: &str) -> &'a IrCall {
+        arena
+            .nodes()
+            .iter()
+            .find_map(|n| match n {
+                IrNode::Call(c) if c.target == target => Some(c),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected IrCall to `{}` in arena", target))
+    }
+
+    // f.8: a private block declared with `-> Plan` must surface
+    // `IrBlock.return_type == Some(DomainType("plan"))` after lowering. Per
+    // planner h.1 decision, Block return_type is stored on IR but NOT emitted
+    // as a top-level Block JSON kind (the JSON-visible promise rides via the
+    // caller's `IrCall.return_type` lookup; cycle 9 covers that).
+    #[test]
+    fn block_return_type_lowers_to_domain_type_some() {
+        let src = "\
+skill drive()
+    flow:
+        \"go\"
+
+block plan_work() -> Plan
+    flow:
+        \"compute the plan\"
+";
+        let arena = lower_skill(src);
+        let block = find_block(&arena, "plan_work");
+        assert_eq!(
+            block.return_type,
+            Some(TypeTag::DomainType("plan".into()))
+        );
+    }
+
+    // f.9a: same-file `Call.return_type` propagation — when a skill calls a
+    // block whose header declares `-> Plan`, the `IrCall` node for that call
+    // site must carry `Some(DomainType("plan"))`. Per planner's micro-flag,
+    // use matching spellings at declarer + caller so `lower::blocks` (raw-key
+    // BTreeMap) hits.
+    #[test]
+    fn call_return_type_lowers_from_same_file_block_decl() {
+        let src = "\
+skill drive()
+    flow:
+        make_plan()
+
+block make_plan() -> Plan
+    flow:
+        \"compute the plan\"
+";
+        let arena = lower_skill(src);
+        let call = find_call(&arena, "make_plan");
+        assert_eq!(
+            call.return_type,
+            Some(TypeTag::DomainType("plan".into()))
+        );
+    }
+
+    // f.9b: the Call node's IR-JSON `return_type` slot must round-trip the
+    // populated `Some(DomainType("plan"))` to `{"domain_type": "plan"}`.
+    #[test]
+    fn call_return_type_round_trips_through_ir_json() {
+        let src = "\
+skill drive()
+    flow:
+        make_plan()
+
+block make_plan() -> Plan
+    flow:
+        \"compute the plan\"
+";
+        let arena = lower_skill(src);
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph.md")
+            .expect("arena should serialize");
+        let v: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
+        // Find the call inside skill.flow[*] with target == "make_plan".
+        let flow = v["skill"]["flow"]
+            .as_array()
+            .expect("skill.flow should be array");
+        let call_json = flow
+            .iter()
+            .find(|n| n["kind"] == "call" && n["target"] == "make_plan")
+            .unwrap_or_else(|| panic!("expected a call to make_plan in skill.flow; got {}", json_str));
+        assert_eq!(
+            call_json["return_type"],
+            serde_json::json!({ "domain_type": "plan" }),
+            "call.return_type slot wrong; full JSON:\n{}",
+            json_str
+        );
+    }
+
+    // f.7b: round-trip through `serialize_ir_json` — the IR-JSON output for a
+    // skill declared with `-> Report` must carry
+    // `"return_type": {"domain_type": "report"}` on the skill object. Pins the
+    // emit-side wiring (chunk-6 (d) plan).
+    #[test]
+    fn skill_return_type_round_trips_through_ir_json() {
+        let src = "\
+skill make_report() -> Report
+    flow:
+        \"do work\"
+";
+        let arena = lower_skill(src);
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "make_report.glyph.md")
+            .expect("arena with root skill should serialize");
+        let v: serde_json::Value =
+            serde_json::from_str(&json_str).expect("emitter output should parse as JSON");
+        assert_eq!(
+            v["skill"]["return_type"],
+            serde_json::json!({ "domain_type": "report" }),
+            "skill.return_type slot missing or wrong shape; full JSON:\n{}",
+            json_str
+        );
+    }
+
+    // f.10: built-in surfacing — a skill declared with `-> String` (a
+    // banned-generic per #83 AC3, but ALSO the canonical name for the
+    // built-in `TypeTag::String` variant) lowers to `Some(TypeTag::String)`
+    // and serializes as the lowercase JSON string `"string"`. Confirms the
+    // built-in arm of `name_to_typetag` flows end-to-end through to
+    // `typetag_to_json`'s lowercase-string output.
+    //
+    // Note: the analyze layer fires `G::analyze::generic-type-name` for this
+    // source independently — that's tested elsewhere; this test pins the
+    // *lower → emit* path under the assumption that the warning has fired
+    // upstream and the user shipped anyway.
+    #[test]
+    fn skill_return_type_string_round_trips_as_lowercase_string() {
+        let src = "\
+skill greet() -> String
+    flow:
+        \"hi\"
+";
+        let arena = lower_skill(src);
+        let skill = root_skill(&arena);
+        assert_eq!(skill.return_type, Some(TypeTag::String));
+
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "greet.glyph.md")
+            .expect("arena should serialize");
+        let v: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
+        assert_eq!(v["skill"]["return_type"], serde_json::json!("string"));
+    }
+
+    // N1: a skill with no `-> DomainType` annotation lowers with
+    // `return_type == None`, and the IR-JSON Skill object surfaces the slot
+    // as JSON `null` (matches the slot's pre-chunk-6 default).
+    #[test]
+    fn skill_without_annotation_lowers_to_none_and_emits_null() {
+        let src = "\
+skill drive()
+    flow:
+        \"go\"
+";
+        let arena = lower_skill(src);
+        assert!(root_skill(&arena).return_type.is_none());
+
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph.md")
+            .expect("arena should serialize");
+        let v: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
+        assert_eq!(v["skill"]["return_type"], serde_json::Value::Null);
+    }
+
+    // N2: a call to a target that isn't a same-file block (e.g. stdlib or
+    // unresolved call) lowers `IrCall.return_type` to `None` and emits JSON
+    // null. Lower doesn't reject unresolved targets — analyze handles those —
+    // so we use an unresolved name to exercise the "no entry in `blocks`"
+    // path of the chunk-6 lookup.
+    #[test]
+    fn call_to_non_block_target_lowers_to_none_and_emits_null() {
+        let src = "\
+skill drive()
+    flow:
+        unresolved_target()
+";
+        let arena = lower_skill(src);
+        let call = find_call(&arena, "unresolved_target");
+        assert!(call.return_type.is_none());
+
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph.md")
+            .expect("arena should serialize");
+        let v: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
+        let flow = v["skill"]["flow"].as_array().expect("flow array");
+        let call_json = flow
+            .iter()
+            .find(|n| n["target"] == "unresolved_target")
+            .expect("call node present");
+        assert_eq!(call_json["return_type"], serde_json::Value::Null);
+    }
+
+    // N3: cross-file call regression pin for D17. A skill that imports a
+    // typed export-block and calls it must today lower the `IrCall` with
+    // `return_type == None`. `lower::blocks` (L249-254) collects only local
+    // `Decl::Block`; `Decl::Import` is not consulted, and there is no
+    // imported-block-types map threaded through `lower_with_imports`. When
+    // D17 lands, this test will need an updated expectation — that's the
+    // point of pinning the *current* behavior.
+    #[test]
+    fn cross_file_call_lowers_to_none_today_d17_regression_pin() {
+        let src = "\
+import \"./lib.glyph.md\" { do_thing }
+
+skill main()
+    flow:
+        do_thing()
+";
+        let arena = lower_skill(src);
+        let call = find_call(&arena, "do_thing");
+        assert!(
+            call.return_type.is_none(),
+            "cross-file call resolution is deferred to D17; today the callee \
+             return_type must be None at the lower layer"
+        );
+
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "main.glyph.md")
+            .expect("arena should serialize");
+        let v: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
+        let flow = v["skill"]["flow"].as_array().expect("flow array");
+        let call_json = flow
+            .iter()
+            .find(|n| n["target"] == "do_thing")
+            .expect("call node present");
+        assert_eq!(call_json["return_type"], serde_json::Value::Null);
+    }
+
+    // N4: a banned-generic identifier in type position (e.g. `List`, `Dict`)
+    // is NOT special-cased by lower (per planner h.2 decision). It lowers to
+    // `DomainType(canonicalize_identifier("List")) = DomainType("list")`.
+    // The `G::analyze::generic-type-name` warning surfaces it upstream; lower
+    // stays decoupled from analyze's decisions and records authorial intent
+    // in canonical form.
+    #[test]
+    fn banned_generic_in_type_position_lowers_to_canonical_domain_type() {
+        // `List` is on the chunk-2 banned list; it is NOT a `TypeTag` built-in
+        // variant, so the fallback arm of `name_to_typetag` lowers it to
+        // `DomainType("list")`.
+        let src = "\
+skill drive() -> List
+    flow:
+        \"go\"
+";
+        let arena = lower_skill(src);
+        let skill = root_skill(&arena);
+        assert_eq!(
+            skill.return_type,
+            Some(TypeTag::DomainType("list".into())),
+            "banned-generic `List` must lower to DomainType(\"list\"); analyze's \
+             generic-type-name warning is the user-facing channel, not lower."
+        );
+
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph.md")
+            .expect("arena should serialize");
+        let v: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
+        assert_eq!(
+            v["skill"]["return_type"],
+            serde_json::json!({ "domain_type": "list" })
+        );
+    }
 }
 
 #[cfg(test)]
