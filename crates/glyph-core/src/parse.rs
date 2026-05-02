@@ -672,12 +672,21 @@ impl<'a> Parser<'a> {
                                 // non-meaningful (bare `return`,
                                 // `return none`). The token after `return`
                                 // sits at `self.tokens[self.pos + 1]`.
+                                //
+                                // The `none` value-keyword is
+                                // case-insensitive on the source side
+                                // (`design/values-and-names.md` §None;
+                                // mirrors the case-insensitive `-> None`
+                                // parse rejection at line 380), so
+                                // `return None` and `return NONE` are
+                                // semantically identical to `return none`
+                                // and must NOT count as meaningful.
                                 let next = self.tokens.get(self.pos + 1).map(|t| &t.kind);
                                 let is_meaningful = match next {
                                     None
                                     | Some(TokenKind::LineStart { .. })
                                     | Some(TokenKind::Eof) => false,
-                                    Some(TokenKind::Ident(s)) if s == "none" => false,
+                                    Some(TokenKind::Ident(s)) if s.eq_ignore_ascii_case("none") => false,
                                     _ => true,
                                 };
                                 if is_meaningful {
@@ -2416,6 +2425,75 @@ skill foo()
         assert!(
             !eb2.has_meaningful_return,
             "has_meaningful_return should be false for `return none`"
+        );
+    }
+
+    // --- Codex pass 1 P2: `return none` detection is case-insensitive ---
+    //
+    // The `none` value-keyword is case-insensitive on the source side per
+    // `design/values-and-names.md` §None (same as the `-> None` parse rule
+    // at parse.rs:380). `return None` / `return NONE` must be treated
+    // identically to `return none` and NOT count as meaningful, otherwise
+    // the analyze rule `G::analyze::export-missing-return-type` would
+    // falsely fire on `export block foo() ... return None` without arrow.
+    //
+    // Tests below pin `has_meaningful_return` directly. The corresponding
+    // analyze fire/no-fire behavior is exercised end-to-end through the
+    // `G::analyze::export-missing-return-type` integration tests in
+    // `crates/glyph-core/src/lib.rs` (issue-#82 chunk 2 site).
+
+    fn first_export_block(src: &str) -> crate::ast::ExportBlockDecl {
+        let (file, _diags) = parse(src, 0).expect("parse should succeed");
+        file.decls
+            .iter()
+            .find_map(|d| match d {
+                crate::ast::Decl::ExportBlock(b) => Some(b.node.clone()),
+                _ => None,
+            })
+            .expect("expected an export block declaration")
+    }
+
+    #[test]
+    fn parse_export_block_return_none_pascal_is_not_meaningful() {
+        // `return None` (PascalCase) must be treated as no-meaningful-return.
+        let src = "export block foo()\n    flow:\n        \"x\"\n        return None\n";
+        let eb = first_export_block(src);
+        assert!(eb.has_return, "has_return should be true for `return None`");
+        assert!(
+            !eb.has_meaningful_return,
+            "has_meaningful_return should be false for `return None` (case-insensitive `none`)"
+        );
+    }
+
+    #[test]
+    fn parse_export_block_return_none_uppercase_is_not_meaningful() {
+        // `return NONE` (all-caps) must be treated as no-meaningful-return.
+        let src = "export block foo()\n    flow:\n        \"x\"\n        return NONE\n";
+        let eb = first_export_block(src);
+        assert!(eb.has_return, "has_return should be true for `return NONE`");
+        assert!(
+            !eb.has_meaningful_return,
+            "has_meaningful_return should be false for `return NONE` (case-insensitive `none`)"
+        );
+    }
+
+    #[test]
+    fn parse_export_block_return_string_literal_without_arrow_is_meaningful() {
+        // Regression: a meaningful return (`return "result"`) WITHOUT a
+        // `-> DomainType` annotation must still be flagged as meaningful,
+        // so the analyze rule `G::analyze::export-missing-return-type`
+        // continues to fire for this case.
+        let src = "export block foo()\n    flow:\n        \"x\"\n        return \"result\"\n";
+        let eb = first_export_block(src);
+        assert!(eb.has_return, "has_return should be true for `return \"result\"`");
+        assert!(
+            eb.has_meaningful_return,
+            "has_meaningful_return must remain true for `return \"result\"` without `->`"
+        );
+        assert!(
+            eb.return_type.is_none(),
+            "return_type must be None when the header omits `->` — got {:?}",
+            eb.return_type
         );
     }
 }

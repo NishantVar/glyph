@@ -485,48 +485,65 @@ fn is_decl_header_line(line: &str) -> bool {
 /// declaration header line. If no match is found, returns the line
 /// unchanged. Trailing whitespace is trimmed on a successful strip so the
 /// result has no dangling space.
+///
+/// The match is restricted to the **return-type slot** — i.e., the substring
+/// strictly after the rightmost `)` on the line (the parameter-list close).
+/// This prevents a `-> None` substring inside a string-default parameter
+/// (e.g. `block foo(msg = "a -> None")`) from being silently stripped.
+/// Per the header grammar, only whitespace may sit between the param-close
+/// and the return-type `->`, and only whitespace may follow the type ident
+/// — both are enforced so we leave malformed or overdecorated lines alone.
 fn strip_none_return_from_line(line: &str) -> String {
     let bytes = line.as_bytes();
-    let mut i = 0;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b'-' && bytes[i + 1] == b'>' {
-            let arrow_start = i;
-            // Skip whitespace between `->` and the type ident.
-            let mut j = i + 2;
-            while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
-                j += 1;
-            }
-            // Read a single ident (alpha/digit/underscore).
-            let ident_start = j;
-            while j < bytes.len()
-                && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_')
-            {
-                j += 1;
-            }
-            let ident_end = j;
-            if ident_end > ident_start
-                && line[ident_start..ident_end].eq_ignore_ascii_case("none")
-            {
-                // Include any whitespace immediately before `->` in the strip.
-                let mut strip_start = arrow_start;
-                while strip_start > 0
-                    && (bytes[strip_start - 1] == b' '
-                        || bytes[strip_start - 1] == b'\t')
-                {
-                    strip_start -= 1;
-                }
-                let mut result = String::with_capacity(line.len());
-                result.push_str(&line[..strip_start]);
-                result.push_str(&line[ident_end..]);
-                return result.trim_end().to_string();
-            }
-            // Not `-> None`; advance past this `->` and continue scanning.
-            i = j.max(i + 2);
-        } else {
-            i += 1;
-        }
+    // Locate the parameter-list close. If the line has no `)` at all, it's
+    // not a well-formed declaration header — leave it alone.
+    let close = match bytes.iter().rposition(|&b| b == b')') {
+        Some(p) => p,
+        None => return line.to_string(),
+    };
+    // Examine only the post-`)` substring.
+    let mut j = close + 1;
+    // Whitespace before `->`.
+    while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+        j += 1;
     }
-    line.to_string()
+    // Need a literal `->` next. If anything else (or end-of-line), bail.
+    if j + 1 >= bytes.len() || bytes[j] != b'-' || bytes[j + 1] != b'>' {
+        return line.to_string();
+    }
+    let arrow_start = j;
+    j += 2;
+    // Whitespace after `->`.
+    while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+        j += 1;
+    }
+    // Read the type ident.
+    let ident_start = j;
+    while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+        j += 1;
+    }
+    let ident_end = j;
+    if ident_end == ident_start
+        || !line[ident_start..ident_end].eq_ignore_ascii_case("none")
+    {
+        return line.to_string();
+    }
+    // Per the header grammar, nothing but trailing whitespace may follow
+    // the return-type ident. If anything else appears, leave the line alone.
+    if bytes[ident_end..].iter().any(|&b| b != b' ' && b != b'\t') {
+        return line.to_string();
+    }
+    // Match found. Strip from the run of whitespace immediately preceding
+    // `->` through end-of-line; the prefix already ends at `)` with no
+    // trailing whitespace, so a final `trim_end` is defensive (handles a
+    // stray `\r` on Windows line endings).
+    let mut strip_start = arrow_start;
+    while strip_start > 0
+        && (bytes[strip_start - 1] == b' ' || bytes[strip_start - 1] == b'\t')
+    {
+        strip_start -= 1;
+    }
+    line[..strip_start].trim_end().to_string()
 }
 
 #[cfg(test)]
@@ -690,6 +707,54 @@ export block compute(scope = \".\") -> Path
             result.output.contains("skill foo()"),
             "stripped header should be present, got:\n{}",
             result.output
+        );
+    }
+
+    // --- Codex pass 1 P1: strip restricted to the return-type slot ---
+    // The strip helper must NOT corrupt a string-default parameter that
+    // happens to contain the substring `-> None`.
+
+    #[test]
+    fn strip_preserves_string_default_containing_arrow_none() {
+        // `block foo(msg = "a -> None")` has NO trailing return-type
+        // annotation; the `-> None` is part of the string default. The
+        // strip must leave the line untouched.
+        let src = "block foo(msg = \"a -> None\")\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(
+            out, src,
+            "string-default containing `-> None` must be preserved untouched, got:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn strip_preserves_string_default_containing_arrow_none_lowercase() {
+        // Lowercase variant inside a string default — same protection
+        // (the strip is case-insensitive on the type ident, so the
+        // pre-fix bug would corrupt this too).
+        let src = "skill foo(default = \"x -> none y\")\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(
+            out, src,
+            "string-default containing `-> none` must be preserved untouched, got:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn strip_trailing_none_with_string_default_preserved() {
+        // Both conditions in one line: a string default that does NOT
+        // contain `-> None` PLUS a real trailing `-> None` annotation.
+        // The trailing annotation must be stripped; the parameter list
+        // (including its string default) must survive intact.
+        let src = "block bar(p = \"ignore\") -> None\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(
+            out,
+            "block bar(p = \"ignore\")\n    flow:\n        \"x\"\n",
+            "trailing `-> None` must be stripped while `(p = \"ignore\")` is preserved, got:\n{}",
+            out
         );
     }
 }
