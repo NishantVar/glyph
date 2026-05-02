@@ -63,12 +63,17 @@ use glyph_core::span::{LineIndex, Span};
 /// last published for the URI. Tracking the published set lets us avoid
 /// re-publishing identical bags (a quiet optimisation; mostly it's defensive
 /// against editors that flicker on duplicate publishes).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct Document {
     text: String,
     /// Most recently published diagnostics for this URI, in publish order.
     /// Purely an optimisation hint; correctness does not depend on it.
     last_published: Vec<LspDiagnostic>,
+    /// URIs of imported dep files we last published cross-file diagnostics for
+    /// from this buffer's lint. On the next lint we clear any URI that drops
+    /// out of the new set so stale dep diagnostics don't linger in the editor.
+    /// Buffer's own URI is excluded.
+    last_dep_uris: std::collections::HashSet<Url>,
 }
 
 /// Server initialization options.
@@ -104,29 +109,90 @@ impl Backend {
         }
     }
 
-    /// Run Phases 1+2 on `text` and publish the resulting diagnostics for `uri`.
+    /// Run Phases 1+2 on `text` (with import-aware cross-file diagnostics, M3)
+    /// and publish the per-file `DiagBag`s. The buffer's URI always gets a
+    /// publish; each imported dep with diagnostics gets its own publish under
+    /// that dep's `file://` URI.
     ///
-    /// Updates the `last_published` field on the matching `Document` so the
-    /// next `did_close` knows what to clear.
+    /// Cross-file invalidation: any dep URI we published for last time but
+    /// that's not in the current import set gets an empty publish (clears
+    /// stale squiggles in the editor when an `import` line changes).
     async fn lint_and_publish(&self, uri: Url, text: &str) {
         let enable_effects = *self.enable_effects.read().await;
-        let label = uri.path().to_string();
-        let bag = glyph_core::check_source_with_effects(text, 0, &label, enable_effects);
-        let diagnostics: Vec<LspDiagnostic> =
-            bag.sorted().iter().map(convert::diagnostic_to_lsp).collect();
 
-        // Stamp the Document with the publish set so close()/future publishes
-        // can compare. Done before publishing so we never lose track of what
-        // the client last saw.
+        // Convert the buffer URI to a filesystem path so import resolution
+        // works against the importer's directory. Untitled buffers
+        // (`untitled:`, `inmemory:`) won't have a `file://` path; in that
+        // case fall back to an empty path and we'll publish single-file
+        // diagnostics under the buffer URI only.
+        let buffer_path = uri
+            .to_file_path()
+            .unwrap_or_else(|_| std::path::PathBuf::from(uri.path()));
+
+        let bags =
+            glyph_core::check_source_with_imports(text, 0, &buffer_path, enable_effects);
+
+        // Resolve which key in `bags` corresponds to the buffer. The core
+        // canonicalizes the entry path when possible; match against both.
+        let canon_buffer = buffer_path
+            .canonicalize()
+            .unwrap_or_else(|_| buffer_path.clone());
+
+        let mut new_dep_uris: std::collections::HashSet<Url> =
+            std::collections::HashSet::new();
+        let mut buffer_diagnostics: Vec<LspDiagnostic> = Vec::new();
+
+        for (path, bag) in bags.iter() {
+            let diagnostics: Vec<LspDiagnostic> =
+                bag.sorted().iter().map(convert::diagnostic_to_lsp).collect();
+
+            let is_buffer = path == &canon_buffer || path == &buffer_path;
+            if is_buffer {
+                buffer_diagnostics = diagnostics;
+                continue;
+            }
+
+            // Cross-file dep — publish under the dep's URI.
+            let dep_uri = match Url::from_file_path(path) {
+                Ok(u) => u,
+                Err(_) => continue, // unrepresentable as `file://` — skip
+            };
+            new_dep_uris.insert(dep_uri.clone());
+            self.client
+                .publish_diagnostics(dep_uri, diagnostics, None)
+                .await;
+        }
+
+        // Clear any dep URI we published for last time that's no longer
+        // referenced by this buffer.
+        let stale_dep_uris: Vec<Url> = {
+            let docs = self.documents.read().await;
+            docs.get(&uri)
+                .map(|d| {
+                    d.last_dep_uris
+                        .iter()
+                        .filter(|u| !new_dep_uris.contains(u))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        for stale in stale_dep_uris {
+            self.client.publish_diagnostics(stale, Vec::new(), None).await;
+        }
+
+        // Stamp the Document with this lint's published set so we know
+        // what to clear next time.
         {
             let mut docs = self.documents.write().await;
             if let Some(doc) = docs.get_mut(&uri) {
-                doc.last_published = diagnostics.clone();
+                doc.last_published = buffer_diagnostics.clone();
+                doc.last_dep_uris = new_dep_uris;
             }
         }
 
         self.client
-            .publish_diagnostics(uri, diagnostics, None)
+            .publish_diagnostics(uri, buffer_diagnostics, None)
             .await;
     }
 }
@@ -184,6 +250,7 @@ impl LanguageServer for Backend {
                 Document {
                     text: text.clone(),
                     last_published: Vec::new(),
+                    last_dep_uris: std::collections::HashSet::new(),
                 },
             );
         }
@@ -231,10 +298,13 @@ impl LanguageServer for Backend {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri.clone();
-        let had_diagnostics = {
+        let (had_diagnostics, dep_uris) = {
             let mut docs = self.documents.write().await;
             let removed = docs.remove(&uri);
-            removed.map(|d| !d.last_published.is_empty()).unwrap_or(false)
+            match removed {
+                Some(d) => (!d.last_published.is_empty(), d.last_dep_uris),
+                None => (false, std::collections::HashSet::new()),
+            }
         };
 
         // Clear stale squiggles in the editor by publishing an empty array.
@@ -242,6 +312,14 @@ impl LanguageServer for Backend {
         // optimisation — avoids spurious notifications).
         if had_diagnostics {
             self.client.publish_diagnostics(uri, Vec::new(), None).await;
+        }
+        // Clear cross-file dep diagnostics that were attributed to this
+        // buffer. If another open buffer also imports the same dep, its next
+        // save will re-publish — so we'd clear here and another buffer would
+        // re-attach. Acceptable in M3 (the design's "FileGraph cache" would
+        // sharpen this; deferred per the M3 brief).
+        for dep in dep_uris {
+            self.client.publish_diagnostics(dep, Vec::new(), None).await;
         }
     }
 
@@ -662,6 +740,78 @@ block validate_plan()
         // dependency file.
         let def_text = &dep_src[r.def_span.start as usize..(r.def_span.start as usize + 6)];
         assert_eq!(def_text, "export");
+    }
+
+    /// M3 cross-file diagnostics: when an importer's clean buffer triggers
+    /// the analyzer to surface a diagnostic in an imported dep, the LSP
+    /// must be able to map the dep's path → URI for the publish.
+    ///
+    /// This exercises the key wiring step in `lint_and_publish`: each
+    /// `(path, bag)` entry where path != buffer_path becomes an
+    /// `Url::from_file_path(path)` publish.
+    #[test]
+    fn cross_file_diagnostic_attributable_to_dep_uri() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dep_path = dir.path().join("dep.glyph.md");
+        // Dep has its own diagnostic (`require ghost` → undefined-name).
+        let dep_text = "\
+export text alpha = \"alpha.\"
+
+skill dep_skill()
+    description: \"dep skill.\"
+    require ghost
+    flow:
+        \"hello\"
+";
+        std::fs::write(&dep_path, dep_text).expect("write dep");
+
+        let importer_path = dir.path().join("main.glyph.md");
+        let importer_src = "\
+import \"./dep.glyph.md\" { alpha }
+
+skill main()
+    description: \"main.\"
+    require alpha
+    flow:
+        \"hello\"
+";
+        std::fs::write(&importer_path, importer_src).expect("write importer");
+
+        let bags =
+            glyph_core::check_source_with_imports(importer_src, 0, &importer_path, false);
+
+        let canon_dep = dep_path.canonicalize().expect("canon dep");
+        let canon_importer = importer_path.canonicalize().expect("canon importer");
+
+        // Both files have entries.
+        assert!(bags.contains_key(&canon_importer));
+        assert!(bags.contains_key(&canon_dep));
+
+        // Importer is clean; dep carries the undefined-name.
+        let importer_bag = bags.get(&canon_importer).unwrap();
+        assert!(
+            importer_bag
+                .iter()
+                .all(|d| !matches!(d.classification, glyph_core::diagnostic::Classification::Error)),
+            "importer should be clean"
+        );
+        let dep_bag = bags.get(&canon_dep).unwrap();
+        assert!(
+            dep_bag
+                .iter()
+                .any(|d| d.id.starts_with("G::analyze::undefined")),
+            "dep should carry undefined-name"
+        );
+
+        // Wiring step: dep canonical path round-trips through Url::from_file_path
+        // back to a usable LSP URI (the same conversion lint_and_publish does).
+        let dep_uri = Url::from_file_path(&canon_dep).expect("dep path → file:// URI");
+        assert_eq!(dep_uri.scheme(), "file");
+        assert_eq!(
+            dep_uri.to_file_path().expect("URI → path round-trip"),
+            canon_dep,
+            "URI ↔ path round-trip should match"
+        );
     }
 }
 

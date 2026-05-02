@@ -467,13 +467,35 @@ pub fn check_file(path: &Path) -> DiagBag {
 }
 
 pub fn check_file_with_effects(path: &Path, enable_effects: bool) -> DiagBag {
-    let mut bag = DiagBag::new();
+    let bags = check_file_partition(path, enable_effects);
+    let mut merged = DiagBag::new();
+    for (_p, b) in bags {
+        merged.merge(b);
+    }
+    merged
+}
+
+/// Like [`check_file_with_effects`] but returns a per-file map of diagnostic
+/// bags. Used by the LSP (M3) so it can publish each file's diagnostics under
+/// the correct URI; back-compat callers keep using the merged-bag entry point
+/// above.
+///
+/// The map key is the file's *canonical* path (as returned by
+/// `Path::canonicalize`). On the failure path where the entry file itself
+/// can't be canonicalized, the original (non-canonical) path is used as the
+/// key for the synthetic `missing-file` diagnostic — there is no canonical
+/// path to use.
+pub fn check_file_partition(
+    path: &Path,
+    enable_effects: bool,
+) -> HashMap<PathBuf, DiagBag> {
+    let mut bags: HashMap<PathBuf, DiagBag> = HashMap::new();
     let canon = match path.canonicalize() {
         Ok(c) => c,
         Err(_) => {
             let span = Span::new(0, 0, 0);
             let li = LineIndex::new("");
-            bag.push(
+            bags.entry(path.to_path_buf()).or_default().push(
                 Diagnostic::error(
                     "G::analyze::missing-file",
                     format!("cannot read `{}`", path.display()),
@@ -481,19 +503,61 @@ pub fn check_file_with_effects(path: &Path, enable_effects: bool) -> DiagBag {
                 ),
                 span,
             );
-            return bag;
+            return bags;
         }
     };
 
     let mut visited: HashSet<PathBuf> = HashSet::new();
     let mut stack: Vec<PathBuf> = Vec::new();
-    check_file_recursive(&canon, &mut bag, &mut visited, &mut stack, enable_effects);
-    bag
+    check_file_recursive(&canon, &mut bags, &mut visited, &mut stack, enable_effects);
+    // Guarantee the entry file always has a (possibly empty) bag in the map
+    // so the LSP can clear stale diagnostics on a clean save.
+    bags.entry(canon).or_default();
+    bags
+}
+
+/// Like [`check_file_partition`] but takes an in-memory `source` for the
+/// entry file at `current_path`. Dependencies are still read from disk.
+///
+/// This is the import-aware companion to [`check_source_with_resolutions_at_path`]:
+/// the LSP holds the unsaved buffer in memory and wants cross-file diagnostics
+/// from the dep DAG without writing the buffer back to disk first.
+///
+/// Returns a `path → DiagBag` map keyed on canonical paths (the entry file's
+/// path is canonicalized via `current_path.canonicalize()` if possible; if the
+/// file does not yet exist on disk, the un-canonicalized path is used as the
+/// key — this lets the LSP publish diagnostics for new buffers).
+pub fn check_source_with_imports(
+    source: &str,
+    file_id: u32,
+    current_path: &Path,
+    enable_effects: bool,
+) -> HashMap<PathBuf, DiagBag> {
+    let mut bags: HashMap<PathBuf, DiagBag> = HashMap::new();
+    // Canonicalize when possible so the LSP-side URI key matches the canonical
+    // form used by recursive imports (avoids the same file appearing under two
+    // different keys).
+    let canon = current_path
+        .canonicalize()
+        .unwrap_or_else(|_| current_path.to_path_buf());
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    let mut stack: Vec<PathBuf> = Vec::new();
+    check_one_file(
+        &canon,
+        source,
+        file_id,
+        &mut bags,
+        &mut visited,
+        &mut stack,
+        enable_effects,
+    );
+    bags.entry(canon).or_default();
+    bags
 }
 
 fn check_file_recursive(
     path: &Path,
-    bag: &mut DiagBag,
+    bags: &mut HashMap<PathBuf, DiagBag>,
     visited: &mut HashSet<PathBuf>,
     stack: &mut Vec<PathBuf>,
     enable_effects: bool,
@@ -508,7 +572,7 @@ fn check_file_recursive(
         let cycle_str = cycle.join(" -> ");
         let span = Span::new(0, 0, 0);
         let li = LineIndex::new("");
-        bag.push(
+        bags.entry(path.to_path_buf()).or_default().push(
             Diagnostic::error(
                 "G::analyze::circular-import",
                 format!("circular import: {}", cycle_str),
@@ -534,15 +598,12 @@ fn check_file_recursive(
         return Some(extract_exports(&parsed));
     }
 
-    visited.insert(path.to_path_buf());
-    stack.push(path.to_path_buf());
-
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(_) => {
             let span = Span::new(0, 0, 0);
             let li = LineIndex::new("");
-            bag.push(
+            bags.entry(path.to_path_buf()).or_default().push(
                 Diagnostic::error(
                     "G::analyze::missing-file",
                     format!("cannot read `{}`", path.display()),
@@ -554,15 +615,44 @@ fn check_file_recursive(
                 ),
                 span,
             );
-            stack.pop();
             return None;
         }
     };
 
-    let file_label = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-    let line_index = LineIndex::new(&source);
+    check_one_file(path, &source, 0, bags, visited, stack, enable_effects)
+}
 
-    let parsed = parse::parse_with_diagnostics_opts(&source, 0, &file_label, &line_index, bag, enable_effects);
+/// Shared body for [`check_file_recursive`] (on-disk source) and
+/// [`check_source_with_imports`] (in-memory source). Performs the per-file
+/// parse + analyze step, walks `import` decls, and recurses into deps.
+///
+/// All diagnostics produced for `path` are written under
+/// `bags.entry(path.to_path_buf())`. Recursive calls into deps write under
+/// the dep's path. This is the per-file partitioning M3 needs.
+fn check_one_file(
+    path: &Path,
+    source: &str,
+    file_id: u32,
+    bags: &mut HashMap<PathBuf, DiagBag>,
+    visited: &mut HashSet<PathBuf>,
+    stack: &mut Vec<PathBuf>,
+    enable_effects: bool,
+) -> Option<ExportedNames> {
+    let key = path.to_path_buf();
+    visited.insert(key.clone());
+    stack.push(key.clone());
+
+    let file_label = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let line_index = LineIndex::new(source);
+
+    let parsed = parse::parse_with_diagnostics_opts(
+        source,
+        file_id,
+        &file_label,
+        &line_index,
+        bags.entry(key.clone()).or_default(),
+        enable_effects,
+    );
     let file = match parsed {
         Some(f) => f,
         None => {
@@ -596,7 +686,7 @@ fn check_file_recursive(
                                 if imp_name.name.node == "subagent" || imp_name.name.node == "send" {
                                     imported_blocks.insert(local.to_string());
                                 } else {
-                                    bag.push(
+                                    bags.entry(key.clone()).or_default().push(
                                         Diagnostic::error(
                                             "G::analyze::import-private",
                                             format!("`{}` is not exported from `{}`", imp_name.name.node, import.path),
@@ -614,7 +704,7 @@ fn check_file_recursive(
                         }
                     }
                 } else {
-                    bag.push(
+                    bags.entry(key.clone()).or_default().push(
                         Diagnostic::error(
                             "G::imports::unknown-stdlib-module",
                             format!("unknown stdlib module `{}`", import.path),
@@ -631,7 +721,7 @@ fn check_file_recursive(
             let resolved = match resolved {
                 Some(r) => r,
                 None => {
-                    bag.push(
+                    bags.entry(key.clone()).or_default().push(
                         Diagnostic::error(
                             "G::analyze::missing-file",
                             format!("imported file `{}` not found", import.path),
@@ -645,7 +735,7 @@ fn check_file_recursive(
 
             // Duplicate import detection.
             if let Some(prev_span) = seen_import_paths.get(&resolved) {
-                bag.push(
+                bags.entry(key.clone()).or_default().push(
                     Diagnostic {
                         id: "G::analyze::duplicate-import".into(),
                         classification: Classification::Repairable,
@@ -661,7 +751,7 @@ fn check_file_recursive(
             seen_import_paths.insert(resolved.clone(), import_span);
 
             // Recursively check/parse the dependency.
-            let dep_exports = check_file_recursive(&resolved, bag, visited, stack, enable_effects);
+            let dep_exports = check_file_recursive(&resolved, bags, visited, stack, enable_effects);
             let dep_exports = match dep_exports {
                 Some(e) => e,
                 None => continue,
@@ -675,7 +765,7 @@ fn check_file_recursive(
                         all_import_names.push((local.to_string(), import_span));
 
                         if dep_exports.skills.contains(&imp_name.name.node) {
-                            bag.push(
+                            bags.entry(key.clone()).or_default().push(
                                 Diagnostic::error(
                                     "G::analyze::import-skill",
                                     format!("`{}` is a `skill` and cannot be selectively imported", imp_name.name.node),
@@ -684,7 +774,7 @@ fn check_file_recursive(
                                 import_span,
                             );
                         } else if dep_exports.privates.contains(&imp_name.name.node) {
-                            bag.push(
+                            bags.entry(key.clone()).or_default().push(
                                 Diagnostic::error(
                                     "G::analyze::import-private",
                                     format!("`{}` is not exported from `{}`", imp_name.name.node, import.path),
@@ -697,7 +787,7 @@ fn check_file_recursive(
                         } else if dep_exports.blocks.contains(&imp_name.name.node) {
                             imported_blocks.insert(local.to_string());
                         } else {
-                            bag.push(
+                            bags.entry(key.clone()).or_default().push(
                                 Diagnostic::error(
                                     "G::analyze::import-private",
                                     format!("`{}` is not exported from `{}`", imp_name.name.node, import.path),
@@ -731,7 +821,7 @@ fn check_file_recursive(
         0,
         &file_label,
         &line_index,
-        bag,
+        bags.entry(key.clone()).or_default(),
         &imported_texts,
         &imported_blocks,
         &mut used_import_names,
@@ -742,7 +832,7 @@ fn check_file_recursive(
     // Unused import detection.
     for (name, span) in &all_import_names {
         if !used_import_names.contains(name) {
-            bag.push(
+            bags.entry(key.clone()).or_default().push(
                 Diagnostic {
                     id: "G::analyze::unused-import".into(),
                     classification: Classification::Repairable,
@@ -4029,6 +4119,149 @@ skill main()
             ids_off.contains(&"G::analyze::empty-skill-body"),
             "with effects off, empty skill should fire empty-skill-body, got: {:?}",
             ids_off
+        );
+    }
+
+    // ── M3 cross-file diagnostics ──────────────────────────────────────────
+
+    #[test]
+    fn check_source_with_imports_partitions_diagnostics_per_file() {
+        // Two files: a clean importer that depends on a dep with a diagnostic.
+        // The dep error should publish under the dep's URI, NOT the importer's.
+        let dir = tempfile::tempdir().unwrap();
+        let dep_path = dir.path().join("dep.glyph.md");
+        // `dep_text` references an undefined name → fires `undefined-name`.
+        let dep_text = "\
+export text alpha = \"alpha.\"
+
+skill dep_skill()
+    description: \"dep skill.\"
+    require ghost
+    flow:
+        \"hello\"
+";
+        std::fs::write(&dep_path, dep_text).unwrap();
+
+        // Importer pulls `alpha` and uses it as a constraint.
+        let importer_path = dir.path().join("main.glyph.md");
+        let importer_src = "\
+import \"./dep.glyph.md\" { alpha }
+
+skill main()
+    description: \"main.\"
+    require alpha
+    flow:
+        \"hello\"
+";
+        std::fs::write(&importer_path, importer_src).unwrap();
+
+        let bags = check_source_with_imports(importer_src, 0, &importer_path, false);
+
+        // Both files should have entries in the map.
+        let canon_importer = importer_path.canonicalize().unwrap();
+        let canon_dep = dep_path.canonicalize().unwrap();
+        assert!(
+            bags.contains_key(&canon_importer),
+            "importer must have a bag entry. keys = {:?}",
+            bags.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            bags.contains_key(&canon_dep),
+            "dep must have a bag entry. keys = {:?}",
+            bags.keys().collect::<Vec<_>>()
+        );
+
+        // Importer bag should be EMPTY of errors (clean side).
+        let importer_bag = bags.get(&canon_importer).unwrap();
+        let importer_errors: Vec<&str> = importer_bag
+            .iter()
+            .filter(|d| matches!(d.classification, diagnostic::Classification::Error))
+            .map(|d| d.id.as_str())
+            .collect();
+        assert!(
+            importer_errors.is_empty(),
+            "importer should have no errors, got: {:?}",
+            importer_errors
+        );
+
+        // Dep bag should carry the `undefined-name` for `ghost`.
+        let dep_bag = bags.get(&canon_dep).unwrap();
+        let dep_ids: Vec<&str> = dep_bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            dep_ids.iter().any(|id| id.starts_with("G::analyze::undefined")),
+            "dep should carry the undefined-name diagnostic. got: {:?}",
+            dep_ids
+        );
+    }
+
+    #[test]
+    fn check_source_with_imports_attributes_import_private_to_importer() {
+        // The importer asks for a name the dep doesn't export. The
+        // `import-private` diagnostic must surface under the importer URI
+        // (importer is the file with the buggy `import` line).
+        let dir = tempfile::tempdir().unwrap();
+        let dep_path = dir.path().join("dep.glyph.md");
+        std::fs::write(&dep_path, "text private_text = \"private.\"\n").unwrap();
+
+        let importer_path = dir.path().join("main.glyph.md");
+        let importer_src = "\
+import \"./dep.glyph.md\" { not_exported }
+
+skill main()
+    description: \"main.\"
+    flow:
+        \"hello\"
+";
+        std::fs::write(&importer_path, importer_src).unwrap();
+
+        let bags = check_source_with_imports(importer_src, 0, &importer_path, false);
+
+        let canon_importer = importer_path.canonicalize().unwrap();
+        let importer_bag = bags.get(&canon_importer).unwrap();
+        let importer_ids: Vec<&str> = importer_bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            importer_ids.iter().any(|id| *id == "G::analyze::import-private"),
+            "import-private should surface on the importer. got: {:?}",
+            importer_ids
+        );
+    }
+
+    #[test]
+    fn check_file_partition_round_trip_matches_legacy_check_file() {
+        // Sanity: check_file_partition + merge == check_file_with_effects.
+        let dir = tempfile::tempdir().unwrap();
+        let dep_path = dir.path().join("dep.glyph.md");
+        std::fs::write(&dep_path, "export text alpha = \"alpha.\"\n").unwrap();
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(
+            &main_path,
+            "\
+import \"./dep.glyph.md\" { alpha }
+
+skill main()
+    description: \"main.\"
+    require alpha
+    flow:
+        \"hello\"
+",
+        )
+        .unwrap();
+
+        let merged = check_file_with_effects(&main_path, false);
+        let bags = check_file_partition(&main_path, false);
+        let mut merged_from_partition = DiagBag::new();
+        for (_p, b) in bags {
+            merged_from_partition.merge(b);
+        }
+        // Compare sorted output (partition map insertion order is non-deterministic).
+        assert_eq!(
+            merged.sorted().iter().map(|d| d.id.clone()).collect::<Vec<_>>(),
+            merged_from_partition
+                .sorted()
+                .iter()
+                .map(|d| d.id.clone())
+                .collect::<Vec<_>>(),
+            "check_file_partition + merge should equal check_file_with_effects"
         );
     }
 }
