@@ -66,12 +66,36 @@ fn warn_if_banned_return_type(
             );
         }
         Ok(_) => {
+            // Issue #84 codex pass 1 — F2: skip registration when the name
+            // is a built-in `TypeTag` (per `kind_infer.rs`). Of the six
+            // built-ins (`String`, `Int`, `Float`, `Bool`, `None`, `Agent`)
+            // all but `Agent` are also on #83's banned-generic list and so
+            // never reach this `Ok` arm; `Agent` is the only one that today
+            // escapes the banned filter and would otherwise be registered
+            // as a domain type, falsely colliding with an `agent` parameter
+            // via chunk-3's no-shadowing sweep. Filter all six here so a
+            // future change to the banned-list does not silently re-expose
+            // any built-in.
+            if is_builtin_type_name(&rt.node) {
+                return;
+            }
             // Issue #84 Chunk 2: legitimate domain-type name → record first
             // use. Idempotent on canonical form; subsequent same-canonical
             // calls preserve the original `first_use_span`.
             registry.register_first_use(&rt.node, rt.span);
         }
     }
+}
+
+/// Issue #84 codex pass 1 — F2: predicate matching the six built-in
+/// `TypeTag` names per `kind_infer.rs`. Case-insensitive ASCII match per
+/// F12 / canonical-form rule. Used by `warn_if_banned_return_type` to
+/// keep built-ins out of the per-file domain-type registry, and by
+/// `check_return_call_nominal` could call this in the future if the
+/// banned-list ever ceases to cover the same set.
+fn is_builtin_type_name(s: &str) -> bool {
+    const BUILTINS: &[&str] = &["String", "Int", "Float", "Bool", "None", "Agent"];
+    BUILTINS.iter().any(|b| b.eq_ignore_ascii_case(s))
 }
 
 /// Issue #84 Chunk 3 (AC5): post-hoc sweep that flags any domain-type name
@@ -265,6 +289,20 @@ fn check_return_call_nominal(
         .copied()
         .or_else(|| imported_block_return_types.get(target.as_str()));
     let Some(callee_rt) = callee_rt else { return };
+    // Issue #84 codex pass 1 — F1: skip the nominal-match check when
+    // either side's type name is on the #83 banned-generic list. The
+    // banned warning (`G::analyze::generic-type-name`) is the user-
+    // visible signal for those names; canonical-equality against a
+    // legitimate domain type would fire `nominal-mismatch` (Error,
+    // exit 1) on top of the warning and thus silently upgrade a
+    // non-blocking issue into a build-breaking one. Banned names
+    // carry no domain semantics, so a mismatch verdict is meaningless
+    // either way.
+    if crate::type_position::validate_type_position(&caller_rt.node).is_err()
+        || crate::type_position::validate_type_position(&callee_rt.node).is_err()
+    {
+        return;
+    }
     if registry.nominal_match(&caller_rt.node, &callee_rt.node) {
         return;
     }
@@ -371,20 +409,21 @@ pub fn analyze_with_diagnostics(
         .collect();
 
     // Issue #84 Chunk 4 (AC4 / D13): per-file local-callee return-type map.
-    // Same shape as the imports-path computation in `analyze_with_imports` —
-    // skill / block / export-block all contribute callees with `-> Type`.
+    // Issue #84 codex pass 1 — F3: only `Decl::Block` is recognized by the
+    // same-file call resolver (`block_names` is `Decl::Block`-only). Including
+    // `Decl::ExportBlock` here caused a false hard `nominal-mismatch` to fire
+    // against `return exported_fn()` boundaries that the resolver would
+    // otherwise reject. Cross-file matching for `export block` callees is
+    // owned by the `imported_block_return_types` map, sourced from
+    // `extract_exports::block_return_types` (lib.rs:216) — restricting this
+    // local map does not break cross-file matching. `Decl::Skill` stays out
+    // because skills cannot be called from other declarations' flow.
     // The no-imports path has no cross-file map, so we pass an empty one.
     let local_callee_return_types: HashMap<&str, &Spanned<String>> = file
         .decls
         .iter()
         .filter_map(|d| match d {
             Decl::Block(b) => b.node.return_type.as_ref().map(|rt| (b.node.name.as_str(), rt)),
-            Decl::ExportBlock(eb) => eb
-                .node
-                .return_type
-                .as_ref()
-                .map(|rt| (eb.node.name.as_str(), rt)),
-            Decl::Skill(s) => s.node.return_type.as_ref().map(|rt| (s.node.name.as_str(), rt)),
             _ => None,
         })
         .collect();
@@ -560,23 +599,20 @@ pub fn analyze_with_imports(
         .collect();
 
     // Issue #84 Chunk 4 (AC4 / D13): per-file local-callee return-type map.
+    // Issue #84 codex pass 1 — F3: see the matching site in
+    // `analyze_with_diagnostics` for rationale. Restricted to `Decl::Block`
+    // — the only kind recognized by the same-file resolver. Cross-file
+    // export-block matching is owned by `imported_block_return_types`.
     // Keyed by callable name; valued by the `-> Type` annotation. Populated
     // for callables that declare a return type only — absence means
     // "skip the type-check" (covers undefined-callee and untyped-callee).
-    // Skill / BlockDecl / ExportBlockDecl all have an `Option<Spanned<String>>`
-    // `return_type` field (ast.rs:89, 130, 238). The borrowed-string keys
-    // tie this map's lifetime to the file AST, same pattern as `block_decls`.
+    // The borrowed-string keys tie this map's lifetime to the file AST,
+    // same pattern as `block_decls`.
     let local_callee_return_types: HashMap<&str, &Spanned<String>> = file
         .decls
         .iter()
         .filter_map(|d| match d {
             Decl::Block(b) => b.node.return_type.as_ref().map(|rt| (b.node.name.as_str(), rt)),
-            Decl::ExportBlock(eb) => eb
-                .node
-                .return_type
-                .as_ref()
-                .map(|rt| (eb.node.name.as_str(), rt)),
-            Decl::Skill(s) => s.node.return_type.as_ref().map(|rt| (s.node.name.as_str(), rt)),
             _ => None,
         })
         .collect();
@@ -2567,6 +2603,138 @@ mod tests {
             d.related[0].end.col,
             repo_context_end as u32,
             "related span must end at the end of the caller's `RepoContext` identifier"
+        );
+    }
+
+    // --- Issue #84 codex pass 1 — three coupled fixes at the registry /
+    // nominal-match call sites. Each cycle pins one finding; the fix is
+    // applied immediately after RED to keep the slice vertical. ---
+
+    #[test]
+    fn t11_nominal_match_skipped_when_caller_type_is_banned_generic() {
+        // Codex pass 1 — F1 [P1]. A skill annotated `-> String` (banned
+        // generic per #83) calling `block helper() -> Report` must NOT
+        // upgrade the #83 banned-generic warning into a hard
+        // `nominal-mismatch` error. The non-blocking `generic-type-name`
+        // warning is the user-visible signal; chunk-4's nominal check has
+        // no contract to enforce when one side is a banned name (the
+        // banned name carries no domain semantics, so canonical-equality
+        // against `Report` is meaningless and would fire spuriously).
+        //
+        // Pre-fix: chunk-4 compares `string` vs `report` canonical forms,
+        // they differ, and `nominal-mismatch` (Error, exit 1) fires. Post-
+        // fix: the call site short-circuits when either side fails
+        // `validate_type_position`, so only the warning remains.
+        let src = "skill main() -> String\n    description: \"Main.\"\n    flow:\n        return helper()\n\nblock helper() -> Report\n    description: \"Helper.\"\n    flow:\n        \"do\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let mismatches = nominal_mismatches(&bag);
+        assert_eq!(
+            mismatches.len(),
+            0,
+            "banned-generic caller `-> String` must not fire nominal-mismatch; got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+        // Sanity: the #83 generic-type-name warning still fires (the
+        // banned-skip is a *suppression* on the new chunk-4 path, not a
+        // muting of the pre-existing #83 warning).
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::generic-type-name"),
+            "expected G::analyze::generic-type-name (banned warning) to still fire, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn t12_builtin_agent_in_return_position_does_not_register_as_domain_type() {
+        // Codex pass 1 — F2 [P2]. `Agent` is a built-in `TypeTag`
+        // (`kind_infer.rs`), not a domain type. It is *not* on #83's
+        // banned-generic list, so chunk 2's `register_first_use` call
+        // formerly recorded `agent` (canonical) in the per-file
+        // domain-type registry. Then chunk 3's no-shadowing sweep
+        // matched the `agent` parameter against that registry entry
+        // and fired `G::analyze::name-collision` (Error, exit 1) —
+        // a spurious diagnostic against a built-in type.
+        //
+        // Post-fix: `warn_if_banned_return_type` skips registration
+        // for any built-in name (`String`, `Int`, `Float`, `Bool`,
+        // `None`, `Agent`), case-insensitive. `Agent` is the only one
+        // not already filtered by the banned-list `Err` branch, so
+        // the regression is observable here.
+        let src = "skill main(agent) -> Agent\n    description: \"Main.\"\n    flow:\n        \"Use the agent.\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        // No domain-type registration → no name-collision sweep match.
+        let collisions = collision_diags(&bag);
+        assert_eq!(
+            collisions.len(),
+            0,
+            "built-in `Agent` must not register as domain type; got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+        // Direct registry assertion: `Agent` (canonicalized to `agent`)
+        // must not have a registry entry. Catches a future regression
+        // where a sibling code path resurrects the built-in registration.
+        assert!(
+            registry.lookup("Agent").is_none(),
+            "built-in `Agent` must not appear in the per-file domain-type registry"
+        );
+    }
+
+    #[test]
+    fn t13_same_file_return_call_to_export_block_does_not_fire_nominal_mismatch() {
+        // Codex pass 1 — F3 [P2]. Chunk 4 populated
+        // `local_callee_return_types` from `Decl::Block`,
+        // `Decl::ExportBlock`, and `Decl::Skill`. But same-file call
+        // resolution recognizes only `Decl::Block` as a valid local
+        // callee. The chunk-4 nominal-match still found the
+        // export-block's `-> Type` entry though, so when the caller's and
+        // callee's declared types differed, a false hard
+        // `G::analyze::nominal-mismatch` (Error, exit 1) fired against
+        // a same-file `return exported_fn()` boundary that the resolver
+        // would otherwise flag as unresolved.
+        //
+        // Post-fix: `local_callee_return_types` is restricted to
+        // `Decl::Block` only. Cross-file matching uses the imports-path
+        // `imported_block_return_types` map (populated from
+        // `extract_exports::block_return_types` over `Decl::ExportBlock`
+        // exports — verified at `lib.rs:216`), so AC8's cross-file
+        // contract remains intact.
+        //
+        // Empirical note (orthogonal to this fix): the
+        // `analyze_skill::FlowStmt::Return(_)` arm currently does not run
+        // the same `block_names` resolution check that `FlowStmt::Call`
+        // does, so `return exported_fn()` to a same-file export-block
+        // surfaces no `undefined-call` diagnostic today. Pre-fix, the
+        // chunk-4 `nominal-mismatch` was the *only* diagnostic emitted
+        // for this fixture; post-fix the bag is empty for the call
+        // boundary itself. Adding a return-position resolution check is
+        // out of scope for this codex pass.
+        //
+        // Fixture uses *mismatched* types (`Plan` vs `Report`);
+        // matching-type fixtures cannot exercise the bug because
+        // `nominal_match` short-circuits to true and no diagnostic
+        // fires either way.
+        let src = "export block exported_fn() -> Plan\n    description: \"Make a plan.\"\n    flow:\n        return \"x\"\n\nskill main() -> Report\n    description: \"Main.\"\n    flow:\n        return exported_fn()\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        // Primary contract: no false hard nominal-mismatch.
+        let mismatches = nominal_mismatches(&bag);
+        assert_eq!(
+            mismatches.len(),
+            0,
+            "same-file call to `export block` must not fire chunk-4 nominal-mismatch; got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
         );
     }
 }
