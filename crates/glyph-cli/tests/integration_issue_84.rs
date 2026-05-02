@@ -209,6 +209,74 @@ skill main() -> repocontext
     );
 }
 
+/// Issue #84 codex pass 3 — F2 [P2] integration pin. An import consumed
+/// only inside a private `block` body (called from a skill) must not fire
+/// `G::analyze::unused-import`.
+///
+/// Pre-fix: `analyze_with_imports` called `track_flow_usage` only from the
+/// `Decl::Skill` arm. With the `Decl::Block` arm now also threading through
+/// `track_flow_usage` (mirroring the skill arm), the multi-file fixture
+/// below — `main.glyph.md` consumes `imported_foo` exclusively from inside
+/// `block helper() { return imported_foo() }`, with `helper()` called from
+/// `skill main()` — exits 0 cleanly. Pre-fix, exit code was 2 with a
+/// Repairable `unused-import` diagnostic.
+///
+/// This is the binary-level pin for the analyze-side unit test
+/// `analyze::tests::t18_block_flow_use_of_imported_block_marks_used_via_imports_path`,
+/// extending the AC8 multi-file CLI surface coverage to the import-tracking
+/// dimension that pass 3 closes.
+#[test]
+fn ac_codex_pass3_block_flow_import_used_via_binary() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let lib_path = dir.path().join("lib.glyph.md");
+    std::fs::write(
+        &lib_path,
+        "\
+export block imported_foo() -> Report
+    description: \"Build the report.\"
+    flow:
+        return \"a report\"
+",
+    )
+    .unwrap();
+
+    let main_path = dir.path().join("main.glyph.md");
+    std::fs::write(
+        &main_path,
+        "\
+import \"./lib.glyph.md\" { imported_foo }
+
+skill main() -> Report
+    description: \"Main.\"
+    flow:
+        helper()
+
+block helper() -> Report
+    description: \"Helper.\"
+    flow:
+        return imported_foo()
+",
+    )
+    .unwrap();
+
+    let result = run_check(&main_path, "json");
+    let stdout = String::from_utf8_lossy(&result.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "block-flow consumption of imported block must exit 0 (clean); stdout={:?} stderr={:?}",
+        stdout,
+        stderr,
+    );
+    assert!(
+        !ndjson_contains_id(&stdout, "G::analyze::unused-import"),
+        "must NOT fire G::analyze::unused-import — `block helper {{ return imported_foo() }}` is a use of the import, got:\n{}",
+        stdout,
+    );
+}
+
 /// AC8 failure path — divergent declared types fire `nominal-mismatch`.
 ///
 /// Library exports `compute() -> Plan`; consumer skill declares `-> Report`

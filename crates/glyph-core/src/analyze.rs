@@ -88,14 +88,23 @@ fn warn_if_banned_return_type(
 }
 
 /// Issue #84 codex pass 1 — F2: predicate matching the six built-in
-/// `TypeTag` names per `kind_infer.rs`. Case-insensitive ASCII match per
-/// F12 / canonical-form rule. Used by `warn_if_banned_return_type` to
-/// keep built-ins out of the per-file domain-type registry, and by
+/// `TypeTag` names per `kind_infer.rs`. Used by `warn_if_banned_return_type`
+/// to keep built-ins out of the per-file domain-type registry, and by
 /// `check_return_call_nominal` could call this in the future if the
 /// banned-list ever ceases to cover the same set.
+///
+/// Issue #84 codex pass 3 — F1 [P2]: classifies by canonical form per
+/// `values-and-names.md §Case Normalization` (D6: ASCII-lowercase + strip
+/// `_`). Pre-pass-3 used `eq_ignore_ascii_case` only and missed underscore-
+/// perturbed spellings like `A_g_e_n_t` — those slipped past the guard,
+/// registered as domain types, and triggered spurious `name-collision`
+/// against same-spelling parameters. Symmetric to the pass-3 fix in
+/// `lower::name_to_typetag` (must classify by canonical form too).
 fn is_builtin_type_name(s: &str) -> bool {
-    const BUILTINS: &[&str] = &["String", "Int", "Float", "Bool", "None", "Agent"];
-    BUILTINS.iter().any(|b| b.eq_ignore_ascii_case(s))
+    const CANONICAL_BUILTINS: &[&str] =
+        &["string", "int", "float", "bool", "none", "agent"];
+    let canonical = crate::domain_registry::canonicalize_identifier(s);
+    CANONICAL_BUILTINS.contains(&canonical.as_str())
 }
 
 /// Issue #84 Chunk 3 (AC5): post-hoc sweep that flags any domain-type name
@@ -740,6 +749,24 @@ pub fn analyze_with_imports(
                     file_label,
                     line_index,
                     bag,
+                );
+
+                // Issue #84 codex pass 3 — F2 [P2]: track imported-name
+                // usage from private block flows. Pre-fix, only the
+                // `Decl::Skill` arm called `track_flow_usage`, so an
+                // import consumed only inside a `block helper { return
+                // imported_foo() }` body left `used_import_names` empty
+                // and the lib.rs unused-import emission step fired
+                // `G::analyze::unused-import` (Repairable, exit 2)
+                // against an import the program actually depends on.
+                // Symmetric in spirit to chunk 7a (extended what counts
+                // as a use within `track_flow_usage`); pass 3 closes the
+                // per-decl dispatch gap.
+                track_flow_usage(
+                    &spanned.node.flow,
+                    imported_texts,
+                    imported_blocks,
+                    used_import_names,
                 );
             }
             Decl::Const(_) | Decl::Import(_) => {}
@@ -2954,5 +2981,132 @@ mod tests {
         assert!(d.message.contains("Report"));
         assert!(d.message.contains("Plan"));
         assert!(d.message.contains("helper"));
+    }
+
+    // --- Issue #84 codex pass 3 — D6 underscore-stripping in built-in
+    // classification + import tracking through private block flows. ---
+
+    #[test]
+    fn t16_builtin_classifier_strips_underscores_per_d6_no_collision() {
+        // Codex pass 3 — F1 [P2] (analyze side). `is_builtin_type_name` was
+        // pass-1's guard that kept built-in `TypeTag` names (notably `Agent`)
+        // out of the per-file domain-type registry, so the chunk-3 collision
+        // sweep wouldn't fire `name-collision` against an `agent` parameter.
+        // The guard used `eq_ignore_ascii_case` only — D6 / `values-and-
+        // names.md §Case Normalization` says underscores are insignificant
+        // alongside ASCII case, so an underscore-perturbed spelling like
+        // `A_g_e_n_t` (which canonicalizes to `agent`) slipped past the
+        // guard, was registered as a domain type, and then collided with
+        // the `agent` parameter — a spurious hard `name-collision` error.
+        //
+        // Post-fix: classifier canonicalizes its input first and compares
+        // against the canonical built-in set (`agent`, `string`, etc.).
+        // Same fixture as pass-1's t12 but with the Agent spelling
+        // perturbed; t12 stays green to lock the original surface.
+        let src = "skill main(agent) -> A_g_e_n_t\n    description: \"Main.\"\n    flow:\n        \"Use the agent.\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let collisions = collision_diags(&bag);
+        assert_eq!(
+            collisions.len(),
+            0,
+            "underscore-perturbed built-in `A_g_e_n_t` must not register as domain type; got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+        assert!(
+            registry.lookup("A_g_e_n_t").is_none(),
+            "underscore-perturbed built-in must not appear in registry"
+        );
+        assert!(
+            registry.lookup("Agent").is_none(),
+            "canonical-form lookup of the same built-in must also miss"
+        );
+    }
+
+    #[test]
+    fn t17_builtin_classifier_strips_underscores_per_d6_string_variant() {
+        // Codex pass 3 — F1 [P2] generic application. The underscore-strip
+        // rule is per-D6, not Agent-specific — apply at least one second
+        // built-in spelling so a regression that special-cases `Agent` only
+        // (e.g. by pattern-matching one variant) still trips a test.
+        // `S_t_r_i_n_g` canonicalizes to `string`; the chunk-2 banned-list
+        // check would short-circuit `String` on the un-perturbed spelling
+        // (`String` is on the banned list), but with underscores its
+        // `validate_type_position` check returns `Ok` and the registration
+        // path is reached — exactly the surface the F1 fix has to cover.
+        let src = "skill main(string) -> S_t_r_i_n_g\n    description: \"Main.\"\n    flow:\n        \"go\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let collisions = collision_diags(&bag);
+        assert_eq!(
+            collisions.len(),
+            0,
+            "underscore-perturbed built-in `S_t_r_i_n_g` must not register as domain type; got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+        assert!(
+            registry.lookup("S_t_r_i_n_g").is_none(),
+            "underscore-perturbed built-in must not appear in registry"
+        );
+    }
+
+    #[test]
+    fn t18_block_flow_use_of_imported_block_marks_used_via_imports_path() {
+        // Codex pass 3 — F2 [P2]. `analyze_with_imports` previously called
+        // `track_flow_usage` only from the `Decl::Skill` arm. An import
+        // consumed *only* inside `block helper() { return imported_foo() }`
+        // (with helper itself called from the skill) left
+        // `used_import_names` empty for that import, and the lib.rs
+        // `unused-import` emission step then fired a Repairable diagnostic
+        // (exit 2) against an import the program actually depends on at
+        // runtime.
+        //
+        // Post-fix: the `Decl::Block` arm also calls `track_flow_usage`,
+        // mirroring the existing `Decl::Skill` arm with the same
+        // imported_texts / imported_blocks / used_import_names accumulators.
+        // Symmetric in spirit to chunk 7a (which extended what counts as
+        // a use *within* `track_flow_usage`); pass 3 closes the per-decl
+        // dispatch gap.
+        //
+        // This is a unit test on the contract: after `analyze_with_imports`
+        // returns, `used` must contain `imported_foo`. The integration-level
+        // pin (parse → analyze → unused-import suppression) lives in the
+        // CLI suite as `ac_codex_pass3_block_flow_import_used_via_binary`.
+        let src = "import \"./lib.glyph.md\" { imported_foo }\n\nskill main()\n    description: \"Main.\"\n    flow:\n        helper()\n\nblock helper()\n    description: \"Helper.\"\n    flow:\n        return imported_foo()\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let mut used: HashSet<String> = HashSet::new();
+
+        let mut imported_blocks: HashSet<String> = HashSet::new();
+        imported_blocks.insert("imported_foo".to_string());
+
+        let _ = analyze_with_imports(
+            &file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &HashSet::new(),
+            &imported_blocks,
+            &mut used,
+            &HashMap::new(),
+            &mut registry,
+            &HashMap::new(),
+        );
+
+        assert!(
+            used.contains("imported_foo"),
+            "block-flow consumption of an imported block must mark it as used; \
+             used={:?}, bag ids={:?}",
+            used,
+            bag.iter().map(|d| d.id.as_str()).collect::<Vec<_>>()
+        );
     }
 }

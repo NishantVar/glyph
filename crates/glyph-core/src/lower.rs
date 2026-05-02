@@ -28,29 +28,27 @@ use std::collections::BTreeMap;
 /// (chunk 2 banned-list, issue #83 AC3) surfaces them upstream. This module
 /// records authorial intent in canonical form; analyze owns warnings.
 fn name_to_typetag(name: &str) -> TypeTag {
-    // Six built-ins (case-insensitive ASCII match per §Case Normalization).
-    if name.eq_ignore_ascii_case("String") {
-        return TypeTag::String;
+    // Issue #84 codex pass 3 — F1 [P2]: classify by canonical form per D6,
+    // not raw ASCII case. `values-and-names.md §Case Normalization` treats
+    // underscores as insignificant alongside ASCII case, so `A_g_e_n_t`
+    // (canonical `agent`) is the same name as `Agent` and must lower to
+    // the same `TypeTag::Agent`. Pre-fix, `eq_ignore_ascii_case` missed
+    // the underscore axis and underscore-perturbed built-ins fell through
+    // to the `DomainType` fallback — wrong IR JSON.
+    let canonical = canonicalize_identifier(name);
+    match canonical.as_str() {
+        "string" => TypeTag::String,
+        "int" => TypeTag::Int,
+        "float" => TypeTag::Float,
+        "bool" => TypeTag::Bool,
+        "none" => TypeTag::None,
+        "agent" => TypeTag::Agent,
+        // Everything else: lower to a DomainType keyed by the canonical
+        // form already computed. Banned generics (e.g. `List`, `Dict`)
+        // land here too — see module doc for the analyze-owns-warnings
+        // rationale.
+        _ => TypeTag::DomainType(canonical),
     }
-    if name.eq_ignore_ascii_case("Int") {
-        return TypeTag::Int;
-    }
-    if name.eq_ignore_ascii_case("Float") {
-        return TypeTag::Float;
-    }
-    if name.eq_ignore_ascii_case("Bool") {
-        return TypeTag::Bool;
-    }
-    if name.eq_ignore_ascii_case("None") {
-        return TypeTag::None;
-    }
-    if name.eq_ignore_ascii_case("Agent") {
-        return TypeTag::Agent;
-    }
-    // Everything else: canonicalize per D6 and lower to a DomainType. Banned
-    // generics (e.g. `List`, `Dict`) land here too — see module doc for the
-    // analyze-owns-warnings rationale.
-    TypeTag::DomainType(canonicalize_identifier(name))
 }
 
 /// Adapt a `ConstValue` into the `kind_infer::Literal` shape for the inferer.
@@ -659,6 +657,44 @@ mod name_to_typetag_tests {
         assert_eq!(name_to_typetag("Agent"), TypeTag::Agent);
         assert_eq!(name_to_typetag("agent"), TypeTag::Agent);
         assert_eq!(name_to_typetag("AGENT"), TypeTag::Agent);
+    }
+
+    // Codex pass 3 — F1 [P2] (lower side). Built-in classification per
+    // `values-and-names.md` §Case Normalization (D6) treats underscores as
+    // insignificant alongside ASCII case. `name_to_typetag` formerly used
+    // `eq_ignore_ascii_case` only, so an underscore-perturbed spelling like
+    // `A_g_e_n_t` (canonicalizes to `agent`) misclassified as
+    // `DomainType("agent")` instead of `TypeTag::Agent`. Wrong IR JSON, and
+    // a regression off the spec because D6 is the canonical-name rule the
+    // module doc-comment already cites.
+    //
+    // Post-fix: canonicalize the input first, then compare against the
+    // canonical built-in set (`agent`, `string`, etc.).
+    #[test]
+    fn name_to_typetag_strips_underscores_per_d6_for_agent() {
+        for variant in ["A_g_e_n_t", "_agent_", "AGENT__", "ag_ent"] {
+            assert_eq!(
+                name_to_typetag(variant),
+                TypeTag::Agent,
+                "underscore-perturbed `{}` must classify as built-in TypeTag::Agent",
+                variant
+            );
+        }
+    }
+
+    // Codex pass 3 — F1 [P2] generic application. Underscore-strip is
+    // per-D6 not Agent-specific; pin a second built-in (`String`) so a fix
+    // that narrowly special-cases Agent still trips a test.
+    #[test]
+    fn name_to_typetag_strips_underscores_per_d6_for_string() {
+        for variant in ["S_t_r_i_n_g", "_String_", "STR_ING"] {
+            assert_eq!(
+                name_to_typetag(variant),
+                TypeTag::String,
+                "underscore-perturbed `{}` must classify as built-in TypeTag::String",
+                variant
+            );
+        }
     }
 }
 
