@@ -4,9 +4,9 @@
 //! `update_docs.glyph.md` per `design/mvp-acceptance.md` §1.
 
 use crate::ast::{
-    BlockDecl, ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl, ElifBranch,
-    ExportBlockDecl, FlowStmt, ImportDecl, ImportKind, ImportName, Param, ReturnExpr, Skill,
-    SourceFile, TextDecl,
+    BlockDecl, ConstDecl, ConstValue, ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl,
+    ElifBranch, ExportBlockDecl, FlowStmt, ImportDecl, ImportKind, ImportName, Param, ReturnExpr,
+    Skill, SourceFile, TextDecl,
 };
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::slot::scan_slots;
@@ -349,8 +349,20 @@ impl<'a> Parser<'a> {
                     let d = self.parse_import()?;
                     decls.push(Decl::Import(d));
                 }
+                "const" => {
+                    let d = self.parse_const_decl()?;
+                    decls.push(Decl::Const(d));
+                }
+                "generated" => {
+                    // TODO(#81 follow-up): enforce placement order per
+                    // language-surface.md §3.6 line 342 (all `generated const`
+                    // decls must appear after all non-generated top-level decls).
+                    let d = self.parse_generated_const()?;
+                    decls.push(Decl::Const(d));
+                }
                 "export" => {
-                    // Peek at the word after `export` to decide: `export block` or `export text`.
+                    // Peek at the word after `export` to decide:
+                    // `export block` | `export text` | `export const`.
                     let saved = self.pos;
                     self.pos += 1; // skip `export`
                     let next_kw = match &self.peek().kind {
@@ -358,7 +370,7 @@ impl<'a> Parser<'a> {
                         _ => {
                             return Err(ParseError::Unexpected {
                                 span: self.peek().span,
-                                message: "expected `block` or `text` after `export`".into(),
+                                message: "expected `block`, `text`, or `const` after `export`".into(),
                             });
                         }
                     };
@@ -372,10 +384,14 @@ impl<'a> Parser<'a> {
                             let d = self.parse_export_text()?;
                             decls.push(Decl::Text(d));
                         }
+                        "const" => {
+                            let d = self.parse_export_const()?;
+                            decls.push(Decl::Const(d));
+                        }
                         _ => {
                             return Err(ParseError::Unexpected {
                                 span: self.peek().span,
-                                message: format!("expected `block` or `text` after `export`, found `{}`", next_kw),
+                                message: format!("expected `block`, `text`, or `const` after `export`, found `{}`", next_kw),
                             });
                         }
                     }
@@ -1594,6 +1610,10 @@ impl<'a> Parser<'a> {
                     parts.push("}".into());
                     self.pos += 1;
                 }
+                TokenKind::NumericLit(s) => {
+                    parts.push(s.clone());
+                    self.pos += 1;
+                }
             }
         }
         if parts.is_empty() {
@@ -1700,6 +1720,119 @@ impl<'a> Parser<'a> {
         let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
         Ok(Spanned::new(TextDecl { name, value, exported: false }, span))
     }
+
+    /// Parse `const NAME = <literal>` where `<literal>` is one of:
+    /// String, Int, Float, or Bool — per `design/language-surface.md` §3.4
+    /// and the issue #81 type-system slate.
+    ///
+    /// Bare-name and qualified-name RHS forms are out of scope for #81 and
+    /// rejected here with a `ParseError::Unexpected`.
+    fn parse_const_decl(&mut self) -> Result<Spanned<ConstDecl>, ParseError> {
+        let (_, kw_span) = self.expect_ident(Some("const"))?;
+        let (name, _) = self.expect_ident(None)?;
+        self.expect(&TokenKind::Equals)?;
+        let value = self.parse_const_literal_rhs()?;
+        let end_span = self.tokens[self.pos - 1].span;
+        let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
+        Ok(Spanned::new(
+            ConstDecl { name, value, exported: false, generated: false },
+            span,
+        ))
+    }
+
+    /// Parse `export const NAME = <literal>`.
+    fn parse_export_const(&mut self) -> Result<Spanned<ConstDecl>, ParseError> {
+        let (_, kw_span) = self.expect_ident(Some("export"))?;
+        let (_, _) = self.expect_ident(Some("const"))?;
+        let (name, _) = self.expect_ident(None)?;
+        self.expect(&TokenKind::Equals)?;
+        let value = self.parse_const_literal_rhs()?;
+        // Sanity assertion: `export generated const` is invalid grammar
+        // (no path produces both flags). Defensive null-check; reaching here
+        // with `generated == true` would be a parser bug.
+        let end_span = self.tokens[self.pos - 1].span;
+        let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
+        Ok(Spanned::new(
+            ConstDecl { name, value, exported: true, generated: false },
+            span,
+        ))
+    }
+
+    /// Parse `generated const NAME = "<string>"` — string-only RHS per
+    /// `design/language-surface.md` §3.6 (line 324).
+    ///
+    /// Rejects int/float/bool RHS with a parse error citing the §3.6 rule.
+    fn parse_generated_const(&mut self) -> Result<Spanned<ConstDecl>, ParseError> {
+        let (_, kw_span) = self.expect_ident(Some("generated"))?;
+        let (_, _) = self.expect_ident(Some("const"))?;
+        let (name, _) = self.expect_ident(None)?;
+        self.expect(&TokenKind::Equals)?;
+        // String-only RHS: peek the next token and reject anything but StringLit.
+        let value = match &self.peek().kind {
+            TokenKind::StringLit(s) => {
+                let v = s.clone();
+                self.pos += 1;
+                ConstValue::String(v)
+            }
+            _ => {
+                return Err(ParseError::Unexpected {
+                    span: self.peek().span,
+                    message:
+                        "expected string literal as `generated const` value (string-only RHS per language-surface.md §3.6)"
+                            .into(),
+                });
+            }
+        };
+        let end_span = self.tokens[self.pos - 1].span;
+        let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
+        Ok(Spanned::new(
+            ConstDecl { name, value, exported: false, generated: true },
+            span,
+        ))
+    }
+
+    /// Shared literal-RHS reader for `const` and `export const`. Accepts the
+    /// four primitive literal kinds; rejects bare/qualified names and any
+    /// other token kind.
+    fn parse_const_literal_rhs(&mut self) -> Result<ConstValue, ParseError> {
+        let tok = self.peek().clone();
+        match tok.kind {
+            TokenKind::StringLit(s) => {
+                self.pos += 1;
+                Ok(ConstValue::String(s))
+            }
+            TokenKind::NumericLit(s) => {
+                self.pos += 1;
+                if s.contains('.') {
+                    Ok(ConstValue::Float(s))
+                } else {
+                    Ok(ConstValue::Int(s))
+                }
+            }
+            TokenKind::Ident(ref s) => {
+                // Bool literals tokenize as Ident; case-insensitive on input
+                // per `design/values-and-names.md` §Booleans.
+                let lower = s.to_ascii_lowercase();
+                if lower == "true" || lower == "false" {
+                    self.pos += 1;
+                    Ok(ConstValue::Bool(s.clone()))
+                } else {
+                    Err(ParseError::Unexpected {
+                        span: tok.span,
+                        message: format!(
+                            "expected literal RHS (string / number / `true` / `false`) for `const`, found `{}` (bare-name and qualified-name RHS are out of scope for #81)",
+                            s
+                        ),
+                    })
+                }
+            }
+            _ => Err(ParseError::Unexpected {
+                span: tok.span,
+                message: "expected literal RHS (string / number / `true` / `false`) for `const`"
+                    .into(),
+            }),
+        }
+    }
 }
 
 /// Check return-related structural rules on a flow statement list.
@@ -1775,5 +1908,171 @@ pub(crate) fn check_return_rules(
             ),
             span,
         );
+    }
+}
+
+#[cfg(test)]
+mod const_decl_tests {
+    //! Issue #81 chunk 2 — `Decl::Const` parser coverage.
+    //!
+    //! Cases follow planner brief: three forms (`const`, `export const`,
+    //! `generated const`) × four primitive kinds (String, Int, Float, Bool),
+    //! with `generated const × non-string` rejected as a parse error per
+    //! `design/language-surface.md` §3.6.
+
+    use super::*;
+    use crate::ast::{ConstValue, Decl};
+
+    /// Helper: parse a source string and return the first decl, expecting it
+    /// to be a `Decl::Const`. Panics on parse failure or wrong variant.
+    fn parse_first_const(src: &str) -> ConstDecl {
+        let (file, _) = parse(src, 0).expect("source should parse");
+        match file.decls.into_iter().next().expect("expected one decl") {
+            Decl::Const(spanned) => spanned.node,
+            other => panic!("expected Decl::Const, got {:?}", other),
+        }
+    }
+
+    // -- `const` form × 4 kinds --
+
+    #[test]
+    fn const_string_literal() {
+        let d = parse_first_const("const greeting = \"hello\"\n");
+        assert_eq!(d.name, "greeting");
+        assert!(matches!(&d.value, ConstValue::String(s) if s == "hello"));
+        assert!(!d.exported && !d.generated);
+    }
+
+    #[test]
+    fn const_int_literal() {
+        let d = parse_first_const("const max = 3\n");
+        assert_eq!(d.name, "max");
+        assert!(matches!(&d.value, ConstValue::Int(s) if s == "3"));
+        assert!(!d.exported && !d.generated);
+    }
+
+    #[test]
+    fn const_float_literal() {
+        let d = parse_first_const("const ratio = 3.14\n");
+        assert_eq!(d.name, "ratio");
+        assert!(matches!(&d.value, ConstValue::Float(s) if s == "3.14"));
+    }
+
+    #[test]
+    fn const_bool_true_literal() {
+        let d = parse_first_const("const flag = true\n");
+        assert!(matches!(&d.value, ConstValue::Bool(s) if s == "true"));
+    }
+
+    // -- `export const` form × 4 kinds --
+
+    #[test]
+    fn export_const_string_literal() {
+        let d = parse_first_const("export const greeting = \"world\"\n");
+        assert_eq!(d.name, "greeting");
+        assert!(matches!(&d.value, ConstValue::String(s) if s == "world"));
+        assert!(d.exported && !d.generated);
+    }
+
+    #[test]
+    fn export_const_int_literal() {
+        let d = parse_first_const("export const answer = 42\n");
+        assert!(matches!(&d.value, ConstValue::Int(s) if s == "42"));
+        assert!(d.exported);
+    }
+
+    #[test]
+    fn export_const_float_literal() {
+        let d = parse_first_const("export const zero = 0.0\n");
+        assert!(matches!(&d.value, ConstValue::Float(s) if s == "0.0"));
+        assert!(d.exported);
+    }
+
+    #[test]
+    fn export_const_bool_false_literal() {
+        let d = parse_first_const("export const off = false\n");
+        assert!(matches!(&d.value, ConstValue::Bool(s) if s == "false"));
+        assert!(d.exported);
+    }
+
+    // -- `generated const` form (string-only RHS positive) --
+
+    #[test]
+    fn generated_const_string_literal() {
+        let d = parse_first_const("generated const summary = \"auto\"\n");
+        assert!(matches!(&d.value, ConstValue::String(s) if s == "auto"));
+        assert!(d.generated && !d.exported);
+    }
+
+    // -- `generated const × non-string` negative cases (string-only per §3.6) --
+
+    #[test]
+    fn generated_const_rejects_int_rhs() {
+        let err = parse("generated const x = 3\n", 0).err();
+        match err {
+            Some(ParseError::Unexpected { ref message, .. }) => {
+                assert!(
+                    message.contains("string"),
+                    "expected message to cite string-only rule, got: {}",
+                    message
+                );
+            }
+            other => panic!("expected ParseError::Unexpected, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn generated_const_rejects_float_rhs() {
+        assert!(matches!(
+            parse("generated const x = 3.14\n", 0),
+            Err(ParseError::Unexpected { .. })
+        ));
+    }
+
+    #[test]
+    fn generated_const_rejects_bool_rhs() {
+        assert!(matches!(
+            parse("generated const x = true\n", 0),
+            Err(ParseError::Unexpected { .. })
+        ));
+    }
+
+    // -- `const NAME = name_ref` negative (bare-name RHS deferred) --
+
+    #[test]
+    fn const_rejects_name_ref_rhs() {
+        // `const x = other_binding` — name-ref RHS is out of scope for #81.
+        let err = parse("const x = other_binding\n", 0).err();
+        match err {
+            Some(ParseError::Unexpected { ref message, .. }) => {
+                assert!(message.contains("literal"));
+            }
+            other => panic!("expected ParseError::Unexpected, got {:?}", other),
+        }
+    }
+
+    // -- Bool case-insensitive on input per `values-and-names.md` §Booleans --
+
+    #[test]
+    fn const_bool_uppercase_preserved_in_ast() {
+        let d = parse_first_const("const flag = TRUE\n");
+        // AST preserves authored casing; lowercase normalization is downstream.
+        assert!(matches!(&d.value, ConstValue::Bool(s) if s == "TRUE"));
+    }
+
+    // -- Multi-decl file: const + skill coexist --
+
+    #[test]
+    fn const_alongside_skill_in_same_file() {
+        let src = "\
+const greeting = \"hi\"
+skill demo()
+    flow:
+        \"do work\"
+";
+        let (file, _) = parse(src, 0).expect("should parse");
+        // Decl 0: Const, Decl 1: Skill.
+        assert!(matches!(&file.decls[0], Decl::Const(_)));
+        assert!(matches!(&file.decls[1], Decl::Skill(_)));
     }
 }

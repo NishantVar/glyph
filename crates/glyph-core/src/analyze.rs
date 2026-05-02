@@ -43,11 +43,14 @@ pub fn analyze_with_diagnostics(
     bag: &mut DiagBag,
 ) -> SourceFile {
     // Collect text declaration names for bare-name detection in flow.
+    // `Decl::Const` is treated as Text-equivalent for visibility — both bind a
+    // name to a value usable at constraint/context/flow reference sites.
     let text_names: HashSet<&str> = file
         .decls
         .iter()
         .filter_map(|d| match d {
             Decl::Text(t) => Some(t.node.name.as_str()),
+            Decl::Const(c) => Some(c.node.name.as_str()),
             _ => None,
         })
         .collect();
@@ -73,11 +76,14 @@ pub fn analyze_with_diagnostics(
         .collect();
 
     // Collect private (non-exported) names for closure checking.
+    // A `generated const` has `exported == false`, so it is captured here as
+    // a private binding (correct: generated consts are file-private by spec).
     let private_names: HashSet<&str> = file
         .decls
         .iter()
         .filter_map(|d| match d {
             Decl::Text(t) if !t.node.exported => Some(t.node.name.as_str()),
+            Decl::Const(c) if !c.node.exported => Some(c.node.name.as_str()),
             Decl::Block(b) => Some(b.node.name.as_str()),
             _ => None,
         })
@@ -93,6 +99,7 @@ pub fn analyze_with_diagnostics(
             }
             Decl::Block(_) => {}
             Decl::Text(_) => {}
+            Decl::Const(_) => {}
             Decl::Import(_) => {}
         }
     }
@@ -104,6 +111,7 @@ pub fn analyze_with_diagnostics(
             let (name, span) = match decl {
                 Decl::ExportBlock(b) => (b.node.name.as_str(), b.span),
                 Decl::Text(t) if t.node.exported => (t.node.name.as_str(), t.span),
+                Decl::Const(c) if c.node.exported => (c.node.name.as_str(), c.span),
                 _ => continue,
             };
             if let Some(_prev_span) = seen_exports.get(name) {
@@ -127,6 +135,7 @@ pub fn analyze_with_diagnostics(
         let has_export = file.decls.iter().any(|d| {
             matches!(d, Decl::ExportBlock(_))
                 || matches!(d, Decl::Text(t) if t.node.exported)
+                || matches!(d, Decl::Const(c) if c.node.exported)
         });
         if !has_export {
             let span = crate::span::Span::new(file_id, 0, 0);
@@ -160,12 +169,14 @@ pub fn analyze_with_imports(
     used_import_names: &mut HashSet<String>,
     imported_block_descriptions: &HashMap<String, String>,
 ) -> SourceFile {
-    // Collect local text declaration names.
+    // Collect local text declaration names. `Decl::Const` is Text-equivalent
+    // for visibility (see `analyze_with_diagnostics` notes).
     let local_text_names: HashSet<&str> = file
         .decls
         .iter()
         .filter_map(|d| match d {
             Decl::Text(t) => Some(t.node.name.as_str()),
+            Decl::Const(c) => Some(c.node.name.as_str()),
             _ => None,
         })
         .collect();
@@ -209,6 +220,7 @@ pub fn analyze_with_imports(
         .iter()
         .filter_map(|d| match d {
             Decl::Text(t) if !t.node.exported => Some(t.node.name.as_str()),
+            Decl::Const(c) if !c.node.exported => Some(c.node.name.as_str()),
             Decl::Block(b) => Some(b.node.name.as_str()),
             _ => None,
         })
@@ -227,7 +239,7 @@ pub fn analyze_with_imports(
             Decl::ExportBlock(spanned) => {
                 analyze_export_block(spanned, file_label, line_index, bag, &private_names);
             }
-            Decl::Block(_) | Decl::Text(_) | Decl::Import(_) => {}
+            Decl::Block(_) | Decl::Text(_) | Decl::Const(_) | Decl::Import(_) => {}
         }
     }
 
@@ -238,6 +250,7 @@ pub fn analyze_with_imports(
             let (name, span) = match decl {
                 Decl::ExportBlock(b) => (b.node.name.as_str(), b.span),
                 Decl::Text(t) if t.node.exported => (t.node.name.as_str(), t.span),
+                Decl::Const(c) if c.node.exported => (c.node.name.as_str(), c.span),
                 _ => continue,
             };
             if let Some(_prev_span) = seen_exports.get(name) {
@@ -261,6 +274,7 @@ pub fn analyze_with_imports(
         let has_export = file.decls.iter().any(|d| {
             matches!(d, Decl::ExportBlock(_))
                 || matches!(d, Decl::Text(t) if t.node.exported)
+                || matches!(d, Decl::Const(c) if c.node.exported)
         });
         if !has_export {
             let span = crate::span::Span::new(file_id, 0, 0);

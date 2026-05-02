@@ -17,6 +17,11 @@ pub enum TokenKind {
     Ident(String),
     /// Quoted string literal — contents (without surrounding quotes), value already unescaped.
     StringLit(String),
+    /// Unsigned numeric literal — source-text slice (e.g. `"3"`, `"0.0"`, `"3.14"`).
+    /// Grammar: `[0-9]+(\.[0-9]+)?`. No leading `.`, no trailing `.`, no exponent,
+    /// no sign. Disambiguation between Int and Float is performed by
+    /// `kind_infer::infer_primitive` based on `'.'` presence.
+    NumericLit(String),
     Lparen,
     Rparen,
     Colon,
@@ -217,6 +222,30 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
                     kind: TokenKind::StringLit(value),
                     span: Span::new(file_id, start as u32, p as u32),
                 });
+            } else if b.is_ascii_digit() {
+                // Unsigned numeric literal: [0-9]+(\.[0-9]+)?.
+                // Carved out for #81 const keyword: bare numeric RHS at parse time.
+                let start = p;
+                while p < content_end && bytes[p].is_ascii_digit() {
+                    p += 1;
+                }
+                if p < content_end
+                    && bytes[p] == b'.'
+                    && p + 1 < content_end
+                    && bytes[p + 1].is_ascii_digit()
+                {
+                    p += 1; // consume '.'
+                    while p < content_end && bytes[p].is_ascii_digit() {
+                        p += 1;
+                    }
+                }
+                let text = std::str::from_utf8(&bytes[start..p])
+                    .expect("ASCII numeric literal")
+                    .to_string();
+                tokens.push(Token {
+                    kind: TokenKind::NumericLit(text),
+                    span: Span::new(file_id, start as u32, p as u32),
+                });
             } else if is_ident_start(b) {
                 let start = p;
                 while p < content_end && is_ident_continue(bytes[p]) {
@@ -315,6 +344,21 @@ mod tests {
         assert!(matches!(&toks[2].kind, TokenKind::Ident(s) if s == "my_block"));
         assert_eq!(toks[3].kind, TokenKind::Dot);
         assert!(matches!(&toks[4].kind, TokenKind::Ident(s) if s == "applies"));
+    }
+
+    #[test]
+    fn tokenize_int_numeric_lit() {
+        let src = "const x = 42\n";
+        let (toks, _) = tokenize(src, 0).unwrap();
+        // [LineStart, Ident("const"), Ident("x"), Equals, NumericLit("42"), Eof]
+        assert!(matches!(&toks[4].kind, TokenKind::NumericLit(s) if s == "42"));
+    }
+
+    #[test]
+    fn tokenize_float_numeric_lit() {
+        let src = "const pi = 3.14\n";
+        let (toks, _) = tokenize(src, 0).unwrap();
+        assert!(matches!(&toks[4].kind, TokenKind::NumericLit(s) if s == "3.14"));
     }
 
     #[test]

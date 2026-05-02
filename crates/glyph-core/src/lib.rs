@@ -199,6 +199,16 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
                     exports.privates.insert(t.node.name.clone());
                 }
             }
+            Decl::Const(c) => {
+                // `Decl::Const` is Text-equivalent for export classification:
+                // exported consts share the `texts` namespace; non-exported
+                // (including `generated const`) are private.
+                if c.node.exported {
+                    exports.texts.insert(c.node.name.clone());
+                } else {
+                    exports.privates.insert(c.node.name.clone());
+                }
+            }
             Decl::ExportBlock(b) => {
                 exports.blocks.insert(b.node.name.clone());
             }
@@ -1001,11 +1011,21 @@ fn extract_and_store_exports(
         Err(_) => return,
     };
     let exports = extract_exports(&parsed);
-    // Store text values.
+    // Store text values. Exported `const` decls are stored alongside text
+    // values using their rendered source-text form (Text-equivalent at inline
+    // sites per #81 chunk 2 / Option C — kind doesn't change observable output).
     for decl in &parsed.decls {
         if let Decl::Text(t) = decl {
             if t.node.exported {
                 file_text_values.insert((file.to_path_buf(), t.node.name.clone()), t.node.value.clone());
+            }
+        }
+        if let Decl::Const(c) = decl {
+            if c.node.exported {
+                file_text_values.insert(
+                    (file.to_path_buf(), c.node.name.clone()),
+                    c.node.value.rendered().to_string(),
+                );
             }
         }
     }

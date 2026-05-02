@@ -4,12 +4,51 @@
 //! Per `design/build-foundation.md` §A4, IDs are allocated in pre-order source
 //! traversal starting at `n0`.
 
-use crate::ast::{BlockDecl, ConstraintMarkerKind, ContextEntry, Decl, FlowStmt, ReturnExpr, Skill, SourceFile};
+use crate::ast::{
+    BlockDecl, ConstValue, ConstraintMarkerKind, ContextEntry, Decl, FlowStmt, ReturnExpr, Skill,
+    SourceFile,
+};
 use crate::ir::{
     IrArena, IrBlock, IrBranch, IrCall, IrConstraint, IrContext, IrElifBranch,
     IrInlineInstruction, IrNode, IrParam, IrSkill, NodeId, Polarity, Role, Strength,
 };
+use crate::kind_infer::{infer_primitive, Literal as KindLiteral, TypeTag};
 use std::collections::BTreeMap;
+
+/// Adapt a `ConstValue` into the `kind_infer::Literal` shape for the inferer.
+/// Adapter is one-to-one — variants carry the same source-text rendering.
+fn const_value_to_kind_literal(value: &ConstValue) -> KindLiteral {
+    match value {
+        ConstValue::String(s) => KindLiteral::String(s.clone()),
+        // Both Int and Float carry numeric source text; the inferer
+        // disambiguates by `'.'` presence per `values-and-names.md`
+        // §Numeric Coercion.
+        ConstValue::Int(s) | ConstValue::Float(s) => KindLiteral::Number(s.clone()),
+        ConstValue::Bool(s) => KindLiteral::Bool(s.clone()),
+    }
+}
+
+/// Build the const-binding map for a source file: name → (rendered source
+/// text, inferred `TypeTag`). Runs the primitive-kind inferer on every
+/// `Decl::Const` so chunk 1's module is exercised by the pipeline.
+///
+/// Exposed at `pub(crate)` so unit tests in this module (and the integrated
+/// pipeline tests in `lib.rs`) can assert which TypeTag the inferer assigned
+/// to each const without round-tripping through the full IR.
+pub(crate) fn collect_consts(file: &SourceFile) -> BTreeMap<String, (String, TypeTag)> {
+    let mut out: BTreeMap<String, (String, TypeTag)> = BTreeMap::new();
+    for d in &file.decls {
+        if let Decl::Const(c) = d {
+            let lit = const_value_to_kind_literal(&c.node.value);
+            let tag = infer_primitive(&lit);
+            out.insert(
+                c.node.name.clone(),
+                (c.node.value.rendered().to_string(), tag),
+            );
+        }
+    }
+    out
+}
 
 #[derive(Debug)]
 pub enum LowerError {
@@ -178,6 +217,28 @@ pub fn lower_with_imports(
         if let Decl::Text(t) = d {
             texts.insert(t.node.name.clone(), t.node.value.clone());
         }
+    }
+
+    // Collect const declarations. For each const, run the primitive-kind
+    // inferer (chunk 1) to compute its `TypeTag`; then merge the rendered
+    // source-text form into the `texts` resolution map so reference sites
+    // pick up the inlined value uniformly with text decls (Option C — kind
+    // doesn't change observable output for #81 chunk 2).
+    //
+    // The full consts map (name → (rendered_text, TypeTag)) is built here for
+    // future kind-aware lowering and exposed via a test helper below; chunk 2
+    // doesn't yet have a reference site that needs the TypeTag, but the
+    // inferer must be exercised on every const decl so chunk 1's module is
+    // wired into the pipeline.
+    let consts: BTreeMap<String, (String, TypeTag)> = collect_consts(file);
+    for (name, (rendered, _tag)) in &consts {
+        // Only insert if not already present — imported texts and local texts
+        // win over consts only via name-collision diagnostics in analyze.rs;
+        // a const cannot share a name with another binding without that
+        // diagnostic firing first. This insert is the resolution path.
+        texts
+            .entry(name.clone())
+            .or_insert_with(|| rendered.clone());
     }
 
     // Collect block declarations into a name → BlockDecl map.
@@ -473,4 +534,123 @@ pub fn lower_with_imports(
     arena.set_root_skill(skill_id);
 
     Ok(arena)
+}
+
+#[cfg(test)]
+mod const_lower_tests {
+    //! Issue #81 chunk 2 — verifies the primitive-kind inferer is invoked on
+    //! every `Decl::Const` during lower, and that the const map produced by
+    //! `collect_consts` carries the rendered text + correct TypeTag.
+    //!
+    //! Reference-resolution test confirms a `const x = "hello"` lowers
+    //! through the `texts` map and inlines into a constraint marker — i.e.
+    //! the Text-equivalent path works end-to-end at indent-1 reference sites.
+    //!
+    //! Per planner Option-C resolution, kind doesn't change observable IR
+    //! output for #81 chunk 2; so these tests assert the inferer's TypeTag
+    //! via `collect_consts` rather than by round-tripping through IR.
+
+    use super::*;
+    use crate::parse;
+
+    fn parse_file(src: &str) -> SourceFile {
+        let (file, _) = parse::parse(src, 0).expect("source should parse");
+        file
+    }
+
+    #[test]
+    fn collect_consts_runs_inferer_for_string_const() {
+        let file = parse_file("const greeting = \"hello\"\n");
+        let consts = collect_consts(&file);
+        let (rendered, tag) = consts.get("greeting").expect("entry present");
+        assert_eq!(rendered, "hello");
+        assert_eq!(*tag, TypeTag::String);
+    }
+
+    #[test]
+    fn collect_consts_runs_inferer_for_int_const() {
+        let file = parse_file("const max = 3\n");
+        let consts = collect_consts(&file);
+        let (rendered, tag) = consts.get("max").expect("entry present");
+        assert_eq!(rendered, "3");
+        assert_eq!(*tag, TypeTag::Int);
+    }
+
+    #[test]
+    fn collect_consts_runs_inferer_for_float_const() {
+        let file = parse_file("const ratio = 3.14\n");
+        let consts = collect_consts(&file);
+        let (_, tag) = consts.get("ratio").expect("entry present");
+        assert_eq!(*tag, TypeTag::Float);
+    }
+
+    #[test]
+    fn collect_consts_runs_inferer_for_bool_const() {
+        let file = parse_file("const flag = true\n");
+        let consts = collect_consts(&file);
+        let (_, tag) = consts.get("flag").expect("entry present");
+        assert_eq!(*tag, TypeTag::Bool);
+    }
+
+    #[test]
+    fn const_string_resolves_via_texts_map_into_skill_constraint() {
+        // Verify reference-site resolution: a `const x = "hello"` referenced
+        // from a skill's body-level `require` marker should inline as the
+        // `"hello"` text in the resulting Constraint IR node — same path
+        // that text decls take.
+        let src = "\
+const policy_text = \"be careful\"
+skill demo()
+    require policy_text
+    flow:
+        \"do work\"
+";
+        let file = parse_file(src);
+        let arena = lower(&file).expect("should lower");
+        // Find the Constraint node and confirm its text is the inlined const.
+        let mut found = false;
+        for n in arena.nodes() {
+            if let crate::ir::IrNode::Constraint(c) = n {
+                if c.text == "be careful" {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found, "expected Constraint node with const-resolved text");
+    }
+
+    #[test]
+    fn export_const_appears_in_consts_map_and_is_marked_exported() {
+        // Verify export classification at the AST level. `extract_exports`
+        // (lib.rs) classifies exported consts into the `texts` namespace;
+        // here we just confirm the AST flag is set so analyze.rs picks it up.
+        let file = parse_file("export const greet = \"hi\"\n");
+        let consts = collect_consts(&file);
+        assert!(consts.contains_key("greet"));
+        // Walk decls to assert the AST flag.
+        match &file.decls[0] {
+            Decl::Const(c) => assert!(c.node.exported, "should be exported"),
+            other => panic!("expected Decl::Const, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn generated_const_parses_lowers_and_runs_inferer() {
+        let src = "\
+generated const auto_summary = \"auto-generated\"
+skill demo()
+    flow:
+        \"do work\"
+";
+        let file = parse_file(src);
+        // collect_consts runs the inferer on every const, including generated ones.
+        let consts = collect_consts(&file);
+        let (rendered, tag) = consts.get("auto_summary").expect("entry present");
+        assert_eq!(rendered, "auto-generated");
+        assert_eq!(*tag, TypeTag::String);
+        // Lower must succeed: a generated const is lower-equivalent to a
+        // private text decl as far as #81 chunk 2 is concerned.
+        let _arena = lower(&file).expect("should lower with a generated const");
+    }
 }
