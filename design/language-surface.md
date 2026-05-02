@@ -269,9 +269,10 @@ Never execute destructive operations without confirmation.
 - `const` declarations are not legal in `flow:` as bare-name instruction steps. A bare `const` name in `flow:` without a keyword prefix (`context`, `require`, `avoid`, `must`) is a compile error (`G::analyze::const-in-flow`). For instruction steps, use `block`. `const` declarations may be referenced in `constraints:` (as constraint content) or `context:` (as context content); the role is determined by sub-section placement.
 - The `=` is required and separates the name from its value.
 - String literals follow `values-and-names.md`: inline `"..."` or block `"""..."""`. Integer and float literals follow `values-and-names.md`, Numbers section. Boolean literals are `true` and `false` per `values-and-names.md`, Booleans section: source is case-insensitive (`True`, `TRUE` are accepted) and the IR normalizes to lowercase `true` / `false`.
-- The compiler infers the value kind from the literal: string from `"..."` or `"""..."""`, integer from `3` or `-1`, float from `0.8` or `3.14`, bool from `true` or `false`.
+- The compiler infers the value kind from the literal: string from `"..."` or `"""..."""`, integer from `3` or `42`, float from `0.8` or `3.14`, bool from `true` or `false`.
 - The RHS may be a literal or a static reference to another `const` / `export const` (same-file bare name or imported via whole-module alias). Lower resolves the reference at compile time and inlines the underlying value into the IR; the binding is not re-resolved at runtime. References to non-`const` declarations, parameters, locals, or anything that produces a value at flow time are rejected (a `const` body is fixed at compile time, not computed).
 - These bindings are not arbitrary expressions. The compiler treats them as named constant resources resolved into IR nodes.
+- **Signed numeric literals are deferred.** Negative numeric literals (`-1`, `-0.5`) are not yet supported in the tokenizer/parser; numeric literals lex as unsigned per `values-and-names.md` §Numeric Coercion, and the leading `-` is currently a tokenize error. A unary `-` prefix at parse time is planned but is the subject of a separate future issue. Until then, write non-negative literals only.
 
 ### 3.5 `import`
 
