@@ -10,8 +10,10 @@ use crate::ast::{
 };
 use crate::ir::{
     IrArena, IrBlock, IrBranch, IrCall, IrConstraint, IrContext, IrElifBranch,
-    IrInlineInstruction, IrNode, IrParam, IrSkill, NodeId, Polarity, Role, Strength,
+    IrInlineInstruction, IrNode, IrOutputContract, IrParam, IrSkill, NodeId, OutputSource,
+    Polarity, Role, Strength,
 };
+use crate::output_target::OutputTargetExpr;
 use crate::domain_registry::canonicalize_identifier;
 use crate::kind_infer::{infer_primitive, Literal as KindLiteral, TypeTag};
 use std::collections::BTreeMap;
@@ -128,6 +130,34 @@ fn resolve_context_entry(
             .cloned()
             .ok_or_else(|| LowerError::UndefinedContextRef(name.clone())),
     }
+}
+
+/// Issue #85: scan a decl's flow for a top-level
+/// `FlowStmt::Return(ReturnExpr::OutputTarget(...))` and, if found, push the
+/// matching `IrOutputContract` node into the arena. Returns its `NodeId` so
+/// the caller can wire it into the enclosing decl's `output_contract` slot.
+///
+/// `enclosing_return_type` is the lowered `-> DomainType` annotation on the
+/// enclosing decl (`Skill`/`Block`). The diagnostic for a missing annotation
+/// is chunk 8/9's job — chunk 4 simply forwards `None` and proceeds.
+fn lower_output_contract_for_flow(
+    flow: &[FlowStmt],
+    arena: &mut IrArena,
+    enclosing_return_type: Option<TypeTag>,
+) -> Option<NodeId> {
+    for stmt in flow {
+        if let FlowStmt::Return(ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id))) = stmt {
+            let next = NodeId(arena.len() as u32);
+            let oc_id = arena.push(IrNode::OutputContract(IrOutputContract {
+                node_id: next,
+                target_name: id.name.clone(),
+                ty: enclosing_return_type,
+                source: OutputSource::SynthesizedByAgent,
+            }));
+            return Some(oc_id);
+        }
+    }
+    None
 }
 
 /// Lower a list of flow statements into IR nodes, returning node IDs.
@@ -319,6 +349,10 @@ pub fn lower_with_imports(
             default: p.default.clone(),
         })
         .collect();
+    let skill_return_type: Option<TypeTag> = skill
+        .return_type
+        .as_ref()
+        .map(|s| name_to_typetag(s.node.as_str()));
     let skill_id = arena.push(IrNode::Skill(IrSkill {
         node_id: NodeId(0),
         name: skill.name.clone(),
@@ -329,10 +363,8 @@ pub fn lower_with_imports(
         context: Vec::new(),
         constraints: Vec::new(),
         return_text: None,
-        return_type: skill
-            .return_type
-            .as_ref()
-            .map(|s| name_to_typetag(s.node.as_str())),
+        return_type: skill_return_type.clone(),
+        output_contract: None,
     }));
 
     // Lower block declarations to IrBlock nodes.
@@ -369,6 +401,17 @@ pub fn lower_with_imports(
                     FlowStmt::BareName(n) => Some(n.clone()),
                 })
                 .collect();
+            let block_return_type: Option<TypeTag> = block
+                .return_type
+                .as_ref()
+                .map(|s| name_to_typetag(s.node.as_str()));
+            // Issue #85: scan for a top-level `return <IDENT>` in this
+            // block's flow. If present, push an `IrOutputContract` node now
+            // (so its id < the block's id is fine — the block holds an
+            // optional reference, not a strict pre-order requirement) and
+            // store the id in `IrBlock.output_contract`.
+            let block_output_contract: Option<NodeId> =
+                lower_output_contract_for_flow(&block.flow, &mut arena, block_return_type.clone());
             let next = NodeId(arena.len() as u32);
             arena.push(IrNode::Block(IrBlock {
                 node_id: next,
@@ -378,10 +421,8 @@ pub fn lower_with_imports(
                 flow_statements,
                 resolved_word_count: None,
                 outgoing_calls,
-                return_type: block
-                    .return_type
-                    .as_ref()
-                    .map(|s| name_to_typetag(s.node.as_str())),
+                return_type: block_return_type,
+                output_contract: block_output_contract,
             }));
         }
     }
@@ -394,6 +435,7 @@ pub fn lower_with_imports(
     let mut flow_hoisted_constraint_ids: Vec<NodeId> = Vec::new();
     let mut flow_hoisted_context_ids: Vec<NodeId> = Vec::new();
     let mut return_text: Option<String> = None;
+    let mut skill_output_contract: Option<NodeId> = None;
     for stmt in &skill.flow {
         match stmt {
             FlowStmt::InlineString(text) => {
@@ -477,13 +519,21 @@ pub fn lower_with_imports(
                     }
                     ReturnExpr::Name(name) => Some(name.clone()),
                     ReturnExpr::Inline(s) => Some(s.clone()),
-                    // Issue #85 chunk 4 will replace this with a real
-                    // `OutputContract` IR lowering. Chunk 3 only needs to
-                    // round-trip the parse, so the form contributes no
-                    // return-fold text yet.
+                    // Issue #85: handled out-of-band below — push an
+                    // `IrOutputContract` instead of folding into return text.
                     ReturnExpr::OutputTarget(_) => None,
                 };
                 return_text = text;
+                if let ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id)) = expr {
+                    let next = NodeId(arena.len() as u32);
+                    let oc_id = arena.push(IrNode::OutputContract(IrOutputContract {
+                        node_id: next,
+                        target_name: id.name.clone(),
+                        ty: skill_return_type.clone(),
+                        source: OutputSource::SynthesizedByAgent,
+                    }));
+                    skill_output_contract = Some(oc_id);
+                }
             }
             FlowStmt::BareName(_) => {
                 // BareName in flow is caught by Analyze before Lower runs.
@@ -605,6 +655,7 @@ pub fn lower_with_imports(
             s.context = context_ids;
             s.constraints = constraint_ids;
             s.return_text = return_text;
+            s.output_contract = skill_output_contract;
         }
     }
     arena.set_root_skill(skill_id);
@@ -1257,5 +1308,143 @@ skill demo()
         // Lower must succeed: a generated const is lower-equivalent to a
         // private text decl as far as #81 chunk 2 is concerned.
         let _arena = lower(&file).expect("should lower with a generated const");
+    }
+}
+
+#[cfg(test)]
+mod output_contract_lower_tests {
+    //! Issue #85 chunk 4 — `OutputContract` IR node lowering.
+    //!
+    //! `ReturnExpr::OutputTarget(Identifier { name, .. })` lowers to a new
+    //! `IrOutputContract` node carrying:
+    //! - `target_name`: the inner identifier
+    //! - `ty`: the enclosing decl's `-> DomainType` (`name_to_typetag`)
+    //! - `source`: `OutputSource::SynthesizedByAgent` (only variant for now)
+    //!
+    //! The enclosing skill's `IrSkill.output_contract` slot points at the
+    //! pushed node. Block-level coverage rides on `IrBlock.output_contract`.
+    //! IR-JSON serialization is chunk 5; expand-step rewriting is chunk 6;
+    //! missing-annotation diagnostics are chunks 8/9.
+    use super::*;
+    use crate::ir::{IrNode, IrOutputContract, OutputSource};
+    use crate::parse;
+
+    fn lower_src(src: &str) -> IrArena {
+        let (file, _) = parse::parse(src, 0).expect("source should parse");
+        lower(&file).expect("source should lower")
+    }
+
+    fn first_output_contract(arena: &IrArena) -> &IrOutputContract {
+        arena
+            .nodes()
+            .iter()
+            .find_map(|n| match n {
+                IrNode::OutputContract(oc) => Some(oc),
+                _ => None,
+            })
+            .expect("expected an OutputContract node in the arena")
+    }
+
+    #[test]
+    fn skill_return_output_target_lowers_to_output_contract_tracer() {
+        let src = "\
+skill make_report() -> Report
+    flow:
+        return <output>
+";
+        let arena = lower_src(src);
+        let oc = first_output_contract(&arena);
+        assert_eq!(oc.target_name, "output");
+        assert_eq!(oc.ty, Some(TypeTag::DomainType("report".into())));
+        assert_eq!(oc.source, OutputSource::SynthesizedByAgent);
+    }
+
+    #[test]
+    fn skill_output_contract_is_referenced_from_skill_node() {
+        // The IrSkill must hold the OC's id in its `output_contract` slot
+        // so callers (chunk 5 emit-IR, chunk 6 expand) can find it without
+        // walking the whole arena.
+        let src = "\
+skill make_report() -> Report
+    flow:
+        return <output>
+";
+        let arena = lower_src(src);
+        let oc = first_output_contract(&arena);
+        let root = arena.root_skill().expect("arena has a root skill");
+        let skill = match arena.get(root) {
+            IrNode::Skill(s) => s,
+            other => panic!("root_skill node was not Skill: {:?}", other),
+        };
+        assert_eq!(skill.output_contract, Some(oc.node_id));
+    }
+
+    #[test]
+    fn block_return_output_target_lowers_with_block_return_type() {
+        // A private block declared `-> Path` whose flow ends with
+        // `return <out>` must surface an OutputContract whose `ty` carries
+        // the block's lowered annotation, and the IrBlock node must point
+        // at it via `output_contract`.
+        let src = "\
+skill drive()
+    flow:
+        \"go\"
+
+block helper() -> Path
+    flow:
+        return <out>
+";
+        let arena = lower_src(src);
+        let oc = first_output_contract(&arena);
+        assert_eq!(oc.target_name, "out");
+        assert_eq!(oc.ty, Some(TypeTag::DomainType("path".into())));
+        let block = arena
+            .nodes()
+            .iter()
+            .find_map(|n| match n {
+                IrNode::Block(b) if b.name == "helper" => Some(b),
+                _ => None,
+            })
+            .expect("expected a block named helper");
+        assert_eq!(block.output_contract, Some(oc.node_id));
+    }
+
+    #[test]
+    fn skill_without_output_target_has_no_output_contract() {
+        // Negative: a skill whose flow has no `return <IDENT>` must lower
+        // with no OutputContract node and `output_contract: None`.
+        let src = "\
+skill drive()
+    flow:
+        \"go\"
+";
+        let arena = lower_src(src);
+        let any_oc = arena
+            .nodes()
+            .iter()
+            .any(|n| matches!(n, IrNode::OutputContract(_)));
+        assert!(!any_oc, "expected no OutputContract node; got arena with one");
+        let root = arena.root_skill().expect("arena has a root skill");
+        let skill = match arena.get(root) {
+            IrNode::Skill(s) => s,
+            other => panic!("root_skill node was not Skill: {:?}", other),
+        };
+        assert!(skill.output_contract.is_none());
+    }
+
+    #[test]
+    fn output_contract_with_missing_annotation_lowers_with_none_ty() {
+        // The missing-annotation diagnostic is chunks 8/9. Chunk 4 must NOT
+        // crash and must lower `ty: None` so downstream phases can detect
+        // and surface the issue. (Header has no `-> DomainType`.)
+        let src = "\
+skill drive()
+    flow:
+        return <out>
+";
+        let arena = lower_src(src);
+        let oc = first_output_contract(&arena);
+        assert_eq!(oc.target_name, "out");
+        assert_eq!(oc.ty, None);
     }
 }
