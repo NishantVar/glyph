@@ -40,6 +40,7 @@ pub fn parse(source: &str, file_id: u32) -> Result<(SourceFile, LineIndex), Pars
         file_label: "<source>",
         line_index: &line_index,
         bag: &mut sink,
+        source,
         consumed_arrow_offsets: Vec::new(),
     };
     let file = p.parse_file()?;
@@ -193,6 +194,7 @@ pub fn parse_with_diagnostics(
             file_label,
             line_index,
             bag,
+            source,
             consumed_arrow_offsets: Vec::new(),
         };
         let parsed = p.parse_file();
@@ -304,6 +306,11 @@ struct Parser<'a> {
     file_label: &'a str,
     line_index: &'a LineIndex,
     bag: &'a mut DiagBag,
+    /// Original source text. Needed by issue-#85 chunk 3 to slice the
+    /// `<IDENT>` byte range covered by an `LAngle`/`RAngle` token pair and
+    /// hand it to `output_target::parse_output_target` (which validates the
+    /// inner identifier without re-tokenizing).
+    source: &'a str,
     /// Byte-offset (`Span.start`) of every `Arrow` token the parser has
     /// legitimately consumed via `try_parse_return_type`. After parsing,
     /// `parse_with_diagnostics` scans the token stream for any `Arrow`
@@ -1453,6 +1460,60 @@ impl<'a> Parser<'a> {
                                 let s = s.clone();
                                 self.pos += 1;
                                 ReturnExpr::Inline(s)
+                            }
+                            TokenKind::LAngle => {
+                                // Issue #85: output-target identifier form
+                                // `return <IDENT>`. Hand the byte slice
+                                // `<…>` covering the angle-bracket pair to
+                                // the chunk-1 deep parser. Diagnostic-ID
+                                // surfacing for malformed inner content
+                                // (whitespace, dots, `<"…">`, etc.) is
+                                // chunk 8's job; for now a malformed form
+                                // bubbles as `ParseError::Unexpected`.
+                                let langle_span = self.peek().span;
+                                self.pos += 1;
+                                // Scan to the matching `RAngle` on the
+                                // same logical line. Stop on `LineStart`
+                                // or `Eof` (unclosed form).
+                                let mut rangle_end: Option<u32> = None;
+                                while !matches!(
+                                    self.peek().kind,
+                                    TokenKind::LineStart { .. } | TokenKind::Eof
+                                ) {
+                                    if matches!(self.peek().kind, TokenKind::RAngle) {
+                                        rangle_end = Some(self.peek().span.end);
+                                        self.pos += 1;
+                                        break;
+                                    }
+                                    self.pos += 1;
+                                }
+                                let end = match rangle_end {
+                                    Some(e) => e,
+                                    None => {
+                                        return Err(ParseError::Unexpected {
+                                            span: langle_span,
+                                            message: "unclosed `<` in `return <IDENT>` output-target form".into(),
+                                        });
+                                    }
+                                };
+                                let form_span = Span::new(
+                                    self.file_id,
+                                    langle_span.start,
+                                    end,
+                                );
+                                let slice = &self.source
+                                    [langle_span.start as usize..end as usize];
+                                match crate::output_target::parse_output_target(
+                                    slice, form_span,
+                                ) {
+                                    Ok(expr) => ReturnExpr::OutputTarget(expr),
+                                    Err(_e) => {
+                                        return Err(ParseError::Unexpected {
+                                            span: form_span,
+                                            message: "malformed `<IDENT>` output-target form after `return`".into(),
+                                        });
+                                    }
+                                }
                             }
                             _ => {
                                 return Err(ParseError::Unexpected {
@@ -2728,5 +2789,122 @@ skill foo()
             "return_type must be None when the header omits `->` — got {:?}",
             eb.return_type
         );
+    }
+}
+
+#[cfg(test)]
+mod output_target_return_tests {
+    //! Issue #85 chunk 3 — wire the output-target identifier form
+    //! `return <IDENT>` into the main parser. The AST gains a new
+    //! `ReturnExpr::OutputTarget(...)` variant carrying chunk 1's
+    //! `OutputTargetExpr`. Diagnostic-ID surfacing for malformed forms is
+    //! deferred to chunk 8; chunk 3 only needs the parse path to round-trip
+    //! the identifier form and to *reject* malformed forms with an
+    //! unstructured `ParseError::Unexpected` for now.
+    use super::*;
+    use crate::ast::{Decl, FlowStmt};
+    use crate::output_target::OutputTargetExpr;
+
+    fn first_skill_flow(src: &str) -> Vec<FlowStmt> {
+        let (file, _) = parse(src, 0).expect("parse should succeed");
+        file.decls
+            .into_iter()
+            .find_map(|d| match d {
+                Decl::Skill(s) => Some(s.node.flow),
+                _ => None,
+            })
+            .expect("expected a skill declaration")
+    }
+
+    #[test]
+    fn parse_return_output_target_identifier_tracer() {
+        let src = "\
+skill foo()
+    flow:
+        return <thing>
+";
+        let flow = first_skill_flow(src);
+        match flow.last().expect("expected at least one flow stmt") {
+            FlowStmt::Return(ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id))) => {
+                assert_eq!(id.name, "thing");
+            }
+            other => panic!("expected Return(OutputTarget(Identifier)), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_return_output_target_rejects_malformed_inner_dot() {
+        // Chunk 8 will surface a structured diagnostic. Chunk 3 only
+        // promises a parser error — never silently produce an
+        // `Identifier { name: "a.b" }` and never crash.
+        let src = "\
+skill foo()
+    flow:
+        return <a.b>
+";
+        let err = parse(src, 0).err().expect("expected parse error for `<a.b>`");
+        assert!(matches!(err, ParseError::Unexpected { .. }),
+            "expected ParseError::Unexpected, got {:?}", err);
+    }
+
+    #[test]
+    fn parse_return_output_target_rejects_unclosed_bracket() {
+        // `return <foo` (no `>`, EOL/EOF) must error rather than scan
+        // past the line. Chunk 8 will assign this its own diagnostic ID.
+        let src = "\
+skill foo()
+    flow:
+        return <foo
+";
+        let err = parse(src, 0).err().expect("expected parse error for unclosed `<foo`");
+        assert!(matches!(err, ParseError::Unexpected { .. }),
+            "expected ParseError::Unexpected, got {:?}", err);
+    }
+
+    #[test]
+    fn parse_return_output_target_identifier_span_covers_whole_form() {
+        // The Identifier.span produced by chunk 1 includes the brackets.
+        // The parser must propagate that contract: its computed `form_span`
+        // must equal `<…>` byte-for-byte (start at the `<`, end after `>`).
+        // Chunk 8 relies on this span when surfacing structured diagnostics.
+        let src = "\
+skill foo()
+    flow:
+        return <bar>
+";
+        let flow = first_skill_flow(src);
+        let id = match flow.last().expect("expected a flow stmt") {
+            FlowStmt::Return(ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id))) => {
+                id.clone()
+            }
+            other => panic!("expected Return(OutputTarget(Identifier)), got {:?}", other),
+        };
+        let start = id.span.start as usize;
+        let end = id.span.end as usize;
+        assert_eq!(&src[start..end], "<bar>", "span must cover `<bar>` exactly");
+    }
+
+    #[test]
+    fn parse_return_output_target_in_private_block() {
+        let src = "\
+block helper() -> Path
+    flow:
+        return <output>
+";
+        let (file, _) = parse(src, 0).expect("parse should succeed");
+        let block_flow = file
+            .decls
+            .into_iter()
+            .find_map(|d| match d {
+                Decl::Block(b) => Some(b.node.flow),
+                _ => None,
+            })
+            .expect("expected a private-block declaration");
+        match block_flow.last().expect("expected a flow stmt") {
+            FlowStmt::Return(ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id))) => {
+                assert_eq!(id.name, "output");
+            }
+            other => panic!("expected Return(OutputTarget(Identifier)), got {:?}", other),
+        }
     }
 }

@@ -3,6 +3,7 @@
 //! Names are unresolved, types unchecked, roles unassigned.
 //! Walking-skeleton subset — covers the constructs in `update_docs.glyph.md`.
 
+use crate::output_target::OutputTargetExpr;
 use crate::span::{Span, Spanned};
 
 /// One source file's parsed declarations, in source order.
@@ -208,6 +209,8 @@ pub enum ReturnExpr {
     Name(String),
     /// `return "inline string"`.
     Inline(String),
+    /// `return <IDENT>` — output-target identifier form (issue #85).
+    OutputTarget(OutputTargetExpr),
 }
 
 /// An entry inside the `context:` sub-section or a body-level `context` marker.

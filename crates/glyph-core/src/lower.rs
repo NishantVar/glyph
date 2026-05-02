@@ -477,6 +477,11 @@ pub fn lower_with_imports(
                     }
                     ReturnExpr::Name(name) => Some(name.clone()),
                     ReturnExpr::Inline(s) => Some(s.clone()),
+                    // Issue #85 chunk 4 will replace this with a real
+                    // `OutputContract` IR lowering. Chunk 3 only needs to
+                    // round-trip the parse, so the form contributes no
+                    // return-fold text yet.
+                    ReturnExpr::OutputTarget(_) => None,
                 };
                 return_text = text;
             }
