@@ -61,6 +61,7 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
   "name": "fix_bug",
   "description": "Debug and fix a bug with minimal changes.",
   "params": [ ... ],
+  "return_type": null,
   "effects": ["reads_files", "writes_files"],
   "context": [ ... ],
   "constraints": [ ... ],
@@ -75,6 +76,7 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
 | `name` | string | yes | Skill declaration name. |
 | `description` | string | yes | Always present after Repair. |
 | `params` | array of Param | yes | May be empty. |
+| `return_type` | TypeTag or null | yes | Resolved from the `skill <name>(...) -> <ReturnType>` declaration header (`language-surface.md` §3.1). Skill return types are optional in source; when omitted, this field is `null`. The annotation folds into the final Step prose during Expand and does not surface as a separate JSON section. |
 | `effects` | array of string | yes | Inferred effect set. Empty array when `none`. |
 | `context` | array of ContextNode | yes | Top-level declared context entries. May be empty. |
 | `constraints` | array of Constraint | yes | Top-level declared constraints only. May be empty. |
@@ -416,6 +418,8 @@ Built-in types serialize as plain strings. Domain types serialize as an object.
 | Built-in | `"string"`, `"int"`, `"float"`, `"bool"`, `"none"`, `"agent"` |
 | Domain type | `{"domain_type": "repo_context"}` |
 
+The `"domain_type"` value is the **canonical form** of the author's type name per `values-and-names.md` §Case Normalization (e.g., `RepoContext` and `repo_context` both serialize as `"repo_context"`). Cross-file nominal matching at call boundaries (`types.md` §What The Compiler Checks) compares canonical names by string equality.
+
 ## Versioning and Stability
 
 ### `ir_version` semantics
@@ -456,6 +460,7 @@ A complete `fix_bug.ir.json` for the `fix_bug` skill from `expand.md` §8.
         "default": { "kind": "string", "value": "." }
       }
     ],
+    "return_type": null,
     "effects": ["reads_files", "writes_files", "runs_commands"],
     "context": [
       {

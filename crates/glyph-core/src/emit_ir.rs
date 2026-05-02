@@ -8,7 +8,43 @@ use crate::ir::{
     IrArena, IrBranch, IrCall, IrConstraint, IrContext, IrElifBranch,
     IrInlineInstruction, IrNode, IrParam, NodeId, Polarity, Role, Strength,
 };
+use crate::kind_infer::TypeTag;
 use serde_json::{json, Map, Value};
+
+/// Serialize a `TypeTag` to its IR JSON representation per
+/// `design/ir-json-schema.md` §TypeTag Serialization (FC8 designer relay):
+/// built-ins lower to lowercase JSON strings; `DomainType(name)` lowers to a
+/// single-key object `{"domain_type": "<canonical_name>"}`. The payload is
+/// already canonical (lower-time `name_to_typetag` performs the
+/// ASCII-lowercase + `_` strip per D6); this helper does no further
+/// canonicalization.
+fn typetag_to_json(tag: &TypeTag) -> Value {
+    match tag {
+        // Built-ins → lowercase JSON strings, spelled literally per FC8
+        // designer relay (no match-by-Debug).
+        TypeTag::String => Value::String("string".into()),
+        TypeTag::Int => Value::String("int".into()),
+        TypeTag::Float => Value::String("float".into()),
+        TypeTag::Bool => Value::String("bool".into()),
+        TypeTag::None => Value::String("none".into()),
+        TypeTag::Agent => Value::String("agent".into()),
+        TypeTag::DomainType(name) => {
+            let mut m = Map::new();
+            m.insert("domain_type".into(), Value::String(name.clone()));
+            Value::Object(m)
+        }
+    }
+}
+
+/// Convenience wrapper: serialize an `Option<TypeTag>` field. `None` lowers
+/// to JSON `null` (matches the slot's pre-chunk-6 hardcoded behavior at
+/// `serialize_call`); `Some(t)` defers to [`typetag_to_json`].
+fn opt_typetag_to_json(tag: &Option<TypeTag>) -> Value {
+    match tag {
+        Some(t) => typetag_to_json(t),
+        None => Value::Null,
+    }
+}
 
 /// Format a NodeId as the `"n<integer>"` string per ir-json-schema.md §Node ID Convention.
 fn node_id_str(id: NodeId) -> String {
@@ -133,7 +169,13 @@ fn serialize_call(c: &IrCall, arena: &IrArena) -> Value {
     m.insert("args".into(), Value::Object(args_map));
 
     m.insert("output".into(), Value::Null);
-    m.insert("return_type".into(), Value::Null);
+    // Issue #84 chunk 6: callee return-type slot. `None` lowers to JSON null
+    // (the slot's pre-chunk-6 hardcoded behavior); `Some(TypeTag)` lowers per
+    // FC8 designer relay (built-ins → lowercase string, DomainType → object).
+    m.insert(
+        "return_type".into(),
+        opt_typetag_to_json(&c.return_type),
+    );
 
     // effects: inherit from callee block if available, else empty.
     m.insert("effects".into(), json!([]));
@@ -358,6 +400,19 @@ pub fn serialize_ir_json(arena: &IrArena, source_file: &str) -> Option<String> {
         .collect();
     skill_obj.insert("params".into(), Value::Array(params));
 
+    // return_type: `{"domain_type": "<canonical>"}` for domain types,
+    // lowercase JSON string for built-ins, JSON `null` when no `->` annotation
+    // was authored (issue #84 chunk 6, FC8 designer relay). Canonical schema
+    // position is between `params` and `effects` per `design/ir-json-schema.md`
+    // §Node Types → Skill (FC9 correction). serde_json::Map is BTreeMap by
+    // default so the serialized JSON is alphabetical regardless of insert
+    // order, but the insert sequence here mirrors the schema for readability
+    // and matches the IR struct field ordering used in `ir-schema.md`.
+    skill_obj.insert(
+        "return_type".into(),
+        opt_typetag_to_json(&skill.return_type),
+    );
+
     // effects
     let effects: Vec<Value> = skill
         .effects
@@ -408,4 +463,57 @@ pub fn serialize_ir_json(arena: &IrArena, source_file: &str) -> Option<String> {
     // We build maps in spec-defined insertion order. serde_json::Map preserves
     // insertion order, giving deterministic output across runs.
     Some(serde_json::to_string_pretty(&Value::Object(envelope)).unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Issue #84 chunk 6 — IR `return_type` propagation. Unit tests for the
+    //! `TypeTag → JSON` helper per `design/ir-json-schema.md` §TypeTag
+    //! Serialization (FC8 designer relay).
+    use super::*;
+    use crate::kind_infer::TypeTag;
+
+    // f.1 (tracer): DomainType lowers to a single-key object `{"domain_type":
+    // "<canonical name verbatim>"}`. Helper performs no further canonicalization
+    // — the lower-time `name_to_typetag` (chunk 6) is the sole canonicalization
+    // boundary.
+    #[test]
+    fn typetag_to_json_domain_type_emits_object_with_canonical_name() {
+        let v = typetag_to_json(&TypeTag::DomainType("report".into()));
+        assert_eq!(v, serde_json::json!({ "domain_type": "report" }));
+    }
+
+    // f.2: each built-in TypeTag variant lowers to its lowercase JSON string.
+    // Per FC8 designer relay (cite: `design/ir-json-schema.md` §TypeTag
+    // Serialization L412–421). Match-by-Debug is explicitly forbidden; the
+    // arms in `typetag_to_json` must spell the lowercase form literally.
+    #[test]
+    fn typetag_to_json_builtins_emit_lowercase_strings() {
+        assert_eq!(typetag_to_json(&TypeTag::String), Value::String("string".into()));
+        assert_eq!(typetag_to_json(&TypeTag::Int),    Value::String("int".into()));
+        assert_eq!(typetag_to_json(&TypeTag::Float),  Value::String("float".into()));
+        assert_eq!(typetag_to_json(&TypeTag::Bool),   Value::String("bool".into()));
+        assert_eq!(typetag_to_json(&TypeTag::None),   Value::String("none".into()));
+        assert_eq!(typetag_to_json(&TypeTag::Agent),  Value::String("agent".into()));
+    }
+
+    // f.3: the `Option<TypeTag>` call-site wrapper — `None` lowers to JSON
+    // `null` (matches the slot's pre-chunk-6 hardcoded behavior at
+    // `serialize_call`). `Some(t)` defers to `typetag_to_json`.
+    #[test]
+    fn opt_typetag_to_json_none_emits_null() {
+        assert_eq!(opt_typetag_to_json(&None), Value::Null);
+    }
+
+    #[test]
+    fn opt_typetag_to_json_some_defers_to_inner_helper() {
+        assert_eq!(
+            opt_typetag_to_json(&Some(TypeTag::DomainType("plan".into()))),
+            serde_json::json!({ "domain_type": "plan" })
+        );
+        assert_eq!(
+            opt_typetag_to_json(&Some(TypeTag::String)),
+            Value::String("string".into())
+        );
+    }
 }

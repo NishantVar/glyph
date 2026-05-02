@@ -1,5 +1,6 @@
 //! IR node schema (walking-skeleton subset) and arena per `design/build-foundation.md` §A4.
 
+use crate::kind_infer::TypeTag;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -39,6 +40,17 @@ pub struct IrSkill {
     /// `None` means no explicit return (implicit `none`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub return_text: Option<String>,
+    /// Issue #84 chunk 6: lowered form of the `-> DomainType` annotation on
+    /// the skill header (per `design/language-surface.md` §3.1 line 161).
+    /// `None` means the author wrote no annotation. Built-ins lower to their
+    /// `TypeTag` variant; everything else lowers to
+    /// `DomainType(canonicalize_identifier(name))`. The IR-JSON emitter in
+    /// `emit_ir::serialize_ir_json` consumes this; the serde derive here is
+    /// incidental (no production caller serializes IR via the derive), so
+    /// the field is `#[serde(skip)]` to avoid forcing `TypeTag: Serialize`
+    /// (designer flag: do not match-by-Debug).
+    #[serde(skip)]
+    pub return_type: Option<TypeTag>,
 }
 
 /// Resolved parameter metadata threaded through Phase 6 Step 1 into the
@@ -89,6 +101,14 @@ pub struct IrBlock {
     /// Names of blocks called from this block's flow (outgoing call edges).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outgoing_calls: Vec<String>,
+    /// Issue #84 chunk 6: lowered form of the `-> DomainType` annotation on
+    /// the block header (per `design/language-surface.md` §3.2 line 198).
+    /// Per planner h.1 decision, Block `return_type` is stored on IR but NOT
+    /// emitted as a top-level Block JSON kind; it surfaces in IR-JSON via
+    /// the caller's `IrCall.return_type` lookup. `#[serde(skip)]` for the
+    /// same reason as `IrSkill::return_type`.
+    #[serde(skip)]
+    pub return_type: Option<TypeTag>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -113,6 +133,15 @@ pub struct IrCall {
     /// E.g., `repo_tools/inspect-repo.md`. Populated by Expand Step 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub procedure_path: Option<String>,
+    /// Issue #84 chunk 6: the callee's lowered `-> DomainType` annotation, when
+    /// the callee is a same-file block (resolved at lower time via the
+    /// `lower::blocks` map). `None` for stdlib calls and cross-file calls
+    /// (D17: cross-file `Call.return_type` resolution via imported
+    /// `block_return_types` is a deferred follow-up). The IR-JSON emitter
+    /// renders this slot via `opt_typetag_to_json`. `#[serde(skip)]` for the
+    /// same reason as `IrSkill::return_type`.
+    #[serde(skip)]
+    pub return_type: Option<TypeTag>,
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -13,6 +13,7 @@ Skill {
   name:              String
   description:       String                // always present after Repair
   params:            [Param]
+  return_type:       TypeTag?              // optional per `language-surface.md` §3.1; when present, annotates the IR's `OutputContract` and the `return` expression folds into the final Step prose
   effects:           [EffectKeyword]       // full inferred set (union of all callees)
   context:           [ContextNode]         // top-level declared context only
   constraints:       [Constraint]          // top-level declared constraints only
@@ -34,7 +35,7 @@ ExportBlock {
   name:              String
   description:       String?               // present iff `BLOCKNAME.applies()` is consulted somewhere reachable; see `ir-and-semantics.md` §Block Trigger Predicate
   params:            [Param]
-  return_type:       TypeTag               // mandatory on export block
+  return_type:       TypeTag?              // present when the export block has a meaningful return; absent when it omits `->` entirely (`types.md` §Return Type Requirements / Issue-82, `language-surface.md` §3.3). When present, it is part of the public contract callers see; absence means "no meaningful return" — there is no `-> None` representation post-#82.
   effects:           [EffectKeyword]       // declared must be superset of inferred
   context:           [ContextNode]         // top-level declared context only
   constraints:       [Constraint]
@@ -213,7 +214,9 @@ ProjectionMode = inline | same_file_procedure | external_file
 
 TypeTag = String | Int | Float | Bool | None | Agent
         | DomainType(name: String)
-// DomainType covers author-defined opaque type names (RepoContext, Plan, etc.)
+// DomainType covers author-defined opaque type names (RepoContext, Plan, etc.).
+// The `name` is stored in canonical form per `values-and-names.md` §Case Normalization;
+// nominal matching at call boundaries is canonical-name string equality.
 
 Value = StringLit(content: String)
       | IntLit(value: Int)
