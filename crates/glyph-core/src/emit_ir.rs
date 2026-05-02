@@ -6,7 +6,8 @@
 
 use crate::ir::{
     IrArena, IrBranch, IrCall, IrConstraint, IrContext, IrElifBranch,
-    IrInlineInstruction, IrNode, IrParam, NodeId, Polarity, Role, Strength,
+    IrInlineInstruction, IrNode, IrOutputContract, IrParam, NodeId, OutputSource,
+    Polarity, Role, Strength,
 };
 use crate::kind_infer::TypeTag;
 use serde_json::{json, Map, Value};
@@ -84,6 +85,51 @@ fn projection_mode_str(tier: Option<u8>) -> &'static str {
         Some(2) => "same_file_procedure",
         Some(3) => "external_file",
         _ => "inline",
+    }
+}
+
+/// Issue #85 chunk 5: serialize an `OutputSource` enum to its JSON string.
+/// `SynthesizedByAgent` is the only variant today; future provenance variants
+/// would extend this. Spelled literally (no match-by-Debug) to match the
+/// `#[serde(rename_all = "snake_case")]` declaration on `OutputSource`.
+fn output_source_str(s: OutputSource) -> &'static str {
+    match s {
+        OutputSource::SynthesizedByAgent => "synthesized_by_agent",
+    }
+}
+
+/// Issue #85 chunk 5: serialize an `IrOutputContract` arena entry to the
+/// pinned JSON shape `{ node_id, kind: "output_contract", target_name, ty,
+/// source }`. `ty` defers to `opt_typetag_to_json` (FC8 designer relay), so
+/// `None` (missing-annotation, surfaced by chunks 8/9) lowers to JSON `null`,
+/// built-ins to lowercase strings, and `DomainType` to a single-key object.
+fn serialize_output_contract(oc: &IrOutputContract) -> Value {
+    let mut m = Map::new();
+    m.insert("node_id".into(), Value::String(node_id_str(oc.node_id)));
+    m.insert("kind".into(), Value::String("output_contract".into()));
+    m.insert("target_name".into(), Value::String(oc.target_name.clone()));
+    m.insert("ty".into(), opt_typetag_to_json(&oc.ty));
+    m.insert(
+        "source".into(),
+        Value::String(output_source_str(oc.source).into()),
+    );
+    Value::Object(m)
+}
+
+/// Issue #85 chunk 5: resolve an `Option<NodeId>` slot (either
+/// `IrSkill.output_contract` or `IrBlock.output_contract`) to its emitted
+/// JSON value: `Value::Null` when the slot is empty, otherwise the
+/// `serialize_output_contract` output of the pointed-at arena node. The
+/// helper unifies the skill-level field and the call-site
+/// `callee_output_contract` lookup so both call sites use the same fallback
+/// for an unexpected non-OutputContract arena entry (panic-free `null`).
+fn output_contract_json(arena: &IrArena, slot: Option<NodeId>) -> Value {
+    match slot {
+        Some(id) => match arena.get(id) {
+            IrNode::OutputContract(oc) => serialize_output_contract(oc),
+            _ => Value::Null,
+        },
+        None => Value::Null,
     }
 }
 
@@ -212,6 +258,21 @@ fn serialize_call(c: &IrCall, arena: &IrArena) -> Value {
     // callee_description: present on non-inline calls when the callee block has a description.
     // callee_flow, callee_context, callee_constraints
     let is_inline = c.projection_tier.is_none() || c.projection_tier == Some(1);
+    // Issue #85 chunk 5 (planner D5 — α): the callee block's
+    // `OutputContract`, denormalized onto the call site under
+    // `callee_output_contract` (mirrors the existing `callee_*` convention).
+    // Always emit the field — null when the callee is unresolved (Tier 1
+    // undefined target) or has no contract; the pinned object otherwise.
+    // The field is computed once and inserted in both branches below to
+    // keep the inline / non-inline schemas symmetric.
+    let callee_output_contract = if is_inline {
+        Value::Null
+    } else {
+        match find_block_by_name(arena, &c.target) {
+            Some(b) => output_contract_json(arena, b.output_contract),
+            None => Value::Null,
+        }
+    };
     if is_inline {
         m.insert("callee_flow".into(), Value::Null);
         m.insert("callee_context".into(), Value::Null);
@@ -248,6 +309,9 @@ fn serialize_call(c: &IrCall, arena: &IrArena) -> Value {
             m.insert("callee_constraints".into(), Value::Null);
         }
     }
+    // Hoisted out of the three branches above: the value was computed once
+    // (per `is_inline`), and the field must appear in every call's JSON.
+    m.insert("callee_output_contract".into(), callee_output_contract);
 
     // procedure_path
     m.insert(
@@ -457,6 +521,18 @@ pub fn serialize_ir_json(arena: &IrArena, source_file: &str) -> Option<String> {
         .collect();
     skill_obj.insert("flow".into(), Value::Array(flow));
 
+    // Issue #85 chunk 5 (planner D5 — α): the skill's own
+    // `OutputContract` node, surfaced after `flow` to mirror the IR struct
+    // field order. `Value::Null` when the skill's flow doesn't end with
+    // `return <IDENT>`; otherwise the pinned object produced by
+    // `serialize_output_contract`. Callers that walk the JSON for role
+    // preservation (e.g. `validate_output.rs`) only iterate `skill.flow`,
+    // so this sibling field doesn't perturb step counts.
+    skill_obj.insert(
+        "output_contract".into(),
+        output_contract_json(arena, skill.output_contract),
+    );
+
     envelope.insert("skill".into(), Value::Object(skill_obj));
 
     // Use serde_json to_string_pretty for human-readable output.
@@ -517,3 +593,374 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod output_contract_emit_tests {
+    //! Issue #85 chunk 5 — `IrOutputContract` IR-JSON serialization.
+    //!
+    //! Surface contract:
+    //! - Skill-level: `skill_obj.output_contract` is a JSON object (or `null`)
+    //!   sibling to `flow`, positioned after `flow`.
+    //! - Pinned shape (object form):
+    //!   `{ node_id, kind: "output_contract", target_name, ty, source }`.
+    //! - Block-level: surfaced via the call site as `callee_output_contract`
+    //!   on `IrCall` JSON (planner D5 — α with `callee_*` denormalization
+    //!   convention). Tier 1 (undefined callee) lowers to `null` (behavior #9).
+    //!
+    //! Tests use the parse → lower → `serialize_ir_json` round-trip path so
+    //! they exercise the same plumbing the CLI does.
+    use super::*;
+    use crate::{expand, lower, parse};
+    use serde_json::Value;
+
+    fn ir_json(src: &str) -> Value {
+        let (file, _) = parse::parse(src, 0).expect("source should parse");
+        let arena = lower::lower(&file).expect("source should lower");
+        let s = serialize_ir_json(&arena, "test.glyph")
+            .expect("arena has a root skill so JSON is produced");
+        serde_json::from_str(&s).expect("emitter output is valid JSON")
+    }
+
+    /// Variant of [`ir_json`] that runs `expand_step1` between lower and emit
+    /// so that block calls receive their Tier 2/3 `projection_tier`. Required
+    /// for tests that exercise the call-site `callee_output_contract` lookup,
+    /// which only fires for non-inline calls (`serialize_call` short-circuits
+    /// inline projections).
+    fn ir_json_after_expand(src: &str) -> Value {
+        let (file, _) = parse::parse(src, 0).expect("source should parse");
+        let arena = lower::lower(&file).expect("source should lower");
+        let arena = expand::expand_step1(arena);
+        let s = serialize_ir_json(&arena, "test.glyph")
+            .expect("arena has a root skill so JSON is produced");
+        serde_json::from_str(&s).expect("emitter output is valid JSON")
+    }
+
+    /// Locate a `call` node by its `target` in a flow array. Returns the
+    /// first match (tests construct flows with one call per target).
+    fn find_call<'a>(flow: &'a Value, target: &str) -> &'a Value {
+        flow.as_array()
+            .expect("flow is an array")
+            .iter()
+            .find(|n| {
+                n.get("kind").and_then(|k| k.as_str()) == Some("call")
+                    && n.get("target").and_then(|t| t.as_str()) == Some(target)
+            })
+            .unwrap_or_else(|| panic!("expected a call to `{target}` in flow"))
+    }
+
+    // Behavior #6 (planner D5 — α): block-level OutputContract surfaces on
+    // the call site as `callee_output_contract`, mirroring the existing
+    // `callee_*` denormalization convention. This requires the call to be
+    // Tier 2/3 (inline calls don't carry callee_* fields), so we run
+    // `expand_step1` first. The block has ≥4 flow statements so it gets
+    // promoted to Tier 2.
+    #[test]
+    fn block_call_site_carries_callee_output_contract_object() {
+        let src = "\
+skill drive()
+    flow:
+        helper()
+
+block helper() -> Path
+    flow:
+        \"a\"
+        \"b\"
+        \"c\"
+        return <out>
+";
+        let v = ir_json_after_expand(src);
+        let flow = v
+            .pointer("/skill/flow")
+            .expect("skill flow array present");
+        let call = find_call(flow, "helper");
+        assert_eq!(
+            call.get("projection_mode").and_then(|m| m.as_str()),
+            Some("same_file_procedure"),
+            "block with >=4 flow statements promotes to Tier 2; behavior #6 \
+             only fires on non-inline calls"
+        );
+        let coc = call
+            .get("callee_output_contract")
+            .expect("call site must carry the `callee_output_contract` field");
+        assert!(
+            coc.is_object(),
+            "callee_output_contract is an object when the callee block has \
+             one; got {coc}"
+        );
+        let obj = coc.as_object().unwrap();
+        assert_eq!(
+            obj.get("kind").and_then(|k| k.as_str()),
+            Some("output_contract"),
+            "callee_output_contract reuses the same pinned shape as the \
+             skill-level field"
+        );
+        assert_eq!(
+            obj.get("target_name").and_then(|n| n.as_str()),
+            Some("out"),
+        );
+        assert_eq!(
+            obj.get("ty"),
+            Some(&serde_json::json!({ "domain_type": "path" })),
+            "ty mirrors the *callee block*'s lowered annotation, not the \
+             caller skill's"
+        );
+        assert_eq!(
+            obj.get("source").and_then(|s| s.as_str()),
+            Some("synthesized_by_agent"),
+        );
+    }
+
+    // Behavior #9 (planner D5 add-on): an unresolved (Tier 1 / undefined)
+    // callee leaves `callee_output_contract: null` — explicit JSON null,
+    // not a missing field. Locks the invariant against future tier-resolution
+    // shifts. Triggers the inline branch of `serialize_call` because no
+    // expand step ran.
+    #[test]
+    fn tier_one_call_callee_output_contract_is_null() {
+        let src = "\
+skill drive()
+    flow:
+        unresolved_target()
+";
+        let v = ir_json(src);
+        let flow = v
+            .pointer("/skill/flow")
+            .expect("skill flow array present");
+        let call = find_call(flow, "unresolved_target");
+        assert_eq!(
+            call.get("projection_mode").and_then(|m| m.as_str()),
+            Some("inline"),
+            "undefined callee stays Tier 1 inline; behavior #9 pins null at \
+             this slot"
+        );
+        assert!(
+            call.as_object().unwrap().contains_key("callee_output_contract"),
+            "Tier 1 calls must still carry the `callee_output_contract` key \
+             (planner D5 — null, not absent)"
+        );
+        assert_eq!(
+            call.get("callee_output_contract"),
+            Some(&Value::Null),
+            "Tier 1 calls lower `callee_output_contract` to JSON null"
+        );
+    }
+
+    // Behavior #7: the OutputContract IR node MUST NOT appear inside the
+    // `skill.flow` array. The contract is surfaced only as a sibling field
+    // (`output_contract`) on the skill object. This isolates `validate_output`
+    // (which walks `skill.flow` for role/step counting) from the new node.
+    #[test]
+    fn output_contract_node_does_not_appear_in_flow_array() {
+        let src = "\
+skill make_report() -> Report
+    flow:
+        return <output>
+";
+        let v = ir_json(src);
+        let flow = v
+            .pointer("/skill/flow")
+            .expect("skill flow array present");
+        for node in flow.as_array().expect("flow is an array") {
+            assert_ne!(
+                node.get("kind").and_then(|k| k.as_str()),
+                Some("output_contract"),
+                "output_contract must be a sibling of flow, not a flow entry; \
+                 found one in flow: {node}"
+            );
+        }
+    }
+
+    // Behavior #8: idempotency — emitting the same arena twice produces a
+    // byte-identical JSON string. Guards against future changes that might
+    // introduce hash-iteration order or arena-walk nondeterminism for the
+    // new field.
+    #[test]
+    fn emit_is_byte_identical_across_runs_with_output_contract() {
+        let src = "\
+skill make_report() -> Report
+    flow:
+        return <output>
+";
+        let (file, _) = parse::parse(src, 0).expect("source should parse");
+        let arena = lower::lower(&file).expect("source should lower");
+        let a = serialize_ir_json(&arena, "test.glyph").expect("first emit");
+        let b = serialize_ir_json(&arena, "test.glyph").expect("second emit");
+        assert_eq!(a, b, "two emits of the same arena must be byte-identical");
+    }
+
+    // Behavior #5: `validate_output` runs cleanly over an emitted IR JSON
+    // that carries an `output_contract` slot. The check exercises the full
+    // role-preservation pipeline rather than re-deriving it; it asserts no
+    // violation references the new field. Step-counting filters by
+    // `kind ∈ {call, inline_instruction, instruction_ref, branch}` inside
+    // `flow` and the `output_contract` lives outside that array, so this
+    // test is the integration witness for that mechanical separation.
+    #[test]
+    fn validate_output_does_not_flag_output_contract_field() {
+        use crate::validate_output::validate_output;
+        let src = "\
+skill make_report() -> Report
+    flow:
+        \"do the thing\"
+        return <output>
+";
+        let (file, _) = parse::parse(src, 0).expect("source should parse");
+        let arena = lower::lower(&file).expect("source should lower");
+        let ir_json = serialize_ir_json(&arena, "test.glyph").expect("emit");
+        // Minimal compiled-output md skeleton matching the single-step skill.
+        let md = "\
+# make_report
+
+## Description
+
+(intentionally empty for this synthetic test)
+
+## Instructions
+
+### Steps
+
+1. Do the thing
+";
+        let violations = validate_output(&ir_json, md);
+        for v in &violations {
+            let s = format!("{v:?}");
+            assert!(
+                !s.contains("output_contract"),
+                "no validate_output violation may reference the new \
+                 output_contract field; got {s}"
+            );
+        }
+    }
+
+    // Behavior #3a: a built-in `-> String` annotation lowers the contract's
+    // `ty` slot to the lowercase JSON string `"string"` per FC8 designer
+    // relay (cite: ir-json-schema.md §TypeTag Serialization). Confirms the
+    // emit path defers to `opt_typetag_to_json` rather than re-implementing
+    // it.
+    #[test]
+    fn skill_output_contract_ty_emits_lowercase_string_for_builtin() {
+        let src = "\
+skill stringify() -> String
+    flow:
+        return <out>
+";
+        let v = ir_json(src);
+        let ty = v
+            .pointer("/skill/output_contract/ty")
+            .expect("ty field present");
+        assert_eq!(ty, &Value::String("string".into()));
+    }
+
+    // Behavior #3b: a skill with `return <IDENT>` but no `-> DomainType`
+    // header annotation lowers `ty: null`. Chunk 4 lowering pins
+    // `IrOutputContract.ty = None` for this case so chunks 8/9 can surface
+    // the missing-annotation diagnostic; the JSON path must preserve the
+    // `null` (not absent, not silently coerced) so downstream consumers can
+    // detect it.
+    #[test]
+    fn skill_output_contract_with_missing_annotation_emits_null_ty() {
+        let src = "\
+skill drive()
+    flow:
+        return <out>
+";
+        let v = ir_json(src);
+        let oc = v
+            .pointer("/skill/output_contract")
+            .expect("output_contract present (return <IDENT> drives lowering)");
+        assert!(
+            oc.is_object(),
+            "output_contract present even when ty is null"
+        );
+        assert_eq!(
+            oc.get("ty"),
+            Some(&Value::Null),
+            "missing `-> DomainType` lowers ty to JSON null"
+        );
+        assert_eq!(
+            oc.get("target_name").and_then(|n| n.as_str()),
+            Some("out"),
+            "target_name still present alongside null ty"
+        );
+    }
+
+    // Behavior #2: a skill with no `return <IDENT>` must still emit the
+    // `output_contract` slot — as JSON `null`, not as a missing field. The
+    // pinned slot lets downstream JSON consumers (chunk 6 expand, chunk 13
+    // golden test) probe the field without distinguishing "absent" from
+    // "explicitly null".
+    #[test]
+    fn skill_without_output_target_emits_null_slot() {
+        let src = "\
+skill drive()
+    flow:
+        \"go\"
+";
+        let v = ir_json(src);
+        let skill = v.get("skill").expect("skill object present");
+        assert!(
+            skill.as_object().unwrap().contains_key("output_contract"),
+            "skill_obj must always carry the `output_contract` key (planner D5 \
+             — slot is null, not absent)"
+        );
+        assert_eq!(
+            skill.get("output_contract"),
+            Some(&Value::Null),
+            "skill without `return <IDENT>` lowers `output_contract` to JSON null"
+        );
+    }
+
+    // Behavior #1 (tracer): a skill whose flow ends with `return <output>` and
+    // whose header is `-> Report` round-trips through `serialize_ir_json` so
+    // that `skill.output_contract` is the pinned object
+    // `{ node_id, kind: "output_contract", target_name, ty, source }`. This
+    // proves the path is wired end-to-end before the variant tests pin
+    // individual slots.
+    #[test]
+    fn skill_output_contract_round_trips_to_pinned_json_shape() {
+        let src = "\
+skill make_report() -> Report
+    flow:
+        return <output>
+";
+        let v = ir_json(src);
+        let oc = v.pointer("/skill/output_contract").expect(
+            "skill_obj.output_contract must be present when the skill's flow ends with return <IDENT>",
+        );
+        assert!(
+            oc.is_object(),
+            "output_contract must serialize as a JSON object; got {oc}"
+        );
+        let obj = oc.as_object().unwrap();
+        assert_eq!(
+            obj.get("kind").and_then(|k| k.as_str()),
+            Some("output_contract"),
+            "kind discriminator must be the snake_case literal \"output_contract\""
+        );
+        assert_eq!(
+            obj.get("target_name").and_then(|n| n.as_str()),
+            Some("output"),
+            "target_name carries the inner identifier verbatim"
+        );
+        assert_eq!(
+            obj.get("ty"),
+            Some(&serde_json::json!({ "domain_type": "report" })),
+            "ty mirrors the enclosing skill's lowered `-> DomainType` annotation \
+             (FC8 designer relay)"
+        );
+        assert_eq!(
+            obj.get("source").and_then(|s| s.as_str()),
+            Some("synthesized_by_agent"),
+            "source must be the snake_case literal for OutputSource::SynthesizedByAgent"
+        );
+        let nid = obj
+            .get("node_id")
+            .and_then(|n| n.as_str())
+            .expect("node_id present and a string");
+        assert!(
+            nid.starts_with('n') && nid[1..].chars().all(|c| c.is_ascii_digit()),
+            "node_id follows the `n<integer>` convention; got {nid:?}"
+        );
+    }
+}
+
