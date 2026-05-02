@@ -21,7 +21,7 @@ This follows foundations: forgiving source, strict IR and foundations: core lang
 
 ## Primitive Kinds (IR-Only)
 
-Glyph's author-facing surface has no primitive type names. Authors never write `String`, `Int`, `Float`, `Bool`, or `None` as type annotations — only semantic domain types like `Plan`, `RepoContext`, or `Diagnosis` are valid in `-> ReturnType` and `name: Type` positions.
+Glyph's author-facing surface has no primitive or generic-collection type names. Authors never write the primitives `String`, `Int`, `Float`, `Bool`, `None`, the generic collections `List`, `Set`, `Map`, `Array`, `Dict`, `Tuple`, or the catch-alls `Object`, `Any` as type annotations — only semantic domain types like `Plan`, `RepoContext`, or `Diagnosis` are valid in `-> ReturnType` and `name: Type` positions. (Parameterized collection forms like `List[T]` are deferred entirely; see §Deferred. The `Agent` `TypeTag` variant in `ir-schema.md` §Enums is a stdlib-specific kind for `subagent()` results, not a generic type, and is **not** in the banned set.)
 
 The compiler still tracks primitive kinds internally in the IR, inferred from literals, defaults, and usage context. The `TypeTag` enum in `ir-schema.md` retains `string`, `int`, `float`, `bool`, and `none` variants for internal analysis, coercion checks, and default-value validation. These kinds are never surfaced to authors.
 
