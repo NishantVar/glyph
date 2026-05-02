@@ -30,6 +30,33 @@ pub fn analyze(file: SourceFile) -> SourceFile {
     file
 }
 
+/// Issue #83 AC2 + AC3: warn when a header `-> DomainType` annotation names
+/// a banned generic type. Warning tier — non-blocking; analyze continues so
+/// every banned occurrence in the file gets flagged. No-op when the
+/// annotation is absent. Used by every header-bearing decl site
+/// (skill / export block / private block, with and without imports).
+fn warn_if_banned_return_type(
+    rt: Option<&Spanned<String>>,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    let Some(rt) = rt else { return };
+    if let Err(w) = crate::type_position::validate_type_position(&rt.node) {
+        bag.push(
+            Diagnostic {
+                id: w.id.into(),
+                classification: Classification::Warning,
+                message: w.message,
+                span: SourceSpan::from_byte_span(file_label, rt.span, line_index),
+                related: Vec::new(),
+                hints: vec![w.hint],
+            },
+            rt.span,
+        );
+    }
+}
+
 /// Run Phase 2 with diagnostic emission.
 ///
 /// Pushes any structured diagnostics onto `bag` and returns the AST unchanged.
@@ -97,7 +124,16 @@ pub fn analyze_with_diagnostics(
             Decl::ExportBlock(spanned) => {
                 analyze_export_block(spanned, file_label, line_index, bag, &private_names);
             }
-            Decl::Block(_) => {}
+            Decl::Block(spanned) => {
+                // Issue #83 AC2 + AC3 (D7: private blocks in scope): warn on
+                // banned generic type names in the header `-> DomainType`.
+                warn_if_banned_return_type(
+                    spanned.node.return_type.as_ref(),
+                    file_label,
+                    line_index,
+                    bag,
+                );
+            }
             Decl::Const(_) => {}
             Decl::Import(_) => {}
         }
@@ -235,7 +271,18 @@ pub fn analyze_with_imports(
             Decl::ExportBlock(spanned) => {
                 analyze_export_block(spanned, file_label, line_index, bag, &private_names);
             }
-            Decl::Block(_) | Decl::Const(_) | Decl::Import(_) => {}
+            Decl::Block(spanned) => {
+                // Issue #83 AC2 + AC3 (D7: private blocks in scope): warn on
+                // banned generic type names in the header `-> DomainType`.
+                // Imports-path parity with `analyze_with_diagnostics`.
+                warn_if_banned_return_type(
+                    spanned.node.return_type.as_ref(),
+                    file_label,
+                    line_index,
+                    bag,
+                );
+            }
+            Decl::Const(_) | Decl::Import(_) => {}
         }
     }
 
@@ -386,6 +433,11 @@ fn analyze_skill(
 ) {
     let skill = &spanned.node;
     let declared: HashSet<&str> = skill.params.iter().map(|p| p.name.as_str()).collect();
+
+    // Issue #83 AC2 + AC3: warn on banned generic type names in the
+    // header `-> DomainType` annotation. Warning tier — non-blocking;
+    // analyze continues so all banned occurrences in the file get flagged.
+    warn_if_banned_return_type(skill.return_type.as_ref(), file_label, line_index, bag);
 
     // Walking-skeleton subset: `flow:` inline strings are the only
     // instruction-bearing strings the parser captures with their source span
@@ -1060,6 +1112,11 @@ fn analyze_export_block(
     private_names: &HashSet<&str>,
 ) {
     let decl = &spanned.node;
+
+    // Issue #83 AC2 + AC3: warn on banned generic type names in the
+    // header `-> DomainType` annotation. Warning tier — non-blocking.
+    warn_if_banned_return_type(decl.return_type.as_ref(), file_label, line_index, bag);
+
     for p in &decl.params {
         if p.default.is_none() {
             let span: Span = p.span;
