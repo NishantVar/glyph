@@ -50,10 +50,19 @@ const BANNED_GENERIC_NAMES: &[&str] = &[
 
 /// Validate an identifier in type position.
 ///
-/// Returns `Ok(DomainType)` when `ident` is not on the banned-generic list
-/// (case-insensitive ASCII match), and `Err(Warning)` otherwise.
+/// Returns `Ok(DomainType)` when `ident` is not on the banned-generic list,
+/// and `Err(Warning)` otherwise. Match is by D6 canonical form — ASCII-
+/// lowercase + strip `_` per `values-and-names.md §Case Normalization`,
+/// shared via [`crate::domain_registry::canonicalize_identifier`]. Issue
+/// #84 codex pass 5: pre-fix this used raw `eq_ignore_ascii_case` only,
+/// so underscore-perturbed spellings (`S_t_r_i_n_g`, `I_n_t`, …) bypassed
+/// the banned check while still lowering as the corresponding built-in
+/// `TypeTag` — analyze and lower disagreed with the validator on what the
+/// spelling meant. Closes the D6 propagation triangle:
+/// `lower::name_to_typetag` ↔ `analyze::is_builtin_type_name` ↔ this site.
 pub fn validate_type_position(ident: &str) -> Result<DomainType, Warning> {
-    if BANNED_GENERIC_NAMES.iter().any(|b| b.eq_ignore_ascii_case(ident)) {
+    let canonical = crate::domain_registry::canonicalize_identifier(ident);
+    if BANNED_GENERIC_NAMES.iter().any(|b| b.eq_ignore_ascii_case(&canonical)) {
         return Err(Warning {
             id: crate::diagnostic::GENERIC_TYPE_NAME_DIAG_ID,
             offending: ident.to_string(),
@@ -188,6 +197,99 @@ mod tests {
             Ok(d) => assert_eq!(d.name(), "Agent"),
             Err(w) => panic!("`Agent` must not be banned, got Err({:?})", w),
         }
+    }
+
+    // --- Issue #84 codex pass 5 — D6 canonicalization in banned-list match.
+    // Pre-pass-5: the validator used `eq_ignore_ascii_case` only, so an
+    // underscore-perturbed spelling like `S_t_r_i_n_g` (which canonicalizes
+    // to `string`) slipped past the banned check. Combined with pass-3's
+    // D6 fix in `lower::name_to_typetag` (lowers as built-in `TypeTag::String`)
+    // and `analyze::is_builtin_type_name` (skips collision-sweep), authors
+    // could bypass #83's `generic-type-name` warning by inserting underscores
+    // — and the analyzer / lowering disagreed on what the spelling meant.
+    // Closes the D6 propagation triangle: lower ↔ analyze ↔ type_position. ---
+
+    #[test]
+    fn t28_underscore_agent_does_not_fire_generic_type_name() {
+        // Codex pass 5 — AC-pass5-3 negative pin. `Agent` is explicitly
+        // NOT on the banned list per `agent_is_not_banned` and the
+        // `BANNED_GENERIC_NAMES` literal. Underscore-perturbed
+        // `A_g_e_n_t` canonicalizes to `agent` and must therefore also
+        // not fire — pass-3 already wired this for the lower / analyze
+        // sides; pass 5 confirms the third leg of the D6 triangle stays
+        // consistent (canonicalization doesn't drag Agent into the
+        // banned set by accident).
+        let result = validate_type_position("A_g_e_n_t");
+        match result {
+            Ok(d) => assert_eq!(d.name(), "A_g_e_n_t"),
+            Err(w) => panic!("`A_g_e_n_t` is not banned (Agent not on banned list); got Err({:?})", w),
+        }
+    }
+
+    #[test]
+    fn t27_underscore_plan_does_not_fire_generic_type_name() {
+        // Codex pass 5 — AC-pass5-5 negative pin. A genuine domain-type
+        // spelling like `P_l_a_n` (canonical `plan`) must NOT match the
+        // banned list — `plan` is not in BANNED_GENERIC_NAMES. Guards
+        // against an over-aggressive canonicalization that mistakenly
+        // matches domain types onto banned built-ins.
+        let result = validate_type_position("P_l_a_n");
+        match result {
+            Ok(d) => assert_eq!(d.name(), "P_l_a_n"),
+            Err(w) => panic!("`P_l_a_n` is a domain-type spelling and must not fire generic-type-name; got Err({:?})", w),
+        }
+    }
+
+    #[test]
+    fn t26_plain_string_still_fires_generic_type_name() {
+        // Codex pass 5 — AC-pass5-4 regression pin. Plain `String` (no
+        // underscores) must still fire — the canonicalization fix must
+        // not break the existing #83 surface. Existing
+        // `banned_string_returns_warning_with_id_and_offender` covers
+        // the same shape; this test exists per planner contract to
+        // explicitly anchor the regression in the pass-5 test set.
+        let result = validate_type_position("String");
+        let w = match result {
+            Err(w) => w,
+            Ok(d) => panic!("expected Err for plain `String`, got Ok({:?})", d),
+        };
+        assert_eq!(w.id, GENERIC_TYPE_NAME_DIAG_ID);
+        assert_eq!(w.offending, "String");
+    }
+
+    #[test]
+    fn t25_underscore_int_fires_generic_type_name() {
+        // Codex pass 5 — AC-pass5-2. Generic application of the
+        // canonicalization fix to a second built-in. `I_n_t`
+        // canonicalizes to `int` and must match banned `Int`. Catches
+        // a regression that special-cases one variant only (e.g. by
+        // pattern-matching `String` instead of running through the
+        // shared `canonicalize_identifier` helper).
+        let result = validate_type_position("I_n_t");
+        let w = match result {
+            Err(w) => w,
+            Ok(d) => panic!("expected Err for `I_n_t`, got Ok({:?})", d),
+        };
+        assert_eq!(w.id, GENERIC_TYPE_NAME_DIAG_ID);
+        assert_eq!(w.offending, "I_n_t");
+    }
+
+    #[test]
+    fn t24_underscore_string_fires_generic_type_name() {
+        // Codex pass 5 — AC-pass5-1 tracer. `S_t_r_i_n_g` canonicalizes
+        // to `string` per D6 and must match banned `String`. Pre-fix,
+        // `eq_ignore_ascii_case` did not strip underscores → the banned
+        // check missed and the warning was lost.
+        let result = validate_type_position("S_t_r_i_n_g");
+        let w = match result {
+            Err(w) => w,
+            Ok(d) => panic!("expected Err for `S_t_r_i_n_g`, got Ok({:?})", d),
+        };
+        assert_eq!(w.id, GENERIC_TYPE_NAME_DIAG_ID);
+        assert_eq!(
+            w.offending, "S_t_r_i_n_g",
+            "offending must echo the source identifier verbatim, not the canonical form"
+        );
     }
 
     #[test]
