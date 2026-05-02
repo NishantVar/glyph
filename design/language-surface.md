@@ -342,6 +342,7 @@ generated const root_cause_before_fix = """
 - Not a callable. A bare name resolves to its string content; a parenthesized form is a compile error.
 - Not exportable. `export generated const` is invalid. To share, promote to `export const`.
 - All `generated const` declarations must appear after all non-generated top-level declarations in the source file.
+- **Placement-order enforcement is deferred.** The compiler does not yet emit a diagnostic when a `generated const` appears before a non-generated top-level declaration; the rule above is the documented contract. A planned analyze-pass diagnostic (working name `G::analyze::generated-placement`) will land in a separate issue. Until then, the repair pass and authors are responsible for honoring the order manually.
 - Full rules for authorship, stability, placement, promotion, and the no-shadowing interaction are in [repair.md](repair.md).
 
 ### 3.7 `generated block`
@@ -372,6 +373,7 @@ generated block summarize_changes()
 - Used for undefined names in `flow:`. Both parens-calls and bare names without parens materialize as `generated block` (bare const names in flow are a compile error, so undefined bare names in flow are treated as intended callable instructions).
 - Not exportable. `export generated block` is invalid. To share, promote to `block` or `export block`.
 - All `generated block` declarations must appear after all non-generated top-level declarations, alongside `generated const`.
+- **Placement-order enforcement is deferred.** The compiler does not yet emit a diagnostic when a `generated block` appears before a non-generated top-level declaration; the rule above is the documented contract. A planned analyze-pass diagnostic (working name `G::analyze::generated-placement`, shared with `generated const` per §3.6) will land in a separate issue. Until then, the repair pass and authors are responsible for honoring the order manually.
 - Full rules for authorship, the single-string constraint, placement, promotion, and the no-shadowing interaction are in [repair.md](repair.md).
 
 ### 3.8 Parameter Syntax
