@@ -41,6 +41,15 @@ pub enum TokenKind {
     Lbrace,
     /// `}` — closing brace (selective imports).
     Rbrace,
+    /// `<` — open angle bracket. Only appears in the output-target form
+    /// `<IDENT>` (issue #85); MVP has no value-level `<` operator per
+    /// `design/values-and-names.md` §No Value-Level Operators (47–55), so
+    /// emission is context-free at the lex layer. Position is enforced by
+    /// the parser / mid-flow validator.
+    LAngle,
+    /// `>` — close angle bracket. Mirror of `LAngle`. Standalone only;
+    /// `->` is captured earlier as `Arrow`.
+    RAngle,
     /// End of file.
     Eof,
 }
@@ -191,6 +200,21 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
                     span: Span::new(file_id, p as u32, (p + 2) as u32),
                 });
                 p += 2;
+            } else if b == b'<' {
+                tokens.push(Token {
+                    kind: TokenKind::LAngle,
+                    span: Span::new(file_id, p as u32, (p + 1) as u32),
+                });
+                p += 1;
+            } else if b == b'>' {
+                // Standalone `>`. The `->` form is captured earlier by the
+                // `b == b'-'` branch (which consumes both bytes), so reaching
+                // here means a `>` not preceded by `-`.
+                tokens.push(Token {
+                    kind: TokenKind::RAngle,
+                    span: Span::new(file_id, p as u32, (p + 1) as u32),
+                });
+                p += 1;
             } else if b == b'{' {
                 tokens.push(Token {
                     kind: TokenKind::Lbrace,
@@ -482,5 +506,35 @@ mod tests {
             .filter(|t| matches!(t.kind, TokenKind::LineStart { .. }))
             .collect();
         assert_eq!(line_starts.len(), 2);
+    }
+
+    #[test]
+    fn tokenize_langle() {
+        // Issue #85: `<` is a standalone token (output-target form).
+        let src = "<\n";
+        let (toks, _) = tokenize(src, 0).expect("`<` should tokenize");
+        assert_eq!(toks[1].kind, TokenKind::LAngle);
+        assert_eq!(toks[1].span.end - toks[1].span.start, 1);
+    }
+
+    #[test]
+    fn tokenize_rangle() {
+        let src = ">\n";
+        let (toks, _) = tokenize(src, 0).expect("`>` should tokenize");
+        assert_eq!(toks[1].kind, TokenKind::RAngle);
+        assert_eq!(toks[1].span.end - toks[1].span.start, 1);
+    }
+
+    #[test]
+    fn tokenize_output_target_form_yields_three_tokens() {
+        // `<foo>` lexes as three primitive tokens — the parser (chunk 3)
+        // assembles them and hands the source slice to `parse_output_target`.
+        let src = "        return <foo>\n";
+        let (toks, _) = tokenize(src, 0).expect("`<foo>` should tokenize");
+        // [LineStart, "return", LAngle, "foo", RAngle, Eof]
+        assert!(matches!(&toks[1].kind, TokenKind::Ident(s) if s == "return"));
+        assert_eq!(toks[2].kind, TokenKind::LAngle);
+        assert!(matches!(&toks[3].kind, TokenKind::Ident(s) if s == "foo"));
+        assert_eq!(toks[4].kind, TokenKind::RAngle);
     }
 }

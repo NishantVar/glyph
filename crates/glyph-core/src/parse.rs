@@ -1795,6 +1795,16 @@ impl<'a> Parser<'a> {
                     // exit-1 failure with no structured ID.
                     break;
                 }
+                TokenKind::LAngle | TokenKind::RAngle => {
+                    // `<`/`>` are only legal in the output-target form
+                    // `<IDENT>` after `return` (issue #85). MVP has no
+                    // value-level `<` operator (`values-and-names.md` §No
+                    // Value-Level Operators 47–55), so they have no meaning
+                    // inside a branch condition. Mirror the `Arrow` arm:
+                    // break without consuming so an outer scan surfaces a
+                    // structured diagnostic instead of a generic exit-1.
+                    break;
+                }
             }
         }
         if parts.is_empty() {
