@@ -14,6 +14,7 @@ pub mod fmt;
 pub mod ir;
 pub mod lower;
 pub mod parse;
+pub mod resolve;
 pub mod slot;
 pub mod span;
 pub mod tokenize;
@@ -137,6 +138,65 @@ pub fn check_source_with_effects(source: &str, file_id: u32, file_label: &str, e
     }
 
     bag
+}
+
+/// Bundle returned by [`check_source_with_resolutions`].
+///
+/// All four pieces are needed by the LSP: the diagnostics drive
+/// `publishDiagnostics`, the `ast` and `line_index` are stored on the
+/// per-buffer `ParsedView` (per `design/glyph-lsp.md` §5), and the
+/// `resolutions` table powers `textDocument/definition`.
+#[derive(Debug)]
+pub struct CheckedView {
+    pub bag: DiagBag,
+    pub ast: ast::SourceFile,
+    pub line_index: LineIndex,
+    pub resolutions: Vec<resolve::Resolution>,
+}
+
+/// Run Phase 1 + Phase 2 like [`check_source_with_effects`], but additionally
+/// return the parsed AST, line index, and the same-file resolution table
+/// driving go-to-definition (M2).
+///
+/// Returns `None` if parsing failed catastrophically (no AST recovered).
+/// In that case the caller should fall back to `check_source_with_effects`
+/// for diagnostics.
+pub fn check_source_with_resolutions(
+    source: &str,
+    file_id: u32,
+    file_label: &str,
+    enable_effects: bool,
+) -> Option<CheckedView> {
+    let mut bag = DiagBag::new();
+    let line_index = LineIndex::new(source);
+
+    let parsed = parse::parse_with_diagnostics_opts(
+        source,
+        file_id,
+        file_label,
+        &line_index,
+        &mut bag,
+        enable_effects,
+    )?;
+
+    let file = analyze::analyze_with_diagnostics(
+        parsed,
+        file_id,
+        file_label,
+        &line_index,
+        &mut bag,
+        enable_effects,
+    );
+
+    let file_path = PathBuf::from(file_label);
+    let resolutions = resolve::collect_same_file_resolutions(&file, &file_path);
+
+    Some(CheckedView {
+        bag,
+        ast: file,
+        line_index,
+        resolutions,
+    })
 }
 
 /// End-to-end file-driven compile.

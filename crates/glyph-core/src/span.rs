@@ -35,6 +35,7 @@ impl<T> Spanned<T> {
 /// Maps byte offsets to 1-indexed (line, column) for diagnostic rendering.
 ///
 /// Built once during tokenization, queried only at diagnostic emission time.
+#[derive(Debug, Clone)]
 pub struct LineIndex {
     /// Byte offset of each line's first character. `line_starts[0]` is always 0.
     line_starts: Vec<u32>,
