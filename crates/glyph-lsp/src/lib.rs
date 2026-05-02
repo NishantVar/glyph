@@ -48,13 +48,19 @@ use tower_lsp::lsp_types::{
     Diagnostic as LspDiagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, GotoDefinitionParams,
     GotoDefinitionResponse, InitializeParams, InitializeResult, InitializedParams, Location,
-    MessageType, OneOf, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
-    TextDocumentSyncKind, Url,
+    MessageType, OneOf, SemanticToken, SemanticTokenModifier as LspTokenModifier,
+    SemanticTokenType as LspTokenType, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+    TextDocumentSyncCapability, TextDocumentSyncKind, Url, WorkDoneProgressOptions,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use glyph_core::analyze::ResolutionKind;
 use glyph_core::ast::{Decl, FlowStmt, ReturnExpr};
+use glyph_core::semantic_tokens::{
+    collect_semantic_tokens, RawSemToken, SemTokenModifier, SemTokenType,
+};
 use glyph_core::span::{LineIndex, Span};
 
 /// One open buffer's mirror inside the LSP server.
@@ -221,6 +227,30 @@ impl LanguageServer for Backend {
                 // advertise the capability — the M3 patch will extend
                 // resolution to follow imports without changing this flag).
                 definition_provider: Some(OneOf::Left(true)),
+                // M3: semantic tokens (`textDocument/semanticTokens/full`).
+                // We advertise the legend from
+                // `glyph_core::semantic_tokens::{SemTokenType, SemTokenModifier}`
+                // and serve only the `full` request — `range` and `delta`
+                // would buy little for files this small.
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            work_done_progress_options: WorkDoneProgressOptions::default(),
+                            legend: SemanticTokensLegend {
+                                token_types: SemTokenType::legend()
+                                    .iter()
+                                    .map(|s| LspTokenType::new(s))
+                                    .collect(),
+                                token_modifiers: SemTokenModifier::legend()
+                                    .iter()
+                                    .map(|s| LspTokenModifier::new(s))
+                                    .collect(),
+                            },
+                            range: Some(false),
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                        },
+                    ),
+                ),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -414,6 +444,63 @@ impl LanguageServer for Backend {
 
         Ok(None)
     }
+
+    /// `textDocument/semanticTokens/full` (M3). Walks the lex stream and
+    /// AST via [`glyph_core::semantic_tokens::collect_semantic_tokens`]
+    /// and delta-encodes the result into the LSP `data: Vec<u32>` shape.
+    ///
+    /// Returns `None` if the buffer isn't open (rare — the editor only
+    /// asks after a `didOpen`). Empty token list is `Some(SemanticTokens
+    /// { data: [] })`, not `None` — `None` would tell the editor "no
+    /// semantic tokens available," which suppresses fallback highlighters
+    /// in some clients.
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> JsonRpcResult<Option<SemanticTokensResult>> {
+        let uri = params.text_document.uri;
+        let text = {
+            let docs = self.documents.read().await;
+            match docs.get(&uri) {
+                Some(d) => d.text.clone(),
+                None => return Ok(None),
+            }
+        };
+
+        let raw = collect_semantic_tokens(&text, 0);
+        let data = encode_semantic_tokens(&raw);
+        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+            result_id: None,
+            data,
+        })))
+    }
+}
+
+/// Delta-encode a sorted list of [`RawSemToken`] into the LSP
+/// `data: Vec<SemanticToken>` shape. Tokens MUST be sorted by
+/// (line, start) — the collector guarantees that.
+fn encode_semantic_tokens(raw: &[RawSemToken]) -> Vec<SemanticToken> {
+    let mut out: Vec<SemanticToken> = Vec::with_capacity(raw.len());
+    let mut prev_line: u32 = 0;
+    let mut prev_start: u32 = 0;
+    for t in raw {
+        let delta_line = t.line - prev_line;
+        let delta_start = if delta_line == 0 {
+            t.start - prev_start
+        } else {
+            t.start
+        };
+        out.push(SemanticToken {
+            delta_line,
+            delta_start,
+            length: t.length,
+            token_type: t.token_type,
+            token_modifiers_bitset: t.modifiers,
+        });
+        prev_line = t.line;
+        prev_start = t.start;
+    }
+    out
 }
 
 /// Resolve a cursor inside a `{name}` slot to the enclosing decl's
@@ -812,6 +899,84 @@ skill main()
             canon_dep,
             "URI ↔ path round-trip should match"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Semantic tokens (M3 Phase B) — LSP delta-encoder pinning tests.
+    //
+    // The collector is unit-tested exhaustively in `glyph_core::semantic_tokens`.
+    // Here we pin the LSP-side delta encoding: tokens on the same line use
+    // delta_start = (col - prev_col); a new line resets delta_start to the
+    // absolute column.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn semantic_tokens_delta_encoding_same_line() {
+        // Two tokens on line 0: cols 0 ("skill") and 6 ("main").
+        let raw = vec![
+            RawSemToken {
+                line: 0,
+                start: 0,
+                length: 5,
+                token_type: SemTokenType::Keyword as u32,
+                modifiers: 0,
+            },
+            RawSemToken {
+                line: 0,
+                start: 6,
+                length: 4,
+                token_type: SemTokenType::Function as u32,
+                modifiers: SemTokenModifier::DECLARATION,
+            },
+        ];
+        let encoded = encode_semantic_tokens(&raw);
+        assert_eq!(encoded.len(), 2);
+        assert_eq!(encoded[0].delta_line, 0);
+        assert_eq!(encoded[0].delta_start, 0);
+        assert_eq!(encoded[0].length, 5);
+        assert_eq!(encoded[1].delta_line, 0);
+        // Same line ⇒ delta_start is the column difference.
+        assert_eq!(encoded[1].delta_start, 6);
+        assert_eq!(encoded[1].length, 4);
+        assert_eq!(encoded[1].token_modifiers_bitset, SemTokenModifier::DECLARATION);
+    }
+
+    #[test]
+    fn semantic_tokens_delta_encoding_new_line_resets_delta_start() {
+        let raw = vec![
+            RawSemToken {
+                line: 0,
+                start: 6,
+                length: 4,
+                token_type: SemTokenType::Function as u32,
+                modifiers: 0,
+            },
+            RawSemToken {
+                line: 2,
+                start: 4,
+                length: 11,
+                token_type: SemTokenType::Keyword as u32,
+                modifiers: 0,
+            },
+        ];
+        let encoded = encode_semantic_tokens(&raw);
+        // delta_line = 2; new line ⇒ delta_start is the absolute column.
+        assert_eq!(encoded[1].delta_line, 2);
+        assert_eq!(encoded[1].delta_start, 4);
+    }
+
+    #[test]
+    fn semantic_tokens_collector_through_lsp_encoding_smoke() {
+        // End-to-end: collector → encoder for a small representative source.
+        // This pins that the two halves combine correctly (sort + delta).
+        let src = "skill main()\n    description: \"d\"\n    flow:\n        \"hi\"\n";
+        let raw = collect_semantic_tokens(src, 0);
+        assert!(!raw.is_empty(), "non-trivial source should produce tokens");
+        let encoded = encode_semantic_tokens(&raw);
+        assert_eq!(encoded.len(), raw.len());
+        // First token's delta_line must equal the first raw token's line
+        // (since prev_line starts at 0).
+        assert_eq!(encoded[0].delta_line, raw[0].line);
     }
 }
 

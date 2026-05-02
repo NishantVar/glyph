@@ -14,6 +14,7 @@ pub mod fmt;
 pub mod ir;
 pub mod lower;
 pub mod parse;
+pub mod semantic_tokens;
 pub mod slot;
 pub mod span;
 pub mod tokenize;
