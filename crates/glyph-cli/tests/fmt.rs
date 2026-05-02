@@ -241,3 +241,85 @@ fn fmt_is_idempotent() {
     let output = run_fmt_check(&tmp_path);
     assert_eq!(output.status.code(), Some(0), "--check after two formats should exit 0");
 }
+
+#[test]
+fn fmt_strips_legacy_none_return_type() {
+    // Issue #82 AC5: the deterministic repair pass rewrites legacy
+    // `-> None` (case-insensitive) headers by omitting `->` entirely.
+    // Multi-decl fixture exercises:
+    // - skill header `-> None` stripped
+    // - private block header `-> None` stripped
+    // - valid `-> Path` header preserved
+    // - body `return none` (value-position keyword) untouched
+    let src = fmt_corpus_path("legacy_none_return.glyph.md");
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let tmp_path = tmp.path().to_path_buf();
+    std::fs::copy(&src, &tmp_path).unwrap();
+
+    let output = run_fmt(&tmp_path);
+    assert!(
+        output.status.success(),
+        "glyph fmt should exit 0; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let result = std::fs::read_to_string(&tmp_path).unwrap();
+
+    // Legacy headers must be stripped of `-> None`.
+    assert!(
+        !result.contains("-> None"),
+        "no `-> None` should remain after fmt, got:\n{}",
+        result
+    );
+    assert!(
+        !result.contains("-> none"),
+        "no `-> none` should remain after fmt, got:\n{}",
+        result
+    );
+    assert!(
+        result.contains("skill cleanup()\n"),
+        "skill header should be stripped to `skill cleanup()`, got:\n{}",
+        result
+    );
+    assert!(
+        result.contains("block helper()\n"),
+        "block header should be stripped to `block helper()`, got:\n{}",
+        result
+    );
+
+    // Valid `-> Path` header must survive.
+    assert!(
+        result.contains("export block compute(scope = \".\") -> Path"),
+        "valid `-> Path` header must be preserved, got:\n{}",
+        result
+    );
+
+    // Body `return none` value-keyword must be untouched.
+    assert!(
+        result.contains("return none"),
+        "body `return none` should remain untouched, got:\n{}",
+        result
+    );
+
+    // Idempotence: a second fmt produces byte-identical output.
+    let output2 = run_fmt(&tmp_path);
+    assert!(
+        output2.status.success(),
+        "second fmt should exit 0; stderr: {}",
+        String::from_utf8_lossy(&output2.stderr)
+    );
+    let result2 = std::fs::read_to_string(&tmp_path).unwrap();
+    assert_eq!(
+        result, result2,
+        "fmt should be idempotent on legacy `-> None` source"
+    );
+
+    // --check after the strip should exit 0 (no further changes needed).
+    let check_output = run_fmt_check(&tmp_path);
+    assert_eq!(
+        check_output.status.code(),
+        Some(0),
+        "--check after fmt should exit 0; stderr: {}",
+        String::from_utf8_lossy(&check_output.stderr)
+    );
+}
