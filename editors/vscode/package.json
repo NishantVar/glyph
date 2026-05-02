@@ -23,6 +23,7 @@
           "glyph"
         ],
         "extensions": [
+          ".glyph",
           ".glyph.md"
         ],
         "configuration": "./language-configuration.json"
