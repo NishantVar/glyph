@@ -97,6 +97,12 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Run the Glyph Language Server over stdio.
+    ///
+    /// Speaks JSON-RPC framed per the LSP spec. Intended to be launched by an
+    /// editor (e.g., via `cmd = { "glyph", "lsp" }` in nvim-lspconfig). See
+    /// `crates/glyph-lsp/README.md` for editor setup instructions.
+    Lsp,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -113,6 +119,21 @@ fn main() -> ExitCode {
         Command::Check { path, format, strict } => run_check(path, format, strict, enable_effects),
         Command::ValidateOutput { ir_json_path, md_path, format } => run_validate_output(ir_json_path, md_path, format),
         Command::Fmt { path, check } => run_fmt(path, check, enable_effects),
+        Command::Lsp => run_lsp(),
+    }
+}
+
+/// Launch the Glyph LSP server over stdio.
+///
+/// Delegates entirely to `glyph_lsp::run_stdio` — this CLI shim only exists so
+/// editors can call `glyph lsp` instead of a separate `glyph-lsp` binary.
+fn run_lsp() -> ExitCode {
+    match glyph_lsp::run_stdio() {
+        Ok(()) => ExitCode::from(0),
+        Err(e) => {
+            eprintln!("glyph: lsp server error: {}", e);
+            ExitCode::from(1)
+        }
     }
 }
 
