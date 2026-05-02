@@ -35,25 +35,42 @@ pub fn analyze(file: SourceFile) -> SourceFile {
 /// every banned occurrence in the file gets flagged. No-op when the
 /// annotation is absent. Used by every header-bearing decl site
 /// (skill / export block / private block, with and without imports).
+///
+/// Two side-effects, co-located at the single point where `-> DomainType` is
+/// processed: (1) emit the banned-generic warning when the name is on the
+/// banned list (issue #83), and (2) on the legitimate-domain-type path
+/// (issue #84 Chunk 2), record the identifier in the per-file registry under
+/// its canonical key so first-use spans are recoverable downstream. Banned
+/// names do NOT register (AC1). Helper name kept for surgical-changes
+/// reasons; cosmetic rename can land later.
 fn warn_if_banned_return_type(
     rt: Option<&Spanned<String>>,
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
+    registry: &mut crate::domain_registry::Registry,
 ) {
     let Some(rt) = rt else { return };
-    if let Err(w) = crate::type_position::validate_type_position(&rt.node) {
-        bag.push(
-            Diagnostic {
-                id: w.id.into(),
-                classification: Classification::Warning,
-                message: w.message,
-                span: SourceSpan::from_byte_span(file_label, rt.span, line_index),
-                related: Vec::new(),
-                hints: vec![w.hint],
-            },
-            rt.span,
-        );
+    match crate::type_position::validate_type_position(&rt.node) {
+        Err(w) => {
+            bag.push(
+                Diagnostic {
+                    id: w.id.into(),
+                    classification: Classification::Warning,
+                    message: w.message,
+                    span: SourceSpan::from_byte_span(file_label, rt.span, line_index),
+                    related: Vec::new(),
+                    hints: vec![w.hint],
+                },
+                rt.span,
+            );
+        }
+        Ok(_) => {
+            // Issue #84 Chunk 2: legitimate domain-type name → record first
+            // use. Idempotent on canonical form; subsequent same-canonical
+            // calls preserve the original `first_use_span`.
+            registry.register_first_use(&rt.node, rt.span);
+        }
     }
 }
 
@@ -68,6 +85,7 @@ pub fn analyze_with_diagnostics(
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
+    registry: &mut crate::domain_registry::Registry,
 ) -> SourceFile {
     // Collect value-binding names for bare-name detection in flow. Post-#81,
     // `const` is the sole value-binding form; the variable name `text_names`
@@ -119,10 +137,10 @@ pub fn analyze_with_diagnostics(
     for decl in &file.decls {
         match decl {
             Decl::Skill(spanned) => {
-                analyze_skill(spanned, file_id, file_label, line_index, bag, &text_names, &block_names, &block_decls, &HashMap::new())
+                analyze_skill(spanned, file_id, file_label, line_index, bag, registry, &text_names, &block_names, &block_decls, &HashMap::new())
             }
             Decl::ExportBlock(spanned) => {
-                analyze_export_block(spanned, file_label, line_index, bag, &private_names);
+                analyze_export_block(spanned, file_label, line_index, bag, registry, &private_names);
             }
             Decl::Block(spanned) => {
                 // Issue #83 AC2 + AC3 (D7: private blocks in scope): warn on
@@ -132,6 +150,7 @@ pub fn analyze_with_diagnostics(
                     file_label,
                     line_index,
                     bag,
+                    registry,
                 );
             }
             Decl::Const(_) => {}
@@ -201,6 +220,7 @@ pub fn analyze_with_imports(
     imported_blocks: &HashSet<String>,
     used_import_names: &mut HashSet<String>,
     imported_block_descriptions: &HashMap<String, String>,
+    registry: &mut crate::domain_registry::Registry,
 ) -> SourceFile {
     // Collect local value-binding names (post-#81: `const` is the sole form;
     // the `local_text_names` variable name is kept for parity with the legacy
@@ -262,14 +282,14 @@ pub fn analyze_with_imports(
         match decl {
             Decl::Skill(spanned) => {
                 analyze_skill_with_usage_tracking(
-                    spanned, file_id, file_label, line_index, bag,
+                    spanned, file_id, file_label, line_index, bag, registry,
                     &text_names, &block_names, &block_decls,
                     imported_texts, imported_blocks, used_import_names,
                     imported_block_descriptions,
                 );
             }
             Decl::ExportBlock(spanned) => {
-                analyze_export_block(spanned, file_label, line_index, bag, &private_names);
+                analyze_export_block(spanned, file_label, line_index, bag, registry, &private_names);
             }
             Decl::Block(spanned) => {
                 // Issue #83 AC2 + AC3 (D7: private blocks in scope): warn on
@@ -280,6 +300,7 @@ pub fn analyze_with_imports(
                     file_label,
                     line_index,
                     bag,
+                    registry,
                 );
             }
             Decl::Const(_) | Decl::Import(_) => {}
@@ -340,6 +361,7 @@ fn analyze_skill_with_usage_tracking(
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
+    registry: &mut crate::domain_registry::Registry,
     text_names: &HashSet<&str>,
     block_names: &HashSet<&str>,
     block_decls: &HashMap<&str, &crate::ast::BlockDecl>,
@@ -349,7 +371,7 @@ fn analyze_skill_with_usage_tracking(
     imported_block_descriptions: &HashMap<String, String>,
 ) {
     // Run the normal analysis.
-    analyze_skill(spanned, file_id, file_label, line_index, bag, text_names, block_names, block_decls, imported_block_descriptions);
+    analyze_skill(spanned, file_id, file_label, line_index, bag, registry, text_names, block_names, block_decls, imported_block_descriptions);
 
     // Track usage: walk flow/constraints/context to see which imported names are referenced.
     let skill = &spanned.node;
@@ -426,6 +448,7 @@ fn analyze_skill(
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
+    registry: &mut crate::domain_registry::Registry,
     text_names: &HashSet<&str>,
     block_names: &HashSet<&str>,
     block_decls: &HashMap<&str, &BlockDecl>,
@@ -437,7 +460,7 @@ fn analyze_skill(
     // Issue #83 AC2 + AC3: warn on banned generic type names in the
     // header `-> DomainType` annotation. Warning tier — non-blocking;
     // analyze continues so all banned occurrences in the file get flagged.
-    warn_if_banned_return_type(skill.return_type.as_ref(), file_label, line_index, bag);
+    warn_if_banned_return_type(skill.return_type.as_ref(), file_label, line_index, bag, registry);
 
     // Walking-skeleton subset: `flow:` inline strings are the only
     // instruction-bearing strings the parser captures with their source span
@@ -1109,13 +1132,14 @@ fn analyze_export_block(
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
+    registry: &mut crate::domain_registry::Registry,
     private_names: &HashSet<&str>,
 ) {
     let decl = &spanned.node;
 
     // Issue #83 AC2 + AC3: warn on banned generic type names in the
     // header `-> DomainType` annotation. Warning tier — non-blocking.
-    warn_if_banned_return_type(decl.return_type.as_ref(), file_label, line_index, bag);
+    warn_if_banned_return_type(decl.return_type.as_ref(), file_label, line_index, bag, registry);
 
     for p in &decl.params {
         if p.default.is_none() {
@@ -1279,5 +1303,179 @@ mod tests {
         assert_eq!(diag.classification, Classification::Error);
         assert!(diag.message.contains("float"));
         assert!(diag.message.contains("int"));
+    }
+
+    // --- Issue #84 Chunk 2: domain-type registry wired into analyze ---
+
+    #[test]
+    fn t1_skill_return_type_registers_in_registry() {
+        // Tracer: a skill header with a legitimate `-> Report` populates
+        // the per-file Registry under canonical key `report`. The entry's
+        // `first_use_span` matches the parser's `return_type.span`, which
+        // covers the whole `-> Report` annotation (start at `->`, end at
+        // the identifier's end) — see `Parser::try_parse_return_type`.
+        let src = "skill foo() -> Report\n    description: \"Foo.\"\n    flow:\n        \"do\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let entry = registry.lookup("Report").expect("`Report` must be registered");
+        assert_eq!(entry.canonical_name, "report");
+        let arrow_start = src.find("->").unwrap() as u32;
+        let report_end = (src.find("Report").unwrap() + "Report".len()) as u32;
+        assert_eq!(entry.first_use_span.start, arrow_start);
+        assert_eq!(entry.first_use_span.end, report_end);
+        assert_eq!(entry.first_use_span.file_id, 0);
+    }
+
+    #[test]
+    fn t2_export_block_return_type_registers_in_registry() {
+        // Export-block visit site populates the registry the same way the
+        // skill site does. Pinpoints the export-block branch of the match.
+        let src = "export block bar(x = \"d\") -> Report\n    flow:\n        \"x\"\n        return x\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let entry = registry.lookup("Report").expect("`Report` must be registered");
+        assert_eq!(entry.canonical_name, "report");
+    }
+
+    #[test]
+    fn t3_private_block_return_type_registers_no_imports_path() {
+        // Private `block` visit site (no-imports analyze entry) populates
+        // the registry. D7: private blocks are in scope for header
+        // `-> DomainType` handling.
+        let src = "skill main()\n    description: \"Main.\"\n    flow:\n        helper()\n\nblock helper() -> Report\n    description: \"Helper.\"\n    flow:\n        \"work\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let entry = registry.lookup("Report").expect("`Report` must be registered from private block");
+        assert_eq!(entry.canonical_name, "report");
+    }
+
+    #[test]
+    fn t4_private_block_return_type_registers_imports_path() {
+        // Imports-path parity with T3: when analyze runs through
+        // `analyze_with_imports` (the path used for files that import other
+        // files), the private-block branch must also register.
+        let src = "skill main()\n    description: \"Main.\"\n    flow:\n        helper()\n\nblock helper() -> Report\n    description: \"Helper.\"\n    flow:\n        \"work\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let mut used: HashSet<String> = HashSet::new();
+        let _ = analyze_with_imports(
+            &file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut used,
+            &HashMap::new(),
+            &mut registry,
+        );
+        let entry = registry.lookup("Report").expect("`Report` must be registered (imports path)");
+        assert_eq!(entry.canonical_name, "report");
+    }
+
+    #[test]
+    fn t5_two_decls_same_spelling_preserves_first_use_span() {
+        // Two decls both `-> Report`. Registry has one entry; `first_use_span`
+        // matches the *first* decl's annotation span — the second is silently
+        // discarded (AC3 first-use semantics, surfacing through analyze).
+        let src = "skill foo() -> Report\n    description: \"Foo.\"\n    flow:\n        \"do\"\n\nexport block bar(x = \"d\") -> Report\n    flow:\n        \"x\"\n        return x\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let entry = registry.lookup("Report").expect("`Report` must be registered");
+        // First `-> Report` is on the skill header; second is on the export
+        // block. The registry must surface the *first* (skill) annotation's
+        // span, not the second.
+        let first_arrow = src.find("->").unwrap() as u32;
+        let first_report_end = (src.find("Report").unwrap() + "Report".len()) as u32;
+        assert_eq!(entry.first_use_span.start, first_arrow);
+        assert_eq!(entry.first_use_span.end, first_report_end);
+    }
+
+    #[test]
+    fn t5b_two_decls_cross_spelling_canonicalize_first_span_wins() {
+        // Cross-spelling first-use: first decl `-> Report`, second `-> report`.
+        // Per D6, both canonicalize to `report` and share one registry entry.
+        // Lookup by either spelling hits; `canonical_name == "report"` (the
+        // canonicalized form, never raw); `first_use_span` matches the
+        // *first* (`Report`) decl, not the second (`report`).
+        //
+        // Why this matters: catches a regression where analyze re-canonicalizes
+        // raw text before passing into the registry — both inputs would already
+        // match in that bug, so T5 alone wouldn't notice.
+        let src = "skill foo() -> Report\n    description: \"Foo.\"\n    flow:\n        \"do\"\n\nblock bar() -> report\n    description: \"Bar.\"\n    flow:\n        \"work\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        // Lookup hits via either spelling.
+        let via_capital = registry.lookup("Report").expect("lookup via `Report` must hit");
+        let via_lower = registry.lookup("report").expect("lookup via `report` must hit");
+        assert_eq!(via_capital.canonical_name, "report");
+        assert_eq!(via_lower.canonical_name, "report");
+        // First-span wins: the entry's span matches the *first* (`Report`)
+        // annotation, not the second (`report`).
+        let first_arrow = src.find("->").unwrap() as u32;
+        let first_report_end = (src.find("Report").unwrap() + "Report".len()) as u32;
+        assert_eq!(via_capital.first_use_span.start, first_arrow);
+        assert_eq!(via_capital.first_use_span.end, first_report_end);
+    }
+
+    #[test]
+    fn t6_banned_return_type_warns_but_does_not_register() {
+        // AC1 split: a banned generic name (`-> String`) emits the existing
+        // `G::analyze::generic-type-name` warning AND must NOT be added to
+        // the registry. Lookup via either casing returns None.
+        let src = "skill foo() -> String\n    description: \"Foo.\"\n    flow:\n        \"do\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        // Existing #83 behavior preserved: warning fires.
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::generic-type-name"),
+            "banned `-> String` must still fire generic-type-name warning, got: {:?}",
+            ids
+        );
+        // AC1 add: registry stays empty for banned names.
+        assert!(
+            registry.lookup("String").is_none(),
+            "banned name `String` must NOT be registered"
+        );
+        assert!(
+            registry.lookup("string").is_none(),
+            "banned name must not be registered under any spelling"
+        );
+    }
+
+    #[test]
+    fn t7_no_return_type_annotations_yields_empty_registry() {
+        // Negative control: a file whose decls all omit `-> DomainType`
+        // produces an empty registry. Catches a "register on every decl
+        // regardless" regression where the early-return on absent annotation
+        // is removed.
+        let src = "skill foo()\n    description: \"Foo.\"\n    flow:\n        \"do\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        assert!(
+            registry.lookup("Foo").is_none(),
+            "registry must be empty when no `-> DomainType` annotations exist"
+        );
+        assert!(
+            registry.lookup("foo").is_none(),
+            "registry must not pick up the skill name as a domain type"
+        );
     }
 }

@@ -93,7 +93,8 @@ pub fn compile_source(
         }
     };
 
-    let file = analyze::analyze_with_diagnostics(file, file_id, file_label, &line_index, &mut bag);
+    let mut registry = domain_registry::Registry::new();
+    let file = analyze::analyze_with_diagnostics(file, file_id, file_label, &line_index, &mut bag, &mut registry);
     if bag.has_error() || bag.has_repairable() {
         return Ok(CompileOutcome::Diagnostics(bag));
     }
@@ -121,7 +122,8 @@ pub fn check_source(source: &str, file_id: u32, file_label: &str) -> DiagBag {
     // Phase 2 (Analyze) — slice 4 adds the parameter-related diagnostics
     // (`G::analyze::unknown-param-slot`, `G::analyze::missing-param-default`).
     if let Some(file) = parsed {
-        let _ = analyze::analyze_with_diagnostics(file, file_id, file_label, &line_index, &mut bag);
+        let mut registry = domain_registry::Registry::new();
+        let _ = analyze::analyze_with_diagnostics(file, file_id, file_label, &line_index, &mut bag, &mut registry);
     }
 
     bag
@@ -489,6 +491,7 @@ fn check_file_recursive(
     }
 
     // Run Phase 2 with import-augmented name sets.
+    let mut registry = domain_registry::Registry::new();
     let _ = analyze::analyze_with_imports(
         &file,
         0,
@@ -499,6 +502,7 @@ fn check_file_recursive(
         &imported_blocks,
         &mut used_import_names,
         &HashMap::new(),
+        &mut registry,
     );
 
     // Unused import detection.
@@ -1101,10 +1105,12 @@ fn compile_source_with_resolved_imports(
 
     let mut used_import_names: HashSet<String> = HashSet::new();
 
+    let mut registry = domain_registry::Registry::new();
     let file = analyze::analyze_with_imports(
         &file, file_id, file_label, &line_index, &mut bag,
         &resolved_imports.text_names, &all_imported_blocks, &mut used_import_names,
         &resolved_imports.block_descriptions,
+        &mut registry,
     );
     if bag.has_error() || bag.has_repairable() {
         return Ok(CompileOutcome::Diagnostics(bag));
