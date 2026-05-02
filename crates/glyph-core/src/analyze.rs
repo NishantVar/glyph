@@ -305,23 +305,23 @@ fn analyze_skill_with_usage_tracking(
 
     // Check constraint markers.
     for marker in &skill.body_constraints {
-        if imported_texts.contains(&marker.name) {
-            used_import_names.insert(marker.name.clone());
+        if imported_texts.contains(&marker.name.node) {
+            used_import_names.insert(marker.name.node.clone());
         }
     }
 
     // Check context entries.
     for entry in &skill.body_context {
         if let crate::ast::ContextEntry::NameRef(name) = entry {
-            if imported_texts.contains(name) {
-                used_import_names.insert(name.clone());
+            if imported_texts.contains(&name.node) {
+                used_import_names.insert(name.node.clone());
             }
         }
     }
     for entry in &skill.context_section {
         if let crate::ast::ContextEntry::NameRef(name) = entry {
-            if imported_texts.contains(name) {
-                used_import_names.insert(name.clone());
+            if imported_texts.contains(&name.node) {
+                used_import_names.insert(name.node.clone());
             }
         }
     }
@@ -339,19 +339,19 @@ fn track_flow_usage(
     for stmt in flow {
         match stmt {
             crate::ast::FlowStmt::Call { target, .. } => {
-                if imported_blocks.contains(target) {
-                    used.insert(target.clone());
+                if imported_blocks.contains(&target.node) {
+                    used.insert(target.node.clone());
                 }
             }
             crate::ast::FlowStmt::ConstraintMarker(marker) => {
-                if imported_texts.contains(&marker.name) {
-                    used.insert(marker.name.clone());
+                if imported_texts.contains(&marker.name.node) {
+                    used.insert(marker.name.node.clone());
                 }
             }
             crate::ast::FlowStmt::ContextMarker(entry) => {
                 if let crate::ast::ContextEntry::NameRef(name) = entry {
-                    if imported_texts.contains(name) {
-                        used.insert(name.clone());
+                    if imported_texts.contains(&name.node) {
+                        used.insert(name.node.clone());
                     }
                 }
             }
@@ -426,7 +426,7 @@ fn analyze_skill(
                         classification: crate::diagnostic::Classification::Repairable,
                         message: format!(
                             "bare name `{}` in `flow:` is not a valid statement; add a keyword prefix (`require`/`avoid`/`must`/`context`) or parentheses for a call",
-                            name
+                            name.node
                         ),
                         span: SourceSpan::from_byte_span(file_label, span, line_index),
                         related: Vec::new(),
@@ -439,9 +439,9 @@ fn analyze_skill(
             }
             FlowStmt::Call { target, .. } => {
                 // Check that the call target resolves to a declared block.
-                if !block_names.contains(target.as_str()) {
+                if !block_names.contains(target.node.as_str()) {
                     // Check if this is a stdlib name used without import.
-                    if is_stdlib_block_name(target) {
+                    if is_stdlib_block_name(&target.node) {
                         let span = spanned.span;
                         bag.push(
                             crate::diagnostic::Diagnostic {
@@ -449,12 +449,12 @@ fn analyze_skill(
                                 classification: crate::diagnostic::Classification::Repairable,
                                 message: format!(
                                     "`{}` is a standard library block; add `import \"@glyph/std\" {{ {} }}`",
-                                    target, target
+                                    target.node, target.node
                                 ),
                                 span: SourceSpan::from_byte_span(file_label, span, line_index),
                                 related: Vec::new(),
                                 hints: vec![
-                                    format!("add `import \"@glyph/std\" {{ {} }}` at the top of the file", target),
+                                    format!("add `import \"@glyph/std\" {{ {} }}` at the top of the file", target.node),
                                 ],
                             },
                             span,
@@ -467,12 +467,12 @@ fn analyze_skill(
                                 classification: crate::diagnostic::Classification::Repairable,
                                 message: format!(
                                     "call to `{}()` but no `block {}` is declared in this file",
-                                    target, target
+                                    target.node, target.node
                                 ),
                                 span: SourceSpan::from_byte_span(file_label, span, line_index),
                                 related: Vec::new(),
                                 hints: vec![
-                                    format!("declare `block {}()` or check the name for typos", target),
+                                    format!("declare `block {}()` or check the name for typos", target.node),
                                 ],
                             },
                             span,
@@ -482,14 +482,14 @@ fn analyze_skill(
             }
             FlowStmt::ConstraintMarker(marker) => {
                 // Check that the constraint name resolves to a text declaration.
-                if !text_names.contains(marker.name.as_str()) {
+                if !text_names.contains(marker.name.node.as_str()) {
                     let span = spanned.span;
                     bag.push(
                         Diagnostic::error(
                             "G::analyze::undefined-name",
                             format!(
                                 "`{}` is not a declared `text` in this file",
-                                marker.name
+                                marker.name.node
                             ),
                             SourceSpan::from_byte_span(file_label, span, line_index),
                         ),
@@ -539,14 +539,14 @@ fn analyze_skill(
 
     // Check body-level constraint name refs.
     for marker in &skill.body_constraints {
-        if !text_names.contains(marker.name.as_str()) {
+        if !text_names.contains(marker.name.node.as_str()) {
             let span = spanned.span;
             bag.push(
                 Diagnostic::error(
                     "G::analyze::undefined-name",
                     format!(
                         "`{}` is not a declared `text` in this file",
-                        marker.name
+                        marker.name.node
                     ),
                     SourceSpan::from_byte_span(file_label, span, line_index),
                 ),
@@ -569,7 +569,7 @@ fn analyze_skill(
     // A bare text name at body level (no keyword prefix) is ambiguous — the
     // compiler doesn't know if the author meant constraint, context, or step.
     for name in &skill.body_bare_names {
-        if text_names.contains(name.as_str()) {
+        if text_names.contains(name.node.as_str()) {
             let span = spanned.span;
             bag.push(
                 crate::diagnostic::Diagnostic {
@@ -577,7 +577,7 @@ fn analyze_skill(
                     classification: crate::diagnostic::Classification::Repairable,
                     message: format!(
                         "bare name `{}` at body level is ambiguous — add a keyword prefix (`require`/`avoid`/`must`/`context`) to clarify intent",
-                        name
+                        name.node
                     ),
                     span: SourceSpan::from_byte_span(file_label, span, line_index),
                     related: Vec::new(),
@@ -744,7 +744,7 @@ fn infer_effects_for_skill(
         .flow
         .iter()
         .filter_map(|stmt| match stmt {
-            FlowStmt::Call { target, .. } => Some(target.clone()),
+            FlowStmt::Call { target, .. } => Some(target.node.clone()),
             _ => None,
         })
         .collect();
@@ -763,7 +763,7 @@ fn infer_effects_for_skill(
             // Add transitive calls from this block.
             for stmt in &block.flow {
                 if let FlowStmt::Call { target: inner, .. } = stmt {
-                    worklist.push(inner.clone());
+                    worklist.push(inner.node.clone());
                 }
             }
         } else if let Some(effects) = stdlib_block_effects(&target) {
@@ -786,11 +786,11 @@ fn check_context_entry_name(
     bag: &mut DiagBag,
 ) {
     if let ContextEntry::NameRef(name) = entry {
-        if !text_names.contains(name.as_str()) {
+        if !text_names.contains(name.node.as_str()) {
             bag.push(
                 Diagnostic::error(
                     "G::analyze::undefined-name",
-                    format!("`{}` is not a declared `text` in this file", name),
+                    format!("`{}` is not a declared `text` in this file", name.node),
                     SourceSpan::from_byte_span(file_label, span, line_index),
                 ),
                 span,
@@ -928,20 +928,20 @@ fn check_branch_body_names(
     for stmt in body {
         match stmt {
             FlowStmt::Call { target, .. } => {
-                if !block_names.contains(target.as_str()) {
-                    if is_stdlib_block_name(target) {
+                if !block_names.contains(target.node.as_str()) {
+                    if is_stdlib_block_name(&target.node) {
                         bag.push(
                             Diagnostic {
                                 id: "G::analyze::stdlib-missing-import".into(),
                                 classification: Classification::Repairable,
                                 message: format!(
                                     "`{}` is a standard library block; add `import \"@glyph/std\" {{ {} }}`",
-                                    target, target
+                                    target.node, target.node
                                 ),
                                 span: SourceSpan::from_byte_span(file_label, span, line_index),
                                 related: Vec::new(),
                                 hints: vec![
-                                    format!("add `import \"@glyph/std\" {{ {} }}` at the top of the file", target),
+                                    format!("add `import \"@glyph/std\" {{ {} }}` at the top of the file", target.node),
                                 ],
                             },
                             span,
@@ -953,12 +953,12 @@ fn check_branch_body_names(
                                 classification: Classification::Repairable,
                                 message: format!(
                                     "call to `{}()` but no `block {}` is declared in this file",
-                                    target, target
+                                    target.node, target.node
                                 ),
                                 span: SourceSpan::from_byte_span(file_label, span, line_index),
                                 related: Vec::new(),
                                 hints: vec![
-                                    format!("declare `block {}()` or check the name for typos", target),
+                                    format!("declare `block {}()` or check the name for typos", target.node),
                                 ],
                             },
                             span,
@@ -967,11 +967,11 @@ fn check_branch_body_names(
                 }
             }
             FlowStmt::ConstraintMarker(marker) => {
-                if !text_names.contains(marker.name.as_str()) {
+                if !text_names.contains(marker.name.node.as_str()) {
                     bag.push(
                         Diagnostic::error(
                             "G::analyze::undefined-name",
-                            format!("`{}` is not a declared `text` in this file", marker.name),
+                            format!("`{}` is not a declared `text` in this file", marker.name.node),
                             SourceSpan::from_byte_span(file_label, span, line_index),
                         ),
                         span,
@@ -1208,7 +1208,7 @@ mod tests {
                 params: Vec::new(),
                 description: Some("Main skill.".to_string()),
                 flow: vec![FlowStmt::Call {
-                    target: "writer".to_string(),
+                    target: Spanned::new("writer".to_string(), Span::new(0, 0, 6)),
                     args: Vec::new(),
                     site_modifier: None,
                 }],

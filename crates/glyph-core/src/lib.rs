@@ -372,15 +372,15 @@ fn check_file_recursive(
                     match &import.kind {
                         ImportKind::Selective(names) => {
                             for imp_name in names {
-                                let local = imp_name.alias.as_deref().unwrap_or(&imp_name.name);
+                                let local = imp_name.alias.as_deref().unwrap_or(imp_name.name.node.as_str());
                                 all_import_names.push((local.to_string(), import_span));
-                                if imp_name.name == "subagent" || imp_name.name == "send" {
+                                if imp_name.name.node == "subagent" || imp_name.name.node == "send" {
                                     imported_blocks.insert(local.to_string());
                                 } else {
                                     bag.push(
                                         Diagnostic::error(
                                             "G::analyze::import-private",
-                                            format!("`{}` is not exported from `{}`", imp_name.name, import.path),
+                                            format!("`{}` is not exported from `{}`", imp_name.name.node, import.path),
                                             SourceSpan::from_byte_span(&file_label, import_span, &line_index),
                                         ),
                                         import_span,
@@ -452,36 +452,36 @@ fn check_file_recursive(
             match &import.kind {
                 ImportKind::Selective(names) => {
                     for imp_name in names {
-                        let local = imp_name.alias.as_deref().unwrap_or(&imp_name.name);
+                        let local = imp_name.alias.as_deref().unwrap_or(imp_name.name.node.as_str());
                         all_import_names.push((local.to_string(), import_span));
 
-                        if dep_exports.skills.contains(&imp_name.name) {
+                        if dep_exports.skills.contains(&imp_name.name.node) {
                             bag.push(
                                 Diagnostic::error(
                                     "G::analyze::import-skill",
-                                    format!("`{}` is a `skill` and cannot be selectively imported", imp_name.name),
+                                    format!("`{}` is a `skill` and cannot be selectively imported", imp_name.name.node),
                                     SourceSpan::from_byte_span(&file_label, import_span, &line_index),
                                 ),
                                 import_span,
                             );
-                        } else if dep_exports.privates.contains(&imp_name.name) {
+                        } else if dep_exports.privates.contains(&imp_name.name.node) {
                             bag.push(
                                 Diagnostic::error(
                                     "G::analyze::import-private",
-                                    format!("`{}` is not exported from `{}`", imp_name.name, import.path),
+                                    format!("`{}` is not exported from `{}`", imp_name.name.node, import.path),
                                     SourceSpan::from_byte_span(&file_label, import_span, &line_index),
                                 ),
                                 import_span,
                             );
-                        } else if dep_exports.texts.contains(&imp_name.name) {
+                        } else if dep_exports.texts.contains(&imp_name.name.node) {
                             imported_texts.insert(local.to_string());
-                        } else if dep_exports.blocks.contains(&imp_name.name) {
+                        } else if dep_exports.blocks.contains(&imp_name.name.node) {
                             imported_blocks.insert(local.to_string());
                         } else {
                             bag.push(
                                 Diagnostic::error(
                                     "G::analyze::import-private",
-                                    format!("`{}` is not exported from `{}`", imp_name.name, import.path),
+                                    format!("`{}` is not exported from `{}`", imp_name.name.node, import.path),
                                     SourceSpan::from_byte_span(&file_label, import_span, &line_index),
                                 ),
                                 import_span,
@@ -892,8 +892,8 @@ fn build_imported_procedure_paths(
             match &import.kind {
                 ImportKind::Selective(names) => {
                     for imp_name in names {
-                        let local = imp_name.alias.as_deref().unwrap_or(&imp_name.name);
-                        let key = (resolved.clone(), imp_name.name.clone());
+                        let local = imp_name.alias.as_deref().unwrap_or(imp_name.name.node.as_str());
+                        let key = (resolved.clone(), imp_name.name.node.clone());
                         if let Some(proc_path) = procedure_paths.get(&key) {
                             result.insert(local.to_string(), proc_path.clone());
                         }
@@ -966,19 +966,19 @@ fn build_resolved_imports(
             match &import.kind {
                 ImportKind::Selective(names) => {
                     for imp_name in names {
-                        let local = imp_name.alias.as_deref().unwrap_or(&imp_name.name);
-                        if exports.texts.contains(&imp_name.name) {
+                        let local = imp_name.alias.as_deref().unwrap_or(imp_name.name.node.as_str());
+                        if exports.texts.contains(&imp_name.name.node) {
                             result.text_names.insert(local.to_string());
-                            if let Some(val) = file_text_values.get(&(resolved.clone(), imp_name.name.clone())) {
+                            if let Some(val) = file_text_values.get(&(resolved.clone(), imp_name.name.node.clone())) {
                                 result.text_values.insert(local.to_string(), val.clone());
                             }
                         }
-                        if exports.blocks.contains(&imp_name.name) {
+                        if exports.blocks.contains(&imp_name.name.node) {
                             result.block_names.insert(local.to_string());
-                            if let Some(body) = file_block_bodies.get(&(resolved.clone(), imp_name.name.clone())) {
+                            if let Some(body) = file_block_bodies.get(&(resolved.clone(), imp_name.name.node.clone())) {
                                 result.block_bodies.insert(local.to_string(), body.clone());
                             }
-                            if let Some(desc) = file_block_descriptions.get(&(resolved.clone(), imp_name.name.clone())) {
+                            if let Some(desc) = file_block_descriptions.get(&(resolved.clone(), imp_name.name.node.clone())) {
                                 result.block_descriptions.insert(local.to_string(), desc.clone());
                             }
                         }
@@ -2544,7 +2544,7 @@ skill main()
         assert_eq!(skill.flow.len(), 1);
         match &skill.flow[0] {
             ast::FlowStmt::Call { target, args, site_modifier } => {
-                assert_eq!(target, "inspect_repo");
+                assert_eq!(target.node, "inspect_repo");
                 assert_eq!(args, &["scope".to_string()]);
                 assert_eq!(site_modifier.as_deref(), Some("focus on auth"));
             }
@@ -2571,7 +2571,7 @@ skill fix_bug()
         match &import.kind {
             ast::ImportKind::Selective(names) => {
                 assert_eq!(names.len(), 1);
-                assert_eq!(names[0].name, "preserve_existing_patterns");
+                assert_eq!(names[0].name.node, "preserve_existing_patterns");
                 assert!(names[0].alias.is_none());
             }
             _ => panic!("expected selective import"),
