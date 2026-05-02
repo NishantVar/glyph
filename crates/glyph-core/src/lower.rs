@@ -342,12 +342,18 @@ pub fn lower_with_imports(
         if let Decl::Block(b) = d {
             let block = &b.node;
             let body_text = resolve_block_body_text(block, &texts)?;
-            // Collect outgoing call targets from the block's flow.
+            // Collect outgoing call targets from the block's flow. Issue #84
+            // codex pass 2 — F2: `return foo()` is also an outgoing call
+            // edge; without this arm a self-recursive `return recurse()`
+            // bypassed validate's DFS cycle check. Mirrors the symmetric
+            // chunk-7a fix in `analyze::track_flow_usage` (`Return(Call)`
+            // counts as a use of an imported block).
             let outgoing_calls: Vec<String> = block
                 .flow
                 .iter()
                 .filter_map(|stmt| match stmt {
                     FlowStmt::Call { target, .. } => Some(target.clone()),
+                    FlowStmt::Return(ReturnExpr::Call { target, .. }) => Some(target.clone()),
                     _ => None,
                 })
                 .collect();
@@ -941,6 +947,88 @@ skill main()
             .find(|n| n["target"] == "do_thing")
             .expect("call node present");
         assert_eq!(call_json["return_type"], serde_json::Value::Null);
+    }
+
+    // Issue #84 codex pass 2 — F2: `return foo()` is a call edge for cycle
+    // detection. `lower::FlowStmt::Call` populates `outgoing_calls`, but the
+    // matching `FlowStmt::Return(ReturnExpr::Call { target, .. })` arm did
+    // not — so a self-recursive `return recurse()` slipped past validate's
+    // DFS cycle check (which reads only `IrBlock.outgoing_calls`). Pinning
+    // through the public pipeline (parse → lower → validate) so a future
+    // refactor that moves the edge-emission logic stays correct.
+    #[test]
+    fn return_call_in_block_flow_emits_outgoing_call_edge_for_cycle_check() {
+        let src = "\
+skill drive()
+    description: \"drive.\"
+    flow:
+        recurse()
+
+block recurse() -> Plan
+    description: \"recurse.\"
+    flow:
+        return recurse()
+";
+        let arena = lower_skill(src);
+        let block = find_block(&arena, "recurse");
+        assert_eq!(
+            block.outgoing_calls,
+            vec!["recurse".to_string()],
+            "`return recurse()` must register as an outgoing call edge so \
+             validate's DFS cycle check sees the self-loop; got: {:?}",
+            block.outgoing_calls
+        );
+
+        // Behavior pin via the public validate surface: the cycle DFS must
+        // now reject the self-recursion it formerly missed.
+        let err = crate::validate::validate(&arena).unwrap_err();
+        assert!(
+            matches!(&err, crate::validate::ValidateError::RecursiveCall(name) if name == "recurse"),
+            "expected RecursiveCall(\"recurse\"); got: {:?}",
+            err
+        );
+    }
+
+    // Issue #84 codex pass 2 — F2 transitive coverage. `block a -> return b()`,
+    // `block b -> return a()` exercises a path the direct-self-recursion
+    // case does not: cycle detection must see edges contributed by *both*
+    // blocks' Return(Call) statements. Pre-fix, both `outgoing_calls` lists
+    // were empty, the DFS adjacency was empty, and validate returned Ok.
+    #[test]
+    fn return_call_transitive_cycle_is_rejected_by_validate() {
+        let src = "\
+skill drive()
+    description: \"drive.\"
+    flow:
+        a()
+
+block a() -> Plan
+    description: \"a.\"
+    flow:
+        return b()
+
+block b() -> Plan
+    description: \"b.\"
+    flow:
+        return a()
+";
+        let arena = lower_skill(src);
+        let a_block = find_block(&arena, "a");
+        let b_block = find_block(&arena, "b");
+        assert_eq!(a_block.outgoing_calls, vec!["b".to_string()]);
+        assert_eq!(b_block.outgoing_calls, vec!["a".to_string()]);
+
+        let err = crate::validate::validate(&arena).unwrap_err();
+        match &err {
+            crate::validate::ValidateError::RecursiveCall(name) => {
+                assert!(
+                    name == "a" || name == "b",
+                    "expected cycle participant `a` or `b`, got: {}",
+                    name
+                );
+            }
+            other => panic!("expected RecursiveCall, got: {:?}", other),
+        }
     }
 
     // N4: a banned-generic identifier in type position (e.g. `List`, `Dict`)

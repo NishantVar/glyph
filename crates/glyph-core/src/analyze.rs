@@ -333,18 +333,102 @@ fn check_block_return_calls(
     line_index: &LineIndex,
     bag: &mut DiagBag,
 ) {
-    for stmt in &block.flow {
-        check_return_call_nominal(
-            block.return_type.as_ref(),
-            stmt,
-            decl_span,
-            registry,
-            local_callee_return_types,
-            imported_block_return_types,
-            file_label,
-            line_index,
-            bag,
-        );
+    walk_return_calls_nominal_check(
+        &block.flow,
+        block.return_type.as_ref(),
+        decl_span,
+        registry,
+        local_callee_return_types,
+        imported_block_return_types,
+        file_label,
+        line_index,
+        bag,
+    );
+}
+
+/// Issue #84 codex pass 2 — F1: recursive nominal walker.
+///
+/// Walks `flow` and runs [`check_return_call_nominal`] on every
+/// `FlowStmt::Return`, recursing into `FlowStmt::Branch` bodies (then-arm,
+/// each elif-arm, optional else-arm) so nested returns are not missed. Pre-
+/// fix, both `analyze_skill::FlowStmt::Branch` and `check_block_return_calls`
+/// iterated only the top-level `flow` slice; a `return foo()` inside an
+/// `if`/`elif`/`else` body silently bypassed the chunk-4 mismatch check.
+///
+/// Side note (orthogonal): `G::parse::return-in-branch` is already a parse-
+/// time error against return-inside-branch; this walker exists so the
+/// invariant "every Return in flow is checked for nominal match" holds
+/// regardless of the parse-rule's future evolution and so that authors who
+/// see both diagnostics get the more precise type signal alongside the
+/// structural one.
+#[allow(clippy::too_many_arguments)]
+fn walk_return_calls_nominal_check(
+    flow: &[FlowStmt],
+    caller_return_type: Option<&Spanned<String>>,
+    decl_span: Span,
+    registry: &crate::domain_registry::Registry,
+    local_callee_return_types: &HashMap<&str, &Spanned<String>>,
+    imported_block_return_types: &HashMap<String, Spanned<String>>,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    for stmt in flow {
+        match stmt {
+            FlowStmt::Return(_) => {
+                check_return_call_nominal(
+                    caller_return_type,
+                    stmt,
+                    decl_span,
+                    registry,
+                    local_callee_return_types,
+                    imported_block_return_types,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+            }
+            FlowStmt::Branch { then_body, elif_branches, else_body, .. } => {
+                walk_return_calls_nominal_check(
+                    then_body,
+                    caller_return_type,
+                    decl_span,
+                    registry,
+                    local_callee_return_types,
+                    imported_block_return_types,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+                for elif in elif_branches {
+                    walk_return_calls_nominal_check(
+                        &elif.body,
+                        caller_return_type,
+                        decl_span,
+                        registry,
+                        local_callee_return_types,
+                        imported_block_return_types,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                }
+                if let Some(eb) = else_body {
+                    walk_return_calls_nominal_check(
+                        eb,
+                        caller_return_type,
+                        decl_span,
+                        registry,
+                        local_callee_return_types,
+                        imported_block_return_types,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1008,6 +1092,47 @@ fn analyze_skill(
                 }
                 if let Some(eb) = else_body {
                     check_branch_body_names(eb, spanned.span, file_label, line_index, bag, &text_names, &block_names);
+                }
+                // Issue #84 codex pass 2 — F1: recurse into branch bodies so
+                // a `return foo()` nested inside `if`/`elif`/`else` runs the
+                // chunk-4 nominal-mismatch check. Pre-fix this arm only ran
+                // structural/name checks; the type check was lost.
+                walk_return_calls_nominal_check(
+                    then_body,
+                    skill.return_type.as_ref(),
+                    spanned.span,
+                    registry,
+                    local_callee_return_types,
+                    imported_block_return_types,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+                for elif in elif_branches {
+                    walk_return_calls_nominal_check(
+                        &elif.body,
+                        skill.return_type.as_ref(),
+                        spanned.span,
+                        registry,
+                        local_callee_return_types,
+                        imported_block_return_types,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                }
+                if let Some(eb) = else_body {
+                    walk_return_calls_nominal_check(
+                        eb,
+                        skill.return_type.as_ref(),
+                        spanned.span,
+                        registry,
+                        local_callee_return_types,
+                        imported_block_return_types,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
                 }
             }
         }
@@ -2736,5 +2861,98 @@ mod tests {
             "same-file call to `export block` must not fire chunk-4 nominal-mismatch; got: {:?}",
             bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
         );
+    }
+
+    // --- Issue #84 codex pass 2 — branch-body nominal walk. The skill flow
+    // walk and `check_block_return_calls` formerly iterated the top-level
+    // `flow` slice flat, so a `return foo()` nested inside an `if` / `elif` /
+    // `else` body bypassed the chunk-4 nominal-mismatch check entirely. ---
+
+    #[test]
+    fn t15_branch_body_return_call_fires_nominal_mismatch_on_block_walk() {
+        // Codex pass 2 — F1 [P1] block walk. Mirrors t14 on the private-
+        // block-as-caller path through `check_block_return_calls`. A local
+        // `block helper() -> Report` returns `imported_foo()` from inside
+        // an `if` body; imports map declares `imported_foo: -> Plan`.
+        //
+        // Pre-fix: `check_block_return_calls` iterated `block.flow` flat
+        // (no Branch recursion), so the imports-path BlockDecl-as-caller
+        // contract t11_imports_path_blockdecl_as_caller_parity pinned only
+        // top-level returns. Returns nested in a branch slipped through.
+        //
+        // Post-fix: the helper delegates to the recursive walker shared
+        // with the skill-flow path (single nominal-walk surface, no drift).
+        let src = "skill main()\n    description: \"Main.\"\n    flow:\n        helper()\n\nblock helper() -> Report\n    description: \"Helper.\"\n    flow:\n        if mode == \"x\"\n            return imported_foo()\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let mut used: HashSet<String> = HashSet::new();
+
+        let mut imported_blocks: HashSet<String> = HashSet::new();
+        imported_blocks.insert("imported_foo".to_string());
+
+        let mut imported_block_return_types: HashMap<String, Spanned<String>> = HashMap::new();
+        imported_block_return_types.insert(
+            "imported_foo".to_string(),
+            Spanned::new("Plan".to_string(), Span::new(0, 0, 0)),
+        );
+
+        let _ = analyze_with_imports(
+            &file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &HashSet::new(),
+            &imported_blocks,
+            &mut used,
+            &HashMap::new(),
+            &mut registry,
+            &imported_block_return_types,
+        );
+
+        let mismatches = nominal_mismatches(&bag);
+        assert_eq!(
+            mismatches.len(),
+            1,
+            "expected one nominal-mismatch for branch-nested return on block-as-caller, got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+        let d = mismatches[0];
+        assert!(d.message.contains("Report"));
+        assert!(d.message.contains("Plan"));
+        assert!(d.message.contains("imported_foo"));
+    }
+
+    #[test]
+    fn t14_branch_body_return_call_fires_nominal_mismatch_on_skill_walk() {
+        // Codex pass 2 — F1 [P1] skill walk. A skill `main() -> Report` has a
+        // `return helper()` nested inside an `if` branch body; same-file
+        // callee `block helper() -> Plan` has a divergent canonical name.
+        //
+        // Pre-fix: `analyze_skill::FlowStmt::Branch` only ran
+        // `check_nested_branches` (the parse-time nested-branch warning),
+        // never `check_return_call_nominal`. The mismatch was silently lost,
+        // exit 0 instead of exit 1.
+        //
+        // Post-fix: the walk recurses into branch bodies and fires
+        // `nominal-mismatch` on every Return regardless of nesting depth.
+        let src = "skill main() -> Report\n    description: \"Main.\"\n    flow:\n        if mode == \"x\"\n            return helper()\n\nblock helper() -> Plan\n    description: \"Helper.\"\n    flow:\n        \"do\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let mismatches = nominal_mismatches(&bag);
+        assert_eq!(
+            mismatches.len(),
+            1,
+            "expected one nominal-mismatch for return-in-branch with mismatched types, got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+        let d = mismatches[0];
+        assert!(d.message.contains("Report"));
+        assert!(d.message.contains("Plan"));
+        assert!(d.message.contains("helper"));
     }
 }
