@@ -175,6 +175,50 @@ fn fmt_check_exits_0_when_already_formatted() {
 }
 
 #[test]
+fn fmt_preserves_generated_const_and_skill_when_mixed() {
+    // Regression: chunk 4's `decl_starts` recognizer didn't include the
+    // `generated ` prefix, so a `generated const` line at top level was
+    // absorbed into the previous decl's range. With the bug, fmt's section
+    // reorder (which moves `flow:` after `description:`) inserts the
+    // generated-const line BETWEEN description and flow, corrupting both
+    // the skill body layout and the generated-const placement. The pin:
+    // the generated const must end up AFTER the skill's flow body.
+    let src = fmt_corpus_path("generated_const_after_skill.glyph.md");
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let tmp_path = tmp.path().to_path_buf();
+    std::fs::copy(&src, &tmp_path).unwrap();
+
+    let output = run_fmt(&tmp_path);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    let result = std::fs::read_to_string(&tmp_path).unwrap();
+    // Skill body must remain intact and reorder flow after description.
+    assert!(result.contains("skill demo()"), "skill header preserved");
+    let desc_pos = result.find("    description: \"Demo skill.\"").expect("skill description preserved");
+    let flow_pos = result.find("    flow:").expect("skill flow section preserved");
+    let step_pos = result.find("        \"step one\"").expect("skill flow body preserved");
+    let generated_pos = result
+        .find("generated const helper_text = \"Generated helper string.\"")
+        .expect("generated const declaration should pass through unchanged");
+    // Canonical order inside skill: description before flow.
+    assert!(desc_pos < flow_pos, "description should come before flow in skill body");
+    // The bug: generated const lands between description and flow.
+    // Fix asserts: generated const must be AFTER the skill body's last line.
+    assert!(
+        generated_pos > step_pos,
+        "generated const must follow the entire skill body, not be embedded inside it; got:\n{}",
+        result,
+    );
+
+    // Idempotency: running fmt again must not change anything.
+    let first = result.clone();
+    let output = run_fmt(&tmp_path);
+    assert!(output.status.success());
+    let second = std::fs::read_to_string(&tmp_path).unwrap();
+    assert_eq!(first, second, "fmt should be idempotent on mixed generated-const + skill");
+}
+
+#[test]
 fn fmt_is_idempotent() {
     // Use the most complex fixture (non-canonical order).
     let src = fmt_corpus_path("noncanonical_order.glyph.md");

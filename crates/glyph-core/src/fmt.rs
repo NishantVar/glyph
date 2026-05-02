@@ -126,6 +126,7 @@ fn ast_rewrite(source: &str, file: &crate::ast::SourceFile) -> String {
                 || trimmed.starts_with("export block ")
                 || trimmed.starts_with("export const ")
                 || trimmed.starts_with("const ")
+                || trimmed.starts_with("generated ")
                 || trimmed.starts_with("import ")
             {
                 decl_starts.push(i);
@@ -158,7 +159,7 @@ fn ast_rewrite(source: &str, file: &crate::ast::SourceFile) -> String {
         last_end = end;
 
         let header = lines[start].trim();
-        if header.starts_with("const ") || header.starts_with("export const ") || header.starts_with("import ") {
+        if header.starts_with("const ") || header.starts_with("export const ") || header.starts_with("import ") || header.starts_with("generated ") {
             // Pass through unchanged.
             for i in start..end {
                 out.push_str(lines[i]);
