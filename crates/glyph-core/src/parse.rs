@@ -130,6 +130,23 @@ pub fn parse_with_diagnostics(
             );
             return None;
         }
+        Err(TokenizeError::LeadingZeroNumeric { byte_offset }) => {
+            let span = Span::new(file_id, byte_offset, byte_offset + 1);
+            bag.push(
+                Diagnostic {
+                    id: "G::parse::leading-zero-numeric".into(),
+                    classification: Classification::Repairable,
+                    message: "numeric literal has a leading zero; per `design/values-and-names.md` §Integers, leading zeros are not allowed on integers or float integer parts".into(),
+                    span: SourceSpan::from_byte_span(file_label, span, line_index),
+                    related: Vec::new(),
+                    hints: vec![
+                        "drop the leading zero(s) — write `3` instead of `03`, or `1.5` instead of `01.5`".into(),
+                    ],
+                },
+                span,
+            );
+            return None;
+        }
         Err(_) => {
             return None;
         }

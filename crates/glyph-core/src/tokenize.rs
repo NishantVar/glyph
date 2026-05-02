@@ -52,6 +52,10 @@ pub enum TokenizeError {
     BadIndent { byte_offset: u32 },
     UnterminatedString { byte_offset: u32 },
     UnexpectedChar { byte_offset: u32, ch: char },
+    /// Multi-digit integer (or float integer part) starting with `0` —
+    /// rejected per `design/values-and-names.md` §Integers ("Leading zeros
+    /// are not allowed."). `0` alone and `0.X` floats remain valid.
+    LeadingZeroNumeric { byte_offset: u32 },
 }
 
 pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), TokenizeError> {
@@ -229,6 +233,16 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
                 while p < content_end && bytes[p].is_ascii_digit() {
                     p += 1;
                 }
+                // Reject leading zeros on the integer part per
+                // `design/values-and-names.md` §Integers ("Leading zeros are
+                // not allowed."). `0` alone and `0.X` floats remain valid;
+                // only multi-digit integer parts starting with `0` are
+                // rejected. Applies to both pure integers (`03`) and float
+                // integer parts (`01.5`); the fractional part of a float
+                // (`1.05`) is unaffected.
+                if p - start > 1 && bytes[start] == b'0' {
+                    return Err(TokenizeError::LeadingZeroNumeric { byte_offset: start as u32 });
+                }
                 if p < content_end
                     && bytes[p] == b'.'
                     && p + 1 < content_end
@@ -359,6 +373,62 @@ mod tests {
         let src = "const pi = 3.14\n";
         let (toks, _) = tokenize(src, 0).unwrap();
         assert!(matches!(&toks[4].kind, TokenKind::NumericLit(s) if s == "3.14"));
+    }
+
+    #[test]
+    fn tokenize_rejects_leading_zero_integer() {
+        // Per `design/values-and-names.md` §Integers, multi-digit integers
+        // starting with `0` are forbidden. This is a regression-proof for
+        // chunk 2's NumericLit carve-out (the prior `text` decl path didn't
+        // accept numbers, so this is a NEW class of malformed source #81
+        // introduces — must reject at tokenize time).
+        let src = "const x = 03\n";
+        match tokenize(src, 0) {
+            Err(TokenizeError::LeadingZeroNumeric { byte_offset }) => {
+                assert_eq!(byte_offset, 10, "byte offset should point at the `0`");
+            }
+            Err(other) => panic!("expected LeadingZeroNumeric, got {:?}", other),
+            Ok(_) => panic!("`03` should fail to tokenize"),
+        }
+    }
+
+    #[test]
+    fn tokenize_rejects_leading_zero_float_integer_part() {
+        // Same rule applies to the integer part of a float: `01.5` rejects.
+        let src = "const x = 01.5\n";
+        match tokenize(src, 0) {
+            Err(TokenizeError::LeadingZeroNumeric { .. }) => {}
+            Err(other) => panic!("expected LeadingZeroNumeric, got {:?}", other),
+            Ok(_) => panic!("`01.5` should fail to tokenize"),
+        }
+    }
+
+    #[test]
+    fn tokenize_accepts_zero_alone() {
+        // `0` is the canonical integer-zero literal — must remain valid.
+        let src = "const x = 0\n";
+        let (toks, _) = tokenize(src, 0).expect("`0` should tokenize");
+        assert!(matches!(&toks[4].kind, TokenKind::NumericLit(s) if s == "0"));
+    }
+
+    #[test]
+    fn tokenize_accepts_zero_dot_float() {
+        // `0.001` is a leading-zero float (allowed — single `0` followed by
+        // `.` and digits). Mirrors the existing `const_float.glyph.md`
+        // fixture which uses `0.001`.
+        let src = "const x = 0.001\n";
+        let (toks, _) = tokenize(src, 0).expect("`0.001` should tokenize");
+        assert!(matches!(&toks[4].kind, TokenKind::NumericLit(s) if s == "0.001"));
+    }
+
+    #[test]
+    fn tokenize_accepts_leading_zero_in_fractional_part() {
+        // The leading-zero rule only applies to the INTEGER part. `1.05` is
+        // a valid float — the `0` is in the fractional digits, not the
+        // integer part.
+        let src = "const x = 1.05\n";
+        let (toks, _) = tokenize(src, 0).expect("`1.05` should tokenize");
+        assert!(matches!(&toks[4].kind, TokenKind::NumericLit(s) if s == "1.05"));
     }
 
     #[test]
