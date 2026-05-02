@@ -192,16 +192,9 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
     };
     for decl in &file.decls {
         match decl {
-            Decl::Text(t) => {
-                if t.node.exported {
-                    exports.texts.insert(t.node.name.clone());
-                } else {
-                    exports.privates.insert(t.node.name.clone());
-                }
-            }
             Decl::Const(c) => {
-                // `Decl::Const` is Text-equivalent for export classification:
-                // exported consts share the `texts` namespace; non-exported
+                // Exported consts share the `texts` namespace (post-issue-#81
+                // `const` is the sole value-binding form); non-exported
                 // (including `generated const`) are private.
                 if c.node.exported {
                     exports.texts.insert(c.node.name.clone());
@@ -1011,20 +1004,21 @@ fn extract_and_store_exports(
         Err(_) => return,
     };
     let exports = extract_exports(&parsed);
-    // Store text values. Exported `const` decls are stored alongside text
-    // values using their rendered source-text form (Text-equivalent at inline
-    // sites per #81 chunk 2 / Option C — kind doesn't change observable output).
+    // Store exported `const` values for cross-file inline resolution. Values
+    // are rendered as source-text (kind-agnostic at inline sites per #81
+    // chunk 2 / Option C — Text-equivalent observable output). Bool values
+    // are normalized to lowercase here per `design/values-and-names.md`
+    // §Booleans, mirroring the local `lower::collect_consts` boundary.
     for decl in &parsed.decls {
-        if let Decl::Text(t) = decl {
-            if t.node.exported {
-                file_text_values.insert((file.to_path_buf(), t.node.name.clone()), t.node.value.clone());
-            }
-        }
         if let Decl::Const(c) = decl {
             if c.node.exported {
+                let rendered = match &c.node.value {
+                    ast::ConstValue::Bool(s) => s.to_ascii_lowercase(),
+                    other => other.rendered().to_string(),
+                };
                 file_text_values.insert(
                     (file.to_path_buf(), c.node.name.clone()),
-                    c.node.value.rendered().to_string(),
+                    rendered,
                 );
             }
         }
@@ -2042,9 +2036,9 @@ skill main()
 
     #[test]
     fn applies_on_non_block_fires_error() {
-        // AC7: applies-on-non-block fires when receiver is a text declaration.
+        // AC7: applies-on-non-block fires when receiver is a const declaration.
         let src = "\
-text my_text = \"Some text.\"
+const my_text = \"Some text.\"
 
 skill main()
     description: \"Main skill.\"
@@ -2110,7 +2104,7 @@ skill main()
     fn context_in_branch_stays_inline() {
         // AC9: context marker inside a branch body stays inline, does not surface in ### Context.
         let src = "\
-text project_info = \"This is a monorepo project.\"
+const project_info = \"This is a monorepo project.\"
 
 skill main()
     description: \"Main skill.\"
@@ -2149,7 +2143,7 @@ skill main()
     fn constraint_in_branch_stays_inline() {
         // AC9-parallel: constraint marker inside a branch body stays inline.
         let src = "\
-text no_breaking_changes = \"Do not break backwards compatibility.\"
+const no_breaking_changes = \"Do not break backwards compatibility.\"
 
 skill main()
     description: \"Main skill.\"
@@ -2562,9 +2556,9 @@ skill fix_bug()
         // and repo_tools.glyph.md.
         let dir = tempfile::tempdir().unwrap();
 
-        // prefs.glyph.md — export text
+        // prefs.glyph.md — export const
         let prefs_path = dir.path().join("prefs.glyph.md");
-        std::fs::write(&prefs_path, r#"export text preserve_existing_patterns = "Prefer existing patterns."
+        std::fs::write(&prefs_path, r#"export const preserve_existing_patterns = "Prefer existing patterns."
 "#).unwrap();
 
         // repo_tools.glyph.md — export block
@@ -2620,7 +2614,7 @@ skill main()
 
         std::fs::write(&b_path, r#"import "./a.glyph.md" { something }
 
-export text something = "Hello."
+export const something = "Hello."
 "#).unwrap();
 
         let bag = check_file(&a_path);
@@ -2647,8 +2641,8 @@ export text something = "Hello."
         let dir = tempfile::tempdir().unwrap();
 
         let lib_path = dir.path().join("lib.glyph.md");
-        std::fs::write(&lib_path, r#"text private_text = "This is private."
-export text public_text = "This is public."
+        std::fs::write(&lib_path, r#"const private_text = "This is private."
+export const public_text = "This is public."
 "#).unwrap();
 
         let main_path = dir.path().join("main.glyph.md");
@@ -2704,7 +2698,7 @@ skill main()
         let dir = tempfile::tempdir().unwrap();
 
         let lib_path = dir.path().join("lib.glyph.md");
-        std::fs::write(&lib_path, r#"export text greeting = "Hello."
+        std::fs::write(&lib_path, r#"export const greeting = "Hello."
 "#).unwrap();
 
         let main_path = dir.path().join("main.glyph.md");
@@ -2734,8 +2728,8 @@ skill main()
         let dir = tempfile::tempdir().unwrap();
 
         let lib_path = dir.path().join("lib.glyph.md");
-        std::fs::write(&lib_path, r#"export text greeting = "Hello."
-export text farewell = "Goodbye."
+        std::fs::write(&lib_path, r#"export const greeting = "Hello."
+export const farewell = "Goodbye."
 "#).unwrap();
 
         let main_path = dir.path().join("main.glyph.md");
@@ -2849,9 +2843,9 @@ skill gamma()
         // list is reversed.
         let dir = tempfile::tempdir().unwrap();
 
-        // lib.glyph.md — standalone (no skill, just an export text — library)
+        // lib.glyph.md — standalone (no skill, just an export const — library)
         std::fs::write(dir.path().join("lib.glyph.md"), "\
-export text greeting = \"Hello from lib.\"
+export const greeting = \"Hello from lib.\"
 ").unwrap();
 
         // consumer.glyph.md — imports from lib but is self-contained for compile
@@ -3021,7 +3015,7 @@ this is broken!!!
     fn ac4_library_with_zero_exports_fires_no_exports_in_library() {
         // A file with zero skills AND zero exports is an error.
         let src = "\
-text private_text = \"This is private.\"
+const private_text = \"This is private.\"
 block helper()
     \"Do something.\"
 ";
@@ -3037,14 +3031,14 @@ block helper()
 
     #[test]
     fn ac1_export_text_only_library_compiles_exit_zero() {
-        // A library file with only export text declarations should compile
+        // A library file with only export const declarations should compile
         // successfully (exit 0) and produce zero .md output.
         let dir = tempfile::tempdir().unwrap();
 
         let prefs_path = dir.path().join("prefs.glyph.md");
         std::fs::write(&prefs_path, "\
-export text terminal_mux = \"tmux\"
-export text validation_strictness = \"high\"
+export const terminal_mux = \"tmux\"
+export const validation_strictness = \"high\"
 ").unwrap();
 
         let sources: Vec<PathBuf> = vec![prefs_path];
@@ -3063,8 +3057,8 @@ export text validation_strictness = \"high\"
         // check_source on a library file with exports should produce zero
         // errors (no no-exports-in-library, no other issues).
         let src = "\
-export text terminal_mux = \"tmux\"
-export text validation_strictness = \"high\"
+export const terminal_mux = \"tmux\"
+export const validation_strictness = \"high\"
 ";
         let bag = check_source(src, 0, "prefs.glyph.md");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
@@ -3104,7 +3098,7 @@ export block shared_util(x = \"default\")
         // Export block referencing its own params and exported text should
         // NOT fire closure-violation.
         let src = "\
-export text greeting = \"Hello.\"
+export const greeting = \"Hello.\"
 
 export block shared_util(x = \"default\")
     flow:
@@ -3124,8 +3118,8 @@ export block shared_util(x = \"default\")
     fn name_collision_fires_for_duplicate_export_names() {
         // Two exports sharing the same name should fire G::analyze::name-collision.
         let src = "\
-export text greeting = \"Hello.\"
-export text greeting = \"Hi.\"
+export const greeting = \"Hello.\"
+export const greeting = \"Hi.\"
 ";
         let bag = check_source(src, 0, "lib.glyph.md");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
@@ -3141,9 +3135,9 @@ export text greeting = \"Hi.\"
     fn ac5_exports_visited_in_source_order() {
         // Exports should be extracted in source order for deterministic output.
         let src = "\
-export text zebra = \"Z.\"
-export text alpha = \"A.\"
-export text middle = \"M.\"
+export const zebra = \"Z.\"
+export const alpha = \"A.\"
+export const middle = \"M.\"
 ";
         let (file, _) = parse::parse(src, 0).expect("should parse");
         let exports = extract_exports(&file);
@@ -3155,7 +3149,7 @@ export text middle = \"M.\"
 
         // Verify source-order by walking decls directly.
         let names: Vec<&str> = file.decls.iter().filter_map(|d| match d {
-            ast::Decl::Text(t) if t.node.exported => Some(t.node.name.as_str()),
+            ast::Decl::Const(c) if c.node.exported => Some(c.node.name.as_str()),
             _ => None,
         }).collect();
         assert_eq!(names, vec!["zebra", "alpha", "middle"],

@@ -32,6 +32,13 @@ fn const_value_to_kind_literal(value: &ConstValue) -> KindLiteral {
 /// text, inferred `TypeTag`). Runs the primitive-kind inferer on every
 /// `Decl::Const` so chunk 1's module is exercised by the pipeline.
 ///
+/// Bool values are lowercase-normalized at this lowering boundary per
+/// `design/values-and-names.md` §Booleans (`true`/`false` accept
+/// case-insensitive input but normalize to lowercase in IR). The AST keeps
+/// the authored casing on `ConstValue::Bool`; this function is the single
+/// site that applies the normalization on the way into the IR-facing
+/// resolution map.
+///
 /// Exposed at `pub(crate)` so unit tests in this module (and the integrated
 /// pipeline tests in `lib.rs`) can assert which TypeTag the inferer assigned
 /// to each const without round-tripping through the full IR.
@@ -41,10 +48,11 @@ pub(crate) fn collect_consts(file: &SourceFile) -> BTreeMap<String, (String, Typ
         if let Decl::Const(c) = d {
             let lit = const_value_to_kind_literal(&c.node.value);
             let tag = infer_primitive(&lit);
-            out.insert(
-                c.node.name.clone(),
-                (c.node.value.rendered().to_string(), tag),
-            );
+            let rendered = match &c.node.value {
+                ConstValue::Bool(s) => s.to_ascii_lowercase(),
+                other => other.rendered().to_string(),
+            };
+            out.insert(c.node.name.clone(), (rendered, tag));
         }
     }
     out
@@ -211,13 +219,10 @@ pub fn lower_with_imports(
     file: &SourceFile,
     imported_texts: &BTreeMap<String, String>,
 ) -> Result<IrArena, LowerError> {
-    // Collect text declarations into a name → value map.
+    // Collect imported text values into a name → value map. Local bindings
+    // are merged in below from `collect_consts` (the sole local source of
+    // value-bindings post-issue-#81).
     let mut texts: BTreeMap<String, String> = imported_texts.clone();
-    for d in &file.decls {
-        if let Decl::Text(t) = d {
-            texts.insert(t.node.name.clone(), t.node.value.clone());
-        }
-    }
 
     // Collect const declarations. For each const, run the primitive-kind
     // inferer (chunk 1) to compute its `TypeTag`; then merge the rendered

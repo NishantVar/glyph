@@ -88,16 +88,16 @@ fn const_bool_inlines_into_compiled_md() {
 }
 
 #[test]
-fn const_bool_uppercase_compiles_with_preserved_casing() {
-    // Per `design/values-and-names.md` §Booleans, `True` should normalize to
-    // `true` in IR. Chunk 2 currently preserves AST casing through to emit;
-    // lowercase normalization is deferred to chunk 4 cleanup. This test
-    // pins the *current* (preserved-casing) behavior so a future
-    // normalization change flips it deliberately.
+fn const_bool_uppercase_normalizes_to_lowercase() {
+    // Per `design/values-and-names.md` §Booleans, mixed/upper-case bool
+    // literals (`True`, `TRUE`) normalize to lowercase `true` in IR. Chunk 4
+    // applies the normalization at the lowering boundary
+    // (`lower::collect_consts`), so the rendered value reaching emit is
+    // always lowercase regardless of source-text casing.
     let (_d, md) = compile_fixture("const_bool_uppercase.glyph.md");
     assert!(
-        md.contains("- True"),
-        "expected bool const value `True` (casing preserved pre-chunk-4) in ### Constraints, got:\n{}",
+        md.contains("- true"),
+        "expected bool const value normalized to `true` in ### Constraints, got:\n{}",
         md
     );
 }
