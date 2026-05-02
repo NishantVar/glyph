@@ -11,8 +11,9 @@
 //!   the in-memory buffer text but does **not** re-lint (per the team-lead's
 //!   call on §10.C — save-only diagnostics for v1).
 //!
-//! NOT in M1: `textDocument/definition` (requires the glyph-core span +
-//! resolution work spec'd in §4.3 and §4.4 of the design — that's M2).
+//! M2 scope adds same-file `textDocument/definition` (per §7) backed by
+//! `glyph_core::resolve::collect_same_file_resolutions` (§4.4). Cross-file
+//! go-to-def lands in M3.
 //!
 //! ## How to run
 //!
@@ -44,11 +45,16 @@ use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result as JsonRpcResult;
 use tower_lsp::lsp_types::{
     Diagnostic as LspDiagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, InitializeParams, InitializeResult,
-    InitializedParams, MessageType, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, GotoDefinitionParams,
+    GotoDefinitionResponse, InitializeParams, InitializeResult, InitializedParams, Location,
+    MessageType, OneOf, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
     TextDocumentSyncKind, Url,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
+
+use glyph_core::ast::{Decl, FlowStmt, ReturnExpr};
+use glyph_core::resolve::ResolutionKind;
+use glyph_core::span::Span;
 
 /// One open buffer's mirror inside the LSP server.
 ///
@@ -144,10 +150,10 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
-                // Definition provider is M2; declare nothing here in M1 so
-                // editors don't enable a `gd` mapping that would just return
-                // `null`.
-                definition_provider: None,
+                // M2: same-file go-to-def. Cross-file is M3 (we still
+                // advertise the capability — the M3 patch will extend
+                // resolution to follow imports without changing this flag).
+                definition_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -236,6 +242,250 @@ impl LanguageServer for Backend {
         if had_diagnostics {
             self.client.publish_diagnostics(uri, Vec::new(), None).await;
         }
+    }
+
+    /// `textDocument/definition` — same-file go-to-def per design §7.
+    ///
+    /// Algorithm: parse + analyze + resolve the buffer, convert the editor
+    /// cursor to a byte offset, find the resolution whose `use_span` covers
+    /// it, return a `Location` for the resolved `def_span`. Falls back to
+    /// `{param}` slot resolution against the enclosing decl's parameter
+    /// list. Returns `null` (None) when nothing matches or when the
+    /// resolution kind is `Stdlib` (per §10.D).
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> JsonRpcResult<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri.clone();
+        let pos = params.text_document_position_params.position;
+
+        let text = {
+            let docs = self.documents.read().await;
+            match docs.get(&uri) {
+                Some(d) => d.text.clone(),
+                None => return Ok(None),
+            }
+        };
+        let enable_effects = *self.enable_effects.read().await;
+
+        let label = uri.path().to_string();
+        let view = match glyph_core::check_source_with_resolutions(
+            &text,
+            0,
+            &label,
+            enable_effects,
+        ) {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        // 1-indexed for LineIndex; LSP positions are 0-indexed.
+        let off = view
+            .line_index
+            .byte_offset(pos.line.saturating_add(1), pos.character.saturating_add(1));
+
+        // Smallest enclosing resolution. Resolutions are span-disjoint by
+        // construction (each reference has exactly one resolution), so the
+        // first hit is the right one — no need to sort.
+        if let Some(r) = view.resolutions.iter().find(|r| {
+            off >= r.use_span.start && off < r.use_span.end
+        }) {
+            // §10.D: stdlib targets return null. The user sees no jump,
+            // which matches "subagent has no .glyph.md to open."
+            if r.kind == ResolutionKind::Stdlib {
+                return Ok(None);
+            }
+            // M2: def is in the same file. M3 will branch on
+            // `r.def_file != PathBuf::from(&label)` and convert to a
+            // different URI via `Url::from_file_path`.
+            let range = convert::byte_span_to_lsp_range(r.def_span, &view.line_index);
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location { uri, range })));
+        }
+
+        // Fallback: cursor inside a `{name}` slot in a flow inline string.
+        if let Some(param_span) = resolve_param_slot(&text, &view.ast, off) {
+            let range = convert::byte_span_to_lsp_range(param_span, &view.line_index);
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location { uri, range })));
+        }
+
+        Ok(None)
+    }
+}
+
+/// Resolve a cursor inside a `{name}` slot to the enclosing decl's
+/// parameter span.
+///
+/// We don't carry slot byte-spans in the AST (FlowStmt::InlineString is a
+/// bare `String`), so this scans the source text directly. Algorithm:
+///
+/// 1. Find the smallest top-level decl whose span covers the cursor.
+/// 2. Within that decl's source slice, run `slot::scan_slots` to get every
+///    `{name}` and check whether the cursor offset falls inside any slot.
+/// 3. Look up the slot's `name` against the decl's param list — return the
+///    matching `Param.span` if found.
+///
+/// Returns `None` if any step fails. The LSP relays that as "no
+/// definition" — which is also what an unresolvable slot already produces
+/// via `G::analyze::unknown-param-slot`.
+fn resolve_param_slot(
+    source: &str,
+    ast: &glyph_core::ast::SourceFile,
+    cursor: u32,
+) -> Option<Span> {
+    // Find the smallest enclosing top-level decl. Top-level decls don't
+    // nest, so any cover is fine.
+    let (decl_span, params) = ast.decls.iter().find_map(|d| match d {
+        Decl::Skill(s) if covers(s.span, cursor) => Some((s.span, s.node.params.as_slice())),
+        Decl::Block(b) if covers(b.span, cursor) => Some((b.span, b.node.params.as_slice())),
+        Decl::ExportBlock(eb) if covers(eb.span, cursor) => {
+            Some((eb.span, eb.node.params.as_slice()))
+        }
+        _ => None,
+    })?;
+
+    // Restrict the slot scan to flow inline strings inside the enclosing
+    // decl. `{name}` is only legal in instruction-bearing strings (per
+    // `design/values-and-names.md` §No Interpolation), so we walk just the
+    // flow lists rather than scanning the entire source slice.
+    let flow_strings = collect_flow_inline_strings(ast, decl_span);
+    let body_start = decl_span.start as usize;
+    let body_end = decl_span.end as usize;
+    let body_text = source.get(body_start..body_end)?;
+
+    for s in &flow_strings {
+        // Each flow inline string appears verbatim in the source, surrounded
+        // by quotes. Find the literal substring inside the decl's source
+        // slice. `find` is O(n) per string; the decl is small, so fine.
+        // (We can't get a perfect match for strings whose value contains
+        // escaped characters; the parser cooks the value but the source
+        // keeps escapes. For MVP escapes don't carry slots, and `{name}`
+        // tokens never include escape sequences, so this is acceptable.)
+        let mut search_from = 0usize;
+        while let Some(rel) = body_text[search_from..].find(s.as_str()) {
+            let abs_start = body_start + search_from + rel;
+            let abs_end = abs_start + s.len();
+            if cursor as usize >= abs_start && (cursor as usize) < abs_end {
+                // Cursor is somewhere in this string. Walk slots.
+                let inner_offset = cursor as usize - abs_start;
+                for slot in glyph_core::slot::scan_slots(s) {
+                    if inner_offset >= slot.start_in_content
+                        && inner_offset < slot.end_in_content
+                    {
+                        // Look up param by name.
+                        if let Some(p) = params.iter().find(|p| p.name == slot.name) {
+                            return Some(p.span);
+                        }
+                        return None;
+                    }
+                }
+                return None;
+            }
+            search_from += rel + s.len();
+        }
+    }
+
+    None
+}
+
+fn covers(span: Span, off: u32) -> bool {
+    off >= span.start && off < span.end
+}
+
+/// Collect every `FlowStmt::InlineString` content reachable inside the
+/// decl whose span is `decl_span`.
+fn collect_flow_inline_strings(
+    ast: &glyph_core::ast::SourceFile,
+    decl_span: Span,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for d in &ast.decls {
+        match d {
+            Decl::Skill(s) if s.span == decl_span => {
+                gather_strings(&s.node.flow, &mut out);
+            }
+            Decl::Block(b) if b.span == decl_span => {
+                gather_strings(&b.node.flow, &mut out);
+            }
+            Decl::ExportBlock(eb) if eb.span == decl_span => {
+                // Slice 4 doesn't lower export-block flow; `flow_strings`
+                // captures the inline-string content the parser saw.
+                out.extend(eb.node.flow_strings.iter().cloned());
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn gather_strings(stmts: &[FlowStmt], out: &mut Vec<String>) {
+    for s in stmts {
+        match s {
+            FlowStmt::InlineString(t) => out.push(t.clone()),
+            FlowStmt::Branch { then_body, elif_branches, else_body, .. } => {
+                gather_strings(then_body, out);
+                for elif in elif_branches {
+                    gather_strings(&elif.body, out);
+                }
+                if let Some(eb) = else_body {
+                    gather_strings(eb, out);
+                }
+            }
+            FlowStmt::Return(ReturnExpr::Inline(t)) => out.push(t.clone()),
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Cursor inside `{scope}` resolves to the skill's `scope` parameter.
+    #[test]
+    fn param_slot_resolves_to_param() {
+        let src = r#"skill main(scope = ".")
+    description: "main."
+    flow:
+        "Inspect {scope} for issues."
+"#;
+        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph.md", false)
+            .expect("parse");
+        // Find the byte offset of the `s` inside `{scope}`.
+        let off = src.find("{scope}").unwrap() as u32 + 1; // inside the braces
+        let span = resolve_param_slot(src, &view.ast, off).expect("should resolve");
+        // The param span should cover the parameter declaration in the
+        // header. The param name is `scope` — verify the span starts at
+        // or near `scope = ".",` in the source.
+        let head = &src[span.start as usize..span.end as usize];
+        assert!(head.contains("scope"), "param span should cover `scope`, got: {:?}", head);
+    }
+
+    /// Cursor inside a slot whose name is not a known parameter returns None.
+    #[test]
+    fn unknown_param_slot_returns_none() {
+        let src = r#"skill main()
+    description: "main."
+    flow:
+        "Use {missing} here."
+"#;
+        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph.md", false)
+            .expect("parse");
+        let off = src.find("{missing}").unwrap() as u32 + 1;
+        assert!(resolve_param_slot(src, &view.ast, off).is_none());
+    }
+
+    /// Cursor outside any slot returns None.
+    #[test]
+    fn cursor_outside_slot_returns_none() {
+        let src = r#"skill main(scope = ".")
+    description: "main."
+    flow:
+        "Inspect things."
+"#;
+        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph.md", false)
+            .expect("parse");
+        let off = src.find("Inspect").unwrap() as u32 + 2;
+        assert!(resolve_param_slot(src, &view.ast, off).is_none());
     }
 }
 

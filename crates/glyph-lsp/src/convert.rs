@@ -24,6 +24,7 @@
 //!    them via code-actions.
 
 use glyph_core::diagnostic::{Classification, Diagnostic as GlyphDiagnostic, LineCol, SourceSpan};
+use glyph_core::span::{LineIndex, Span};
 use tower_lsp::lsp_types::{
     Diagnostic as LspDiagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location,
     NumberOrString, Position, Range, Url,
@@ -138,6 +139,32 @@ fn file_label_to_url(label: &str) -> Option<Url> {
         return Url::from_file_path(abs).ok();
     }
     None
+}
+
+/// Convert a `glyph_core::span::Span` (byte offsets) into an LSP `Range`.
+///
+/// Used by the go-to-definition handler — Glyph's resolution table carries
+/// raw byte spans, not the cooked `(file, line, col)` form Diagnostic spans
+/// use. This helper bridges the two: walk both endpoints through `LineIndex`
+/// to get 1-indexed line/col pairs, then subtract 1 from each to land on
+/// LSP's 0-indexed coordinate system.
+///
+/// `Span.end` is **exclusive** (half-open `[start, end)`), so unlike the
+/// diagnostic-span path (§10.B) there is no inclusive→exclusive bump — both
+/// endpoints translate symmetrically.
+pub fn byte_span_to_lsp_range(span: Span, line_index: &LineIndex) -> Range {
+    let (sl, sc) = line_index.line_col(span.start);
+    let (el, ec) = line_index.line_col(span.end);
+    Range {
+        start: Position {
+            line: sl.saturating_sub(1),
+            character: sc.saturating_sub(1),
+        },
+        end: Position {
+            line: el.saturating_sub(1),
+            character: ec.saturating_sub(1),
+        },
+    }
 }
 
 /// Convert a Glyph `Diagnostic` to an LSP `Diagnostic`.
@@ -284,6 +311,30 @@ mod tests {
             "expected hint to be appended; got: {:?}",
             lsp.message
         );
+    }
+
+    /// Byte-span → LSP range. Half-open input, half-open output.
+    /// Pin the conversion so the go-to-def handler can rely on it.
+    #[test]
+    fn byte_span_to_range_basic() {
+        // "abc\ndef" — bytes 4..7 covers `def` on line 2 (0-indexed line 1).
+        let src = "abc\ndef";
+        let li = LineIndex::new(src);
+        let span = Span::new(0, 4, 7);
+        let r = byte_span_to_lsp_range(span, &li);
+        assert_eq!(r.start, Position { line: 1, character: 0 });
+        assert_eq!(r.end, Position { line: 1, character: 3 });
+    }
+
+    /// Byte-span → LSP range when the use-site is at the very start of file.
+    #[test]
+    fn byte_span_to_range_at_origin() {
+        let src = "abc";
+        let li = LineIndex::new(src);
+        let span = Span::new(0, 0, 3);
+        let r = byte_span_to_lsp_range(span, &li);
+        assert_eq!(r.start, Position { line: 0, character: 0 });
+        assert_eq!(r.end, Position { line: 0, character: 3 });
     }
 
     /// `related` spans flow through into LSP `related_information`.
