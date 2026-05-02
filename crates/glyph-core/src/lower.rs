@@ -237,13 +237,12 @@ pub fn lower_with_imports(
     // wired into the pipeline.
     let consts: BTreeMap<String, (String, TypeTag)> = collect_consts(file);
     for (name, (rendered, _tag)) in &consts {
-        // Only insert if not already present — imported texts and local texts
-        // win over consts only via name-collision diagnostics in analyze.rs;
-        // a const cannot share a name with another binding without that
-        // diagnostic firing first. This insert is the resolution path.
-        texts
-            .entry(name.clone())
-            .or_insert_with(|| rendered.clone());
+        // Local consts overwrite imports of the same name (matches prior
+        // `text` semantics from baseline `8a7d8dd`). Per
+        // `design/values-and-names.md` §No Shadowing this should ultimately
+        // be a `G::analyze::name-collision` hard error — tracked as a
+        // follow-up; out of scope for #81.
+        texts.insert(name.clone(), rendered.clone());
     }
 
     // Collect block declarations into a name → BlockDecl map.
@@ -638,6 +637,40 @@ skill demo()
             Decl::Const(c) => assert!(c.node.exported, "should be exported"),
             other => panic!("expected Decl::Const, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn local_const_overwrites_imported_text_value() {
+        // Regression: chunk 2 introduced `texts.entry().or_insert_with(...)`
+        // for the local-const merge, which silently let an imported const
+        // shadow a same-named local one. Prior `text` semantics (baseline
+        // `8a7d8dd`) used `texts.insert(...)` — local OVERWRITES imported.
+        // This test pins that restored behavior.
+        let src = "\
+const greeting = \"local\"
+skill demo()
+    require greeting
+    flow:
+        \"do work\"
+";
+        let file = parse_file(src);
+        let mut imported = BTreeMap::new();
+        imported.insert("greeting".to_string(), "imported".to_string());
+        let arena = lower_with_imports(&file, &imported).expect("should lower");
+        let mut found_local = false;
+        let mut found_imported = false;
+        for n in arena.nodes() {
+            if let crate::ir::IrNode::Constraint(c) = n {
+                if c.text == "local" {
+                    found_local = true;
+                }
+                if c.text == "imported" {
+                    found_imported = true;
+                }
+            }
+        }
+        assert!(found_local, "expected Constraint with local const value");
+        assert!(!found_imported, "imported value should not shadow local const");
     }
 
     #[test]
