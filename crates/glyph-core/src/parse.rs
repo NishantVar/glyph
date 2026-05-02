@@ -409,11 +409,6 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
         let arrow_span = self.peek().span;
-        // Record this Arrow as legitimately consumed in a header
-        // return-type slot so the post-parse scan in
-        // `parse_with_diagnostics` does NOT flag it as a stray
-        // expression-position `->`.
-        self.consumed_arrow_offsets.push(arrow_span.start);
         self.pos += 1; // consume `->`
 
         let (name, name_span) = match &self.peek().kind {
@@ -424,12 +419,30 @@ impl<'a> Parser<'a> {
                 (s, span)
             }
             _ => {
+                // The `Arrow` was consumed above but the next token is not
+                // an `Ident` (e.g. `block foo() ->` with nothing after, or
+                // `skill foo() -> "Path"` with a string literal). Bail with
+                // `ParseError::Unexpected` and intentionally do NOT record
+                // the Arrow in `consumed_arrow_offsets` — that way the
+                // post-parse Arrow scan in `parse_with_diagnostics` still
+                // surfaces the structured `G::parse::operator-in-expression`
+                // (Repairable) diagnostic, restoring the pre-#82-chunk-2
+                // diagnostic quality on incomplete header arrows.
                 return Err(ParseError::Unexpected {
                     span: self.peek().span,
                     message: "expected return-type name after `->`".into(),
                 });
             }
         };
+
+        // Record this Arrow as legitimately consumed in a header
+        // return-type slot so the post-parse scan in
+        // `parse_with_diagnostics` does NOT flag it as a stray
+        // expression-position `->`. Recorded only after the trailing
+        // `Ident` is validated; an incomplete `->` (no ident, or non-ident
+        // token) leaves the offset out so the scan emits
+        // `G::parse::operator-in-expression`.
+        self.consumed_arrow_offsets.push(arrow_span.start);
 
         // Reject `-> none` (case-insensitive) per `design/types.md` §none
         // Value lines 81–96 ("`None` as a type annotation (`-> None`) is
@@ -1772,11 +1785,15 @@ impl<'a> Parser<'a> {
                 TokenKind::Arrow => {
                     // `->` is only valid as a header return-type arrow per
                     // `design/language-surface.md` §3; it has no meaning
-                    // inside a branch condition.
-                    return Err(ParseError::Unexpected {
-                        span: self.peek().span,
-                        message: "`->` is not allowed inside a branch condition".into(),
-                    });
+                    // inside a branch condition. Stop scanning the
+                    // condition WITHOUT consuming the `Arrow` so the
+                    // post-parse Arrow scan in `parse_with_diagnostics`
+                    // surfaces the structured `G::parse::operator-in-expression`
+                    // (Repairable) diagnostic the pre-#82-chunk-2 byte-scan
+                    // path used to emit. Returning a hard `ParseError`
+                    // here would short-circuit the scan into a generic
+                    // exit-1 failure with no structured ID.
+                    break;
                 }
             }
         }
@@ -2453,6 +2470,82 @@ block foo() -> Path
             "must NOT fire operator-in-expression for valid header `-> Path`, got: {:?}",
             ids
         );
+    }
+
+    // --- Issue #82 codex-pass-3 P2-A: `try_parse_return_type` must not
+    // record the Arrow before validating the trailing Ident, so the
+    // post-parse scan still flags incomplete header arrows.
+
+    #[test]
+    fn parse_rejects_incomplete_header_arrow_no_ident() {
+        // Codex P2-A regression #1: `block foo() ->` (no trailing ident)
+        // used to be silently swallowed because pass 2 unconditionally
+        // recorded the Arrow as consumed before validating the `Ident`.
+        // After pass 3 the recording moves to the success path, so this
+        // input now surfaces `G::parse::operator-in-expression`
+        // (Repairable, exit 2) via the post-parse scan.
+        let src = "\
+block foo() ->
+    description: \"d\"
+    flow:
+        \"x\"
+";
+        let (ids, code) = run(src);
+        assert!(
+            ids.iter().any(|s| s == "G::parse::operator-in-expression"),
+            "expected G::parse::operator-in-expression for `block foo() ->` (incomplete header arrow), got: {:?}",
+            ids
+        );
+        assert_eq!(code, 2, "operator-in-expression is repairable (exit 2)");
+    }
+
+    #[test]
+    fn parse_rejects_header_arrow_followed_by_string_literal() {
+        // Codex P2-A regression #2: `skill foo() -> "Path"` (string
+        // literal where an Ident is required). The Arrow was consumed
+        // but never legitimately resolved into a return-type slot, so
+        // the post-parse scan must surface the structured diagnostic.
+        let src = "\
+skill foo() -> \"Path\"
+    description: \"d\"
+    flow:
+        \"x\"
+";
+        let (ids, code) = run(src);
+        assert!(
+            ids.iter().any(|s| s == "G::parse::operator-in-expression"),
+            "expected G::parse::operator-in-expression for `-> \"Path\"`, got: {:?}",
+            ids
+        );
+        assert_eq!(code, 2);
+    }
+
+    // --- Issue #82 codex-pass-3 P2-B: branch-condition Arrow must fall
+    // through to the post-parse scan rather than short-circuit into a
+    // generic `ParseError::Unexpected`.
+
+    #[test]
+    fn parse_rejects_arrow_in_branch_condition() {
+        // Codex P2-B regression: `if cond -> other` previously raised
+        // `ParseError::Unexpected` from `parse_branch_condition`, which
+        // `parse_with_diagnostics` collapsed into an unstructured exit-1
+        // failure with no diagnostic ID. After pass 3 the branch-condition
+        // arm `break`s without consuming the Arrow, so the post-parse
+        // scan emits the structured `G::parse::operator-in-expression`.
+        let src = "\
+skill foo()
+    description: \"d\"
+    flow:
+        if cond -> other
+            \"yes\"
+";
+        let (ids, code) = run(src);
+        assert!(
+            ids.iter().any(|s| s == "G::parse::operator-in-expression"),
+            "expected G::parse::operator-in-expression for `if cond -> other`, got: {:?}",
+            ids
+        );
+        assert_eq!(code, 2);
     }
 
     // --- Issue #82 chunk 2: AST `return_type` field is populated ---
