@@ -2145,6 +2145,35 @@ skill foo() -> Agent
     }
 
     #[test]
+    fn return_type_none_fires_parse_repairable_not_analyze_generic_warning() {
+        // D9: `-> None` in author-facing source is intercepted by
+        // `G::parse::none-as-return-type` (#82, repairable, Phase 3a auto-fix)
+        // and never reaches the analyze-tier validator. `None` stays in the
+        // banned list (defense in depth for any future call site that
+        // bypasses parse), but for the author-visible exit-code path the
+        // parse repairable always wins. This test pins the cross-issue
+        // precedence — if either diagnostic moves, it breaks loud.
+        let src = "\
+skill foo() -> None
+    description: \"Foo.\"
+    flow:
+        \"do something\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::none-as-return-type"),
+            "expected `-> None` to fire G::parse::none-as-return-type (repairable, #82); got: {:?}",
+            ids,
+        );
+        assert!(
+            !ids.contains(&"G::analyze::generic-type-name"),
+            "must NOT also fire G::analyze::generic-type-name — parse intercept takes precedence over the analyze warning; got: {:?}",
+            ids,
+        );
+    }
+
+    #[test]
     fn banned_return_types_warn_on_imports_path() {
         // AC2 imports-path parity: every header-bearing decl arm
         // (skill / export block / private block) must fire the warning when
