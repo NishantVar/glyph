@@ -102,7 +102,13 @@ enum Command {
     /// Speaks JSON-RPC framed per the LSP spec. Intended to be launched by an
     /// editor (e.g., via `cmd = { "glyph", "lsp" }` in nvim-lspconfig). See
     /// `crates/glyph-lsp/README.md` for editor setup instructions.
-    Lsp,
+    Lsp {
+        /// Accepted for compatibility with `vscode-languageclient` (which
+        /// appends `--stdio` when `TransportKind.stdio` is set). The Glyph
+        /// LSP only supports stdio, so the flag is a no-op.
+        #[arg(long, hide = true)]
+        stdio: bool,
+    },
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -119,7 +125,7 @@ fn main() -> ExitCode {
         Command::Check { path, format, strict } => run_check(path, format, strict, enable_effects),
         Command::ValidateOutput { ir_json_path, md_path, format } => run_validate_output(ir_json_path, md_path, format),
         Command::Fmt { path, check } => run_fmt(path, check, enable_effects),
-        Command::Lsp => run_lsp(),
+        Command::Lsp { .. } => run_lsp(),
     }
 }
 
