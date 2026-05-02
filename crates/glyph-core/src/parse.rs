@@ -111,56 +111,13 @@ pub fn parse_with_diagnostics(
         Err(TokenizeError::UnexpectedChar { byte_offset, ch })
             if ch == '+' || ch == '-' || ch == '*' || ch == '/' =>
         {
-            // Special case: `-> none` (case-insensitive) is the legacy
-            // `-> None` return-type annotation, which is dropped from the
-            // language per `design/types.md` §none Value (No `None` Type
-            // Annotation), line 85: "`None` as a type annotation (`-> None`)
-            // is dropped. A block that produces no meaningful return value
-            // simply omits the `->` from its declaration header." The rule
-            // applies uniformly to `skill`, `block`, and `export block` per
-            // `design/language-surface.md` §3 (§3.1 line 161, §3.2 line 198,
-            // §3.3 lines 224/227/230). Emit a dedicated repairable
-            // diagnostic instead of the generic operator-in-expression so
-            // the author gets a precise repair (drop `->`).
-            if ch == '-' {
-                let off = byte_offset as usize;
-                let bytes = source.as_bytes();
-                if bytes.get(off + 1) == Some(&b'>') {
-                    // Skip ASCII spaces between `->` and the following ident.
-                    let mut p = off + 2;
-                    while p < bytes.len() && bytes[p] == b' ' {
-                        p += 1;
-                    }
-                    let end = p + 4;
-                    let matches_none = end <= bytes.len()
-                        && bytes[p..end].eq_ignore_ascii_case(b"none")
-                        && bytes
-                            .get(end)
-                            .is_none_or(|&b| !(b.is_ascii_alphanumeric() || b == b'_'));
-                    if matches_none {
-                        // Span the full offending construct (`->...none`)
-                        // so the repair pass has a precise replacement
-                        // target. Source is case-insensitive on the `none`
-                        // keyword per `design/values-and-names.md` §None.
-                        let span = Span::new(file_id, byte_offset, end as u32);
-                        bag.push(
-                            Diagnostic {
-                                id: "G::parse::none-as-return-type".into(),
-                                classification: Classification::Repairable,
-                                message: "`-> None` is not a valid return-type annotation; a block with no meaningful return value omits `->` entirely from its header".into(),
-                                span: SourceSpan::from_byte_span(file_label, span, line_index),
-                                related: Vec::new(),
-                                hints: vec![
-                                    "drop the `-> None` from the header — Glyph has no `None` type annotation; the absence of `->` already means \"no meaningful return value\"".into(),
-                                ],
-                            },
-                            span,
-                        );
-                        return None;
-                    }
-                }
-            }
-
+            // Note (#82 chunk 2): the prior byte-scan that detected `-> none`
+            // here has been deleted now that the tokenizer emits a real
+            // `Arrow` token. The `-> None` rejection lives in
+            // `Parser::try_parse_return_type` and fires the same
+            // `G::parse::none-as-return-type` diagnostic from the parser
+            // proper. Stray `-` (e.g., `5 - 2`) still falls through to
+            // `G::parse::operator-in-expression` below.
             let span = Span::new(file_id, byte_offset, byte_offset + 1);
             bag.push(
                 Diagnostic {
@@ -375,6 +332,73 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Optionally consume a header return-type annotation `-> DomainType`.
+    ///
+    /// Shared by `parse_skill`, `parse_block_decl`, and `parse_export_block`
+    /// per the uniform-grammar decision for issue #82 (the `->`-optional rule
+    /// applies to all three kinds — see `design/language-surface.md` §3.1
+    /// line 161, §3.2 line 198, §3.3 lines 224/227/230).
+    ///
+    /// Returns:
+    /// - `Ok(None)` if no `Arrow` is at peek (no annotation),
+    ///   OR the annotation was `-> none` (case-insensitive) and we emitted
+    ///   the repairable `G::parse::none-as-return-type` diagnostic per
+    ///   `design/types.md` §none Value lines 81–96 / `design/values-and-names.md`
+    ///   §None — in that case we consume the bogus `Arrow Ident` so the parse
+    ///   continues, and the outer `parse_with_diagnostics` halts on
+    ///   `bag.has_repairable()`.
+    /// - `Ok(Some(Spanned<String>))` if `-> Ident` was consumed and the
+    ///   ident is a real domain-type name (anything other than `none`).
+    fn try_parse_return_type(&mut self) -> Result<Option<Spanned<String>>, ParseError> {
+        if !matches!(self.peek().kind, TokenKind::Arrow) {
+            return Ok(None);
+        }
+        let arrow_span = self.peek().span;
+        self.pos += 1; // consume `->`
+
+        let (name, name_span) = match &self.peek().kind {
+            TokenKind::Ident(s) => {
+                let s = s.clone();
+                let span = self.peek().span;
+                self.pos += 1;
+                (s, span)
+            }
+            _ => {
+                return Err(ParseError::Unexpected {
+                    span: self.peek().span,
+                    message: "expected return-type name after `->`".into(),
+                });
+            }
+        };
+
+        // Reject `-> none` (case-insensitive) per `design/types.md` §none
+        // Value lines 81–96 ("`None` as a type annotation (`-> None`) is
+        // dropped"). Source-side case-insensitivity is per
+        // `design/values-and-names.md` §None. Same ID/tier/message as the
+        // pre-Chunk-2 byte-scan path; this is just the relocated detection
+        // site.
+        if name.eq_ignore_ascii_case("none") {
+            let span = Span::new(self.file_id, arrow_span.start, name_span.end);
+            self.bag.push(
+                Diagnostic {
+                    id: "G::parse::none-as-return-type".into(),
+                    classification: Classification::Repairable,
+                    message: "`-> None` is not a valid return-type annotation; a block with no meaningful return value omits `->` entirely from its header".into(),
+                    span: SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                    related: Vec::new(),
+                    hints: vec![
+                        "drop the `-> None` from the header — Glyph has no `None` type annotation; the absence of `->` already means \"no meaningful return value\"".into(),
+                    ],
+                },
+                span,
+            );
+            return Ok(None);
+        }
+
+        let span = Span::new(self.file_id, arrow_span.start, name_span.end);
+        Ok(Some(Spanned::new(name, span)))
+    }
+
     fn parse_file(&mut self) -> Result<SourceFile, ParseError> {
         let mut decls = Vec::new();
         loop {
@@ -472,6 +496,7 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Lparen)?;
         let params = self.parse_param_list()?;
         self.expect(&TokenKind::Rparen)?;
+        let return_type = self.try_parse_return_type()?;
 
         let mut description: Option<String> = None;
         let mut body_constraints: Vec<ConstraintMarker> = Vec::new();
@@ -520,6 +545,7 @@ impl<'a> Parser<'a> {
                 flow,
                 flow_present,
                 body_bare_names,
+                return_type,
             },
             span,
         ))
@@ -607,12 +633,17 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Lparen)?;
         let params = self.parse_param_list()?;
         self.expect(&TokenKind::Rparen)?;
+        let return_type = self.try_parse_return_type()?;
 
         // Skip body — every line whose LineStart indent is > 0.
-        // Scan for `return` keyword to set has_return flag.
+        // Scan for `return` keyword to set has_return flag, and look at the
+        // immediate next token to compute `has_meaningful_return` per
+        // issue #82 AC2 (true iff `return <expr>` where `<expr>` is not the
+        // `none` value-keyword and not a bare/empty return).
         // Also collect bare-name references for closure checking and word count.
         // Additionally capture description, effects, and flow strings for Tier 3 emission.
         let mut has_return = false;
+        let mut has_meaningful_return = false;
         let mut body_refs: Vec<String> = Vec::new();
         let mut body_word_count: usize = 0;
         let mut description: Option<String> = None;
@@ -634,7 +665,25 @@ impl<'a> Parser<'a> {
                     // Check if line starts with a sub-section keyword or `return`.
                     if let TokenKind::Ident(kw) = &self.peek().kind {
                         match kw.as_str() {
-                            "return" => has_return = true,
+                            "return" => {
+                                has_return = true;
+                                // Distinguish meaningful (`return foo`,
+                                // `return some_call()`, `return "lit"`) from
+                                // non-meaningful (bare `return`,
+                                // `return none`). The token after `return`
+                                // sits at `self.tokens[self.pos + 1]`.
+                                let next = self.tokens.get(self.pos + 1).map(|t| &t.kind);
+                                let is_meaningful = match next {
+                                    None
+                                    | Some(TokenKind::LineStart { .. })
+                                    | Some(TokenKind::Eof) => false,
+                                    Some(TokenKind::Ident(s)) if s == "none" => false,
+                                    _ => true,
+                                };
+                                if is_meaningful {
+                                    has_meaningful_return = true;
+                                }
+                            }
                             "description" => { current_section = Some("description"); }
                             "effects" => { current_section = Some("effects"); }
                             "flow" => { current_section = Some("flow"); }
@@ -685,8 +734,8 @@ impl<'a> Parser<'a> {
         };
         let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
         Ok(Spanned::new(ExportBlockDecl {
-            name, params, has_return, body_refs, body_word_count,
-            description, effects, flow_strings,
+            name, params, has_return, has_meaningful_return, body_refs, body_word_count,
+            description, effects, flow_strings, return_type,
         }, span))
     }
 
@@ -698,6 +747,7 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Lparen)?;
         let params = self.parse_param_list()?;
         self.expect(&TokenKind::Rparen)?;
+        let return_type = self.try_parse_return_type()?;
 
         let mut description: Option<String> = None;
         let mut effects: Vec<String> = Vec::new();
@@ -806,6 +856,7 @@ impl<'a> Parser<'a> {
                 params,
                 effects,
                 flow,
+                return_type,
             },
             span,
         ))
@@ -1649,6 +1700,15 @@ impl<'a> Parser<'a> {
                     parts.push(s.clone());
                     self.pos += 1;
                 }
+                TokenKind::Arrow => {
+                    // `->` is only valid as a header return-type arrow per
+                    // `design/language-surface.md` §3; it has no meaning
+                    // inside a branch condition.
+                    return Err(ParseError::Unexpected {
+                        span: self.peek().span,
+                        message: "`->` is not allowed inside a branch condition".into(),
+                    });
+                }
             }
         }
         if parts.is_empty() {
@@ -2253,6 +2313,109 @@ skill foo()
             !ids.iter().any(|s| s == "G::parse::none-as-return-type"),
             "must NOT fire none-as-return-type for `-> nonexistent`, got: {:?}",
             ids
+        );
+    }
+
+    // --- Issue #82 chunk 2: AST `return_type` field is populated ---
+
+    #[test]
+    fn parse_skill_return_type_populates_ast() {
+        // AC9: `skill foo() -> SomeType` parses cleanly with `return_type`
+        // populated on the `Skill` AST node.
+        let src = "skill foo() -> SomeType\n    flow:\n        \"x\"\n";
+        let (file, _) = parse(src, 0).expect("parse should succeed");
+        let skill = file
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                crate::ast::Decl::Skill(s) => Some(&s.node),
+                _ => None,
+            })
+            .expect("expected a skill declaration");
+        let rt = skill
+            .return_type
+            .as_ref()
+            .expect("expected return_type to be populated");
+        assert_eq!(rt.node, "SomeType");
+    }
+
+    #[test]
+    fn parse_block_return_type_populates_ast() {
+        // AC9: `block foo() -> SomeType` parses cleanly with `return_type`
+        // populated on the `BlockDecl` AST node.
+        let src = "block foo() -> SomeType\n    description: \"d\"\n";
+        let (file, _) = parse(src, 0).expect("parse should succeed");
+        let block = file
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                crate::ast::Decl::Block(b) => Some(&b.node),
+                _ => None,
+            })
+            .expect("expected a block declaration");
+        let rt = block
+            .return_type
+            .as_ref()
+            .expect("expected return_type to be populated");
+        assert_eq!(rt.node, "SomeType");
+    }
+
+    #[test]
+    fn parse_export_block_return_type_populates_ast() {
+        // AC9: `export block foo() -> SomeType` parses cleanly with
+        // `return_type` populated on the `ExportBlockDecl` AST node.
+        let src = "export block foo() -> SomeType\n    flow:\n        \"x\"\n        return none\n";
+        let (file, _) = parse(src, 0).expect("parse should succeed");
+        let eb = file
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                crate::ast::Decl::ExportBlock(b) => Some(&b.node),
+                _ => None,
+            })
+            .expect("expected an export block declaration");
+        let rt = eb
+            .return_type
+            .as_ref()
+            .expect("expected return_type to be populated");
+        assert_eq!(rt.node, "SomeType");
+    }
+
+    #[test]
+    fn parse_export_block_has_meaningful_return_tracking() {
+        // AC2 prerequisite: `has_meaningful_return` is `true` when the body
+        // contains `return <expr>` with `<expr>` not the `none` keyword.
+        let src = "export block foo() -> SomeType\n    flow:\n        \"x\"\n        return x\n";
+        let (file, _) = parse(src, 0).expect("parse should succeed");
+        let eb = file
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                crate::ast::Decl::ExportBlock(b) => Some(&b.node),
+                _ => None,
+            })
+            .expect("expected an export block declaration");
+        assert!(eb.has_return, "has_return should be true");
+        assert!(
+            eb.has_meaningful_return,
+            "has_meaningful_return should be true for `return x`"
+        );
+
+        // And `return none` should set has_return but NOT has_meaningful_return.
+        let src2 = "export block foo()\n    flow:\n        \"x\"\n        return none\n";
+        let (file2, _) = parse(src2, 0).expect("parse should succeed");
+        let eb2 = file2
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                crate::ast::Decl::ExportBlock(b) => Some(&b.node),
+                _ => None,
+            })
+            .expect("expected an export block declaration");
+        assert!(eb2.has_return, "has_return should be true for `return none`");
+        assert!(
+            !eb2.has_meaningful_return,
+            "has_meaningful_return should be false for `return none`"
         );
     }
 }

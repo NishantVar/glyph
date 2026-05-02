@@ -1097,6 +1097,33 @@ fn analyze_export_block(
         );
     }
 
+    // G::analyze::export-missing-return-type — issue #82 AC2: an export block
+    // that returns a meaningful value (a `return <expr>` where `<expr>` is
+    // not the `none` value-keyword) must declare its return type with a
+    // `-> DomainType` annotation on the header. The reverse direction
+    // (`-> DomainType` declared but no meaningful return) is intentionally
+    // out of scope per #82 — `missing-return` already covers total absence
+    // of `return`.
+    if decl.has_meaningful_return && decl.return_type.is_none() {
+        let span = spanned.span;
+        bag.push(
+            Diagnostic {
+                id: "G::analyze::export-missing-return-type".into(),
+                classification: Classification::Repairable,
+                message: format!(
+                    "`export block {}` returns a meaningful value but its header lacks a `-> DomainType` annotation",
+                    decl.name
+                ),
+                span: SourceSpan::from_byte_span(file_label, span, line_index),
+                related: Vec::new(),
+                hints: vec![
+                    "add a return-type annotation to the header — e.g. `export block name(...) -> DomainType`".into(),
+                ],
+            },
+            span,
+        );
+    }
+
     // G::analyze::closure-violation — export block must not reference private names.
     let param_names: HashSet<&str> = decl.params.iter().map(|p| p.name.as_str()).collect();
     for body_ref in &decl.body_refs {

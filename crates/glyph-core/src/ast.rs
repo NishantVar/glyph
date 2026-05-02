@@ -81,6 +81,12 @@ pub struct Skill {
     /// keyword. Used by analyze to fire `G::analyze::ambiguous-role` when
     /// the name resolves to a `const` declaration.
     pub body_bare_names: Vec<String>,
+    /// Optional `-> DomainType` return-type annotation on the header per
+    /// `design/language-surface.md` §3.1 line 161. Stored on the AST so
+    /// later phases (analyze, lower) can read it; `Skill`-level enforcement
+    /// is out of scope for issue #82 (export-block-only — see
+    /// `analyze::analyze_export_block`).
+    pub return_type: Option<Spanned<String>>,
 }
 
 /// Minimal `export block` declaration — slice 4 captures the header shape only.
@@ -92,6 +98,13 @@ pub struct ExportBlockDecl {
     /// Whether the body contains an explicit `return` statement.
     /// Slice 8 needs this to fire `G::analyze::missing-return`.
     pub has_return: bool,
+    /// Whether the body contains a `return <expr>` whose `<expr>` is not the
+    /// `none` value-keyword. Bare `return` and `return none` both leave this
+    /// `false` while `has_return` stays `true`. Issue #82 AC2 uses this
+    /// together with `return_type` to fire
+    /// `G::analyze::export-missing-return-type` when an export block returns
+    /// a meaningful value but its header has no `-> DomainType`.
+    pub has_meaningful_return: bool,
     /// Bare-name references found in the body (calls, constraint/context refs).
     /// Used by analyze to detect closure violations: an export block must not
     /// reference private (non-exported, non-parameter) names.
@@ -109,6 +122,12 @@ pub struct ExportBlockDecl {
     /// Flow statement strings for Tier 3 procedure file emission.
     /// Each entry is the text of a string literal from the `flow:` section.
     pub flow_strings: Vec<String>,
+    /// Optional `-> DomainType` return-type annotation on the header per
+    /// `design/language-surface.md` §3.3 lines 224/227/230. The
+    /// `analyze_export_block` rule in issue #82 fires
+    /// `G::analyze::export-missing-return-type` when this is `None` and
+    /// `has_meaningful_return` is `true`.
+    pub return_type: Option<Spanned<String>>,
 }
 
 /// A header parameter on `skill`, `block`, or `export block`.
@@ -212,6 +231,11 @@ pub struct BlockDecl {
     pub effects: Vec<String>,
     /// Flow statements — inline strings, calls, etc.
     pub flow: Vec<FlowStmt>,
+    /// Optional `-> DomainType` return-type annotation on the header per
+    /// `design/language-surface.md` §3.2 line 198. Stored on the AST so
+    /// later phases can read it; private-block enforcement is out of scope
+    /// for issue #82.
+    pub return_type: Option<Spanned<String>>,
 }
 
 /// `const NAME = <literal>` declaration — unifies value bindings across the
