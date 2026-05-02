@@ -14,7 +14,6 @@ pub mod fmt;
 pub mod ir;
 pub mod lower;
 pub mod parse;
-pub mod resolve;
 pub mod slot;
 pub mod span;
 pub mod tokenize;
@@ -151,7 +150,7 @@ pub struct CheckedView {
     pub bag: DiagBag,
     pub ast: ast::SourceFile,
     pub line_index: LineIndex,
-    pub resolutions: Vec<resolve::Resolution>,
+    pub resolutions: Vec<analyze::Resolution>,
 }
 
 /// Run Phase 1 + Phase 2 like [`check_source_with_effects`], but additionally
@@ -161,6 +160,11 @@ pub struct CheckedView {
 /// Returns `None` if parsing failed catastrophically (no AST recovered).
 /// In that case the caller should fall back to `check_source_with_effects`
 /// for diagnostics.
+///
+/// This same-file variant is preserved for callers that don't have a
+/// real path on disk (e.g., in-memory tests, scratch buffers). The LSP
+/// uses [`check_source_with_resolutions_at_path`] so it can also follow
+/// cross-file imports.
 pub fn check_source_with_resolutions(
     source: &str,
     file_id: u32,
@@ -179,17 +183,16 @@ pub fn check_source_with_resolutions(
         enable_effects,
     )?;
 
-    let file = analyze::analyze_with_diagnostics(
+    let file_path = PathBuf::from(file_label);
+    let (file, resolutions) = analyze::analyze_with_resolutions(
         parsed,
         file_id,
         file_label,
+        &file_path,
         &line_index,
         &mut bag,
         enable_effects,
     );
-
-    let file_path = PathBuf::from(file_label);
-    let resolutions = resolve::collect_same_file_resolutions(&file, &file_path);
 
     Some(CheckedView {
         bag,
@@ -197,6 +200,162 @@ pub fn check_source_with_resolutions(
         line_index,
         resolutions,
     })
+}
+
+/// Like [`check_source_with_resolutions`] but also resolves cross-file
+/// references (M2 cross-file go-to-def, design §4.4 + §7.cross-file).
+///
+/// `current_path` is the on-disk path of the buffer being analyzed — needed
+/// so `import "./<rel>"` paths can be resolved against the importer's
+/// directory. Each imported declaration is parsed once; matching use-sites
+/// in the buffer get [`analyze::Resolution`]s whose `def_file` points at
+/// the imported file.
+///
+/// The same-file resolutions returned by `analyze_with_resolutions` are
+/// concatenated with the cross-file ones, in that order. Resolutions remain
+/// span-disjoint (no use-site is both same-file and cross-file).
+pub fn check_source_with_resolutions_at_path(
+    source: &str,
+    file_id: u32,
+    current_path: &Path,
+    enable_effects: bool,
+) -> Option<CheckedView> {
+    let file_label = current_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| current_path.to_string_lossy().into_owned());
+
+    let mut bag = DiagBag::new();
+    let line_index = LineIndex::new(source);
+
+    let parsed = parse::parse_with_diagnostics_opts(
+        source,
+        file_id,
+        &file_label,
+        &line_index,
+        &mut bag,
+        enable_effects,
+    )?;
+
+    let current_path_buf = current_path.to_path_buf();
+    let (file, mut resolutions) = analyze::analyze_with_resolutions(
+        parsed,
+        file_id,
+        &file_label,
+        &current_path_buf,
+        &line_index,
+        &mut bag,
+        enable_effects,
+    );
+
+    // Walk imports — for every imported name we can resolve to a declaration
+    // in the dependency file, build a target descriptor.
+    let cross_targets = collect_cross_file_targets(&file, current_path, enable_effects);
+    let cross_resolutions = analyze::collect_cross_file_resolutions(&file, &cross_targets);
+    resolutions.extend(cross_resolutions);
+
+    Some(CheckedView {
+        bag,
+        ast: file,
+        line_index,
+        resolutions,
+    })
+}
+
+/// For each `import "<rel>" { name [as alias] }` clause in `file`, parse
+/// the dependency file and locate the declaration matching each imported
+/// name. Returns a `local_name → ImportTarget` map keyed on the importer's
+/// view (alias-resolved).
+///
+/// Stdlib (`@glyph/...`) and unresolvable imports are silently skipped — the
+/// LSP returns `null` for those rather than surfacing a fake jump.
+fn collect_cross_file_targets(
+    file: &ast::SourceFile,
+    current_path: &Path,
+    enable_effects: bool,
+) -> HashMap<String, analyze::ImportTarget> {
+    use crate::ast::ImportKind;
+
+    let mut out: HashMap<String, analyze::ImportTarget> = HashMap::new();
+
+    for decl in &file.decls {
+        let imp = match decl {
+            Decl::Import(i) => i,
+            _ => continue,
+        };
+        if imp.node.path.starts_with("@glyph/") {
+            continue;
+        }
+        let names = match &imp.node.kind {
+            ImportKind::Selective(n) => n,
+            ImportKind::WholeModule { .. } => continue, // not LSP-jumpable in MVP
+        };
+
+        let resolved = match resolve_import_path(current_path, &imp.node.path) {
+            Some(p) => p,
+            None => continue,
+        };
+        let dep_source = match std::fs::read_to_string(&resolved) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let dep_li = LineIndex::new(&dep_source);
+        let dep_label = resolved
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| resolved.to_string_lossy().into_owned());
+        let mut tmp_bag = DiagBag::new();
+        let dep_file = match parse::parse_with_diagnostics_opts(
+            &dep_source,
+            0,
+            &dep_label,
+            &dep_li,
+            &mut tmp_bag,
+            enable_effects,
+        ) {
+            Some(f) => f,
+            None => continue,
+        };
+
+        for imp_name in names {
+            let local = imp_name
+                .alias
+                .clone()
+                .unwrap_or_else(|| imp_name.name.node.clone());
+            // Find the declaration in the dependency file by exported name.
+            for dep_decl in &dep_file.decls {
+                match dep_decl {
+                    Decl::Text(t) if t.node.exported && t.node.name == imp_name.name.node => {
+                        out.insert(
+                            local.clone(),
+                            analyze::ImportTarget {
+                                local_name: local.clone(),
+                                def_file: resolved.clone(),
+                                def_span: t.span,
+                                kind: analyze::ResolutionKind::Text,
+                            },
+                        );
+                        break;
+                    }
+                    Decl::ExportBlock(b) if b.node.name == imp_name.name.node => {
+                        out.insert(
+                            local.clone(),
+                            analyze::ImportTarget {
+                                local_name: local.clone(),
+                                def_file: resolved.clone(),
+                                def_span: b.span,
+                                kind: analyze::ResolutionKind::ExportBlock,
+                            },
+                        );
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    out
 }
 
 /// End-to-end file-driven compile.

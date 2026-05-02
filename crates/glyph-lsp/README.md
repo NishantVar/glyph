@@ -2,9 +2,9 @@
 
 A `tower-lsp`-based language server that wraps `glyph-core`'s Phase 1 (Parse) +
 Phase 2 (Analyze) phases and republishes the resulting `DiagBag` as LSP
-`publishDiagnostics` notifications. The M2 milestone adds same-file
-`textDocument/definition` over the resolution table that
-`glyph_core::resolve` exposes.
+`publishDiagnostics` notifications. The M2 milestone adds
+`textDocument/definition` (same-file and cross-file) over the resolution
+table that `glyph_core::analyze::analyze_with_resolutions` exposes.
 
 See [`design/glyph-lsp.md`](../../design/glyph-lsp.md) for the full design.
 
@@ -13,10 +13,11 @@ See [`design/glyph-lsp.md`](../../design/glyph-lsp.md) for the full design.
 - **Lifecycle:** `initialize`, `initialized`, `shutdown`, `exit`
 - **Document sync:** `didOpen`, `didChange`, `didClose`, `didSave` (Full text sync)
 - **Diagnostics:** republished on `didOpen` and `didSave` (save-only, per design §10.C)
-- **Go-to-definition (M2, same-file):** jumps to `block` / `text` /
-  `export block` declarations and `{param}` slots in flow inline strings.
-  Stdlib targets (`subagent`, `send`) and unresolvable identifiers return
-  `null`.
+- **Go-to-definition (M2):** jumps to `block` / `text` / `export block`
+  declarations and `{param}` slots in flow inline strings. Cross-file
+  imports follow the `import "./<rel>.glyph.md" { name }` clause and jump
+  to the declaration in the imported file. Stdlib targets (`subagent`,
+  `send`) and unresolvable identifiers return `null`.
 
 `didChange` updates the in-memory buffer text but does **not** re-lint. The next
 `didSave` runs the analyzer and publishes diagnostics. `didClose` clears any
@@ -27,7 +28,10 @@ diagnostics `glyph check` would emit, in LSP shape.
 
 ## What is not yet implemented
 
-- Cross-file go-to-def + import-aware analysis (M3)
+- Cross-file import-aware *diagnostics* publishing (M3 — currently we
+  parse imported files for go-to-def but only publish diagnostics for the
+  buffer that was saved)
+- Semantic tokens (M3 — needed for cross-editor highlighting parity)
 - Hover, completion, formatting, code actions, rename, references, etc.
 
 ## Build and install
@@ -135,7 +139,11 @@ With the same setup:
 4. With a parameter slot like `"Inspect {scope} for issues."` in `flow:`
    and `skill main(scope = ".")`, place the cursor inside `{scope}` and
    press `gd` — jumps to the `scope = "."` parameter in the header.
-5. On a stdlib reference (`subagent` imported via `@glyph/std`) or any
+5. Open `crates/glyph-cli/tests/corpus/valid/imports/fix_bug.glyph.md` —
+   place the cursor inside the `inspect_repo` call in the flow block and
+   press `gd`. The cursor should jump to the `export block inspect_repo`
+   declaration in the sibling file `repo_tools.glyph.md` (cross-file).
+6. On a stdlib reference (`subagent` imported via `@glyph/std`) or any
    unresolvable name, `gd` reports "no definition found" — the LSP
    returns `null` (per design §10.D).
 

@@ -11,9 +11,10 @@
 //!   the in-memory buffer text but does **not** re-lint (per the team-lead's
 //!   call on §10.C — save-only diagnostics for v1).
 //!
-//! M2 scope adds same-file `textDocument/definition` (per §7) backed by
-//! `glyph_core::resolve::collect_same_file_resolutions` (§4.4). Cross-file
-//! go-to-def lands in M3.
+//! M2 scope adds `textDocument/definition` (per §7) backed by
+//! `glyph_core::analyze::analyze_with_resolutions` (§4.4) plus a follow-the-
+//! imports walk for cross-file targets. Both same-file and cross-file
+//! jumps are wired up in M2.
 //!
 //! ## How to run
 //!
@@ -52,9 +53,9 @@ use tower_lsp::lsp_types::{
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
+use glyph_core::analyze::ResolutionKind;
 use glyph_core::ast::{Decl, FlowStmt, ReturnExpr};
-use glyph_core::resolve::ResolutionKind;
-use glyph_core::span::Span;
+use glyph_core::span::{LineIndex, Span};
 
 /// One open buffer's mirror inside the LSP server.
 ///
@@ -244,14 +245,15 @@ impl LanguageServer for Backend {
         }
     }
 
-    /// `textDocument/definition` — same-file go-to-def per design §7.
+    /// `textDocument/definition` — go-to-def per design §7.
     ///
-    /// Algorithm: parse + analyze + resolve the buffer, convert the editor
-    /// cursor to a byte offset, find the resolution whose `use_span` covers
-    /// it, return a `Location` for the resolved `def_span`. Falls back to
-    /// `{param}` slot resolution against the enclosing decl's parameter
-    /// list. Returns `null` (None) when nothing matches or when the
-    /// resolution kind is `Stdlib` (per §10.D).
+    /// Algorithm: parse + analyze + resolve the buffer (following imports for
+    /// cross-file targets), convert the editor cursor to a byte offset, find
+    /// the resolution whose `use_span` covers it, return a `Location` for the
+    /// resolved `def_span`. Falls back to `{param}` slot resolution against
+    /// the enclosing decl's parameter list. Returns `null` (None) when
+    /// nothing matches or when the resolution kind is `Stdlib`
+    /// (per §10.D).
     async fn goto_definition(
         &self,
         params: GotoDefinitionParams,
@@ -268,11 +270,17 @@ impl LanguageServer for Backend {
         };
         let enable_effects = *self.enable_effects.read().await;
 
-        let label = uri.path().to_string();
-        let view = match glyph_core::check_source_with_resolutions(
+        // Convert URI to a filesystem path so cross-file imports resolve
+        // against the importer's directory. Buffers without a `file://`
+        // path (rare — `untitled:` or in-memory) fall back to the URI's
+        // path component, which still gives same-file resolutions.
+        let buffer_path = uri
+            .to_file_path()
+            .unwrap_or_else(|_| std::path::PathBuf::from(uri.path()));
+        let view = match glyph_core::check_source_with_resolutions_at_path(
             &text,
             0,
-            &label,
+            &buffer_path,
             enable_effects,
         ) {
             Some(v) => v,
@@ -295,9 +303,27 @@ impl LanguageServer for Backend {
             if r.kind == ResolutionKind::Stdlib {
                 return Ok(None);
             }
-            // M2: def is in the same file. M3 will branch on
-            // `r.def_file != PathBuf::from(&label)` and convert to a
-            // different URI via `Url::from_file_path`.
+            // Cross-file branch: when the def lives in a different file, build
+            // the target URI from its on-disk path and read that file just to
+            // build a LineIndex for the LSP range conversion.
+            let same_file = r.def_file == buffer_path
+                || r.def_file.as_os_str().is_empty();
+            if !same_file {
+                let target_uri = match Url::from_file_path(&r.def_file) {
+                    Ok(u) => u,
+                    Err(_) => return Ok(None),
+                };
+                let target_text = match std::fs::read_to_string(&r.def_file) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(None),
+                };
+                let target_li = LineIndex::new(&target_text);
+                let range = convert::byte_span_to_lsp_range(r.def_span, &target_li);
+                return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                    uri: target_uri,
+                    range,
+                })));
+            }
             let range = convert::byte_span_to_lsp_range(r.def_span, &view.line_index);
             return Ok(Some(GotoDefinitionResponse::Scalar(Location { uri, range })));
         }
@@ -486,6 +512,156 @@ mod tests {
             .expect("parse");
         let off = src.find("Inspect").unwrap() as u32 + 2;
         assert!(resolve_param_slot(src, &view.ast, off).is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // Resolution-table tests for go-to-definition (M2).
+    //
+    // We exercise the resolution table directly rather than the full
+    // LSP handler — the handler wraps the same machinery plus an LSP
+    // range conversion. The conversion is covered by `convert::tests`.
+    // -----------------------------------------------------------------
+
+    /// Cursor on a same-file `block` call jumps to the `block` declaration.
+    #[test]
+    fn block_call_resolves_same_file() {
+        let src = r#"skill main()
+    description: "main."
+    flow:
+        validate_plan()
+
+block validate_plan()
+    "Check the plan."
+"#;
+        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph.md", false)
+            .expect("parse");
+        // Cursor inside the `validate_plan` call-site (first occurrence —
+        // the second is the `block` declaration's name token).
+        let call_offset = src.find("validate_plan()").unwrap() as u32 + 2;
+        let r = view
+            .resolutions
+            .iter()
+            .find(|r| call_offset >= r.use_span.start && call_offset < r.use_span.end)
+            .expect("expected a resolution under the cursor");
+        assert_eq!(r.kind, ResolutionKind::Block);
+        let def_text = &src[r.def_span.start as usize..r.def_span.start as usize + 5];
+        assert_eq!(def_text, "block");
+    }
+
+    /// Cursor on a same-file bare-name binding reference jumps to the `text`
+    /// declaration.
+    #[test]
+    fn bare_name_resolves_to_text_decl() {
+        let src = r#"skill main()
+    description: "main."
+    require accuracy
+    flow:
+        "Be careful."
+
+text accuracy = "Be accurate."
+"#;
+        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph.md", false)
+            .expect("parse");
+        // Cursor inside `accuracy` after `require`.
+        let off = src.find("require accuracy").unwrap() as u32 + "require ".len() as u32 + 1;
+        let r = view
+            .resolutions
+            .iter()
+            .find(|r| off >= r.use_span.start && off < r.use_span.end)
+            .expect("expected a Text resolution under the cursor");
+        assert_eq!(r.kind, ResolutionKind::Text);
+        let def_text = &src[r.def_span.start as usize..r.def_span.start as usize + 4];
+        assert_eq!(def_text, "text");
+    }
+
+    /// Cursor on a stdlib reference returns no jump (`Stdlib` kind, which
+    /// the handler maps to `null`).
+    #[test]
+    fn stdlib_reference_marks_stdlib() {
+        let src = r#"import "@glyph/std" { subagent }
+
+skill main()
+    description: "main."
+    flow:
+        subagent()
+"#;
+        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph.md", false)
+            .expect("parse");
+        // Cursor inside the `subagent` call-site. Skip the import line.
+        let off = src.find("subagent()").unwrap() as u32 + 2;
+        let r = view
+            .resolutions
+            .iter()
+            .find(|r| off >= r.use_span.start && off < r.use_span.end)
+            .expect("expected a stdlib resolution under the cursor");
+        assert_eq!(r.kind, ResolutionKind::Stdlib);
+    }
+
+    /// Cursor on whitespace finds no resolution — handler returns `null`.
+    #[test]
+    fn whitespace_cursor_no_resolution() {
+        let src = r#"skill main()
+    description: "main."
+    flow:
+        validate_plan()
+
+block validate_plan()
+    "Check the plan."
+"#;
+        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph.md", false)
+            .expect("parse");
+        // Cursor on a leading-whitespace position (start of the indented line).
+        let off = src.find("    description").unwrap() as u32;
+        let hit = view
+            .resolutions
+            .iter()
+            .find(|r| off >= r.use_span.start && off < r.use_span.end);
+        assert!(hit.is_none(), "no resolution should cover whitespace, got: {:?}", hit);
+        // And the param-slot fallback should also yield None.
+        assert!(resolve_param_slot(src, &view.ast, off).is_none());
+    }
+
+    /// Cursor on a cross-file imported call resolves to the `export block`
+    /// declaration in the dependency file. Verifies that the path-aware
+    /// entry point follows imports and emits a Resolution whose `def_file`
+    /// points at the imported file.
+    #[test]
+    fn cross_file_import_resolves_to_dep_file() {
+        // Lay out the corpus in a tempdir so `resolve_import_path` can
+        // canonicalize the dependency path.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dep_path = dir.path().join("repo_tools.glyph.md");
+        let dep_src = "export block inspect_repo(scope = \".\")\n    description: \"Inspect.\"\n    flow:\n        \"Examine.\"\n";
+        std::fs::write(&dep_path, dep_src).expect("write dep");
+
+        let importer_path = dir.path().join("fix_bug.glyph.md");
+        let importer_src = "import \"./repo_tools.glyph.md\" { inspect_repo }\n\nskill fix_bug(scope = \".\")\n    description: \"Fix.\"\n    flow:\n        inspect_repo(scope)\n";
+        std::fs::write(&importer_path, importer_src).expect("write importer");
+
+        let view = glyph_core::check_source_with_resolutions_at_path(
+            importer_src,
+            0,
+            &importer_path,
+            false,
+        )
+        .expect("parse");
+
+        // Cursor inside the `inspect_repo` call-site (in the flow block).
+        let call_idx = importer_src.find("inspect_repo(scope)").unwrap();
+        let off = call_idx as u32 + 2;
+        let r = view
+            .resolutions
+            .iter()
+            .find(|r| off >= r.use_span.start && off < r.use_span.end)
+            .expect("expected a cross-file resolution under the cursor");
+        assert_eq!(r.kind, ResolutionKind::ExportBlock);
+        // The def_file should be the dependency file path (canonicalized).
+        let dep_canon = dep_path.canonicalize().expect("canon dep");
+        assert_eq!(r.def_file, dep_canon, "def_file should point at the dep");
+        // The def_span should cover the `export block` declaration in the
+        // dependency file.
+        let def_text = &dep_src[r.def_span.start as usize..(r.def_span.start as usize + 6)];
+        assert_eq!(def_text, "export");
     }
 }
 
