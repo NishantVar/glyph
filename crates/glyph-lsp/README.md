@@ -2,17 +2,21 @@
 
 A `tower-lsp`-based language server that wraps `glyph-core`'s Phase 1 (Parse) +
 Phase 2 (Analyze) phases and republishes the resulting `DiagBag` as LSP
-`publishDiagnostics` notifications.
+`publishDiagnostics` notifications. The M2 milestone adds same-file
+`textDocument/definition` over the resolution table that
+`glyph_core::resolve` exposes.
 
-This is the **M1** milestone (diagnostics-only). Go-to-definition and other
-features are M2/M3. See [`design/glyph-lsp.md`](../../design/glyph-lsp.md) for
-the full design.
+See [`design/glyph-lsp.md`](../../design/glyph-lsp.md) for the full design.
 
-## What v1 does
+## What ships today
 
 - **Lifecycle:** `initialize`, `initialized`, `shutdown`, `exit`
 - **Document sync:** `didOpen`, `didChange`, `didClose`, `didSave` (Full text sync)
 - **Diagnostics:** republished on `didOpen` and `didSave` (save-only, per design §10.C)
+- **Go-to-definition (M2, same-file):** jumps to `block` / `text` /
+  `export block` declarations and `{param}` slots in flow inline strings.
+  Stdlib targets (`subagent`, `send`) and unresolvable identifiers return
+  `null`.
 
 `didChange` updates the in-memory buffer text but does **not** re-lint. The next
 `didSave` runs the analyzer and publishes diagnostics. `didClose` clears any
@@ -21,10 +25,9 @@ previously published diagnostics for the buffer.
 The LSP introduces no new compiler behaviour; it republishes the same
 diagnostics `glyph check` would emit, in LSP shape.
 
-## What v1 does not do
+## What is not yet implemented
 
-- `textDocument/definition` (M2)
-- Cross-file import-aware analysis (M3)
+- Cross-file go-to-def + import-aware analysis (M3)
 - Hover, completion, formatting, code actions, rename, references, etc.
 
 ## Build and install
@@ -104,6 +107,37 @@ vim.filetype.add({
    `G::parse::*` or `G::analyze::*` code.
 8. Save the buffer with the error fixed; the squiggle clears on the next save.
 9. `:bd` the buffer. Diagnostics for that URI are cleared.
+
+### Go-to-definition (M2)
+
+With the same setup:
+
+1. Open a file containing a `block` declaration plus a call site, e.g.:
+
+   ```
+   skill main()
+       description: "main."
+       require accuracy
+       flow:
+           validate_plan()
+
+   block validate_plan()
+       "Check the plan."
+
+   text accuracy = "Be accurate."
+   ```
+
+2. Place the cursor on `validate_plan` inside the `flow:` call and press
+   `gd` (or run `:lua vim.lsp.buf.definition()`). The cursor should jump
+   to the `block validate_plan` line.
+3. Place the cursor on `accuracy` after `require` and press `gd` — jumps
+   to the `text accuracy = ...` declaration.
+4. With a parameter slot like `"Inspect {scope} for issues."` in `flow:`
+   and `skill main(scope = ".")`, place the cursor inside `{scope}` and
+   press `gd` — jumps to the `scope = "."` parameter in the header.
+5. On a stdlib reference (`subagent` imported via `@glyph/std`) or any
+   unresolvable name, `gd` reports "no definition found" — the LSP
+   returns `null` (per design §10.D).
 
 ## Smoke test (no editor required)
 
