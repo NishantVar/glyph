@@ -1764,6 +1764,121 @@ skill main()
         );
     }
 
+    // --- Issue #82 chunk 2: G::analyze::export-missing-return-type ---
+
+    #[test]
+    fn export_block_meaningful_return_without_arrow_fires() {
+        // AC2(a): An export block whose body has `return <expr>` (where <expr>
+        // is not the `none` value-keyword) and whose header lacks
+        // `-> DomainType` must fire `G::analyze::export-missing-return-type`
+        // as repairable.
+        let src = "\
+export block compute(x = \"default\")
+    flow:
+        \"Compute something.\"
+        return x
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::export-missing-return-type"),
+            "expected G::analyze::export-missing-return-type for meaningful return without `->`, got: {:?}",
+            ids
+        );
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::export-missing-return-type")
+            .unwrap();
+        assert_eq!(
+            diag.classification,
+            diagnostic::Classification::Repairable,
+            "export-missing-return-type must be Repairable"
+        );
+    }
+
+    #[test]
+    fn export_block_return_none_without_arrow_no_export_missing_return_type() {
+        // AC2(b): `return none` at the end of an export block body is the
+        // value-position `none` keyword (no meaningful return). With no
+        // `-> DomainType` on the header, the new diagnostic must NOT fire.
+        // The legacy `missing-return` also must not fire because there *is*
+        // an explicit `return`.
+        let src = "\
+export block notify(msg = \"hello\")
+    flow:
+        \"Send a notification.\"
+        return none
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::export-missing-return-type"),
+            "must NOT fire export-missing-return-type for `return none`, got: {:?}",
+            ids
+        );
+        assert!(
+            !ids.contains(&"G::analyze::missing-return"),
+            "must NOT fire missing-return when `return none` is present, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn export_block_meaningful_return_with_arrow_passes_clean() {
+        // AC2(c): An export block with `-> DomainType` on the header and a
+        // meaningful return must NOT fire `export-missing-return-type`.
+        let src = "\
+export block compute(x = \"default\") -> Path
+    flow:
+        \"Compute something.\"
+        return x
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::export-missing-return-type"),
+            "must NOT fire export-missing-return-type when `-> Path` is present, got: {:?}",
+            ids
+        );
+        // And neither the parser's `none-as-return-type` nor analyze's
+        // `missing-return` should fire.
+        assert!(
+            !ids.contains(&"G::analyze::missing-return"),
+            "must NOT fire missing-return when return is present, got: {:?}",
+            ids
+        );
+        assert!(
+            !ids.contains(&"G::parse::none-as-return-type"),
+            "must NOT fire none-as-return-type for `-> Path`, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn export_block_no_return_still_fires_missing_return_only() {
+        // AC2(d): When the export block body has no `return` at all,
+        // `missing-return` (legacy) fires, but the new
+        // `export-missing-return-type` does NOT — there is no meaningful
+        // return to require an annotation.
+        let src = "\
+export block compute(x = \"default\")
+    flow:
+        \"Compute something.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::missing-return"),
+            "expected G::analyze::missing-return when body has no return, got: {:?}",
+            ids
+        );
+        assert!(
+            !ids.contains(&"G::analyze::export-missing-return-type"),
+            "must NOT fire export-missing-return-type when there is no return at all, got: {:?}",
+            ids
+        );
+    }
+
     #[test]
     fn return_not_terminal_fires_diagnostic() {
         // AC3: G::parse::return-not-terminal — return before the last statement.
@@ -3173,7 +3288,7 @@ export const middle = \"M.\"
         }
 
         let repo_tools_src = format!("\
-export block inspect_repo(scope = \".\")
+export block inspect_repo(scope = \".\") -> Path
     description: \"Inspect the repository for issues.\"
     flow:
 {}        return scope
@@ -3230,13 +3345,13 @@ export block inspect_repo(scope = \".\")
         }
 
         let repo_tools_src = format!("\
-export block inspect_repo(scope = \".\")
+export block inspect_repo(scope = \".\") -> Path
     description: \"Inspect the repository for issues.\"
     effects: reads_files
     flow:
 {}        return scope
 
-export block run_tests(target = \"all\")
+export block run_tests(target = \"all\") -> TestResult
     description: \"Run the project test suite.\"
     effects: reads_files
     flow:
@@ -3281,7 +3396,7 @@ export block run_tests(target = \"all\")
         }
 
         let lib_src = format!("\
-export block inspect_repo(scope = \".\")
+export block inspect_repo(scope = \".\") -> Path
     description: \"Inspect the repository for issues.\"
     effects: reads_files
     flow:
@@ -3334,7 +3449,7 @@ skill audit_code()
         }
 
         let repo_tools_src = format!("\
-export block inspect_repo(scope = \".\")
+export block inspect_repo(scope = \".\") -> Path
     description: \"Inspect the repository for issues.\"
     effects: reads_files
     flow:

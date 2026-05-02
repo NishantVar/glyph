@@ -25,6 +25,12 @@ pub fn fmt_source(source: &str) -> FmtResult {
 
     // Stratum 1: pre-parse text-level rewrites.
     let after_preparse = preparse_rewrite(source);
+    // Issue #82 chunk 3: strip legacy `-> None` return-type annotations
+    // from declaration headers so the parser never sees them. The parser
+    // would otherwise emit `G::parse::none-as-return-type` (Repairable) and
+    // drop the slot anyway; doing the rewrite at the text layer means
+    // `ast_rewrite`'s verbatim header copy emits the cleaned-up form.
+    let after_preparse = strip_legacy_none_return_types(&after_preparse);
 
     // Try to parse for stratum 2.
     let line_index = LineIndex::new(&after_preparse);
@@ -425,4 +431,330 @@ fn is_constraint_marker(trimmed: &str) -> bool {
 
 fn is_context_marker(trimmed: &str) -> bool {
     trimmed.starts_with("context ") && !trimmed.starts_with("context:")
+}
+
+/// Strip legacy `-> None` (case-insensitive) return-type annotations from
+/// declaration headers. Issue #82 dropped the `-> None` annotation in favor
+/// of an omitted `->`; this text-level pass rewrites legacy sources during
+/// `glyph fmt` so they conform to the new surface.
+///
+/// Applies only to lines at indent 0 that begin with a declaration keyword
+/// (`skill `, `block `, `export block `, `generated block `). Body lines and
+/// non-declaration top-level lines are excluded by construction, so the
+/// `none` value-position keyword (`return none`, `effects: none`, …) is
+/// untouched.
+///
+/// Detection mirrors `parse::Parser::try_parse_return_type`'s ident-boundary
+/// check: locate `->`, skip interior whitespace, read an ident, and match
+/// case-insensitively against `none`. Matching ident is stripped along with
+/// the preceding whitespace and `->`, then the line's trailing whitespace is
+/// trimmed so `skill foo()  ->  None  ` becomes `skill foo()`.
+///
+/// Idempotent: once stripped, no `-> none` remains, so a second pass is a
+/// no-op.
+fn strip_legacy_none_return_types(source: &str) -> String {
+    let lines: Vec<&str> = source.split('\n').collect();
+    let mut out = String::with_capacity(source.len());
+    for (idx, line) in lines.iter().enumerate() {
+        if is_decl_header_line(line) {
+            out.push_str(&strip_none_return_from_line(line));
+        } else {
+            out.push_str(line);
+        }
+        if idx + 1 < lines.len() {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// True iff `line` is a declaration header line (indent 0, declaration
+/// keyword prefix). Used to scope `strip_legacy_none_return_types` to
+/// headers only.
+fn is_decl_header_line(line: &str) -> bool {
+    if line.starts_with(' ') || line.starts_with('\t') {
+        return false;
+    }
+    line.starts_with("skill ")
+        || line.starts_with("block ")
+        || line.starts_with("export block ")
+        || line.starts_with("generated block ")
+}
+
+/// Strip a trailing `-> None` (case-insensitive) annotation from a single
+/// declaration header line. If no match is found, returns the line
+/// unchanged. Trailing whitespace is trimmed on a successful strip so the
+/// result has no dangling space.
+///
+/// The match is restricted to the **return-type slot** — i.e., the substring
+/// strictly after the rightmost `)` on the line (the parameter-list close).
+/// This prevents a `-> None` substring inside a string-default parameter
+/// (e.g. `block foo(msg = "a -> None")`) from being silently stripped.
+/// Per the header grammar, only whitespace may sit between the param-close
+/// and the return-type `->`, and only whitespace may follow the type ident
+/// — both are enforced so we leave malformed or overdecorated lines alone.
+fn strip_none_return_from_line(line: &str) -> String {
+    let bytes = line.as_bytes();
+    // Locate the parameter-list close. If the line has no `)` at all, it's
+    // not a well-formed declaration header — leave it alone.
+    let close = match bytes.iter().rposition(|&b| b == b')') {
+        Some(p) => p,
+        None => return line.to_string(),
+    };
+    // Examine only the post-`)` substring.
+    let mut j = close + 1;
+    // Whitespace before `->`.
+    while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+        j += 1;
+    }
+    // Need a literal `->` next. If anything else (or end-of-line), bail.
+    if j + 1 >= bytes.len() || bytes[j] != b'-' || bytes[j + 1] != b'>' {
+        return line.to_string();
+    }
+    let arrow_start = j;
+    j += 2;
+    // Whitespace after `->`.
+    while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+        j += 1;
+    }
+    // Read the type ident.
+    let ident_start = j;
+    while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+        j += 1;
+    }
+    let ident_end = j;
+    if ident_end == ident_start
+        || !line[ident_start..ident_end].eq_ignore_ascii_case("none")
+    {
+        return line.to_string();
+    }
+    // Per the header grammar, nothing but trailing whitespace may follow
+    // the return-type ident. If anything else appears, leave the line alone.
+    if bytes[ident_end..].iter().any(|&b| b != b' ' && b != b'\t') {
+        return line.to_string();
+    }
+    // Match found. Strip from the run of whitespace immediately preceding
+    // `->` through end-of-line; the prefix already ends at `)` with no
+    // trailing whitespace, so a final `trim_end` is defensive (handles a
+    // stray `\r` on Windows line endings).
+    let mut strip_start = arrow_start;
+    while strip_start > 0
+        && (bytes[strip_start - 1] == b' ' || bytes[strip_start - 1] == b'\t')
+    {
+        strip_start -= 1;
+    }
+    line[..strip_start].trim_end().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Issue #82 chunk 3: G::parse::none-as-return-type repair ---
+
+    #[test]
+    fn strip_none_return_skill_basic() {
+        let src = "skill foo() -> None\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, "skill foo()\n    flow:\n        \"x\"\n");
+    }
+
+    #[test]
+    fn strip_none_return_lowercase() {
+        let src = "skill foo() -> none\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, "skill foo()\n    flow:\n        \"x\"\n");
+    }
+
+    #[test]
+    fn strip_none_return_uppercase() {
+        let src = "skill foo() -> NONE\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, "skill foo()\n    flow:\n        \"x\"\n");
+    }
+
+    #[test]
+    fn strip_none_return_extra_interior_spaces() {
+        let src = "skill foo()  ->  None\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, "skill foo()\n    flow:\n        \"x\"\n");
+    }
+
+    #[test]
+    fn strip_none_return_trailing_whitespace() {
+        let src = "skill foo() -> None  \n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, "skill foo()\n    flow:\n        \"x\"\n");
+    }
+
+    #[test]
+    fn strip_none_return_block() {
+        let src = "block helper() -> None\n    description: \"d\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, "block helper()\n    description: \"d\"\n");
+    }
+
+    #[test]
+    fn strip_none_return_export_block() {
+        let src = "export block widget() -> None\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, "export block widget()\n    flow:\n        \"x\"\n");
+    }
+
+    #[test]
+    fn strip_none_return_generated_block() {
+        // Defensive: design says `generated block` headers don't admit `->`,
+        // but a legacy file that mistakenly has one should still get cleaned.
+        let src = "generated block reword() -> None\n    description: \"d\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, "generated block reword()\n    description: \"d\"\n");
+    }
+
+    #[test]
+    fn strip_none_return_preserves_valid_arrow_type() {
+        // A valid `-> SomeType` header must survive untouched.
+        let src = "skill foo() -> SomeType\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, src, "valid `-> SomeType` must not be touched");
+    }
+
+    #[test]
+    fn strip_none_return_does_not_match_none_prefix() {
+        // Ident-boundary: `-> nonexistent` must not match `none`.
+        let src = "skill foo() -> nonexistent\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, src, "`-> nonexistent` must not be matched as `none`");
+    }
+
+    #[test]
+    fn strip_none_return_does_not_touch_body_return_none() {
+        // The `none` value-keyword in the body must survive.
+        let src = "skill foo()\n    flow:\n        return none\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, src, "body `return none` must be untouched");
+    }
+
+    #[test]
+    fn strip_none_return_does_not_touch_body_arrow_none() {
+        // A body line that happens to contain `-> None` (e.g. inside a
+        // string literal) must survive — only header lines are scanned.
+        let src = "skill foo()\n    flow:\n        \"a -> None marker\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, src, "body line with `-> None` text must be untouched");
+    }
+
+    #[test]
+    fn strip_none_return_multi_decl_only_legacy_stripped() {
+        // Mixed file: legacy `-> None` stripped; valid `-> Path` preserved.
+        let src = "\
+skill cleanup() -> None
+    flow:
+        \"clean up\"
+
+export block compute(scope = \".\") -> Path
+    flow:
+        \"compute\"
+        return scope
+";
+        let out = strip_legacy_none_return_types(src);
+        let expected = "\
+skill cleanup()
+    flow:
+        \"clean up\"
+
+export block compute(scope = \".\") -> Path
+    flow:
+        \"compute\"
+        return scope
+";
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn strip_none_return_idempotent() {
+        // Running the strip a second time must be a no-op.
+        let src = "skill foo() -> None\n    flow:\n        \"x\"\n";
+        let once = strip_legacy_none_return_types(src);
+        let twice = strip_legacy_none_return_types(&once);
+        assert_eq!(once, twice, "strip must be idempotent");
+        // And on already-clean source, the strip must be a no-op.
+        let clean = "skill foo()\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(clean);
+        assert_eq!(out, clean, "already-clean source must be unchanged");
+    }
+
+    #[test]
+    fn strip_none_return_no_trailing_newline() {
+        // Source without a trailing newline must round-trip cleanly.
+        let src = "skill foo() -> None";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, "skill foo()");
+    }
+
+    #[test]
+    fn fmt_source_strips_legacy_none_return() {
+        // End-to-end: `fmt_source` produces a cleaned-up output and
+        // `changed: true` when the only difference is `-> None`.
+        let src = "skill foo() -> None\n    flow:\n        \"x\"\n";
+        let result = fmt_source(src);
+        assert!(result.changed, "fmt should report changed=true");
+        assert!(
+            !result.output.contains("-> None"),
+            "no `-> None` should remain, got:\n{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("skill foo()"),
+            "stripped header should be present, got:\n{}",
+            result.output
+        );
+    }
+
+    // --- Codex pass 1 P1: strip restricted to the return-type slot ---
+    // The strip helper must NOT corrupt a string-default parameter that
+    // happens to contain the substring `-> None`.
+
+    #[test]
+    fn strip_preserves_string_default_containing_arrow_none() {
+        // `block foo(msg = "a -> None")` has NO trailing return-type
+        // annotation; the `-> None` is part of the string default. The
+        // strip must leave the line untouched.
+        let src = "block foo(msg = \"a -> None\")\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(
+            out, src,
+            "string-default containing `-> None` must be preserved untouched, got:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn strip_preserves_string_default_containing_arrow_none_lowercase() {
+        // Lowercase variant inside a string default — same protection
+        // (the strip is case-insensitive on the type ident, so the
+        // pre-fix bug would corrupt this too).
+        let src = "skill foo(default = \"x -> none y\")\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(
+            out, src,
+            "string-default containing `-> none` must be preserved untouched, got:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn strip_trailing_none_with_string_default_preserved() {
+        // Both conditions in one line: a string default that does NOT
+        // contain `-> None` PLUS a real trailing `-> None` annotation.
+        // The trailing annotation must be stripped; the parameter list
+        // (including its string default) must survive intact.
+        let src = "block bar(p = \"ignore\") -> None\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(
+            out,
+            "block bar(p = \"ignore\")\n    flow:\n        \"x\"\n",
+            "trailing `-> None` must be stripped while `(p = \"ignore\")` is preserved, got:\n{}",
+            out
+        );
+    }
 }

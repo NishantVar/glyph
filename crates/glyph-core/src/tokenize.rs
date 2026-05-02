@@ -31,6 +31,12 @@ pub enum TokenKind {
     Dot,
     /// `==` — branch condition equality (not a value-level operator).
     DoubleEquals,
+    /// `->` — return-type arrow on `skill` / `block` / `export block` headers
+    /// per `design/language-surface.md` §3.1/§3.2/§3.3. The parser optionally
+    /// consumes `Arrow Ident` after the header `(...)`. Per `design/types.md`
+    /// §none Value lines 81–96, `-> None` is rejected at the parser layer
+    /// with `G::parse::none-as-return-type`.
+    Arrow,
     /// `{` — opening brace (selective imports).
     Lbrace,
     /// `}` — closing brace (selective imports).
@@ -175,6 +181,16 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
                     span: Span::new(file_id, p as u32, (p + 1) as u32),
                 });
                 p += 1;
+            } else if b == b'-' && p + 1 < content_end && bytes[p + 1] == b'>' {
+                // `->` — return-type arrow. Consumed as a single 2-byte token;
+                // bare `-` continues to fall through to `UnexpectedChar` so the
+                // existing `G::parse::operator-in-expression` repairable
+                // diagnostic is preserved for `5 - 2`-style stray operators.
+                tokens.push(Token {
+                    kind: TokenKind::Arrow,
+                    span: Span::new(file_id, p as u32, (p + 2) as u32),
+                });
+                p += 2;
             } else if b == b'{' {
                 tokens.push(Token {
                     kind: TokenKind::Lbrace,
@@ -429,6 +445,32 @@ mod tests {
         let src = "const x = 1.05\n";
         let (toks, _) = tokenize(src, 0).expect("`1.05` should tokenize");
         assert!(matches!(&toks[4].kind, TokenKind::NumericLit(s) if s == "1.05"));
+    }
+
+    #[test]
+    fn tokenize_arrow_is_single_token() {
+        // `->` lexes as a single Arrow token, not as `-` + `>`. This is the
+        // tokenizer half of issue #82's return-type-annotation support.
+        let src = "skill foo() -> SomeType\n";
+        let (toks, _) = tokenize(src, 0).expect("`->` should tokenize cleanly");
+        // [LineStart, "skill", "foo", Lparen, Rparen, Arrow, "SomeType", Eof]
+        assert_eq!(toks[5].kind, TokenKind::Arrow);
+        assert!(matches!(&toks[6].kind, TokenKind::Ident(s) if s == "SomeType"));
+        // Span is 2 bytes covering `->`.
+        assert_eq!(toks[5].span.end - toks[5].span.start, 2);
+    }
+
+    #[test]
+    fn tokenize_stray_minus_still_unexpected() {
+        // A stray `-` not followed by `>` continues to fail tokenization so
+        // `G::parse::operator-in-expression` keeps firing for value-level
+        // operator misuse like `5 - 2`.
+        let src = "const x = 5 - 2\n";
+        match tokenize(src, 0) {
+            Err(TokenizeError::UnexpectedChar { ch: '-', .. }) => {}
+            Err(other) => panic!("expected UnexpectedChar('-'), got error {:?}", other),
+            Ok(_) => panic!("expected UnexpectedChar('-'), but tokenize succeeded"),
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! expressions, and returns a [`TypeTag`].
 //!
 //! Out of scope for this module:
-//! - [`TypeTag::None`] — produced by explicit `-> None` annotations (#82).
+//! - [`TypeTag::None`] — internal kind tag for "no meaningful return value." Surface annotation `-> None` was dropped in #82 (`design/types.md` §`none` Value); declarations now omit `->` entirely for none-returning blocks.
 //! - [`TypeTag::Agent`] — produced by agent-typed positions (later slate work).
 //! - [`TypeTag::DomainType`] — produced by the domain-type registry (#84).
 //!

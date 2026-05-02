@@ -215,7 +215,7 @@ The author resolves manually: rename one of the conflicting declarations, or exp
 
 Phase 3 has three sub-steps:
 
-- **3a — deterministic auto-fixes.** Tab→spaces, unused import removal, etc. No LLM. 3a operates in two strata mirroring `glyph fmt` (`cli.md` §`glyph fmt`): pre-Parse text-level rewrites (tab → 4 spaces, mixed-indent normalization) run first on raw source and may turn a previously-rejecting source into one Phase 1 can accept; post-Parse AST-level rewrites (unconditional constraint hoisting, duplicate import merging, unused import removal, source section reordering) require a successful Phase 1. If Phase 1 fails after the pre-Parse pass, only the pre-Parse fixes are written and the parse diagnostic is surfaced to subsequent phases; AST-level rewrites are skipped.
+- **3a — deterministic auto-fixes.** Tab→spaces, unused import removal, etc. No LLM. 3a operates in two strata mirroring `glyph fmt` (`cli.md` §`glyph fmt`): pre-Parse text-level rewrites (tab → 4 spaces, mixed-indent normalization, legacy `-> None` strip on declaration headers — see §7) run first on raw source and may turn a previously-rejecting source into one Phase 1 can accept; post-Parse AST-level rewrites (unconditional constraint hoisting, duplicate import merging, unused import removal, source section reordering) require a successful Phase 1. If Phase 1 fails after the pre-Parse pass, only the pre-Parse fixes are written and the parse diagnostic is surfaced to subsequent phases; AST-level rewrites are skipped.
 - **3b — LLM-assisted repairs.** Driven by `repairable` diagnostics from Phase 2 (undefined names, ambiguous roles, missing returns, etc.).
 - **3c — constraint conflict scan.** Always runs (when triggered by constraint count). Independent of Phase 2 diagnostics.
 
@@ -420,7 +420,8 @@ The repair pass may add:
 The repair pass may remove:
 
 - duplicate declarations that make resolution impossible;
-- syntax that is invalid and has a clear local correction.
+- syntax that is invalid and has a clear local correction;
+- legacy `-> None` return-type annotations on `skill` / `block` / `export block` / `generated block` declaration headers — the `None` type annotation has been removed in MVP, and a declaration with no meaningful return omits `->` entirely (`types.md` §`none` Value, `language-surface.md` §3.3). Implemented as a Phase 3a pre-Parse text-level rewrite (`glyph fmt` stratum 1): the trailing ` -> None` is stripped from indent-0 declaration headers, case-insensitive on `none`, with identifier-boundary semantics. The value keyword `none` (in `return none`, `effects: none`, and other value positions per `values-and-names.md` §None) is preserved untouched. Triggered by `G::parse::none-as-return-type` (`diagnostics.md`).
 
 The repair pass should not remove meaningful instructions.
 

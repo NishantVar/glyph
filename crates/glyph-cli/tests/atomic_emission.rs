@@ -164,7 +164,7 @@ fn procedure_files_stale_tmp_cleaned() {
         "\
 export const shared_val = \"x\"
 
-export block setup_env(shell = \"bash\")
+export block setup_env(shell = \"bash\") -> Path
     flow:
 {}
         return shell
