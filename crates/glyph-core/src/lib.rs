@@ -3286,6 +3286,79 @@ skill main()
         );
     }
 
+    /// Issue #84 Chunk 7a: an imported block that is consumed *only* in
+    /// `return imported_block()` position should be recognized as used. Pre-fix,
+    /// `track_flow_usage` (analyze.rs) only walked `FlowStmt::Call`,
+    /// `ConstraintMarker`, `ContextMarker`, and `Branch` — `FlowStmt::Return`
+    /// fell into the catch-all `_` arm, so `return imported_block()` did not
+    /// mark the import as used and `G::analyze::unused-import` fired
+    /// spuriously, blocking AC8's exit-0 success contract for cross-file
+    /// nominal-match consumers. Post-fix, the import is correctly marked used.
+    #[test]
+    fn imported_block_used_in_return_call_position_does_not_fire_unused_import() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let lib_path = dir.path().join("lib.glyph.md");
+        std::fs::write(&lib_path, r#"export block do_thing()
+    description: "Do a thing."
+    flow:
+        "Do it."
+"#).unwrap();
+
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(&main_path, r#"import "./lib.glyph.md" { do_thing }
+
+skill main()
+    description: "Main."
+    flow:
+        return do_thing()
+"#).unwrap();
+
+        let bag = check_file(&main_path);
+        let unused_for_do_thing = bag.iter().any(|d| {
+            d.id == "G::analyze::unused-import" && d.message.contains("do_thing")
+        });
+        assert!(
+            !unused_for_do_thing,
+            "`return do_thing()` should mark `do_thing` as used; got diagnostics: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>(),
+        );
+    }
+
+    /// Issue #84 Chunk 7a: companion to the `Return(Call)` test — a
+    /// `return imported_name` (no parens, bare-name reference) should also
+    /// mark the import as used. The `Name` arm is symmetric with
+    /// `ContextMarker(NameRef)` (analyze.rs L753-758) and checks both
+    /// `imported_texts` and `imported_blocks` since a bare name could resolve
+    /// to either pool.
+    #[test]
+    fn imported_name_used_in_return_name_position_does_not_fire_unused_import() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let lib_path = dir.path().join("lib.glyph.md");
+        std::fs::write(&lib_path, r#"export const greeting = "Hello."
+"#).unwrap();
+
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(&main_path, r#"import "./lib.glyph.md" { greeting }
+
+skill main()
+    description: "Main."
+    flow:
+        return greeting
+"#).unwrap();
+
+        let bag = check_file(&main_path);
+        let unused_for_greeting = bag.iter().any(|d| {
+            d.id == "G::analyze::unused-import" && d.message.contains("greeting")
+        });
+        assert!(
+            !unused_for_greeting,
+            "`return greeting` should mark `greeting` as used; got diagnostics: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>(),
+        );
+    }
+
     #[test]
     fn missing_import_file_detected() {
         // Missing file produces G::analyze::missing-file.

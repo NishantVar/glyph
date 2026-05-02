@@ -766,6 +766,24 @@ fn track_flow_usage(
                     track_flow_usage(eb, imported_texts, imported_blocks, used);
                 }
             }
+            // Issue #84 Chunk 7a: a `return imported_block()` consumes the
+            // imported name in return position; before this arm it fell into
+            // the catch-all `_` and `unused-import` fired spuriously, blocking
+            // AC8's exit-0 success contract for cross-file return-position
+            // consumers.
+            crate::ast::FlowStmt::Return(crate::ast::ReturnExpr::Call { target, .. }) => {
+                if imported_blocks.contains(target) {
+                    used.insert(target.clone());
+                }
+            }
+            // Symmetric to `ContextMarker(NameRef)` above (L753-758): a
+            // `return <name>` reference may resolve to either an imported text
+            // const or an imported block, so check both pools.
+            crate::ast::FlowStmt::Return(crate::ast::ReturnExpr::Name(name)) => {
+                if imported_blocks.contains(name) || imported_texts.contains(name) {
+                    used.insert(name.clone());
+                }
+            }
             _ => {}
         }
     }
