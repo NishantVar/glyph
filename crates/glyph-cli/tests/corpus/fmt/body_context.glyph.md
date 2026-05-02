@@ -7,5 +7,5 @@ skill review_code()
         context repo_layout
         "Report findings."
 
-text project_conventions = "Strict linting rules."
-text repo_layout = "Monorepo layout."
+const project_conventions = "Strict linting rules."
+const repo_layout = "Monorepo layout."

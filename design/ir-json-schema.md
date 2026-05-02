@@ -15,6 +15,13 @@ Both subcommands must agree on this schema. A change to the IR JSON shape requir
 
 **Node kinds in the JSON.** The JSON output contains `Skill` as the root and flow-level nodes (`Call`, `InlineInstruction`, `InstructionRef`, `Branch`, `Return`, `Constraint`, `ContextNode`) plus `Param`, `ElifBranch`, and `Expr` sub-nodes. `Block` and `ExportBlock` compilation units from `ir-schema.md` do **not** appear as separate nodes in the JSON — their content is inlined into `Call` nodes via the resolved fields (`resolved_body_text`, `callee_flow`, `callee_context`, `callee_constraints`). The JSON `"call"` kind represents a **resolved call** (post-Step-1), carrying both the base `Call` fields from `ir-schema.md` and the resolved fields from `ir-schema.md` §Resolved IR (`ResolvedCall`).
 
+**Const declarations have no JSON kind.** `const`, `export const`, and `generated const` declarations (`language-surface.md` §3.4 / §3.6) do **not** serialize as their own JSON nodes. There is no `"const"` or `"const_decl"` kind in `--emit-ir` output, by design — this absence mirrors the IR schema's erase-and-inline contract for const decls (`ir-schema.md` §Top-Level Compilation Units). Const-derived values surface in the JSON only via the inlined sites:
+
+- **`Param.default`** (see §Param) — when a const is bound as a parameter default, the resolved literal appears in the Value-union shape (`{"kind": "string|int|float|bool|none", "value": ...}`).
+- **`InstructionRef.resolved_text`** (see §InstructionRef (resolved)) — when a const is referenced bare-name in `flow:` / `constraints:` / `context:`, its string content is inlined into `resolved_text`. No `TypeTag` field accompanies it, since const-as-instruction is always string-typed.
+
+The matching `TypeTag` for primitive consts is inferred at the lowering boundary and flows into the JSON via the `Value` variant chosen and via `Param.type` when applicable; it is never serialized as a free-standing const-decl attribute. The library-files-emit-no-IR-JSON rule (above, in §Scope) is independent — it applies to whole files regardless of declaration kind.
+
 ## Top-Level Envelope
 
 ```json

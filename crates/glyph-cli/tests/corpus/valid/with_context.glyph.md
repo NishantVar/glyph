@@ -8,4 +8,4 @@ skill fix_bug(scope = ".")
         "Identify the root cause."
         "Apply a minimal fix."
 
-text project_layout = "This codebase uses a monorepo layout with per-crate Cargo.toml files."
+const project_layout = "This codebase uses a monorepo layout with per-crate Cargo.toml files."

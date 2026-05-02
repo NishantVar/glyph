@@ -44,6 +44,18 @@ ExportBlock {
 
 **Derived field on `ExportBlock` (post-Phase-6-Step-1, in-memory only).** After a library file's Phase 6 Step 1 runs, each `ExportBlock` node additionally carries a `resolved_word_count: Int` field — the word count of the export block's resolved expanded prose, computed once during the library's own compilation. When a downstream skill compiles, its Phase 6 Step 1 reads this derived field from the imported `ExportBlock` to make the per-call-site projection-tier decision (inline vs. same-file procedure vs. external file). The field propagates via the import-resolution mechanism only; it is **not** part of the JSON serialization defined in `ir-json-schema.md` and does not appear in `--emit-ir` output. It is an implementation detail of in-memory IR nodes during a single multi-file build, not part of the public IR contract. See `pipeline.md` §Multi-File Compilation Order and `compiled-output.md` §Three-Tier Block Projection.
 
+**Const declarations: erase-and-inline (no IR node).** `const`, `export const`, and `generated const` declarations from `language-surface.md` §3.4 / §3.6 are **not** a top-level `IrNode` kind. They have no entry in this section and no presence in the post-Lower IR as their own nodes. The `Const`-shaped row absent from the table above is deliberate, not an omission; the schema's "Completeness caveat" allows future extensions but const decls do not require one — they erase at the lowering boundary and surface only as inlined values at reference sites:
+
+- **As a parameter default** (`Param.default: Value?` — see §Parameters below) the const's literal is inlined into the `Value` union (`StringLit`, `IntLit`, `FloatLit`, `BoolLit`, `NoneLit` — see §Enums). The literal kind lives in the `Value` variant; the matching `TypeTag` lives on the sibling `Param.type` field when the parameter is annotated.
+- **As a bare-name reference in `flow:` / `constraints:` / `context:`** the const's resolved string content becomes the `resolved_text: String` of an `InstructionRef` (§Flow Nodes) or the `text: String` of a hoisted `Constraint` / `ContextNode`. No `TypeTag` accompanies these — const-as-instruction is always string-typed.
+
+Primitive `TypeTag` is **inferred at the lowering boundary** from the const's RHS literal (string / int / float / bool — see §Enums for the full primitive set). The inference is internal to Lower; the inferred tag flows out only via the `Value` variant chosen for inlining and via `Param.type` when the const is bound to a parameter. There is no "const-decl carries its inferred TypeTag" channel because there is no const decl in the IR to carry it.
+
+Cross-refs:
+- `pipeline.md` §Phase 6 (Expand Step 1) — bare-name inlining for `const` / `generated const` references.
+- `compiled-output.md` §Authoring Constructs Compile Away — the user-facing erasure contract; `const` declarations themselves emit nothing to compiled Markdown, only their inlined content surfaces at reference sites.
+- `ir-json-schema.md` §Node kinds in the JSON — the JSON schema also has no `const_decl` kind, by the same erase-and-inline contract.
+
 ## Parameters
 
 ```

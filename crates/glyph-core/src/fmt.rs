@@ -111,7 +111,7 @@ fn ast_rewrite(source: &str, file: &crate::ast::SourceFile) -> String {
         return source.to_string();
     }
 
-    // Find declaration header lines (indent 0, starts with skill/block/export/text/import).
+    // Find declaration header lines (indent 0, starts with skill/block/export/const/import).
     let mut decl_ranges: Vec<(usize, usize)> = Vec::new(); // (start_line, end_line exclusive)
     let mut decl_starts: Vec<usize> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
@@ -124,8 +124,9 @@ fn ast_rewrite(source: &str, file: &crate::ast::SourceFile) -> String {
             if trimmed.starts_with("skill ")
                 || trimmed.starts_with("block ")
                 || trimmed.starts_with("export block ")
-                || trimmed.starts_with("export text ")
-                || trimmed.starts_with("text ")
+                || trimmed.starts_with("export const ")
+                || trimmed.starts_with("const ")
+                || trimmed.starts_with("generated ")
                 || trimmed.starts_with("import ")
             {
                 decl_starts.push(i);
@@ -144,7 +145,7 @@ fn ast_rewrite(source: &str, file: &crate::ast::SourceFile) -> String {
         decl_ranges.push((start, end));
     }
 
-    // For simple declarations (text, import), just pass through.
+    // For simple declarations (const, import), just pass through.
     // For skill/block/export block, do the rewrite.
     let mut out = String::new();
     let mut last_end = 0;
@@ -158,7 +159,7 @@ fn ast_rewrite(source: &str, file: &crate::ast::SourceFile) -> String {
         last_end = end;
 
         let header = lines[start].trim();
-        if header.starts_with("text ") || header.starts_with("export text ") || header.starts_with("import ") {
+        if header.starts_with("const ") || header.starts_with("export const ") || header.starts_with("import ") || header.starts_with("generated ") {
             // Pass through unchanged.
             for i in start..end {
                 out.push_str(lines[i]);

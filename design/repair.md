@@ -322,7 +322,7 @@ This preserves a clean separation: `generated` means machine-created; `const`/`b
 
 ### 5.3 Placement
 
-All generated declarations (both `generated const` and `generated block`) must appear after all non-generated top-level declarations in the source file. The compiler enforces this ordering rule. The repair pass appends generated declarations to the end of the file.
+All generated declarations (both `generated const` and `generated block`) must appear after all non-generated top-level declarations in the source file. The repair pass appends generated declarations to the end of the file. Compiler enforcement of this ordering rule is deferred (planned analyze-pass diagnostic, working name `G::analyze::generated-placement`); until that issue lands, the rule is a documented contract that the repair pass and authors honor manually. See [language-surface.md](language-surface.md) §3.6 and §3.7 for the matching deferral notes on the surface side.
 
 Example file structure:
 

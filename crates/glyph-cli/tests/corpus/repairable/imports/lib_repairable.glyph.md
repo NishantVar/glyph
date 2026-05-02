@@ -1,2 +1,2 @@
-export text greeting = "Hello."
-export text farewell = "Goodbye."
+export const greeting = "Hello."
+export const farewell = "Goodbye."

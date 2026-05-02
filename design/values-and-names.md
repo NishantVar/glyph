@@ -62,8 +62,10 @@ Standard decimal integers are supported. Leading zeros are not allowed.
 
 ```glyph
 max_attempts = 3
-offset = -1
+offset = 2
 ```
+
+Signed numeric literals (`-1`, `-0.5`) are deferred beyond MVP. The tokenizer rejects a leading `-` on a numeric literal today; a unary `-` prefix at parse time is planned in a future issue. See `language-surface.md` §3.4 for the matching deferral note on `const` RHS.
 
 ### Floats
 

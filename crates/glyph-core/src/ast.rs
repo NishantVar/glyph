@@ -14,7 +14,6 @@ pub struct SourceFile {
 #[derive(Clone, Debug)]
 pub enum Decl {
     Skill(Spanned<Skill>),
-    Text(Spanned<TextDecl>),
     /// Minimal `export block` placeholder — slice 4 only needs to identify the
     /// declaration shape and its parameter list so it can validate
     /// `G::analyze::missing-param-default`. Body content (flow, return,
@@ -24,6 +23,10 @@ pub enum Decl {
     Block(Spanned<BlockDecl>),
     /// `import "<path>" { name1, name2 }` or `import "<path>" as <alias>`.
     Import(Spanned<ImportDecl>),
+    /// `const NAME = <literal>` value binding. The sole value-binding decl
+    /// post-issue-#81 — supersedes the prior `text NAME = "..."` form by
+    /// covering all four primitive kinds (String, Int, Float, Bool).
+    Const(Spanned<ConstDecl>),
 }
 
 /// An `import` declaration at the top of a source file.
@@ -76,7 +79,7 @@ pub struct Skill {
     pub flow_present: bool,
     /// Bare names at body level (indent 1) that don't match any recognized
     /// keyword. Used by analyze to fire `G::analyze::ambiguous-role` when
-    /// the name resolves to a `text` declaration.
+    /// the name resolves to a `const` declaration.
     pub body_bare_names: Vec<String>,
 }
 
@@ -189,7 +192,7 @@ pub enum ReturnExpr {
 }
 
 /// An entry inside the `context:` sub-section or a body-level `context` marker.
-/// Can be a bare-name reference to a `text` declaration or an inline string.
+/// Can be a bare-name reference to a `const` declaration or an inline string.
 #[derive(Clone, Debug)]
 pub enum ContextEntry {
     /// Bare name reference (e.g., `project_conventions`).
@@ -211,10 +214,54 @@ pub struct BlockDecl {
     pub flow: Vec<FlowStmt>,
 }
 
+/// `const NAME = <literal>` declaration — unifies value bindings across the
+/// four primitive kinds in scope for issue #81 (String, Int, Float, Bool).
+///
+/// `value` carries the rendered source-text form so the inferer in
+/// `crate::kind_infer` can disambiguate Int vs Float by `'.'` presence per
+/// `design/values-and-names.md` §Numeric Coercion. String contents are stored
+/// without surrounding quotes.
 #[derive(Clone, Debug)]
-pub struct TextDecl {
+pub struct ConstDecl {
     pub name: String,
-    pub value: String,
-    /// Whether this text was declared with `export`.
+    pub value: ConstValue,
+    /// Whether this const was declared with `export`.
     pub exported: bool,
+    /// Whether this const was declared with `generated` (string-only RHS per
+    /// `design/language-surface.md` §3.6). `generated` and `exported` are
+    /// mutually exclusive at the grammar level.
+    pub generated: bool,
+}
+
+/// Rendered literal RHS of a `const` declaration. Each variant carries the
+/// source-text slice (with surrounding quotes stripped for `String`) — same
+/// shape as `kind_infer::Literal` so adapter is one-to-one.
+#[derive(Clone, Debug)]
+pub enum ConstValue {
+    /// String literal contents (quotes already stripped by the tokenizer).
+    String(String),
+    /// Integer literal source text — e.g. `"3"`, `"42"`.
+    Int(String),
+    /// Float literal source text — e.g. `"0.0"`, `"3.14"`.
+    Float(String),
+    /// Boolean literal source text — e.g. `"true"`, `"True"`, `"TRUE"`.
+    /// IR normalizes to lowercase per `design/values-and-names.md` §Booleans;
+    /// the AST preserves the original casing.
+    Bool(String),
+}
+
+impl ConstValue {
+    /// Return the rendered source-text form for inline-site substitution.
+    /// Raw text without surrounding quotes. For `Bool`, casing is preserved
+    /// as authored — IR lowercase normalization (per
+    /// `design/values-and-names.md` §Booleans) is applied at the lowering
+    /// boundary in `crate::lower::collect_consts`, not here.
+    pub fn rendered(&self) -> &str {
+        match self {
+            ConstValue::String(s)
+            | ConstValue::Int(s)
+            | ConstValue::Float(s)
+            | ConstValue::Bool(s) => s.as_str(),
+        }
+    }
 }
