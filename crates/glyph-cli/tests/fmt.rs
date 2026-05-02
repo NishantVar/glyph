@@ -322,4 +322,29 @@ fn fmt_strips_legacy_none_return_type() {
         "--check after fmt should exit 0; stderr: {}",
         String::from_utf8_lossy(&check_output.stderr)
     );
+
+    // AC7-3: the rewritten multi-decl source must parse + analyze cleanly via
+    // `glyph check` (exit 0) — confirms the repair pass produces source that
+    // flows through Phase 1 + Phase 2 without surfacing the original
+    // `G::parse::none-as-return-type` diagnostic.
+    let glyph_check_output = Command::new(glyph_bin())
+        .arg("check")
+        .arg(&tmp_path)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("failed to spawn glyph binary for post-fmt check");
+    assert_eq!(
+        glyph_check_output.status.code(),
+        Some(0),
+        "post-fmt `glyph check` must exit 0; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&glyph_check_output.stdout),
+        String::from_utf8_lossy(&glyph_check_output.stderr),
+    );
+    let post_fmt_stdout = String::from_utf8_lossy(&glyph_check_output.stdout);
+    assert!(
+        !post_fmt_stdout.contains("G::parse::none-as-return-type"),
+        "post-fmt `glyph check` stdout must not contain G::parse::none-as-return-type, got:\n{}",
+        post_fmt_stdout,
+    );
 }
