@@ -327,6 +327,72 @@ fn check_return_call_nominal(
     );
 }
 
+/// Issue #84 codex pass 4: emit `G::analyze::undefined-call` /
+/// `G::analyze::stdlib-missing-import` for a `return some_callee()` whose
+/// target does not resolve against the skill-flow `block_names` set
+/// (combined local-block + imported-block names on the imports path).
+///
+/// Mirrors the `FlowStmt::Call` arm's resolver verbatim — same Repairable
+/// tier, same message and hint shape — so the diagnostic surface stays
+/// position-agnostic. No-op when the expression is `Return(Name)` /
+/// `Return(StringLit)` (those non-Call return forms cannot be undefined-
+/// callable).
+///
+/// Skill-flow path only. `check_block_return_calls` deliberately does not
+/// invoke this helper: block-flow Calls and Returns continue to bypass
+/// undefined-call resolution (the existing asymmetry — block flow is
+/// nominal-only).
+fn check_return_call_undefined(
+    expr: &crate::ast::ReturnExpr,
+    span: Span,
+    block_names: &HashSet<&str>,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    let crate::ast::ReturnExpr::Call { target, .. } = expr else {
+        return;
+    };
+    if block_names.contains(target.as_str()) {
+        return;
+    }
+    if is_stdlib_block_name(target) {
+        bag.push(
+            Diagnostic {
+                id: "G::analyze::stdlib-missing-import".into(),
+                classification: Classification::Repairable,
+                message: format!(
+                    "`{}` is a standard library block; add `import \"@glyph/std\" {{ {} }}`",
+                    target, target
+                ),
+                span: SourceSpan::from_byte_span(file_label, span, line_index),
+                related: Vec::new(),
+                hints: vec![
+                    format!("add `import \"@glyph/std\" {{ {} }}` at the top of the file", target),
+                ],
+            },
+            span,
+        );
+    } else {
+        bag.push(
+            Diagnostic {
+                id: "G::analyze::undefined-call".into(),
+                classification: Classification::Repairable,
+                message: format!(
+                    "call to `{}()` but no `block {}` is declared in this file",
+                    target, target
+                ),
+                span: SourceSpan::from_byte_span(file_label, span, line_index),
+                related: Vec::new(),
+                hints: vec![
+                    format!("declare `block {}()` or check the name for typos", target),
+                ],
+            },
+            span,
+        );
+    }
+}
+
 /// Issue #84 Chunk 4 (AC4 / D13, D16): walk a `BlockDecl`'s `flow:` for
 /// `return foo()` statements and delegate each to
 /// [`check_return_call_nominal`]. ExportBlockDecl is deliberately not
@@ -1074,7 +1140,19 @@ fn analyze_skill(
             FlowStmt::ContextMarker(entry) => {
                 check_context_entry_name(entry, text_names, spanned.span, file_label, line_index, bag);
             }
-            FlowStmt::Return(_) => {
+            FlowStmt::Return(expr) => {
+                // Issue #84 codex pass 4: route `return some_call()` through
+                // the same `block_names` resolver that `FlowStmt::Call` uses.
+                // Pre-fix, the FlowStmt::Return arm only ran the chunk-4
+                // nominal-match check; an undefined / unimported callee in
+                // return position produced no diagnostic at all (the carry-
+                // forward observation in t13). Same Repairable tier and
+                // identical `stdlib-missing-import` / `undefined-call`
+                // message shape as the FlowStmt::Call arm above so authors
+                // see the same fix-it regardless of position.
+                check_return_call_undefined(
+                    expr, spanned.span, block_names, file_label, line_index, bag,
+                );
                 // Return statements are validated structurally by the parser
                 // (check_return_rules). Issue #84 Chunk 4 (AC4 / D13):
                 // delegate the cross-/same-file nominal-mismatch check to
@@ -1602,6 +1680,15 @@ fn check_branch_body_names(
             }
             FlowStmt::ContextMarker(entry) => {
                 check_context_entry_name(entry, text_names, span, file_label, line_index, bag);
+            }
+            // Issue #84 codex pass 4 — AC-pass4-5: a `return some_callee()`
+            // nested inside an `if`/`elif`/`else` body must run the same
+            // undefined-call resolver as a top-level Return. Pre-fix this
+            // arm fell into the catch-all and the diagnostic was silently
+            // dropped — symmetric in spirit to pass-2's branch-body
+            // nominal-walk extension.
+            FlowStmt::Return(expr) => {
+                check_return_call_undefined(expr, span, block_names, file_label, line_index, bag);
             }
             _ => {}
         }
@@ -3107,6 +3194,162 @@ mod tests {
              used={:?}, bag ids={:?}",
             used,
             bag.iter().map(|d| d.id.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    // --- Issue #84 codex pass 4 — route `return some_call()` through the
+    // same `block_names` resolver that `FlowStmt::Call` uses. Pre-fix, the
+    // skill flow's `FlowStmt::Return(_)` arm only ran the chunk-4 nominal-
+    // match check; an undefined / unimported callee in return position
+    // produced no diagnostic at all (closes the carry-forward observation
+    // documented in t13). The asymmetry where block-flow Calls / Returns
+    // still bypass undefined-call resolution is preserved intentionally —
+    // `check_block_return_calls` keeps its nominal-only contract. ---
+
+    /// Helper: count `G::analyze::undefined-call` diagnostics in the bag.
+    fn undefined_call_diags(bag: &DiagBag) -> Vec<&Diagnostic> {
+        bag.iter()
+            .filter(|d| d.id == "G::analyze::undefined-call")
+            .collect()
+    }
+
+    #[test]
+    fn t23_return_call_in_branch_body_fires_undefined_call() {
+        // Codex pass 4 — AC-pass4-5. Nested coverage: `return some_undefined()`
+        // inside an `if`/`elif`/`else` body must fire undefined-call too.
+        // Pre-fix the skill-flow Branch arm called `check_branch_body_names`,
+        // which matched only Call / ConstraintMarker / ContextMarker — Return
+        // fell into the catch-all. Symmetric to pass-2's branch-body nominal
+        // walk extension (t14, t15) but for the new pass-4 resolution path.
+        let src = "skill main() -> Plan\n    description: \"Main.\"\n    flow:\n        if mode == \"x\"\n            return some_undefined()\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let diags = undefined_call_diags(&bag);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected one undefined-call for branch-nested `return some_undefined()`, got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+        assert!(diags[0].message.contains("some_undefined"));
+    }
+
+    #[test]
+    fn t22_return_call_to_imported_block_does_not_fire_undefined_call() {
+        // Codex pass 4 — AC-pass4-4 negative pin (imports path). A
+        // `return imported_proc()` resolved through the augmented
+        // `block_names` set in `analyze_with_imports` (analyze.rs:667-671
+        // unions local block names with `imported_blocks`) must not fire
+        // undefined-call. Confirms the new resolver shares the same
+        // resolution scope as the existing FlowStmt::Call arm — symmetric
+        // across positions and across the imports vs no-imports paths.
+        let src = "skill main() -> Plan\n    description: \"Main.\"\n    flow:\n        return imported_proc()\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let mut used: HashSet<String> = HashSet::new();
+
+        let mut imported_blocks: HashSet<String> = HashSet::new();
+        imported_blocks.insert("imported_proc".to_string());
+
+        let _ = analyze_with_imports(
+            &file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &HashSet::new(),
+            &imported_blocks,
+            &mut used,
+            &HashMap::new(),
+            &mut registry,
+            &HashMap::new(),
+        );
+
+        let diags = undefined_call_diags(&bag);
+        assert_eq!(
+            diags.len(),
+            0,
+            "`return imported_proc()` with matching import must not fire undefined-call; got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn t21_return_call_to_defined_local_block_does_not_fire_undefined_call() {
+        // Codex pass 4 — AC-pass4-3 negative pin. A `return local_block()`
+        // to a same-file `block local_block() -> Plan` is a well-formed
+        // call boundary; the resolver must not fire undefined-call. Pins
+        // that the new resolution path doesn't over-fire on the legitimate
+        // same-file callee surface.
+        let src = "skill main() -> Plan\n    description: \"Main.\"\n    flow:\n        return local_block()\n\nblock local_block() -> Plan\n    description: \"Local.\"\n    flow:\n        \"do\"\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let diags = undefined_call_diags(&bag);
+        assert_eq!(
+            diags.len(),
+            0,
+            "well-formed `return local_block()` must not fire undefined-call; got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn t20_return_call_to_same_file_export_block_fires_undefined_call() {
+        // Codex pass 4 — AC-pass4-2. The same-file resolver's `block_names`
+        // is `Decl::Block`-only (analyze.rs:472, codex pass 1 F3 rationale
+        // documented in t13); a `return same_file_export_block()` boundary
+        // does not resolve against `block_names`, so undefined-call fires.
+        // This preserves the existing asymmetry — ExportBlock is not a
+        // valid same-file callee target — and closes t13's carry-forward
+        // observation about return-position resolution.
+        let src = "export block exported_fn() -> Plan\n    description: \"Make a plan.\"\n    flow:\n        return \"x\"\n\nskill main() -> Report\n    description: \"Main.\"\n    flow:\n        return exported_fn()\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let diags = undefined_call_diags(&bag);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected one undefined-call for same-file ExportBlock callee in return position, got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+        assert!(diags[0].message.contains("exported_fn"));
+    }
+
+    #[test]
+    fn t19_return_call_to_undefined_name_fires_undefined_call() {
+        // Codex pass 4 — AC-pass4-1 tracer. A `return some_undefined()` in
+        // skill flow with no matching `block` declaration and no import
+        // must emit `G::analyze::undefined-call` (Repairable), matching
+        // the FlowStmt::Call arm's existing tier (analyze.rs:1040).
+        let src = "skill main() -> Plan\n    description: \"Main.\"\n    flow:\n        return some_undefined()\n";
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+
+        let diags = undefined_call_diags(&bag);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected one undefined-call for `return some_undefined()`, got: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+        );
+        let d = diags[0];
+        assert_eq!(d.classification, crate::diagnostic::Classification::Repairable);
+        assert!(
+            d.message.contains("some_undefined"),
+            "message must name the undefined callee, got: {:?}",
+            d.message
         );
     }
 }

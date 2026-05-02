@@ -277,6 +277,61 @@ block helper() -> Report
     );
 }
 
+/// Issue #84 codex pass 4 integration pin. Same surface as the analyze-side
+/// unit test `t19_return_call_to_undefined_name_fires_undefined_call`, but
+/// exercised through the spawned `glyph` binary so the CLI exit code and
+/// NDJSON diagnostic surface stay in sync with the library.
+///
+/// Pre-fix: a `return some_undefined()` in skill flow surfaced no diagnostic
+/// at all and `glyph check` exited 0 — the carry-forward observation
+/// documented in the analyze-side `t13` test. Post-fix: undefined-call
+/// (Repairable) fires and `glyph check` exits 2.
+#[test]
+fn ac_codex_pass4_return_undefined_via_binary() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let main_path = dir.path().join("main.glyph.md");
+    std::fs::write(
+        &main_path,
+        "\
+skill main() -> Plan
+    description: \"Main.\"
+    flow:
+        return some_undefined()
+",
+    )
+    .unwrap();
+
+    let result = run_check(&main_path, "json");
+    let stdout = String::from_utf8_lossy(&result.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+    assert_eq!(
+        result.status.code(),
+        Some(2),
+        "undefined-call (Repairable) in return position should exit 2; stdout={:?} stderr={:?}",
+        stdout,
+        stderr,
+    );
+    assert!(
+        ndjson_contains_id(&stdout, "G::analyze::undefined-call"),
+        "must fire G::analyze::undefined-call for `return some_undefined()`, got:\n{}",
+        stdout,
+    );
+    assert_eq!(
+        classification_of(&stdout, "G::analyze::undefined-call").as_deref(),
+        Some("repairable"),
+        "G::analyze::undefined-call must be classified repairable, got:\n{}",
+        stdout,
+    );
+    let msg = message_of(&stdout, "G::analyze::undefined-call")
+        .expect("undefined-call diagnostic must have a message field");
+    assert!(
+        msg.contains("some_undefined"),
+        "message must name the undefined callee, got: {}",
+        msg,
+    );
+}
+
 /// AC8 failure path — divergent declared types fire `nominal-mismatch`.
 ///
 /// Library exports `compute() -> Plan`; consumer skill declares `-> Report`
