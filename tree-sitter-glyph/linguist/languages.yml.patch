@@ -1,0 +1,37 @@
+Insertion site (context only — Linguist's `languages.yml` is alphabetised
+on the top-level keys, so place `Glyph:` between `Glsl:` and
+`Glyph Bitmap Distribution Format:`):
+
+ Glsl:
+   type: programming
+   color: "#5686a5"
+   extensions:
+   - ".glsl"
+   ace_mode: glsl
+   tm_scope: source.glsl
+   language_id: 137
++Glyph:
++  type: programming
++  color: "#1FA9A0"
++  extensions:
++  - ".glyph"
++  tm_scope: none
++  ace_mode: text
++  language_id: 999100001
+ Glyph Bitmap Distribution Format:
+   type: data
+   color: "#000000"
+   extensions:
+   - ".bdf"
+   tm_scope: source.bdf
+   ace_mode: text
+   language_id: 99
+
+Notes:
+- `language_id` is a placeholder. Linguist reviewers will assign the
+  final ID by running `script/update-ids` against their local
+  registry. The chosen value (`999100001`) is far enough above
+  current IDs to avoid collision in a hand-applied patch.
+- The `Glsl` and `Glyph Bitmap Distribution Format` entries are
+  reproduced from Linguist's current `languages.yml` for context;
+  do not modify them when applying this patch.

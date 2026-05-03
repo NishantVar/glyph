@@ -1,0 +1,28 @@
+{
+  "name": "glyph-vscode",
+  "displayName": "Glyph",
+  "description": "Glyph language support for Visual Studio Code (scaffold).",
+  "version": "0.1.0",
+  "publisher": "glyph",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "glyph",
+        "aliases": [
+          "Glyph",
+          "glyph"
+        ],
+        "extensions": [
+          ".glyph"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ]
+  }
+}

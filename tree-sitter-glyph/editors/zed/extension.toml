@@ -1,0 +1,11 @@
+id = "glyph"
+name = "Glyph"
+description = "Glyph language support (tree-sitter, syntax highlighting, locals)."
+version = "0.1.0"
+schema_version = 1
+authors = ["Glyph contributors"]
+repository = "https://github.com/PLACEHOLDER/glyph"
+
+[grammars.glyph]
+repository = "https://github.com/PLACEHOLDER/tree-sitter-glyph"
+commit = "PLACEHOLDER_COMMIT_SHA"

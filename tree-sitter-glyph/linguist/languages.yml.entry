@@ -1,0 +1,8 @@
+Glyph:
+  type: programming
+  color: "#1FA9A0"
+  extensions:
+  - ".glyph"
+  tm_scope: none
+  ace_mode: text
+  language_id: 999100001

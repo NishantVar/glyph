@@ -1,0 +1,14 @@
+# Append this to your `~/.config/helix/languages.toml` to enable
+# Glyph syntax highlighting and tree-sitter parsing in Helix.
+
+[[language]]
+name = "glyph"
+scope = "source.glyph"
+file-types = ["glyph"]
+comment-token = "//"
+indent = { tab-width = 4, unit = "    " }
+roots = []
+
+[language.grammar]
+name = "glyph"
+source = { git = "https://github.com/PLACEHOLDER/tree-sitter-glyph", rev = "PLACEHOLDER_COMMIT_SHA" }

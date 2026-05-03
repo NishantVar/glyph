@@ -1,0 +1,81 @@
+================================================================================
+Plain block with flow section
+================================================================================
+
+block review_code()
+    flow:
+        "Scan for issues."
+        "Report findings."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (block_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))
+
+================================================================================
+Block with single-string shorthand body
+================================================================================
+
+block summarize_changes()
+    "Summarize what was changed and why."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (block_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (inline_instruction
+        (string_literal
+          (string_content))))))
+
+================================================================================
+Export block with explicit return type and flow
+================================================================================
+
+export block inspect_repo(scope = ".") -> Context
+    description: "Inspect the repository."
+    flow:
+        "Examine {scope}."
+        return context
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (export_block_declaration
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        default: (string_literal
+          (string_content))))
+    (return_type
+      type: (type_identifier))
+    (export_block_body
+      (description_section
+        content: (string_literal
+          (string_content)))
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content)
+              (interpolation
+                (identifier))
+              (string_content))))
+        (flow_statement
+          (return_statement
+            value: (identifier)))))))
