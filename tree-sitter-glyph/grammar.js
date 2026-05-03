@@ -27,8 +27,6 @@ module.exports = grammar({
         $.block_declaration,
         $.export_block_declaration,
         $.const_declaration,
-        $.int_declaration,
-        $.float_declaration,
         $.generated_const_declaration,
         $.generated_block_declaration,
       ),
@@ -137,27 +135,16 @@ module.exports = grammar({
         $._newline,
       ),
 
-    _const_rhs: ($) => choice($.string_literal, $.block_string, $.qualified_name, $.identifier),
-
-    int_declaration: ($) =>
-      seq(
-        optional("export"),
-        "int",
-        field("name", $.identifier),
-        "=",
-        field("value", choice($.integer_literal, $.qualified_name, $.identifier)),
-        $._newline,
-      ),
-
-    float_declaration: ($) =>
-      seq(
-        optional("export"),
-        "float",
-        field("name", $.identifier),
-        "=",
-        field("value", choice($.float_literal, $.qualified_name, $.identifier)),
-        $._newline,
-      ),
+    // Per #81: const RHS is a literal — string, block string, integer,
+    // float, or boolean. Bare-name and qualified-name RHS are out of
+    // scope (see crates/glyph-core/src/parse.rs `parse_const_literal_rhs`).
+    _const_rhs: ($) => choice(
+      $.string_literal,
+      $.block_string,
+      $.integer_literal,
+      $.float_literal,
+      $.boolean_literal,
+    ),
 
     generated_const_declaration: ($) =>
       seq(

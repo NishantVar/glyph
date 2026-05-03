@@ -24,8 +24,6 @@
 
 ; ── Built-in type keywords ─────────────────────────────────────
 "const" @type.builtin
-"int" @type.builtin
-"float" @type.builtin
 "generated" @type.builtin
 
 ; ── Constraint markers — visually distinct from keywords ───────
@@ -82,10 +80,8 @@
 ; ── Argument names (named arguments: `name = value`) ───────────
 (argument name: (identifier) @variable.parameter)
 
-; ── Value-binding names (const, int, float, generated const) ────
+; ── Value-binding names (const, generated const) ──────────────
 (const_declaration name: (identifier) @constant)
-(int_declaration name: (identifier) @constant)
-(float_declaration name: (identifier) @constant)
 (generated_const_declaration name: (identifier) @constant)
 
 ; ── Module / import names ──────────────────────────────────────

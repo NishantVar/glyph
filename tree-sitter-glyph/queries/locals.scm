@@ -28,8 +28,6 @@
 ; ── File-level definitions (constants and callables) ──────────
 
 (const_declaration name: (identifier) @local.definition.constant)
-(int_declaration name: (identifier) @local.definition.constant)
-(float_declaration name: (identifier) @local.definition.constant)
 (generated_const_declaration name: (identifier) @local.definition.constant)
 
 (skill_declaration name: (identifier) @local.definition.function)

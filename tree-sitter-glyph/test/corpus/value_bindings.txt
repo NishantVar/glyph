@@ -1,11 +1,12 @@
 ================================================================================
-int and float bindings, with and without export
+const bindings with int, float, and bool literals (with and without export)
 ================================================================================
 
-int max_attempts = 3
-export int default_max_attempts = 3
-float threshold = 0.8
-export float default_temperature = 0.7
+const max_attempts = 3
+export const default_max_attempts = 3
+const threshold = 0.8
+export const default_temperature = 0.7
+const enable_caching = true
 
 skill foo()
     flow:
@@ -14,18 +15,21 @@ skill foo()
 --------------------------------------------------------------------------------
 
 (source_file
-  (int_declaration
+  (const_declaration
     name: (identifier)
     value: (integer_literal))
-  (int_declaration
+  (const_declaration
     name: (identifier)
     value: (integer_literal))
-  (float_declaration
+  (const_declaration
     name: (identifier)
     value: (float_literal))
-  (float_declaration
+  (const_declaration
     name: (identifier)
     value: (float_literal))
+  (const_declaration
+    name: (identifier)
+    value: (boolean_literal))
   (skill_declaration
     name: (identifier)
     (parameter_list)
