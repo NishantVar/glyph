@@ -46,7 +46,7 @@ This folder is the working source of truth for Glyph system design. The reposito
 
 ### MVP
 - [build-foundation.md](build-foundation.md) — **Rust implementation foundation**: two-crate workspace, hand-rolled parser, span/arena types, sync-only architecture, error/diagnostic channels, CLI contract, agent workflow, dependency inventory
-- [mvp-acceptance.md](mvp-acceptance.md) — walking skeleton (`update_docs.glyph.md`), test corpus structure, 5-skill multi-file acceptance project, 77 compiler-scope + 11 agent-scope diagnostic IDs, exit criteria
+- [mvp-acceptance.md](mvp-acceptance.md) — walking skeleton (`update_docs.glyph.md`), test corpus structure, 5-skill multi-file acceptance project, 82 compiler-scope + 11 agent-scope diagnostic IDs, exit criteria
 
 ## Reading Order
 

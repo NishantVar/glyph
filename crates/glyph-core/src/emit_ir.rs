@@ -5,9 +5,8 @@
 //! Each node carries its `node_id` as `"n<integer>"`.
 
 use crate::ir::{
-    IrArena, IrBranch, IrCall, IrConstraint, IrContext, IrElifBranch,
-    IrInlineInstruction, IrNode, IrOutputContract, IrParam, NodeId, OutputSource,
-    Polarity, Role, Strength,
+    IrArena, IrBranch, IrCall, IrConstraint, IrContext, IrElifBranch, IrInlineInstruction, IrNode,
+    IrOutputContract, IrParam, NodeId, OutputSource, Polarity, Role, Strength,
 };
 use crate::kind_infer::TypeTag;
 use serde_json::{json, Map, Value};
@@ -147,10 +146,7 @@ fn serialize_param(param: &IrParam, node_id: &str) -> Value {
             .strip_prefix('"')
             .and_then(|s| s.strip_suffix('"'))
             .unwrap_or(default);
-        m.insert(
-            "default".into(),
-            json!({ "kind": "string", "value": raw }),
-        );
+        m.insert("default".into(), json!({ "kind": "string", "value": raw }));
     }
     Value::Object(m)
 }
@@ -218,10 +214,7 @@ fn serialize_call(c: &IrCall, arena: &IrArena) -> Value {
     // Issue #84 chunk 6: callee return-type slot. `None` lowers to JSON null
     // (the slot's pre-chunk-6 hardcoded behavior); `Some(TypeTag)` lowers per
     // FC8 designer relay (built-ins → lowercase string, DomainType → object).
-    m.insert(
-        "return_type".into(),
-        opt_typetag_to_json(&c.return_type),
-    );
+    m.insert("return_type".into(), opt_typetag_to_json(&c.return_type));
 
     // effects: inherit from callee block if available, else empty.
     m.insert("effects".into(), json!([]));
@@ -261,17 +254,13 @@ fn serialize_call(c: &IrCall, arena: &IrArena) -> Value {
     // Issue #85 chunk 5 (planner D5 — α): the callee block's
     // `OutputContract`, denormalized onto the call site under
     // `callee_output_contract` (mirrors the existing `callee_*` convention).
-    // Always emit the field — null when the callee is unresolved (Tier 1
-    // undefined target) or has no contract; the pinned object otherwise.
-    // The field is computed once and inserted in both branches below to
-    // keep the inline / non-inline schemas symmetric.
-    let callee_output_contract = if is_inline {
-        Value::Null
-    } else {
-        match find_block_by_name(arena, &c.target) {
-            Some(b) => output_contract_json(arena, b.output_contract),
-            None => Value::Null,
-        }
+    // Always emit the field — null when the callee is unresolved or has no
+    // contract; the pinned object otherwise. Inline resolved calls carry it
+    // too so validate-output can run the output-target leak check using only
+    // the emitted IR JSON.
+    let callee_output_contract = match find_block_by_name(arena, &c.target) {
+        Some(b) => output_contract_json(arena, b.output_contract),
+        None => Value::Null,
     };
     if is_inline {
         m.insert("callee_flow".into(), Value::Null);
@@ -309,8 +298,8 @@ fn serialize_call(c: &IrCall, arena: &IrArena) -> Value {
             m.insert("callee_constraints".into(), Value::Null);
         }
     }
-    // Hoisted out of the three branches above: the value was computed once
-    // (per `is_inline`), and the field must appear in every call's JSON.
+    // Hoisted out of the branches above: the value was computed once, and the
+    // field must appear in every call's JSON.
     m.insert("callee_output_contract".into(), callee_output_contract);
 
     // procedure_path
@@ -565,12 +554,27 @@ mod tests {
     // arms in `typetag_to_json` must spell the lowercase form literally.
     #[test]
     fn typetag_to_json_builtins_emit_lowercase_strings() {
-        assert_eq!(typetag_to_json(&TypeTag::String), Value::String("string".into()));
-        assert_eq!(typetag_to_json(&TypeTag::Int),    Value::String("int".into()));
-        assert_eq!(typetag_to_json(&TypeTag::Float),  Value::String("float".into()));
-        assert_eq!(typetag_to_json(&TypeTag::Bool),   Value::String("bool".into()));
-        assert_eq!(typetag_to_json(&TypeTag::None),   Value::String("none".into()));
-        assert_eq!(typetag_to_json(&TypeTag::Agent),  Value::String("agent".into()));
+        assert_eq!(
+            typetag_to_json(&TypeTag::String),
+            Value::String("string".into())
+        );
+        assert_eq!(typetag_to_json(&TypeTag::Int), Value::String("int".into()));
+        assert_eq!(
+            typetag_to_json(&TypeTag::Float),
+            Value::String("float".into())
+        );
+        assert_eq!(
+            typetag_to_json(&TypeTag::Bool),
+            Value::String("bool".into())
+        );
+        assert_eq!(
+            typetag_to_json(&TypeTag::None),
+            Value::String("none".into())
+        );
+        assert_eq!(
+            typetag_to_json(&TypeTag::Agent),
+            Value::String("agent".into())
+        );
     }
 
     // f.3: the `Option<TypeTag>` call-site wrapper — `None` lowers to JSON
@@ -622,10 +626,8 @@ mod output_contract_emit_tests {
     }
 
     /// Variant of [`ir_json`] that runs `expand_step1` between lower and emit
-    /// so that block calls receive their Tier 2/3 `projection_tier`. Required
-    /// for tests that exercise the call-site `callee_output_contract` lookup,
-    /// which only fires for non-inline calls (`serialize_call` short-circuits
-    /// inline projections).
+    /// so block calls receive their final projection tier before JSON
+    /// serialization.
     fn ir_json_after_expand(src: &str) -> Value {
         let (file, _) = parse::parse(src, 0).expect("source should parse");
         let arena = lower::lower(&file).expect("source should lower");
@@ -650,10 +652,8 @@ mod output_contract_emit_tests {
 
     // Behavior #6 (planner D5 — α): block-level OutputContract surfaces on
     // the call site as `callee_output_contract`, mirroring the existing
-    // `callee_*` denormalization convention. This requires the call to be
-    // Tier 2/3 (inline calls don't carry callee_* fields), so we run
-    // `expand_step1` first. The block has ≥4 flow statements so it gets
-    // promoted to Tier 2.
+    // `callee_*` denormalization convention. The block has ≥4 flow statements
+    // so it gets promoted to Tier 2.
     #[test]
     fn block_call_site_carries_callee_output_contract_object() {
         let src = "\
@@ -669,15 +669,12 @@ block helper() -> Path
         return <out>
 ";
         let v = ir_json_after_expand(src);
-        let flow = v
-            .pointer("/skill/flow")
-            .expect("skill flow array present");
+        let flow = v.pointer("/skill/flow").expect("skill flow array present");
         let call = find_call(flow, "helper");
         assert_eq!(
             call.get("projection_mode").and_then(|m| m.as_str()),
             Some("same_file_procedure"),
-            "block with >=4 flow statements promotes to Tier 2; behavior #6 \
-             only fires on non-inline calls"
+            "block with >=4 flow statements promotes to Tier 2"
         );
         let coc = call
             .get("callee_output_contract")
@@ -694,10 +691,7 @@ block helper() -> Path
             "callee_output_contract reuses the same pinned shape as the \
              skill-level field"
         );
-        assert_eq!(
-            obj.get("target_name").and_then(|n| n.as_str()),
-            Some("out"),
-        );
+        assert_eq!(obj.get("target_name").and_then(|n| n.as_str()), Some("out"),);
         assert_eq!(
             obj.get("ty"),
             Some(&serde_json::json!({ "domain_type": "path" })),
@@ -708,6 +702,36 @@ block helper() -> Path
             obj.get("source").and_then(|s| s.as_str()),
             Some("synthesized_by_agent"),
         );
+    }
+
+    #[test]
+    fn inline_block_call_site_carries_callee_output_contract_object() {
+        let src = "\
+skill drive()
+    flow:
+        helper()
+
+block helper() -> Path
+    flow:
+        return <out>
+";
+        let v = ir_json_after_expand(src);
+        let flow = v.pointer("/skill/flow").expect("skill flow array present");
+        let call = find_call(flow, "helper");
+        assert_eq!(
+            call.get("projection_mode").and_then(|m| m.as_str()),
+            Some("inline"),
+            "single-return helper remains Tier 1 inline"
+        );
+        let coc = call
+            .get("callee_output_contract")
+            .expect("call site must carry the `callee_output_contract` field");
+        assert!(
+            coc.is_object(),
+            "inline callee_output_contract is an object when the callee block \
+             has one; got {coc}"
+        );
+        assert_eq!(coc.get("target_name").and_then(|n| n.as_str()), Some("out"));
     }
 
     // Behavior #9 (planner D5 add-on): an unresolved (Tier 1 / undefined)
@@ -723,9 +747,7 @@ skill drive()
         unresolved_target()
 ";
         let v = ir_json(src);
-        let flow = v
-            .pointer("/skill/flow")
-            .expect("skill flow array present");
+        let flow = v.pointer("/skill/flow").expect("skill flow array present");
         let call = find_call(flow, "unresolved_target");
         assert_eq!(
             call.get("projection_mode").and_then(|m| m.as_str()),
@@ -734,7 +756,9 @@ skill drive()
              this slot"
         );
         assert!(
-            call.as_object().unwrap().contains_key("callee_output_contract"),
+            call.as_object()
+                .unwrap()
+                .contains_key("callee_output_contract"),
             "Tier 1 calls must still carry the `callee_output_contract` key \
              (planner D5 — null, not absent)"
         );
@@ -757,9 +781,7 @@ skill make_report() -> Report
         return <output>
 ";
         let v = ir_json(src);
-        let flow = v
-            .pointer("/skill/flow")
-            .expect("skill flow array present");
+        let flow = v.pointer("/skill/flow").expect("skill flow array present");
         for node in flow.as_array().expect("flow is an array") {
             assert_ne!(
                 node.get("kind").and_then(|k| k.as_str()),
@@ -963,4 +985,3 @@ skill make_report() -> Report
         );
     }
 }
-

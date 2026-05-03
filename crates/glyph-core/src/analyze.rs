@@ -16,8 +16,9 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use crate::ast::{BlockDecl, ContextEntry, Decl, FlowStmt, SourceFile};
+use crate::ast::{BlockDecl, ContextEntry, Decl, FlowStmt, ReturnExpr, SourceFile};
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
+use crate::output_target::OutputTargetExpr;
 use crate::slot::scan_slots;
 use crate::span::{LineIndex, Span, Spanned};
 
@@ -101,10 +102,224 @@ fn warn_if_banned_return_type(
 /// against same-spelling parameters. Symmetric to the pass-3 fix in
 /// `lower::name_to_typetag` (must classify by canonical form too).
 fn is_builtin_type_name(s: &str) -> bool {
-    const CANONICAL_BUILTINS: &[&str] =
-        &["string", "int", "float", "bool", "none", "agent"];
+    const CANONICAL_BUILTINS: &[&str] = &["string", "int", "float", "bool", "none", "agent"];
     let canonical = crate::domain_registry::canonicalize_identifier(s);
     CANONICAL_BUILTINS.contains(&canonical.as_str())
+}
+
+fn is_domain_return_type(rt: Option<&Spanned<String>>) -> bool {
+    let Some(rt) = rt else {
+        return false;
+    };
+    crate::type_position::validate_type_position(&rt.node).is_ok()
+        && !is_builtin_type_name(&rt.node)
+}
+
+fn placeholder_identifier(s: &str) -> Option<&str> {
+    let inner = s.strip_prefix('<')?.strip_suffix('>')?;
+    if inner.is_empty() {
+        return None;
+    }
+    let mut chars = inner.chars();
+    let first = chars.next()?;
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return None;
+    }
+    if chars.all(|c| c == '_' || c.is_ascii_alphanumeric()) {
+        Some(inner)
+    } else {
+        None
+    }
+}
+
+fn output_target_identifier(expr: &ReturnExpr) -> Option<(&str, Span)> {
+    match expr {
+        ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id)) => {
+            Some((id.name.as_str(), id.span))
+        }
+        _ => None,
+    }
+}
+
+fn visible_names_for_decl<'a>(
+    params: impl Iterator<Item = &'a str>,
+    text_names: &HashSet<&str>,
+    block_names: &HashSet<&str>,
+) -> HashSet<String> {
+    let mut visible: HashSet<String> = params.map(String::from).collect();
+    visible.extend(text_names.iter().map(|s| (*s).to_string()));
+    visible.extend(block_names.iter().map(|s| (*s).to_string()));
+    visible
+}
+
+fn check_output_target_shadows_binding(
+    expr: &ReturnExpr,
+    visible_names: &HashSet<String>,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    let Some((name, span)) = output_target_identifier(expr) else {
+        return;
+    };
+    if !visible_names.contains(name) {
+        return;
+    }
+    bag.push(
+        Diagnostic::error(
+            "G::analyze::output-target-shadows-binding",
+            format!("output target `{name}` shadows an existing visible binding"),
+            SourceSpan::from_byte_span(file_label, span, line_index),
+        ),
+        span,
+    );
+}
+
+fn check_flow_output_target_shadows_binding(
+    flow: &[FlowStmt],
+    visible_names: &HashSet<String>,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    for stmt in flow {
+        match stmt {
+            FlowStmt::Return(expr) => {
+                check_output_target_shadows_binding(
+                    expr,
+                    visible_names,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+            }
+            FlowStmt::Branch {
+                then_body,
+                elif_branches,
+                else_body,
+                ..
+            } => {
+                check_flow_output_target_shadows_binding(
+                    then_body,
+                    visible_names,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+                for elif in elif_branches {
+                    check_flow_output_target_shadows_binding(
+                        &elif.body,
+                        visible_names,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                }
+                if let Some(else_body) = else_body {
+                    check_flow_output_target_shadows_binding(
+                        else_body,
+                        visible_names,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn check_placeholder_string_return(
+    expr: &ReturnExpr,
+    enclosing_return_type: Option<&Spanned<String>>,
+    span: Span,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    if !is_domain_return_type(enclosing_return_type) {
+        return;
+    }
+    let ReturnExpr::Inline(s) = expr else {
+        return;
+    };
+    let Some(target) = placeholder_identifier(s) else {
+        return;
+    };
+    bag.push(
+        Diagnostic {
+            id: "G::analyze::placeholder-string-return".into(),
+            classification: Classification::Repairable,
+            message: format!(
+                "string placeholder return `\"<{target}>\"` should use the output target form"
+            ),
+            span: SourceSpan::from_byte_span(file_label, span, line_index),
+            related: Vec::new(),
+            hints: vec![format!("rewrite as `return <{target}>`")],
+        },
+        span,
+    );
+}
+
+fn check_flow_placeholder_string_returns(
+    flow: &[FlowStmt],
+    enclosing_return_type: Option<&Spanned<String>>,
+    span: Span,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    for stmt in flow {
+        match stmt {
+            FlowStmt::Return(expr) => {
+                check_placeholder_string_return(
+                    expr,
+                    enclosing_return_type,
+                    span,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+            }
+            FlowStmt::Branch {
+                then_body,
+                elif_branches,
+                else_body,
+                ..
+            } => {
+                check_flow_placeholder_string_returns(
+                    then_body,
+                    enclosing_return_type,
+                    span,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+                for elif in elif_branches {
+                    check_flow_placeholder_string_returns(
+                        &elif.body,
+                        enclosing_return_type,
+                        span,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                }
+                if let Some(else_body) = else_body {
+                    check_flow_placeholder_string_returns(
+                        else_body,
+                        enclosing_return_type,
+                        span,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Issue #84 Chunk 3 (AC5): post-hoc sweep that flags any domain-type name
@@ -163,9 +378,7 @@ fn sweep_name_collisions(
 
     for entry in registry.iter() {
         for (param_raw, param_span) in &params {
-            if crate::domain_registry::canonicalize_identifier(param_raw)
-                == entry.canonical_name
-            {
+            if crate::domain_registry::canonicalize_identifier(param_raw) == entry.canonical_name {
                 emit_name_collision(
                     "parameter",
                     entry,
@@ -178,9 +391,7 @@ fn sweep_name_collisions(
             }
         }
         for (const_raw, const_span) in &consts {
-            if crate::domain_registry::canonicalize_identifier(const_raw)
-                == entry.canonical_name
-            {
+            if crate::domain_registry::canonicalize_identifier(const_raw) == entry.canonical_name {
                 emit_name_collision(
                     "const",
                     entry,
@@ -367,9 +578,10 @@ fn check_return_call_undefined(
                 ),
                 span: SourceSpan::from_byte_span(file_label, span, line_index),
                 related: Vec::new(),
-                hints: vec![
-                    format!("add `import \"@glyph/std\" {{ {} }}` at the top of the file", target),
-                ],
+                hints: vec![format!(
+                    "add `import \"@glyph/std\" {{ {} }}` at the top of the file",
+                    target
+                )],
             },
             span,
         );
@@ -384,9 +596,10 @@ fn check_return_call_undefined(
                 ),
                 span: SourceSpan::from_byte_span(file_label, span, line_index),
                 related: Vec::new(),
-                hints: vec![
-                    format!("declare `block {}()` or check the name for typos", target),
-                ],
+                hints: vec![format!(
+                    "declare `block {}()` or check the name for typos",
+                    target
+                )],
             },
             span,
         );
@@ -463,7 +676,12 @@ fn walk_return_calls_nominal_check(
                     bag,
                 );
             }
-            FlowStmt::Branch { then_body, elif_branches, else_body, .. } => {
+            FlowStmt::Branch {
+                then_body,
+                elif_branches,
+                else_body,
+                ..
+            } => {
                 walk_return_calls_nominal_check(
                     then_body,
                     caller_return_type,
@@ -566,6 +784,17 @@ pub fn analyze_with_diagnostics(
             _ => None,
         })
         .collect();
+    let visible_binding_names: HashSet<&str> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Const(c) => Some(c.node.name.as_str()),
+            Decl::Block(b) => Some(b.node.name.as_str()),
+            Decl::ExportBlock(b) => Some(b.node.name.as_str()),
+            Decl::Skill(s) => Some(s.node.name.as_str()),
+            Decl::Import(_) => None,
+        })
+        .collect();
 
     // Issue #84 Chunk 4 (AC4 / D13): per-file local-callee return-type map.
     // Issue #84 codex pass 1 — F3: only `Decl::Block` is recognized by the
@@ -582,7 +811,11 @@ pub fn analyze_with_diagnostics(
         .decls
         .iter()
         .filter_map(|d| match d {
-            Decl::Block(b) => b.node.return_type.as_ref().map(|rt| (b.node.name.as_str(), rt)),
+            Decl::Block(b) => b
+                .node
+                .return_type
+                .as_ref()
+                .map(|rt| (b.node.name.as_str(), rt)),
             _ => None,
         })
         .collect();
@@ -590,15 +823,30 @@ pub fn analyze_with_diagnostics(
 
     for decl in &file.decls {
         match decl {
-            Decl::Skill(spanned) => {
-                analyze_skill(
-                    spanned, file_id, file_label, line_index, bag, registry,
-                    &text_names, &block_names, &block_decls, &HashMap::new(),
-                    &local_callee_return_types, &empty_imported_block_return_types,
-                )
-            }
+            Decl::Skill(spanned) => analyze_skill(
+                spanned,
+                file_id,
+                file_label,
+                line_index,
+                bag,
+                registry,
+                &text_names,
+                &block_names,
+                &block_decls,
+                &HashMap::new(),
+                &local_callee_return_types,
+                &empty_imported_block_return_types,
+            ),
             Decl::ExportBlock(spanned) => {
-                analyze_export_block(spanned, file_label, line_index, bag, registry, &private_names);
+                analyze_export_block(
+                    spanned,
+                    file_label,
+                    line_index,
+                    bag,
+                    registry,
+                    &private_names,
+                    &visible_binding_names,
+                );
             }
             Decl::Block(spanned) => {
                 // Issue #83 AC2 + AC3 (D7: private blocks in scope): warn on
@@ -609,6 +857,26 @@ pub fn analyze_with_diagnostics(
                     line_index,
                     bag,
                     registry,
+                );
+                let visible_names = visible_names_for_decl(
+                    spanned.node.params.iter().map(|p| p.name.as_str()),
+                    &text_names,
+                    &block_names,
+                );
+                check_flow_output_target_shadows_binding(
+                    &spanned.node.flow,
+                    &visible_names,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+                check_flow_placeholder_string_returns(
+                    &spanned.node.flow,
+                    spanned.node.return_type.as_ref(),
+                    spanned.span,
+                    file_label,
+                    line_index,
+                    bag,
                 );
 
                 // Issue #84 Chunk 4 (AC4 / D13): a `block` may itself be a
@@ -664,8 +932,7 @@ pub fn analyze_with_diagnostics(
     let has_skill = file.decls.iter().any(|d| matches!(d, Decl::Skill(_)));
     if !has_skill {
         let has_export = file.decls.iter().any(|d| {
-            matches!(d, Decl::ExportBlock(_))
-                || matches!(d, Decl::Const(c) if c.node.exported)
+            matches!(d, Decl::ExportBlock(_)) || matches!(d, Decl::Const(c) if c.node.exported)
         });
         if !has_export {
             let span = crate::span::Span::new(file_id, 0, 0);
@@ -756,6 +1023,23 @@ pub fn analyze_with_imports(
             _ => None,
         })
         .collect();
+    let mut visible_binding_names: HashSet<&str> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Const(c) => Some(c.node.name.as_str()),
+            Decl::Block(b) => Some(b.node.name.as_str()),
+            Decl::ExportBlock(b) => Some(b.node.name.as_str()),
+            Decl::Skill(s) => Some(s.node.name.as_str()),
+            Decl::Import(_) => None,
+        })
+        .collect();
+    for t in &imported_text_refs {
+        visible_binding_names.insert(t.as_str());
+    }
+    for b in &imported_block_refs {
+        visible_binding_names.insert(b.as_str());
+    }
 
     // Issue #84 Chunk 4 (AC4 / D13): per-file local-callee return-type map.
     // Issue #84 codex pass 1 — F3: see the matching site in
@@ -771,7 +1055,11 @@ pub fn analyze_with_imports(
         .decls
         .iter()
         .filter_map(|d| match d {
-            Decl::Block(b) => b.node.return_type.as_ref().map(|rt| (b.node.name.as_str(), rt)),
+            Decl::Block(b) => b
+                .node
+                .return_type
+                .as_ref()
+                .map(|rt| (b.node.name.as_str(), rt)),
             _ => None,
         })
         .collect();
@@ -780,15 +1068,33 @@ pub fn analyze_with_imports(
         match decl {
             Decl::Skill(spanned) => {
                 analyze_skill_with_usage_tracking(
-                    spanned, file_id, file_label, line_index, bag, registry,
-                    &text_names, &block_names, &block_decls,
-                    imported_texts, imported_blocks, used_import_names,
+                    spanned,
+                    file_id,
+                    file_label,
+                    line_index,
+                    bag,
+                    registry,
+                    &text_names,
+                    &block_names,
+                    &block_decls,
+                    imported_texts,
+                    imported_blocks,
+                    used_import_names,
                     imported_block_descriptions,
-                    &local_callee_return_types, imported_block_return_types,
+                    &local_callee_return_types,
+                    imported_block_return_types,
                 );
             }
             Decl::ExportBlock(spanned) => {
-                analyze_export_block(spanned, file_label, line_index, bag, registry, &private_names);
+                analyze_export_block(
+                    spanned,
+                    file_label,
+                    line_index,
+                    bag,
+                    registry,
+                    &private_names,
+                    &visible_binding_names,
+                );
             }
             Decl::Block(spanned) => {
                 // Issue #83 AC2 + AC3 (D7: private blocks in scope): warn on
@@ -800,6 +1106,26 @@ pub fn analyze_with_imports(
                     line_index,
                     bag,
                     registry,
+                );
+                let visible_names = visible_names_for_decl(
+                    spanned.node.params.iter().map(|p| p.name.as_str()),
+                    &text_names,
+                    &block_names,
+                );
+                check_flow_output_target_shadows_binding(
+                    &spanned.node.flow,
+                    &visible_names,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+                check_flow_placeholder_string_returns(
+                    &spanned.node.flow,
+                    spanned.node.return_type.as_ref(),
+                    spanned.span,
+                    file_label,
+                    line_index,
+                    bag,
                 );
 
                 // Issue #84 Chunk 4 (AC4 / D13, D16): BlockDecl-as-caller
@@ -871,8 +1197,7 @@ pub fn analyze_with_imports(
     let has_skill = file.decls.iter().any(|d| matches!(d, Decl::Skill(_)));
     if !has_skill {
         let has_export = file.decls.iter().any(|d| {
-            matches!(d, Decl::ExportBlock(_))
-                || matches!(d, Decl::Const(c) if c.node.exported)
+            matches!(d, Decl::ExportBlock(_)) || matches!(d, Decl::Const(c) if c.node.exported)
         });
         if !has_export {
             let span = crate::span::Span::new(file_id, 0, 0);
@@ -910,9 +1235,18 @@ fn analyze_skill_with_usage_tracking(
 ) {
     // Run the normal analysis.
     analyze_skill(
-        spanned, file_id, file_label, line_index, bag, registry,
-        text_names, block_names, block_decls, imported_block_descriptions,
-        local_callee_return_types, imported_block_return_types,
+        spanned,
+        file_id,
+        file_label,
+        line_index,
+        bag,
+        registry,
+        text_names,
+        block_names,
+        block_decls,
+        imported_block_descriptions,
+        local_callee_return_types,
+        imported_block_return_types,
     );
 
     // Track usage: walk flow/constraints/context to see which imported names are referenced.
@@ -942,7 +1276,12 @@ fn analyze_skill_with_usage_tracking(
     }
 
     // Check flow statements.
-    track_flow_usage(&skill.flow, imported_texts, imported_blocks, used_import_names);
+    track_flow_usage(
+        &skill.flow,
+        imported_texts,
+        imported_blocks,
+        used_import_names,
+    );
 }
 
 fn track_flow_usage(
@@ -970,7 +1309,12 @@ fn track_flow_usage(
                     }
                 }
             }
-            crate::ast::FlowStmt::Branch { then_body, elif_branches, else_body, .. } => {
+            crate::ast::FlowStmt::Branch {
+                then_body,
+                elif_branches,
+                else_body,
+                ..
+            } => {
                 track_flow_usage(then_body, imported_texts, imported_blocks, used);
                 for elif in elif_branches {
                     track_flow_usage(&elif.body, imported_texts, imported_blocks, used);
@@ -1018,11 +1362,37 @@ fn analyze_skill(
 ) {
     let skill = &spanned.node;
     let declared: HashSet<&str> = skill.params.iter().map(|p| p.name.as_str()).collect();
+    let visible_names = visible_names_for_decl(
+        skill.params.iter().map(|p| p.name.as_str()),
+        text_names,
+        block_names,
+    );
 
     // Issue #83 AC2 + AC3: warn on banned generic type names in the
     // header `-> DomainType` annotation. Warning tier — non-blocking;
     // analyze continues so all banned occurrences in the file get flagged.
-    warn_if_banned_return_type(skill.return_type.as_ref(), file_label, line_index, bag, registry);
+    warn_if_banned_return_type(
+        skill.return_type.as_ref(),
+        file_label,
+        line_index,
+        bag,
+        registry,
+    );
+    check_flow_output_target_shadows_binding(
+        &skill.flow,
+        &visible_names,
+        file_label,
+        line_index,
+        bag,
+    );
+    check_flow_placeholder_string_returns(
+        &skill.flow,
+        skill.return_type.as_ref(),
+        spanned.span,
+        file_label,
+        line_index,
+        bag,
+    );
 
     // Walking-skeleton subset: `flow:` inline strings are the only
     // instruction-bearing strings the parser captures with their source span
@@ -1111,9 +1481,10 @@ fn analyze_skill(
                                 ),
                                 span: SourceSpan::from_byte_span(file_label, span, line_index),
                                 related: Vec::new(),
-                                hints: vec![
-                                    format!("declare `block {}()` or check the name for typos", target),
-                                ],
+                                hints: vec![format!(
+                                    "declare `block {}()` or check the name for typos",
+                                    target
+                                )],
                             },
                             span,
                         );
@@ -1127,10 +1498,7 @@ fn analyze_skill(
                     bag.push(
                         Diagnostic::error(
                             "G::analyze::undefined-name",
-                            format!(
-                                "`{}` is not a declared `text` in this file",
-                                marker.name
-                            ),
+                            format!("`{}` is not a declared `text` in this file", marker.name),
                             SourceSpan::from_byte_span(file_label, span, line_index),
                         ),
                         span,
@@ -1138,7 +1506,14 @@ fn analyze_skill(
                 }
             }
             FlowStmt::ContextMarker(entry) => {
-                check_context_entry_name(entry, text_names, spanned.span, file_label, line_index, bag);
+                check_context_entry_name(
+                    entry,
+                    text_names,
+                    spanned.span,
+                    file_label,
+                    line_index,
+                    bag,
+                );
             }
             FlowStmt::Return(expr) => {
                 // Issue #84 codex pass 4: route `return some_call()` through
@@ -1151,7 +1526,12 @@ fn analyze_skill(
                 // message shape as the FlowStmt::Call arm above so authors
                 // see the same fix-it regardless of position.
                 check_return_call_undefined(
-                    expr, spanned.span, block_names, file_label, line_index, bag,
+                    expr,
+                    spanned.span,
+                    block_names,
+                    file_label,
+                    line_index,
+                    bag,
                 );
                 // Return statements are validated structurally by the parser
                 // (check_return_rules). Issue #84 Chunk 4 (AC4 / D13):
@@ -1169,7 +1549,12 @@ fn analyze_skill(
                     bag,
                 );
             }
-            FlowStmt::Branch { condition, then_body, elif_branches, else_body } => {
+            FlowStmt::Branch {
+                condition,
+                then_body,
+                elif_branches,
+                else_body,
+            } => {
                 // Check for nested branches.
                 check_nested_branches(then_body, spanned.span, file_label, line_index, bag);
                 for elif in elif_branches {
@@ -1180,23 +1565,63 @@ fn analyze_skill(
                 }
                 // Check applies() calls in condition.
                 check_applies_in_condition(
-                    condition, spanned.span, file_id, file_label, line_index, bag,
-                    &text_names, &block_names, &block_decls, imported_block_descriptions,
+                    condition,
+                    spanned.span,
+                    file_id,
+                    file_label,
+                    line_index,
+                    bag,
+                    &text_names,
+                    &block_names,
+                    &block_decls,
+                    imported_block_descriptions,
                 );
                 // Check elif conditions too.
                 for elif in elif_branches {
                     check_applies_in_condition(
-                        &elif.condition, spanned.span, file_id, file_label, line_index, bag,
-                        &text_names, &block_names, &block_decls, imported_block_descriptions,
+                        &elif.condition,
+                        spanned.span,
+                        file_id,
+                        file_label,
+                        line_index,
+                        bag,
+                        &text_names,
+                        &block_names,
+                        &block_decls,
+                        imported_block_descriptions,
                     );
                 }
                 // Check flow statements inside branch bodies for name resolution.
-                check_branch_body_names(then_body, spanned.span, file_label, line_index, bag, &text_names, &block_names);
+                check_branch_body_names(
+                    then_body,
+                    spanned.span,
+                    file_label,
+                    line_index,
+                    bag,
+                    &text_names,
+                    &block_names,
+                );
                 for elif in elif_branches {
-                    check_branch_body_names(&elif.body, spanned.span, file_label, line_index, bag, &text_names, &block_names);
+                    check_branch_body_names(
+                        &elif.body,
+                        spanned.span,
+                        file_label,
+                        line_index,
+                        bag,
+                        &text_names,
+                        &block_names,
+                    );
                 }
                 if let Some(eb) = else_body {
-                    check_branch_body_names(eb, spanned.span, file_label, line_index, bag, &text_names, &block_names);
+                    check_branch_body_names(
+                        eb,
+                        spanned.span,
+                        file_label,
+                        line_index,
+                        bag,
+                        &text_names,
+                        &block_names,
+                    );
                 }
                 // Issue #84 codex pass 2 — F1: recurse into branch bodies so
                 // a `return foo()` nested inside `if`/`elif`/`else` runs the
@@ -1250,10 +1675,7 @@ fn analyze_skill(
             bag.push(
                 Diagnostic::error(
                     "G::analyze::undefined-name",
-                    format!(
-                        "`{}` is not a declared `text` in this file",
-                        marker.name
-                    ),
+                    format!("`{}` is not a declared `text` in this file", marker.name),
                     SourceSpan::from_byte_span(file_label, span, line_index),
                 ),
                 span,
@@ -1359,7 +1781,11 @@ fn analyze_skill(
                     "G::analyze::effects-under-declared",
                     format!(
                         "`effects: none` declared but call graph infers: {}",
-                        inferred.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                        inferred
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ),
                     SourceSpan::from_byte_span(file_label, span, line_index),
                 ),
@@ -1368,7 +1794,11 @@ fn analyze_skill(
         }
     } else if has_effects_declaration && !declared_none {
         // Check under-declared: inferred effects not in declared set.
-        let missing: BTreeSet<&str> = inferred.iter().map(|s| s.as_str()).filter(|e| !declared_set.contains(e)).collect();
+        let missing: BTreeSet<&str> = inferred
+            .iter()
+            .map(|s| s.as_str())
+            .filter(|e| !declared_set.contains(e))
+            .collect();
         if !missing.is_empty() {
             let span = spanned.span;
             bag.push(
@@ -1385,7 +1815,11 @@ fn analyze_skill(
         }
 
         // Check over-declared: declared effects not in inferred set.
-        let extra: BTreeSet<&str> = declared_set.iter().filter(|e| !inferred.contains(**e)).copied().collect();
+        let extra: BTreeSet<&str> = declared_set
+            .iter()
+            .filter(|e| !inferred.contains(**e))
+            .copied()
+            .collect();
         if !extra.is_empty() {
             let span = spanned.span;
             bag.push(
@@ -1398,9 +1832,7 @@ fn analyze_skill(
                     ),
                     span: SourceSpan::from_byte_span(file_label, span, line_index),
                     related: Vec::new(),
-                    hints: vec![
-                        "remove unused effects or verify they are needed".into(),
-                    ],
+                    hints: vec!["remove unused effects or verify they are needed".into()],
                 },
                 span,
             );
@@ -1415,7 +1847,11 @@ fn analyze_skill(
                 message: format!(
                     "`skill {}` has no `effects:` declaration; inferred: {}",
                     skill.name,
-                    inferred.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                    inferred
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 span: SourceSpan::from_byte_span(file_label, span, line_index),
                 related: Vec::new(),
@@ -1548,14 +1984,20 @@ fn check_applies_in_condition(
         let abs_pos = search_from + pos;
         // Extract the receiver name (word before the dot).
         let receiver = &condition[..abs_pos];
-        let receiver_name = receiver.rsplit(|c: char| !c.is_alphanumeric() && c != '_').next().unwrap_or("");
+        let receiver_name = receiver
+            .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
+            .next()
+            .unwrap_or("");
         if !receiver_name.is_empty() {
             if text_names.contains(receiver_name) {
                 // Receiver is a text declaration — not a block.
                 bag.push(
                     Diagnostic::error(
                         "G::analyze::applies-on-non-block",
-                        format!("`{}.applies()` — receiver `{}` is a `text` declaration, not a `block`", receiver_name, receiver_name),
+                        format!(
+                            "`{}.applies()` — receiver `{}` is a `text` declaration, not a `block`",
+                            receiver_name, receiver_name
+                        ),
                         SourceSpan::from_byte_span(file_label, span, line_index),
                     ),
                     span,
@@ -1604,7 +2046,10 @@ fn check_applies_in_condition(
                 bag.push(
                     Diagnostic::error(
                         "G::analyze::applies-on-non-block",
-                        format!("`{}.applies()` — receiver `{}` does not resolve to a `block`", receiver_name, receiver_name),
+                        format!(
+                            "`{}.applies()` — receiver `{}` does not resolve to a `block`",
+                            receiver_name, receiver_name
+                        ),
                         SourceSpan::from_byte_span(file_label, span, line_index),
                     ),
                     span,
@@ -1657,9 +2102,10 @@ fn check_branch_body_names(
                                 ),
                                 span: SourceSpan::from_byte_span(file_label, span, line_index),
                                 related: Vec::new(),
-                                hints: vec![
-                                    format!("declare `block {}()` or check the name for typos", target),
-                                ],
+                                hints: vec![format!(
+                                    "declare `block {}()` or check the name for typos",
+                                    target
+                                )],
                             },
                             span,
                         );
@@ -1771,12 +2217,36 @@ fn analyze_export_block(
     bag: &mut DiagBag,
     registry: &mut crate::domain_registry::Registry,
     private_names: &HashSet<&str>,
+    visible_binding_names: &HashSet<&str>,
 ) {
     let decl = &spanned.node;
 
     // Issue #83 AC2 + AC3: warn on banned generic type names in the
     // header `-> DomainType` annotation. Warning tier — non-blocking.
-    warn_if_banned_return_type(decl.return_type.as_ref(), file_label, line_index, bag, registry);
+    warn_if_banned_return_type(
+        decl.return_type.as_ref(),
+        file_label,
+        line_index,
+        bag,
+        registry,
+    );
+
+    if let Some(expr) = decl.terminal_return.as_ref() {
+        let mut visible_names: HashSet<String> = visible_binding_names
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        visible_names.extend(decl.params.iter().map(|p| p.name.clone()));
+        check_output_target_shadows_binding(expr, &visible_names, file_label, line_index, bag);
+        check_placeholder_string_return(
+            expr,
+            decl.return_type.as_ref(),
+            spanned.span,
+            file_label,
+            line_index,
+            bag,
+        );
+    }
 
     for p in &decl.params {
         if p.default.is_none() {
@@ -1807,9 +2277,7 @@ fn analyze_export_block(
                 ),
                 span: SourceSpan::from_byte_span(file_label, span, line_index),
                 related: Vec::new(),
-                hints: vec![
-                    "add a `return` statement at the end of the `flow:` section".into(),
-                ],
+                hints: vec!["add a `return` statement at the end of the `flow:` section".into()],
             },
             span,
         );
@@ -1866,6 +2334,65 @@ fn analyze_export_block(
 mod tests {
     use super::*;
 
+    fn check_ids(src: &str) -> Vec<String> {
+        crate::check_source(src, 0, "test.glyph.md")
+            .iter()
+            .map(|d| d.id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn placeholder_string_return_is_repairable_on_domain_typed_skill() {
+        let src = "\
+skill current() -> BranchName
+    description: \"Return the current branch.\"
+    flow:
+        return \"<current_branch>\"
+";
+        let bag = crate::check_source(src, 0, "test.glyph.md");
+        let ids: Vec<String> = bag.iter().map(|d| d.id.clone()).collect();
+        assert!(
+            ids.iter()
+                .any(|id| id == "G::analyze::placeholder-string-return"),
+            "expected placeholder-string-return, got {ids:?}"
+        );
+        assert_eq!(bag.exit_code(), 2, "diagnostic must be repairable-tier");
+    }
+
+    #[test]
+    fn placeholder_string_return_ignored_without_domain_type() {
+        let src = "\
+skill current()
+    description: \"Return the current branch.\"
+    flow:
+        return \"<current_branch>\"
+";
+        let ids = check_ids(src);
+        assert!(
+            !ids.iter()
+                .any(|id| id == "G::analyze::placeholder-string-return"),
+            "untyped placeholder string returns must not fire issue-85 repairable: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn output_target_name_must_not_shadow_visible_binding() {
+        let src = "\
+const current_branch = \"main\"
+
+skill current() -> BranchName
+    description: \"Return the current branch.\"
+    flow:
+        return <current_branch>
+";
+        let ids = check_ids(src);
+        assert!(
+            ids.iter()
+                .any(|id| id == "G::analyze::output-target-shadows-binding"),
+            "expected output-target-shadows-binding, got {ids:?}"
+        );
+    }
+
     #[test]
     fn imported_block_without_description_fires_error() {
         // AC6: When a block name is in block_names but not in block_decls
@@ -1900,7 +2427,10 @@ mod tests {
             ids
         );
         // Should be a hard error, not repairable.
-        let diag = bag.iter().find(|d| d.id == "G::analyze::applies-on-undescribed-block").unwrap();
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::applies-on-undescribed-block")
+            .unwrap();
         assert_eq!(
             diag.classification,
             Classification::Error,
@@ -1915,11 +2445,26 @@ mod tests {
         let line_index = LineIndex::new(source);
         let span = Span::new(0, 0, source.len() as u32);
 
-        emit_nominal_mismatch("Report", "TestResult", "my_call", span, "test.glyph.md", &line_index, &mut bag);
+        emit_nominal_mismatch(
+            "Report",
+            "TestResult",
+            "my_call",
+            span,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+        );
 
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
-        assert!(ids.contains(&"G::analyze::nominal-mismatch"), "ids: {:?}", ids);
-        let diag = bag.iter().find(|d| d.id == "G::analyze::nominal-mismatch").unwrap();
+        assert!(
+            ids.contains(&"G::analyze::nominal-mismatch"),
+            "ids: {:?}",
+            ids
+        );
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::nominal-mismatch")
+            .unwrap();
         assert_eq!(diag.classification, Classification::Error);
         assert!(diag.message.contains("Report"));
         assert!(diag.message.contains("TestResult"));
@@ -1932,11 +2477,26 @@ mod tests {
         let line_index = LineIndex::new(source);
         let span = Span::new(0, 0, source.len() as u32);
 
-        emit_lossy_coercion("float", "int", "my_param", span, "test.glyph.md", &line_index, &mut bag);
+        emit_lossy_coercion(
+            "float",
+            "int",
+            "my_param",
+            span,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+        );
 
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
-        assert!(ids.contains(&"G::analyze::lossy-coercion"), "ids: {:?}", ids);
-        let diag = bag.iter().find(|d| d.id == "G::analyze::lossy-coercion").unwrap();
+        assert!(
+            ids.contains(&"G::analyze::lossy-coercion"),
+            "ids: {:?}",
+            ids
+        );
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::lossy-coercion")
+            .unwrap();
         assert_eq!(diag.classification, Classification::Error);
         assert!(diag.message.contains("float"));
         assert!(diag.message.contains("int"));
@@ -1955,8 +2515,17 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
-        let entry = registry.lookup("Report").expect("`Report` must be registered");
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
+        let entry = registry
+            .lookup("Report")
+            .expect("`Report` must be registered");
         assert_eq!(entry.canonical_name, "report");
         let arrow_start = src.find("->").unwrap() as u32;
         let report_end = (src.find("Report").unwrap() + "Report".len()) as u32;
@@ -1969,12 +2538,22 @@ mod tests {
     fn t2_export_block_return_type_registers_in_registry() {
         // Export-block visit site populates the registry the same way the
         // skill site does. Pinpoints the export-block branch of the match.
-        let src = "export block bar(x = \"d\") -> Report\n    flow:\n        \"x\"\n        return x\n";
+        let src =
+            "export block bar(x = \"d\") -> Report\n    flow:\n        \"x\"\n        return x\n";
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
-        let entry = registry.lookup("Report").expect("`Report` must be registered");
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
+        let entry = registry
+            .lookup("Report")
+            .expect("`Report` must be registered");
         assert_eq!(entry.canonical_name, "report");
     }
 
@@ -1987,8 +2566,17 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
-        let entry = registry.lookup("Report").expect("`Report` must be registered from private block");
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
+        let entry = registry
+            .lookup("Report")
+            .expect("`Report` must be registered from private block");
         assert_eq!(entry.canonical_name, "report");
     }
 
@@ -2015,7 +2603,9 @@ mod tests {
             &mut registry,
             &HashMap::new(),
         );
-        let entry = registry.lookup("Report").expect("`Report` must be registered (imports path)");
+        let entry = registry
+            .lookup("Report")
+            .expect("`Report` must be registered (imports path)");
         assert_eq!(entry.canonical_name, "report");
     }
 
@@ -2028,8 +2618,17 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
-        let entry = registry.lookup("Report").expect("`Report` must be registered");
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
+        let entry = registry
+            .lookup("Report")
+            .expect("`Report` must be registered");
         // First `-> Report` is on the skill header; second is on the export
         // block. The registry must surface the *first* (skill) annotation's
         // span, not the second.
@@ -2054,10 +2653,21 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
         // Lookup hits via either spelling.
-        let via_capital = registry.lookup("Report").expect("lookup via `Report` must hit");
-        let via_lower = registry.lookup("report").expect("lookup via `report` must hit");
+        let via_capital = registry
+            .lookup("Report")
+            .expect("lookup via `Report` must hit");
+        let via_lower = registry
+            .lookup("report")
+            .expect("lookup via `report` must hit");
         assert_eq!(via_capital.canonical_name, "report");
         assert_eq!(via_lower.canonical_name, "report");
         // First-span wins: the entry's span matches the *first* (`Report`)
@@ -2077,7 +2687,14 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
         // Existing #83 behavior preserved: warning fires.
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
@@ -2106,7 +2723,14 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
         assert!(
             registry.lookup("Foo").is_none(),
             "registry must be empty when no `-> DomainType` annotations exist"
@@ -2146,14 +2770,23 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let diags = collision_diags(&bag);
         assert_eq!(
             diags.len(),
             1,
             "expected exactly one domain-type collision diagnostic, got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
         let d = diags[0];
         assert_eq!(d.classification, crate::diagnostic::Classification::Error);
@@ -2198,14 +2831,23 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let diags = collision_diags(&bag);
         assert_eq!(
             diags.len(),
             1,
             "expected exactly one domain-type collision diagnostic, got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
         let d = diags[0];
         assert_eq!(d.classification, crate::diagnostic::Classification::Error);
@@ -2223,14 +2865,23 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let diags = collision_diags(&bag);
         assert_eq!(
             diags.len(),
             1,
             "expected exactly one cross-decl collision diagnostic, got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2244,14 +2895,23 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let diags = collision_diags(&bag);
         assert_eq!(
             diags.len(),
             1,
             "expected one canonicalized collision (`makePlan` vs `make_plan`), got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
         // Message must use raw author spellings on both sides, not the
         // canonicalized `makeplan` form.
@@ -2278,14 +2938,23 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let diags = collision_diags(&bag);
         assert_eq!(
             diags.len(),
             1,
             "expected exactly one type-vs-const collision, got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
         assert!(
             diags[0].message.contains("const"),
@@ -2308,7 +2977,14 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let diags = collision_diags(&bag);
         assert!(
@@ -2327,7 +3003,14 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         // #83 banned-warning still fires.
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
@@ -2355,7 +3038,14 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let diags = collision_diags(&bag);
         assert!(
@@ -2395,7 +3085,9 @@ mod tests {
             diags.len(),
             1,
             "imports-path must also emit chunk-3 collision diagnostic, got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2409,14 +3101,23 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let diags = collision_diags(&bag);
         assert_eq!(
             diags.len(),
             1,
             "expected exactly one domain-type collision diagnostic from private block, got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
         assert!(diags[0].message.contains("parameter"));
     }
@@ -2489,7 +3190,9 @@ mod tests {
             mismatches.len(),
             1,
             "expected exactly one nominal-mismatch diagnostic, got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
         let d = mismatches[0];
         assert_eq!(d.classification, Classification::Error);
@@ -2528,8 +3231,7 @@ mod tests {
         );
         assert_eq!(d.related[0].end.line, 1);
         assert_eq!(
-            d.related[0].end.col,
-            repo_context_end as u32,
+            d.related[0].end.col, repo_context_end as u32,
             "related span must end at the end of the `RepoContext` identifier"
         );
     }
@@ -2573,7 +3275,10 @@ mod tests {
         assert!(
             mismatches.is_empty(),
             "expected zero nominal-mismatch for canonical-equal types, got: {:?}",
-            mismatches.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
+            mismatches
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2594,14 +3299,23 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let mismatches = nominal_mismatches(&bag);
         assert_eq!(
             mismatches.len(),
             1,
             "expected one nominal-mismatch from BlockDecl-as-caller, got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
         let d = mismatches[0];
         assert!(d.message.contains("Report"));
@@ -2641,7 +3355,10 @@ mod tests {
         assert!(
             mismatches.is_empty(),
             "stdlib callee must skip the type check (no declared `-> Type` in scope), got: {:?}",
-            mismatches.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
+            mismatches
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2656,13 +3373,23 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let mismatches = nominal_mismatches(&bag);
         assert!(
             mismatches.is_empty(),
             "cross-spelling canonical match must skip the diagnostic, got: {:?}",
-            mismatches.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
+            mismatches
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2674,13 +3401,23 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let mismatches = nominal_mismatches(&bag);
         assert!(
             mismatches.is_empty(),
             "expected zero nominal-mismatch when callee is untyped, got: {:?}",
-            mismatches.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
+            mismatches
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2694,13 +3431,23 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let mismatches = nominal_mismatches(&bag);
         assert!(
             mismatches.is_empty(),
             "expected zero nominal-mismatch when caller is untyped, got: {:?}",
-            mismatches.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
+            mismatches
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2712,13 +3459,23 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let mismatches = nominal_mismatches(&bag);
         assert!(
             mismatches.is_empty(),
             "expected zero nominal-mismatch for same-canonical types, got: {:?}",
-            mismatches.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
+            mismatches
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2732,14 +3489,23 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let mismatches = nominal_mismatches(&bag);
         assert_eq!(
             mismatches.len(),
             1,
             "expected one nominal-mismatch for same-file mismatched types, got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
         let d = mismatches[0];
         assert!(d.message.contains("RepoContext"));
@@ -2792,7 +3558,9 @@ mod tests {
             mismatches.len(),
             1,
             "expected one nominal-mismatch for imports-path BlockDecl-as-caller, got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
         let d = mismatches[0];
         assert!(d.message.contains("Report"));
@@ -2815,7 +3583,14 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let mismatches = nominal_mismatches(&bag);
         assert_eq!(mismatches.len(), 1);
@@ -2839,8 +3614,7 @@ mod tests {
         );
         assert_eq!(d.related[0].end.line, 1);
         assert_eq!(
-            d.related[0].end.col,
-            repo_context_end as u32,
+            d.related[0].end.col, repo_context_end as u32,
             "related span must end at the end of the caller's `RepoContext` identifier"
         );
     }
@@ -2868,14 +3642,23 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let mismatches = nominal_mismatches(&bag);
         assert_eq!(
             mismatches.len(),
             0,
             "banned-generic caller `-> String` must not fire nominal-mismatch; got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
         // Sanity: the #83 generic-type-name warning still fires (the
         // banned-skip is a *suppression* on the new chunk-4 path, not a
@@ -2908,7 +3691,14 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         // No domain-type registration → no name-collision sweep match.
         let collisions = collision_diags(&bag);
@@ -2916,7 +3706,9 @@ mod tests {
             collisions.len(),
             0,
             "built-in `Agent` must not register as domain type; got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
         // Direct registry assertion: `Agent` (canonicalized to `agent`)
         // must not have a registry entry. Catches a future regression
@@ -2965,7 +3757,14 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         // Primary contract: no false hard nominal-mismatch.
         let mismatches = nominal_mismatches(&bag);
@@ -2973,7 +3772,9 @@ mod tests {
             mismatches.len(),
             0,
             "same-file call to `export block` must not fire chunk-4 nominal-mismatch; got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3030,7 +3831,9 @@ mod tests {
             mismatches.len(),
             1,
             "expected one nominal-mismatch for branch-nested return on block-as-caller, got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
         let d = mismatches[0];
         assert!(d.message.contains("Report"));
@@ -3055,14 +3858,23 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let mismatches = nominal_mismatches(&bag);
         assert_eq!(
             mismatches.len(),
             1,
             "expected one nominal-mismatch for return-in-branch with mismatched types, got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
         let d = mismatches[0];
         assert!(d.message.contains("Report"));
@@ -3094,14 +3906,23 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let collisions = collision_diags(&bag);
         assert_eq!(
             collisions.len(),
             0,
             "underscore-perturbed built-in `A_g_e_n_t` must not register as domain type; got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
         assert!(
             registry.lookup("A_g_e_n_t").is_none(),
@@ -3128,7 +3949,14 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let collisions = collision_diags(&bag);
         assert_eq!(
@@ -3225,14 +4053,23 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let diags = undefined_call_diags(&bag);
         assert_eq!(
             diags.len(),
             1,
             "expected one undefined-call for branch-nested `return some_undefined()`, got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
         assert!(diags[0].message.contains("some_undefined"));
     }
@@ -3274,7 +4111,9 @@ mod tests {
             diags.len(),
             0,
             "`return imported_proc()` with matching import must not fire undefined-call; got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3289,14 +4128,23 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let diags = undefined_call_diags(&bag);
         assert_eq!(
             diags.len(),
             0,
             "well-formed `return local_block()` must not fire undefined-call; got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3313,7 +4161,14 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let diags = undefined_call_diags(&bag);
         assert_eq!(
@@ -3335,17 +4190,29 @@ mod tests {
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(file, 0, "test.glyph.md", &line_index, &mut bag, &mut registry);
+        let _ = analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph.md",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
 
         let diags = undefined_call_diags(&bag);
         assert_eq!(
             diags.len(),
             1,
             "expected one undefined-call for `return some_undefined()`, got: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
         let d = diags[0];
-        assert_eq!(d.classification, crate::diagnostic::Classification::Repairable);
+        assert_eq!(
+            d.classification,
+            crate::diagnostic::Classification::Repairable
+        );
         assert!(
             d.message.contains("some_undefined"),
             "message must name the undefined callee, got: {:?}",

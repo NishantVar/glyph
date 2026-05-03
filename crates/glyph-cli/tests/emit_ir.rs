@@ -114,28 +114,11 @@ skill fix()
     flow:
         inspect() with "focus on auth"
 "#;
-    let _v = compile_and_read_ir("with_mod.glyph.md", source);
-    // The call should be inlined (Tier 1), so it becomes an InlineInstruction.
-    // But the site_modifier is on the IrCall. After Tier 1 inlining, the Call
-    // is replaced with an InlineInstruction. For site_modifier to show up in IR,
-    // the call must survive as a Call (Tier 2+). Let's use a block with >= 4 stmts.
-    // Re-do with a Tier 2 block.
-    let source = r#"block review_code()
-    flow:
-        "Scan for style violations."
-        "Check for security issues."
-        "Check for performance issues."
-        "Compile findings."
-
-skill fix()
-    description: "Fix it."
-    flow:
-        review_code() with "focus on auth"
-"#;
     let v = compile_and_read_ir("with_mod.glyph.md", source);
     let flow = v["skill"]["flow"].as_array().unwrap();
     let call = &flow[0];
     assert_eq!(call["kind"], "call");
+    assert_eq!(call["projection_mode"], "inline");
     assert_eq!(call["site_modifier"], "focus on auth");
 }
 
@@ -175,12 +158,11 @@ skill fix()
 "#;
     let v = compile_and_read_ir("proj_inline.glyph.md", source);
     let flow = v["skill"]["flow"].as_array().unwrap();
-    // After Tier 1 inline, the call is replaced with an InlineInstruction.
-    // So it won't have projection_mode; it will have kind: inline_instruction.
+    // Tier 1 calls keep their Call shape in IR so call-site metadata remains
+    // available to validators and downstream tooling.
     let node = &flow[0];
-    assert_eq!(node["kind"], "inline_instruction");
-    // The inline instruction won't carry projection_mode. That's correct behavior:
-    // only Call nodes have projection_mode, and Tier 1 calls become InlineInstructions.
+    assert_eq!(node["kind"], "call");
+    assert_eq!(node["projection_mode"], "inline");
 }
 
 #[test]
@@ -347,8 +329,7 @@ fn emit_ir_skill_carries_context_array() {
 }
 
 #[test]
-fn emit_ir_call_carries_callee_context_null_when_inline() {
-    // Tier 1 inlined calls become InlineInstructions, which don't have callee_context.
+fn emit_ir_call_carries_callee_context_for_non_inline_call() {
     // For Tier 2+ calls, callee_context should be an array.
     let source = r#"block review_code()
     flow:

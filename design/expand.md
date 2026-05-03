@@ -106,12 +106,14 @@ The output must preserve the following structural invariants:
    - Every top-level `Branch` node must produce exactly one top-level numbered list item under `### Steps`, containing lettered sub-steps per arm (see `compiled-output.md` §Constraint Rendering). Each arm is introduced by a condition header (`If <condition>:` for `if`/`elif`, `Otherwise:` for `else`), and each Step-projecting node inside the arm produces a lettered sub-step (`a.`, `b.`, `c.`). Letters reset per arm.
    - Every `Constraint` node must produce exactly one bulleted list item under `### Constraints`. Order is not required to match the IR.
    - The `Return` expression must fold into the last `### Steps` item (or the last sub-step of the final arm, if the last Step is a Branch), not produce a separate item or section.
+   - An `OutputContract` from `return <name>` must fold into natural output prose and must not preserve the literal `<name>` token.
    - Every Call with `projection_mode: same_file_procedure` must additionally produce one `### Procedure: <name>` section with numbered items matching the callee's flow node count. The referencing Step includes the procedure name in its prose.
    - Calls with `projection_mode: external_file` produce one Step whose prose includes the file path from `procedure_path`. No `### Procedure:` section is emitted for external projections.
 4. **No invented content.** Step 2 may reshape wording but must not add new steps, new sub-steps, new constraints, new sections, or commentary.
 5. **Bounded length.** For non-conditional Steps, each step is **one instruction-sized paragraph** — at most three sentences, typically one or two. For conditional Steps (Branch projections), each **sub-step** is at most three sentences. Each constraint is **one sentence**. This is the floor and ceiling; longer items indicate Step 2 is inventing content, shorter items indicate Step 2 is stripping content.
 6. **Parameter references preserved.** `{param}` references from the resolved IR must survive into the output unchanged. Step 2 must not substitute, remove, or rename them. Step 2 must not invent new `{param}` references for names not in the skill's parameter list.
 6b. **Local binding references resolved.** `local_ref` slots (e.g., `{diagnosis}` where `diagnosis` is a local binding, not a declared parameter) must be resolved by Step 2 into natural-language cross-references in the prose. They must **not** survive as literal `{name}` tokens in the output — the consuming LLM already produced the referenced value in a prior step. For example, `{diagnosis}` might become "the diagnosis from your earlier analysis" or "the diagnosis identified in step 1." Step 2 uses the local's name and the producing step's position/content to generate a clear cross-reference.
+6c. **Output target tokens resolved.** Output targets (`OutputContract.target_name` from `return <name>`) must be described in prose. The literal `<name>` token must not survive anywhere in the compiled Markdown.
 7. **No authoring artifacts.** No `generated` markers, no `with` modifier text, no import paths, no IR field names. `{param}` references for declared parameters are the only authoring-adjacent syntax that survives. Local binding references are fully resolved into prose.
 8. **Standard Markdown only.** Headings, numbered lists, bulleted lists, inline emphasis. No HTML, no tables, no code blocks inside steps.
 
@@ -202,6 +204,7 @@ For the Markdown returned by Step 2:
 | `G::expand::invented-param-ref` | error | `{...}` reference does not match any declared parameter |
 | `G::expand::dropped-param-ref` | error | A parameter reference from Step 1 output was silently removed by Step 2 |
 | `G::expand::unresolved-local-ref` | error | A `local_ref` slot survived as a literal `{name}` token — Step 2 failed to resolve it into prose |
+| `G::expand::output-target-leak` | error | An output target literal `<name>` survived in compiled Markdown |
 | `G::expand::modifier-leaked` | error | `with` modifier string appears verbatim in output |
 | `G::expand::params-section-mismatch` | error | `## Parameters` item count does not match `InputContract` parameter count |
 | `G::expand::params-section-missing` | error | Skill has parameters but `## Parameters` section is absent |

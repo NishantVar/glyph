@@ -18,6 +18,7 @@ Skill {
   context:           [ContextNode]         // top-level declared context only
   constraints:       [Constraint]          // top-level declared constraints only
   flow:              [FlowNode]            // ordered
+  output_contract:   OutputContract?       // present when flow ends with `return <name>`
 }
 
 Block {
@@ -29,6 +30,7 @@ Block {
   context:           [ContextNode]         // top-level declared context only
   constraints:       [Constraint]
   flow:              [FlowNode]
+  output_contract:   OutputContract?       // present when flow ends with `return <name>`
 }
 
 ExportBlock {
@@ -40,6 +42,7 @@ ExportBlock {
   context:           [ContextNode]         // top-level declared context only
   constraints:       [Constraint]
   flow:              [FlowNode]
+  output_contract:   OutputContract?       // present when flow ends with `return <name>`
 }
 ```
 
@@ -142,9 +145,23 @@ ElifBranch {
 
 ```
 Return {
-  value:             Expr                  // call, binding ref, literal, dot access, or none
+  value:             Expr | OutputTargetExpr // call, binding ref, literal, dot access, none, or `<name>`
 }
 ```
+
+### OutputContract
+
+```
+OutputContract {
+  target_name:       String                // identifier inside `return <name>`
+  ty:                TypeTag?              // enclosing declaration's `-> DomainType`, if any
+  source:            OutputSource          // currently SynthesizedByAgent
+}
+
+OutputTargetExpr = Identifier(name: String)
+```
+
+`OutputContract` is a sidecar contract for agent-synthesized output. It does not appear as an ordered `FlowNode`; it annotates the enclosing `Skill`, `Block`, or `ExportBlock` and folds into the final Step prose during Expand.
 
 ## Constraint
 
@@ -211,6 +228,8 @@ EffectKeyword = none | reads_files | reads_env | writes_files
              | creates_artifacts | spawns_agent
 
 ProjectionMode = inline | same_file_procedure | external_file
+
+OutputSource = SynthesizedByAgent
 
 TypeTag = String | Int | Float | Bool | None | Agent
         | DomainType(name: String)
