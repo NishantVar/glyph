@@ -10,7 +10,6 @@
 "skill" @keyword
 "block" @keyword
 "export" @keyword
-"generated" @keyword
 "import" @keyword
 "as" @keyword
 "return" @keyword
@@ -24,9 +23,10 @@
 "not" @keyword
 
 ; ── Built-in type keywords ─────────────────────────────────────
-"text" @type.builtin
+"const" @type.builtin
 "int" @type.builtin
 "float" @type.builtin
+"generated" @type.builtin
 
 ; ── Constraint markers — visually distinct from keywords ───────
 (require_marker "require" @keyword.directive)
@@ -61,7 +61,7 @@
 ; ── Strings and interpolation ──────────────────────────────────
 ; Generic string captures stay as the fallback for any string outside
 ; an `inline_instruction` / `context_section` / `context_marker`
-; (e.g. `description:` content, `text` declaration RHS). The
+; (e.g. `description:` content, `const` declaration RHS). The
 ; section-aware Glyph-prefixed captures are below.
 (string_literal) @string
 (block_string) @string
@@ -82,11 +82,11 @@
 ; ── Argument names (named arguments: `name = value`) ───────────
 (argument name: (identifier) @variable.parameter)
 
-; ── Value-binding names (text, int, float, generated text) ────
-(text_declaration name: (identifier) @constant)
+; ── Value-binding names (const, int, float, generated const) ────
+(const_declaration name: (identifier) @constant)
 (int_declaration name: (identifier) @constant)
 (float_declaration name: (identifier) @constant)
-(generated_text_declaration name: (identifier) @constant)
+(generated_const_declaration name: (identifier) @constant)
 
 ; ── Module / import names ──────────────────────────────────────
 (import_path) @string.special
@@ -132,7 +132,7 @@
 ; a matching `SemTokenType` variant (see PRD #93 / issue #95).
 ;
 ; Note: skill / block declaration names and value-binding names
-; (text / int / float / generated_text) intentionally do NOT receive
+; (const / int / float / generated_const) intentionally do NOT receive
 ; Glyph-prefixed captures — they keep the standard `@function` /
 ; `@function.method` / `@constant` captures from above. The locked
 ; LSP vocabulary classifies those via existing token types and
@@ -154,9 +154,25 @@
 (inline_instruction (block_string) @glyph.flow.string @string)
 
 ; Context bare-name reference — an identifier in `context:` body or in
-; a `context <name>` marker, pointing back to a `text` declaration.
+; a `context <name>` marker, pointing back to a `const` declaration.
 ; PRD §Visual Hierarchy: "context bare-name references: same color as
-; text declaration names so the link between reference and definition
+; const declaration names so the link between reference and definition
 ; is obvious".
 (context_section (identifier) @glyph.context.name_ref @variable)
 (context_marker (identifier) @glyph.context.name_ref @variable)
+
+; ─────────────────────────────────────────────────────────────────────
+; Output-target return forms — `return <name>` / `return <"description">`
+; ─────────────────────────────────────────────────────────────────────
+;
+; The angle-bracket form marks a returned value as a named/described
+; output target. Identifier form gets a type-like fallback so the name
+; reads as a referent; description form gets `@string.special` so the
+; quoted text reads as a label rather than a payload string. The
+; brackets themselves are punctuation.
+(output_target_identifier (identifier) @glyph.return.target.ident @type)
+(output_target_description (string_literal) @glyph.return.target.description @string.special)
+(output_target_identifier "<" @punctuation.bracket)
+(output_target_identifier ">" @punctuation.bracket)
+(output_target_description "<" @punctuation.bracket)
+(output_target_description ">" @punctuation.bracket)

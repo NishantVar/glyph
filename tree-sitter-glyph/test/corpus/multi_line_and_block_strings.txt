@@ -82,10 +82,10 @@ skill foo()
             value: (identifier)))))))
 
 ================================================================================
-Triple-quoted block string in text binding
+Triple-quoted block string in const binding
 ================================================================================
 
-text rules = """
+const rules = """
 Never execute destructive operations.
 Always confirm before deleting files.
 """
@@ -97,7 +97,7 @@ skill foo()
 --------------------------------------------------------------------------------
 
 (source_file
-  (text_declaration
+  (const_declaration
     name: (identifier)
     value: (block_string
       (block_string_content)))
@@ -115,7 +115,7 @@ skill foo()
 Block string with literal "" mid-content (followed by non-special)
 ================================================================================
 
-text rules = """before""world"""
+const rules = """before""world"""
 
 skill foo()
     flow:
@@ -124,7 +124,7 @@ skill foo()
 --------------------------------------------------------------------------------
 
 (source_file
-  (text_declaration
+  (const_declaration
     name: (identifier)
     value: (block_string
       (block_string_content)
@@ -144,7 +144,7 @@ skill foo()
 Block string with literal "" immediately before interpolation
 ================================================================================
 
-text rules = """before""{name}after"""
+const rules = """before""{name}after"""
 
 skill foo()
     flow:
@@ -153,7 +153,7 @@ skill foo()
 --------------------------------------------------------------------------------
 
 (source_file
-  (text_declaration
+  (const_declaration
     name: (identifier)
     value: (block_string
       (block_string_content)
@@ -174,7 +174,7 @@ skill foo()
 Block string with leading and consecutive embedded quotes around interpolations
 ================================================================================
 
-text rules = """""{a}""{b}"""
+const rules = """""{a}""{b}"""
 
 skill foo()
     flow:
@@ -183,7 +183,7 @@ skill foo()
 --------------------------------------------------------------------------------
 
 (source_file
-  (text_declaration
+  (const_declaration
     name: (identifier)
     value: (block_string
       (interpolation
@@ -204,7 +204,7 @@ skill foo()
 Block string with single literal " mid-content
 ================================================================================
 
-text rules = """one"two"""
+const rules = """one"two"""
 
 skill foo()
     flow:
@@ -213,7 +213,7 @@ skill foo()
 --------------------------------------------------------------------------------
 
 (source_file
-  (text_declaration
+  (const_declaration
     name: (identifier)
     value: (block_string
       (block_string_content)

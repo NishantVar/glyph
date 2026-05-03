@@ -86,7 +86,7 @@ skill check_code()
         validate_style
         "Review the code."
 
-text validate_style = "Ensure consistent formatting."
+const validate_style = "Ensure consistent formatting."
 
 --------------------------------------------------------------------------------
 
@@ -105,7 +105,7 @@ text validate_style = "Ensure consistent formatting."
           (inline_instruction
             (string_literal
               (string_content)))))))
-  (text_declaration
+  (const_declaration
     name: (identifier)
     value: (string_literal
       (string_content))))
@@ -114,7 +114,7 @@ text validate_style = "Ensure consistent formatting."
 Bare body-position identifier — ERROR node, declaration recovers around it
 ================================================================================
 
-text accuracy = "Ensure all documentation accurately reflects the current code."
+const accuracy = "Ensure all documentation accurately reflects the current code."
 
 skill review_docs()
     description: "Review documentation for accuracy."
@@ -125,7 +125,7 @@ skill review_docs()
 --------------------------------------------------------------------------------
 
 (source_file
-  (text_declaration
+  (const_declaration
     name: (identifier)
     value: (string_literal
       (string_content)))

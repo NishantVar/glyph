@@ -1,0 +1,77 @@
+================================================================================
+Return identifier output target
+================================================================================
+
+skill foo()
+    flow:
+        return <my_target>
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (return_statement
+            value: (output_target_identifier
+              (identifier))))))))
+
+================================================================================
+Return descriptive output target
+================================================================================
+
+skill foo()
+    flow:
+        return <"a descriptive string">
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (return_statement
+            value: (output_target_description
+              (string_literal
+                (string_content)))))))))
+
+================================================================================
+Export block returning output targets
+================================================================================
+
+export block bar()
+    flow:
+        return <result_name>
+
+export block baz()
+    flow:
+        return <"the description form">
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (export_block_declaration
+    name: (identifier)
+    (parameter_list)
+    (export_block_body
+      (flow_section
+        (flow_statement
+          (return_statement
+            value: (output_target_identifier
+              (identifier)))))))
+  (export_block_declaration
+    name: (identifier)
+    (parameter_list)
+    (export_block_body
+      (flow_section
+        (flow_statement
+          (return_statement
+            value: (output_target_description
+              (string_literal
+                (string_content)))))))))
