@@ -90,8 +90,8 @@ skill foo()
             avoid stale_references
             "Do strict thing."
 
-text accuracy = "x"
-text stale_references = "y"
+const accuracy = "x"
+const stale_references = "y"
 
 --------------------------------------------------------------------------------
 
@@ -118,11 +118,11 @@ text stale_references = "y"
               (inline_instruction
                 (string_literal
                   (string_content)))))))))
-  (text_declaration
+  (const_declaration
     name: (identifier)
     value: (string_literal
       (string_content)))
-  (text_declaration
+  (const_declaration
     name: (identifier)
     value: (string_literal
       (string_content))))

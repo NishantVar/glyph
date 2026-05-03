@@ -12,7 +12,7 @@ skill fix_bug(scope = ".")
         "Identify the root cause."
         "Apply a minimal fix."
 
-text project_layout = "This codebase uses a monorepo layout with per-crate Cargo.toml files."
+const project_layout = "This codebase uses a monorepo layout with per-crate Cargo.toml files."
 
 --------------------------------------------------------------------------------
 
@@ -45,7 +45,7 @@ text project_layout = "This codebase uses a monorepo layout with per-crate Cargo
           (inline_instruction
             (string_literal
               (string_content)))))))
-  (text_declaration
+  (const_declaration
     name: (identifier)
     value: (string_literal
       (string_content))))

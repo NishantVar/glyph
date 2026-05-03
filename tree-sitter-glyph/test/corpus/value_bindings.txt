@@ -1,11 +1,12 @@
 ================================================================================
-int and float bindings, with and without export
+const bindings with int, float, and bool literals (with and without export)
 ================================================================================
 
-int max_attempts = 3
-export int default_max_attempts = 3
-float threshold = 0.8
-export float default_temperature = 0.7
+const max_attempts = 3
+export const default_max_attempts = 3
+const threshold = 0.8
+export const default_temperature = 0.7
+const enable_caching = true
 
 skill foo()
     flow:
@@ -14,18 +15,21 @@ skill foo()
 --------------------------------------------------------------------------------
 
 (source_file
-  (int_declaration
+  (const_declaration
     name: (identifier)
     value: (integer_literal))
-  (int_declaration
+  (const_declaration
     name: (identifier)
     value: (integer_literal))
-  (float_declaration
+  (const_declaration
     name: (identifier)
     value: (float_literal))
-  (float_declaration
+  (const_declaration
     name: (identifier)
     value: (float_literal))
+  (const_declaration
+    name: (identifier)
+    value: (boolean_literal))
   (skill_declaration
     name: (identifier)
     (parameter_list)
@@ -37,7 +41,7 @@ skill foo()
               (string_content))))))))
 
 ================================================================================
-Generated text and generated block declarations
+Generated const and generated block declarations
 ================================================================================
 
 skill foo()
@@ -45,7 +49,7 @@ skill foo()
         inspect_failure(scope)
         summarize_changes()
 
-generated text root_cause_before_fix = "Identify the root cause."
+generated const root_cause_before_fix = "Identify the root cause."
 
 generated block inspect_failure(area)
     "Inspect the failure in {area}."
@@ -71,7 +75,7 @@ generated block summarize_changes()
           (call_expression
             function: (identifier)
             (argument_list))))))
-  (generated_text_declaration
+  (generated_const_declaration
     name: (identifier)
     value: (string_literal
       (string_content)))
@@ -94,10 +98,10 @@ generated block summarize_changes()
         (string_content)))))
 
 ================================================================================
-Export text bindings
+Export const bindings
 ================================================================================
 
-export text safety_rules = "Never execute destructive operations without confirmation."
+export const safety_rules = "Never execute destructive operations without confirmation."
 
 skill foo()
     flow:
@@ -106,7 +110,7 @@ skill foo()
 --------------------------------------------------------------------------------
 
 (source_file
-  (text_declaration
+  (const_declaration
     name: (identifier)
     value: (string_literal
       (string_content)))

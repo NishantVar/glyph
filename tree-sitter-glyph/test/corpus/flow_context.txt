@@ -11,7 +11,7 @@ skill deploy_app()
         "Run tests."
         "Deploy to production."
 
-text deployment_rules = "Follow the deployment checklist before deploying."
+const deployment_rules = "Follow the deployment checklist before deploying."
 
 --------------------------------------------------------------------------------
 
@@ -43,7 +43,7 @@ text deployment_rules = "Follow the deployment checklist before deploying."
           (inline_instruction
             (string_literal
               (string_content)))))))
-  (text_declaration
+  (const_declaration
     name: (identifier)
     value: (string_literal
       (string_content))))

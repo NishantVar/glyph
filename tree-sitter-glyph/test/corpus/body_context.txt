@@ -10,7 +10,7 @@ skill review_code()
         "Scan the repository for issues."
         "Report findings."
 
-text project_conventions = "This project follows strict linting rules."
+const project_conventions = "This project follows strict linting rules."
 
 --------------------------------------------------------------------------------
 
@@ -36,7 +36,7 @@ text project_conventions = "This project follows strict linting rules."
           (inline_instruction
             (string_literal
               (string_content)))))))
-  (text_declaration
+  (const_declaration
     name: (identifier)
     value: (string_literal
       (string_content))))

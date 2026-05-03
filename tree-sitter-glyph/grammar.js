@@ -26,10 +26,8 @@ module.exports = grammar({
         $.skill_declaration,
         $.block_declaration,
         $.export_block_declaration,
-        $.text_declaration,
-        $.int_declaration,
-        $.float_declaration,
-        $.generated_text_declaration,
+        $.const_declaration,
+        $.generated_const_declaration,
         $.generated_block_declaration,
       ),
 
@@ -127,42 +125,31 @@ module.exports = grammar({
     _shorthand_body: ($) => seq($.inline_instruction, $._newline),
 
     // ── value bindings ─────────────────────────────────────────────
-    text_declaration: ($) =>
+    const_declaration: ($) =>
       seq(
         optional("export"),
-        "text",
+        "const",
         field("name", $.identifier),
         "=",
-        field("value", $._text_rhs),
+        field("value", $._const_rhs),
         $._newline,
       ),
 
-    _text_rhs: ($) => choice($.string_literal, $.block_string, $.qualified_name, $.identifier),
+    // Per #81: const RHS is a literal — string, block string, integer,
+    // float, or boolean. Bare-name and qualified-name RHS are out of
+    // scope (see crates/glyph-core/src/parse.rs `parse_const_literal_rhs`).
+    _const_rhs: ($) => choice(
+      $.string_literal,
+      $.block_string,
+      $.integer_literal,
+      $.float_literal,
+      $.boolean_literal,
+    ),
 
-    int_declaration: ($) =>
-      seq(
-        optional("export"),
-        "int",
-        field("name", $.identifier),
-        "=",
-        field("value", choice($.integer_literal, $.qualified_name, $.identifier)),
-        $._newline,
-      ),
-
-    float_declaration: ($) =>
-      seq(
-        optional("export"),
-        "float",
-        field("name", $.identifier),
-        "=",
-        field("value", choice($.float_literal, $.qualified_name, $.identifier)),
-        $._newline,
-      ),
-
-    generated_text_declaration: ($) =>
+    generated_const_declaration: ($) =>
       seq(
         "generated",
-        "text",
+        "const",
         field("name", $.identifier),
         "=",
         field("value", choice($.string_literal, $.block_string)),
@@ -475,7 +462,18 @@ module.exports = grammar({
         $.float_literal,
         $.boolean_literal,
         $.none_literal,
+        $.output_target_identifier,
+        $.output_target_description,
       ),
+
+    // Output-target return forms — `<name>` or `<"description">`.
+    // Used to mark a returned value as a named/described output target
+    // for the surrounding skill or export block.
+    output_target_identifier: ($) =>
+      seq("<", $.identifier, ">"),
+
+    output_target_description: ($) =>
+      seq("<", $.string_literal, ">"),
 
     // ── variable binding ───────────────────────────────────────────
     variable_binding: ($) =>

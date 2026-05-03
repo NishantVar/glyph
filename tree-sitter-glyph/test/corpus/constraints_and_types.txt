@@ -11,10 +11,10 @@ skill foo()
     flow:
         "x"
 
-text accuracy = "x"
-text stale_references = "y"
-text root_cause_before_fix = "z"
-text silent_failures = "w"
+const accuracy = "x"
+const stale_references = "y"
+const root_cause_before_fix = "z"
+const silent_failures = "w"
 
 --------------------------------------------------------------------------------
 
@@ -37,19 +37,19 @@ text silent_failures = "w"
           (inline_instruction
             (string_literal
               (string_content)))))))
-  (text_declaration
+  (const_declaration
     name: (identifier)
     value: (string_literal
       (string_content)))
-  (text_declaration
+  (const_declaration
     name: (identifier)
     value: (string_literal
       (string_content)))
-  (text_declaration
+  (const_declaration
     name: (identifier)
     value: (string_literal
       (string_content)))
-  (text_declaration
+  (const_declaration
     name: (identifier)
     value: (string_literal
       (string_content))))

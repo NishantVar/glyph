@@ -47,7 +47,7 @@ skill foo()
         // comment inside flow
         "x"
 
-text accuracy = "x"
+const accuracy = "x"
 
 --------------------------------------------------------------------------------
 
@@ -69,7 +69,7 @@ text accuracy = "x"
           (inline_instruction
             (string_literal
               (string_content)))))))
-  (text_declaration
+  (const_declaration
     name: (identifier)
     value: (string_literal
       (string_content))))
