@@ -99,6 +99,8 @@ Representative diagnostics implied by the current design.
 | `G::parse::applies-no-parens` | error | `BLOCKNAME.applies` appears without `()`; the trigger predicate form requires explicit parentheses (`ir-and-semantics.md` §Block Trigger Predicate) |
 | `G::parse::applies-with-args` | error | `BLOCKNAME.applies(...)` is called with arguments; the trigger predicate is zero-arity (`ir-and-semantics.md` §Block Trigger Predicate) |
 | `G::parse::none-as-return-type` | repairable | A declaration header uses `-> None` as a return-type annotation (e.g., `block foo() -> None`, `export block foo() -> None`). The `None` type annotation has been removed in MVP; declarations with no meaningful return omit `->` entirely (`types.md` §`none` Value, `language-surface.md` §3.3). Phase 3a (pre-Parse text-level rewrite, `glyph fmt` stratum 1) deterministically strips the trailing ` -> None` from `skill` / `block` / `export block` / `generated block` declaration headers. Match is case-insensitive on `none` with identifier-boundary semantics; the value keyword `none` (in `return none`, `effects: none`, value positions) is preserved. |
+| `G::parse::malformed-output-target` | error | A `return <...>` output-target candidate is not the identifier form: empty `<>`, whitespace inside brackets, dot access, call syntax, or any non-identifier character. |
+| `G::parse::output-target-outside-return` | error | `<name>` output-target syntax appears outside the single MVP-legal position: the terminal top-level `return <name>` expression. |
 
 ### Analyze phase
 
@@ -122,6 +124,8 @@ Representative diagnostics implied by the current design.
 | `G::analyze::lossy-coercion` | error | Lossy numeric conversion, e.g. `3.7` where integer expected (`values-and-names.md`) |
 | `G::analyze::missing-return` | repairable | Export block lacks `return` on a code path (`language-surface.md` §3.3) |
 | `G::analyze::export-missing-return-type` | repairable | An `export block` body has at least one `return <expr>` with a meaningful return value but the header lacks a `-> DomainType` annotation. Export-block return types must be explicit when the block has a meaningful return and omitted otherwise (`language-surface.md` §3.3, `types.md` §`none` Value). Bare `return` and `return none` do not trigger this diagnostic — those are the no-meaningful-return form, and the header correctly omits `->`. Reparability is via Phase 3b (LLM-assisted inference of the `DomainType` name from the body); Phase 3a's deterministic strata cannot synthesize a domain-type name. |
+| `G::analyze::output-target-shadows-binding` | error | `return <name>` uses an output target name that already resolves to a visible binding (parameter, const, block, export, or import depending on scope). The target must be a fresh output name, not a reference. |
+| `G::analyze::placeholder-string-return` | repairable | A domain-typed declaration ends with a string literal whose entire content is an identifier-shaped placeholder such as `"<current_branch>"`. Phase 3a rewrites it to `return <current_branch>`; ordinary strings and untyped declarations are unaffected. |
 | `G::analyze::closure-violation` | error | Export block depends on hidden caller context (`data-flow.md`) |
 | `G::analyze::stdlib-missing-import` | repairable | `subagent()` used without importing `@glyph/std` (`stdlib.md`) |
 | `G::imports::unknown-stdlib-module` | error | An import path under the reserved `@glyph/` virtual namespace does not resolve to a known compiler-embedded stdlib module. The MVP recognises only `@glyph/std`; any other `@glyph/*` path fires this diagnostic (`stdlib.md`, `imports.md`). |
@@ -157,7 +161,7 @@ Build-phase diagnostics cover project-level orchestration concerns rather than a
 
 ### Validate-output phase (Phase 6b)
 
-Phase 6b structural validation, implemented in the `glyph validate-output` subcommand. These are **compiler-scope** diagnostics — deterministic checks that Step 2's Markdown output faithfully projects the input IR. All 26 are classification `error`. The canonical specification lives in `expand.md` §4.2; the workflow integration is in `agent-skill.md` §`glyph validate-output`.
+Phase 6b structural validation, implemented in the `glyph validate-output` subcommand. These are **compiler-scope** diagnostics — deterministic checks that Step 2's Markdown output faithfully projects the input IR. All 27 are classification `error`. The canonical specification lives in `expand.md` §4.2; the workflow integration is in `agent-skill.md` §`glyph validate-output`.
 
 | ID | Classification | Trigger |
 |---|---|---|
@@ -172,6 +176,7 @@ Phase 6b structural validation, implemented in the `glyph validate-output` subco
 | `G::expand::invented-param-ref` | error | `{...}` reference does not match any declared parameter |
 | `G::expand::dropped-param-ref` | error | A parameter reference from Step 1 output was silently removed by Step 2 |
 | `G::expand::unresolved-local-ref` | error | A `local_ref` slot survived as a literal `{name}` token — Step 2 failed to resolve it into prose |
+| `G::expand::output-target-leak` | error | A literal output-target token `<name>` from an `OutputContract.target_name` survived in compiled Markdown instead of being folded into natural prose |
 | `G::expand::modifier-leaked` | error | `with` modifier string appears verbatim in output |
 | `G::expand::params-section-mismatch` | error | `## Parameters` item count does not match `InputContract` parameter count |
 | `G::expand::params-section-missing` | error | Skill has parameters but `## Parameters` section is absent |
@@ -210,7 +215,7 @@ Phase 6b structural validation, implemented in the `glyph validate-output` subco
 
 ### Expand execution failures (agent-scope)
 
-Step 2 execution-level failures that are the agent's responsibility, independent of structural validation. Phase 6b structural diagnostics (25 IDs) are compiler-scope — see the Validate-output section above.
+Step 2 execution-level failures that are the agent's responsibility, independent of structural validation. Phase 6b structural diagnostics (27 IDs) are compiler-scope — see the Validate-output section above.
 
 | ID | Classification | Trigger |
 |---|---|---|

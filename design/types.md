@@ -51,18 +51,18 @@ Named domain types such as `RepoContext`, `Plan`, `FileSet`, and `ValidationResu
 
 Domain types are implicitly declared by first use in a `-> Type` position. No explicit `type Foo` declaration is needed in MVP. When the compiler encounters `-> Diagnosis` for the first time, it registers `Diagnosis` as a known domain type.
 
-The meaning of a domain type is contextually defined by `<"...">` descriptions at return sites (see `output-target-expression-note.md`). For example:
+The meaning of a domain type is contextually reinforced by return-site output targets and surrounding prose. For identifier-shaped synthesized results, authors use `return <name>`:
 
 ```glyph
 export block diagnose_issue(scope) -> Diagnosis
     flow:
         inspect_repo(scope)
-        return <"root cause analysis including affected files and severity">
+        return <diagnosis>
 ```
 
-The `-> Diagnosis` on the header serves as the compiler contract (nominal matching). The `<"root cause analysis including affected files and severity">` serves as agent guidance (what to synthesize). These are complementary.
+The `-> Diagnosis` on the header serves as the compiler contract (nominal matching). The `<diagnosis>` target names the value the agent must synthesize in the final output. Rich descriptive output-target forms are deferred; use inline prose before the terminal return when the target needs more guidance.
 
-Two blocks returning the same `-> Type` with different `<"...">` descriptions is valid — descriptions are local to each block's compiled output and do not participate in nominal matching.
+Two blocks returning the same `-> Type` with different output-target names or prose guidance are valid — that guidance is local to each block's compiled output and does not participate in nominal matching.
 
 ### What The Compiler Checks
 
@@ -135,6 +135,7 @@ Parameter type annotations are always optional. When omitted, the compiler infer
 - **`export block` with meaningful return:** `-> DomainType` is required. Missing `->` on an export block that returns a value is a repairable diagnostic; the repair pass infers a domain type name from the block name and return expression.
 - **`export block` with no meaningful return:** omit `->` entirely.
 - **`block` and `skill`:** `-> DomainType` is optional. The repair pass may suggest a domain type but never enforces one.
+- **Output target returns:** `return <name>` uses the enclosing `-> DomainType` as the IR `OutputContract.ty`. If the annotation is omitted, the output target still lowers but carries `ty: null`; authors should prefer a semantic domain type when the synthesized output is part of a public or reusable contract.
 
 ## Interaction With Export Block Closure
 
@@ -183,7 +184,7 @@ The following type features are deferred beyond the MVP:
 - **Enum and union types.** Per `values-and-names.md`, Enums And Symbols section, enumerated values are represented as strings in MVP. Dedicated enum types with exhaustiveness checking may be added later.
 - **Type aliases.** A shorthand for renaming or combining existing types.
 - **`Never` / bottom type.** For blocks that unconditionally fail or diverge.
-- **Divergent description warnings.** When the same `-> Type` appears on multiple blocks with substantially different `<"...">` descriptions, the compiler could warn that the type name may be overloaded. Deferred because descriptions are local to each block's compiled output and do not affect nominal matching.
+- **Divergent output-target guidance warnings.** When the same `-> Type` appears on multiple blocks with substantially different output-target names or prose guidance, the compiler could warn that the type name may be overloaded. Deferred because output guidance is local to each block's compiled output and does not affect nominal matching.
 - **LLM-phase semantic type mismatch detection.** The LLM repair pass could potentially catch semantic type mismatches (passing a string where an int is expected) using name and usage context. Deferred post-MVP; for now, the compiler infers primitive kinds from literals and defaults only.
 
 ## Open Syntax Choices

@@ -142,6 +142,7 @@ fn node_id(n: &IrNode) -> u32 {
         IrNode::Block(b) => b.node_id.0,
         IrNode::Call(c) => c.node_id.0,
         IrNode::Branch(br) => br.node_id.0,
+        IrNode::OutputContract(oc) => oc.node_id.0,
     }
 }
 
@@ -163,6 +164,7 @@ mod tests {
             constraints: vec![],
             return_text: None,
             return_type: None,
+            output_contract: None,
         }));
         arena.push(IrNode::InlineInstruction(IrInlineInstruction {
             node_id: NodeId(1),
@@ -187,6 +189,7 @@ mod tests {
             constraints: vec![],
             return_text: None,
             return_type: None,
+            output_contract: None,
         }));
         arena.set_root_skill(NodeId(0));
         // Manually push a node with the same ID.
@@ -230,6 +233,7 @@ mod tests {
             constraints: vec![],
             return_text: None,
             return_type: None,
+            output_contract: None,
         }));
         arena.push(IrNode::Call(IrCall {
             node_id: NodeId(1),
@@ -261,6 +265,7 @@ mod tests {
             constraints: vec![],
             return_text: None,
             return_type: None,
+            output_contract: None,
         }));
         arena.push(IrNode::Call(IrCall {
             node_id: NodeId(1),
@@ -282,6 +287,7 @@ mod tests {
             resolved_word_count: None,
             outgoing_calls: vec!["foo".into()], // self-referencing!
             return_type: None,
+            output_contract: None,
         }));
         arena.set_root_skill(NodeId(0));
 
@@ -304,6 +310,7 @@ mod tests {
             constraints: vec![],
             return_text: None,
             return_type: None,
+            output_contract: None,
         }));
         arena.push(IrNode::Branch(crate::ir::IrBranch {
             node_id: NodeId(1),
@@ -334,6 +341,7 @@ mod tests {
             constraints: vec![],
             return_text: None,
             return_type: None,
+            output_contract: None,
         }));
         arena.push(IrNode::Call(IrCall {
             node_id: NodeId(1),
@@ -355,6 +363,7 @@ mod tests {
             resolved_word_count: None,
             outgoing_calls: vec!["bar".into()],
             return_type: None,
+            output_contract: None,
         }));
         // Block "bar" calls "foo" — completing the cycle.
         arena.push(IrNode::Block(IrBlock {
@@ -366,6 +375,7 @@ mod tests {
             resolved_word_count: None,
             outgoing_calls: vec!["foo".into()],
             return_type: None,
+            output_contract: None,
         }));
         arena.set_root_skill(NodeId(0));
 

@@ -412,6 +412,7 @@ The repair pass may add:
 - missing imports when the referenced library is obvious from available context (deferred from MVP — see `todo.md`);
 - missing `effects:` on any declaration (skill, block, or export block) whose inferred set is non-empty — Phase 3a deterministically inserts an `effects:` sub-section with the inferred set into the source, triggered by `G::analyze::missing-effects`, and emits `G::repair::inferred-effects` (warning, informational) so the author knows what was added (see `ir-and-semantics.md` §3 and `diagnostics.md`);
 - missing `description:` on a `skill` — Phase 3b generates a single-string description from the skill name, parameters, and body, and adds it as a `description:` sub-section, triggered by `G::analyze::missing-description` (see `ir-and-semantics.md` §4 and `diagnostics.md`);
+- placeholder string returns on domain-typed declarations — Phase 3a rewrites a terminal `return "<name>"` whose contents are identifier-shaped and whose enclosing declaration has `-> DomainType` into `return <name>`, triggered by `G::analyze::placeholder-string-return`. Plain strings and untyped declarations are preserved.
 - `export` on a block only when an importability diagnostic makes the author's intent clear;
 - missing block delimiters or indentation fixes;
 - explicit section headers when the source already implies the section;

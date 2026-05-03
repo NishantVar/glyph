@@ -9,6 +9,7 @@ use crate::ast::{
     Skill, SourceFile,
 };
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
+use crate::output_target::{OutputTargetExpr, OutputTargetParseError};
 use crate::slot::scan_slots;
 use crate::span::{LineIndex, Span, Spanned};
 use crate::tokenize::{tokenize, Token, TokenKind, TokenizeError};
@@ -40,7 +41,9 @@ pub fn parse(source: &str, file_id: u32) -> Result<(SourceFile, LineIndex), Pars
         file_label: "<source>",
         line_index: &line_index,
         bag: &mut sink,
+        source,
         consumed_arrow_offsets: Vec::new(),
+        consumed_output_target_offsets: Vec::new(),
     };
     let file = p.parse_file()?;
     Ok((file, line_index))
@@ -81,7 +84,8 @@ pub fn parse_with_diagnostics(
                 Diagnostic {
                     id: "G::parse::tab-indent".into(),
                     classification: Classification::Repairable,
-                    message: "tab character used for indentation; Glyph requires 4-space indents".into(),
+                    message: "tab character used for indentation; Glyph requires 4-space indents"
+                        .into(),
                     span: SourceSpan::from_byte_span(file_label, span, line_index),
                     related: Vec::new(),
                     hints: vec![
@@ -185,7 +189,7 @@ pub fn parse_with_diagnostics(
     // can leave a stray `->` in the stream that would otherwise be silently
     // dropped, regressing the pre-#82-chunk-2 `G::parse::operator-in-expression`
     // diagnostic that the byte-scan path used to emit on bare `-`).
-    let (parsed_result, consumed_arrows) = {
+    let (parsed_result, consumed_arrows, consumed_output_targets) = {
         let mut p = Parser {
             tokens: &tokens,
             pos: 0,
@@ -193,10 +197,16 @@ pub fn parse_with_diagnostics(
             file_label,
             line_index,
             bag,
+            source,
             consumed_arrow_offsets: Vec::new(),
+            consumed_output_target_offsets: Vec::new(),
         };
         let parsed = p.parse_file();
-        (parsed, std::mem::take(&mut p.consumed_arrow_offsets))
+        (
+            parsed,
+            std::mem::take(&mut p.consumed_arrow_offsets),
+            std::mem::take(&mut p.consumed_output_target_offsets),
+        )
     };
 
     // Post-parse Arrow scan. Any `Arrow` token whose start offset is NOT in
@@ -208,9 +218,7 @@ pub fn parse_with_diagnostics(
     // see the same structured diagnostic that fired pre-#82-chunk-2 when the
     // tokenizer flagged `-` as `UnexpectedChar`.
     for tok in tokens.iter() {
-        if matches!(tok.kind, TokenKind::Arrow)
-            && !consumed_arrows.contains(&tok.span.start)
-        {
+        if matches!(tok.kind, TokenKind::Arrow) && !consumed_arrows.contains(&tok.span.start) {
             let span = tok.span;
             bag.push(
                 Diagnostic {
@@ -226,6 +234,25 @@ pub fn parse_with_diagnostics(
                             .into(),
                     ],
                 },
+                span,
+            );
+        }
+    }
+
+    // Post-parse output-target scan. Any `<` token that was not consumed as
+    // part of a return-position output target candidate is outside the only
+    // MVP-legal slot (`return <name>` as the terminal flow statement).
+    for tok in tokens.iter() {
+        if matches!(tok.kind, TokenKind::LAngle)
+            && !consumed_output_targets.contains(&tok.span.start)
+        {
+            let span = tok.span;
+            bag.push(
+                Diagnostic::error(
+                    "G::parse::output-target-outside-return",
+                    "output targets are only allowed as the terminal `return <name>` expression",
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
                 span,
             );
         }
@@ -264,21 +291,44 @@ pub fn parse_with_diagnostics(
         }
         // Check return-related diagnostics for skills.
         if let Decl::Skill(spanned_skill) = decl {
-            check_return_rules(&spanned_skill.node.flow, spanned_skill.span, file_label, line_index, bag, false);
+            check_return_rules(
+                &spanned_skill.node.flow,
+                spanned_skill.span,
+                file_label,
+                line_index,
+                bag,
+                false,
+            );
         }
         // Check return-related diagnostics for blocks.
         if let Decl::Block(spanned_block) = decl {
-            check_return_rules(&spanned_block.node.flow, spanned_block.span, file_label, line_index, bag, false);
+            check_return_rules(
+                &spanned_block.node.flow,
+                spanned_block.span,
+                file_label,
+                line_index,
+                bag,
+                false,
+            );
         }
     }
     // Detect `G::parse::multiple-skills`: more than one `skill` per file.
     {
-        let skill_count = file.decls.iter().filter(|d| matches!(d, Decl::Skill(_))).count();
+        let skill_count = file
+            .decls
+            .iter()
+            .filter(|d| matches!(d, Decl::Skill(_)))
+            .count();
         if skill_count > 1 {
-            let span = file.decls.iter().filter_map(|d| match d {
-                Decl::Skill(s) => Some(s.span),
-                _ => None,
-            }).nth(1).unwrap();
+            let span = file
+                .decls
+                .iter()
+                .filter_map(|d| match d {
+                    Decl::Skill(s) => Some(s.span),
+                    _ => None,
+                })
+                .nth(1)
+                .unwrap();
             bag.push(
                 Diagnostic::error(
                     "G::parse::multiple-skills",
@@ -304,6 +354,11 @@ struct Parser<'a> {
     file_label: &'a str,
     line_index: &'a LineIndex,
     bag: &'a mut DiagBag,
+    /// Original source text. Needed by issue-#85 chunk 3 to slice the
+    /// `<IDENT>` byte range covered by an `LAngle`/`RAngle` token pair and
+    /// hand it to `output_target::parse_output_target` (which validates the
+    /// inner identifier without re-tokenizing).
+    source: &'a str,
     /// Byte-offset (`Span.start`) of every `Arrow` token the parser has
     /// legitimately consumed via `try_parse_return_type`. After parsing,
     /// `parse_with_diagnostics` scans the token stream for any `Arrow`
@@ -313,6 +368,11 @@ struct Parser<'a> {
     /// fired on stray `-` characters before the tokenizer learned the
     /// `Arrow` token.
     consumed_arrow_offsets: Vec<u32>,
+    /// Byte-offset (`Span.start`) of every `<` token the parser consumed as a
+    /// return-position output target candidate. The post-parse scan uses this
+    /// to reject all other angle-bracket output-target forms with the
+    /// structured `G::parse::output-target-outside-return` diagnostic.
+    consumed_output_target_offsets: Vec<u32>,
 }
 
 impl<'a> Parser<'a> {
@@ -472,6 +532,64 @@ impl<'a> Parser<'a> {
         Ok(Some(Spanned::new(name, span)))
     }
 
+    fn emit_malformed_output_target(&mut self, form_span: Span, err: OutputTargetParseError) {
+        let detail = match err {
+            OutputTargetParseError::MissingOpenBracket => {
+                "output target must start with `<`".to_string()
+            }
+            OutputTargetParseError::UnclosedBracket => {
+                "output target is missing its closing `>`".to_string()
+            }
+            OutputTargetParseError::TrailingChars { .. } => {
+                "output target must contain exactly one `<name>` form".to_string()
+            }
+            OutputTargetParseError::Empty => "output target identifier is empty".to_string(),
+            OutputTargetParseError::InvalidIdentStart { ch, .. } if ch.is_whitespace() => {
+                "output target identifiers must not contain whitespace".to_string()
+            }
+            OutputTargetParseError::InvalidIdentChar { ch, .. } if ch.is_whitespace() => {
+                "output target identifiers must not contain whitespace".to_string()
+            }
+            OutputTargetParseError::InvalidIdentStart { ch, .. } => {
+                format!(
+                    "output target identifier must start with a letter or `_`, found `{}`",
+                    ch
+                )
+            }
+            OutputTargetParseError::InvalidIdentChar { ch, .. } => {
+                format!(
+                    "output target identifier may only contain letters, digits, or `_`, found `{}`",
+                    ch
+                )
+            }
+        };
+        self.bag.push(
+            Diagnostic {
+                id: "G::parse::malformed-output-target".into(),
+                classification: Classification::Error,
+                message: format!("{detail}; write `return <name>`"),
+                span: SourceSpan::from_byte_span(self.file_label, form_span, self.line_index),
+                related: Vec::new(),
+                hints: vec![
+                    "`return <name>` accepts only identifier-shaped names like `current_branch`"
+                        .into(),
+                ],
+            },
+            form_span,
+        );
+    }
+
+    fn emit_output_target_outside_return(&mut self, span: Span) {
+        self.bag.push(
+            Diagnostic::error(
+                "G::parse::output-target-outside-return",
+                "output targets are only allowed as the terminal `return <name>` expression",
+                SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+            ),
+            span,
+        );
+    }
+
     fn parse_file(&mut self) -> Result<SourceFile, ParseError> {
         let mut decls = Vec::new();
         loop {
@@ -547,7 +665,10 @@ impl<'a> Parser<'a> {
                         _ => {
                             return Err(ParseError::Unexpected {
                                 span: self.peek().span,
-                                message: format!("expected `block` or `const` after `export`, found `{}`", next_kw),
+                                message: format!(
+                                    "expected `block` or `const` after `export`, found `{}`",
+                                    next_kw
+                                ),
                             });
                         }
                     }
@@ -722,19 +843,46 @@ impl<'a> Parser<'a> {
         let mut description: Option<String> = None;
         let mut effects: Vec<String> = Vec::new();
         let mut flow_strings: Vec<String> = Vec::new();
+        // Issue #85 chunk 4b (D4): last-write-wins capture of the
+        // structurally-parsed return expression. See
+        // `ExportBlockDecl::terminal_return` for the language invariant.
+        let mut terminal_return: Option<ReturnExpr> = None;
+        let mut flow_item_count: usize = 0;
+        let mut root_flow_output_targets: Vec<(usize, Span)> = Vec::new();
         // Track which sub-section we are currently in.
         let mut current_section: Option<&'static str> = None;
         let body_keywords: &[&str] = &[
-            "flow", "return", "description", "effects", "constraints",
-            "context", "require", "avoid", "must", "if", "elif", "else",
-            "none", "with", "as", "import", "export", "block", "skill",
-            "text", "int", "float",
+            "flow",
+            "return",
+            "description",
+            "effects",
+            "constraints",
+            "context",
+            "require",
+            "avoid",
+            "must",
+            "if",
+            "elif",
+            "else",
+            "none",
+            "with",
+            "as",
+            "import",
+            "export",
+            "block",
+            "skill",
+            "text",
+            "int",
+            "float",
         ];
         loop {
             match self.current_line_indent() {
                 Some(n) if n > 0 => {
+                    let line_indent = n;
                     // Drop the LineStart and every token until the next LineStart or Eof.
                     self.pos += 1;
+                    let mut line_is_section_header = false;
+                    let mut output_target_return_span: Option<Span> = None;
                     // Check if line starts with a sub-section keyword or `return`.
                     if let TokenKind::Ident(kw) = &self.peek().kind {
                         match kw.as_str() {
@@ -759,22 +907,67 @@ impl<'a> Parser<'a> {
                                     None
                                     | Some(TokenKind::LineStart { .. })
                                     | Some(TokenKind::Eof) => false,
-                                    Some(TokenKind::Ident(s)) if s.eq_ignore_ascii_case("none") => false,
+                                    Some(TokenKind::Ident(s)) if s.eq_ignore_ascii_case("none") => {
+                                        false
+                                    }
                                     _ => true,
                                 };
                                 if is_meaningful {
                                     has_meaningful_return = true;
                                 }
+                                // Issue #85 chunk 4b (D4): structurally
+                                // parse the return expression for
+                                // `terminal_return`. Save pos so the body-
+                                // walking loop below still observes the
+                                // expression tokens for body_refs /
+                                // body_word_count accumulation. Last-write-
+                                // wins: a flow with multiple `return`s
+                                // (illegal but tolerated upstream) keeps
+                                // the most recent one.
+                                let saved_for_body_walk = self.pos;
+                                self.pos += 1; // consume `return`
+                                let expr = self.parse_return_expr()?;
+                                if let ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id)) =
+                                    &expr
+                                {
+                                    output_target_return_span = Some(id.span);
+                                }
+                                terminal_return = Some(expr);
+                                self.pos = saved_for_body_walk;
                             }
-                            "description" => { current_section = Some("description"); }
-                            "effects" => { current_section = Some("effects"); }
-                            "flow" => { current_section = Some("flow"); }
-                            "constraints" | "context" => { current_section = Some("other"); }
+                            "description" => {
+                                line_is_section_header = true;
+                                current_section = Some("description");
+                            }
+                            "effects" => {
+                                line_is_section_header = true;
+                                current_section = Some("effects");
+                            }
+                            "flow" => {
+                                line_is_section_header = true;
+                                current_section = Some("flow");
+                            }
+                            "constraints" | "context" => {
+                                line_is_section_header = true;
+                                current_section = Some("other");
+                            }
                             _ => {}
                         }
                     }
-                    while !self.at_eof()
-                        && !matches!(self.peek().kind, TokenKind::LineStart { .. })
+                    if current_section == Some("flow") && !line_is_section_header {
+                        let item_index = flow_item_count;
+                        flow_item_count += 1;
+                        if let Some(span) = output_target_return_span {
+                            if line_indent == 2 {
+                                root_flow_output_targets.push((item_index, span));
+                            } else {
+                                self.emit_output_target_outside_return(span);
+                            }
+                        }
+                    } else if let Some(span) = output_target_return_span {
+                        self.emit_output_target_outside_return(span);
+                    }
+                    while !self.at_eof() && !matches!(self.peek().kind, TokenKind::LineStart { .. })
                     {
                         match &self.peek().kind {
                             TokenKind::Ident(ident) => {
@@ -809,16 +1002,34 @@ impl<'a> Parser<'a> {
             }
         }
 
+        for (item_index, span) in root_flow_output_targets {
+            if item_index + 1 != flow_item_count {
+                self.emit_output_target_outside_return(span);
+            }
+        }
+
         let end_span = if self.pos > 0 {
             self.tokens[self.pos - 1].span
         } else {
             kw_span
         };
         let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
-        Ok(Spanned::new(ExportBlockDecl {
-            name, params, has_return, has_meaningful_return, body_refs, body_word_count,
-            description, effects, flow_strings, return_type,
-        }, span))
+        Ok(Spanned::new(
+            ExportBlockDecl {
+                name,
+                params,
+                has_return,
+                has_meaningful_return,
+                body_refs,
+                body_word_count,
+                description,
+                effects,
+                flow_strings,
+                return_type,
+                terminal_return,
+            },
+            span,
+        ))
     }
 
     /// Parse `block <name>(<params>)` with optional body (description, flow,
@@ -867,7 +1078,11 @@ impl<'a> Parser<'a> {
                                     }
                                     // Validate `none` exclusivity for blocks too.
                                     if effects.contains(&"none".to_string()) && effects.len() > 1 {
-                                        let span = Span::new(self.file_id, colon_span.start, colon_span.end);
+                                        let span = Span::new(
+                                            self.file_id,
+                                            colon_span.start,
+                                            colon_span.end,
+                                        );
                                         self.bag.push(
                                             Diagnostic::error(
                                                 "G::parse::none-with-effects",
@@ -974,11 +1189,7 @@ impl<'a> Parser<'a> {
                             // opening quote; only meaningful for ASCII content
                             // in the walking skeleton.
                             let span_start = lit_span.start + 1 + off as u32;
-                            let span = Span::new(
-                                self.file_id,
-                                span_start,
-                                span_start + 1,
-                            );
+                            let span = Span::new(self.file_id, span_start, span_start + 1);
                             self.bag.push(
                                 Diagnostic {
                                     id: "G::parse::param-slot-in-non-instruction-string".into(),
@@ -1008,7 +1219,11 @@ impl<'a> Parser<'a> {
                 }
             }
             let span = Span::new(self.file_id, name_span.start, end_span.end);
-            params.push(Param { name: pname, default, span });
+            params.push(Param {
+                name: pname,
+                default,
+                span,
+            });
             match &self.peek().kind {
                 TokenKind::Comma => {
                     self.pos += 1;
@@ -1079,10 +1294,15 @@ impl<'a> Parser<'a> {
                             id: "G::parse::duplicate-subsection".into(),
                             classification: Classification::Repairable,
                             message: "duplicate `description:` sub-section in skill body".into(),
-                            span: SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                            span: SourceSpan::from_byte_span(
+                                self.file_label,
+                                span,
+                                self.line_index,
+                            ),
                             related: Vec::new(),
                             hints: vec![
-                                "remove the duplicate or merge contents into one `description:`".into(),
+                                "remove the duplicate or merge contents into one `description:`"
+                                    .into(),
                             ],
                         },
                         span,
@@ -1188,8 +1408,10 @@ impl<'a> Parser<'a> {
                                         let lit_span = self.peek().span;
                                         let v = s.clone();
                                         for slot in scan_slots(&v) {
-                                            let span_start = lit_span.start + 1 + slot.start_in_content as u32;
-                                            let span = Span::new(self.file_id, span_start, span_start + 1);
+                                            let span_start =
+                                                lit_span.start + 1 + slot.start_in_content as u32;
+                                            let span =
+                                                Span::new(self.file_id, span_start, span_start + 1);
                                             self.bag.push(
                                                 Diagnostic {
                                                     id: "G::parse::param-slot-in-non-instruction-string".into(),
@@ -1218,7 +1440,9 @@ impl<'a> Parser<'a> {
                                     _ => {
                                         return Err(ParseError::Unexpected {
                                             span: self.peek().span,
-                                            message: "expected string literal or name in `context:` body".into(),
+                                            message:
+                                                "expected string literal or name in `context:` body"
+                                                    .into(),
                                         });
                                     }
                                 }
@@ -1309,7 +1533,9 @@ impl<'a> Parser<'a> {
                                 _ => {
                                     return Err(ParseError::Unexpected {
                                         span: self.peek().span,
-                                        message: "expected constraint marker in `constraints:` body".into(),
+                                        message:
+                                            "expected constraint marker in `constraints:` body"
+                                                .into(),
                                     });
                                 }
                             }
@@ -1342,6 +1568,140 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Parse a return expression. Caller must have consumed the `return`
+    /// keyword; this method consumes the expression tokens and returns the
+    /// parsed `ReturnExpr`.
+    ///
+    /// Used by:
+    ///   - the canonical `parse_flow_stmt` `"return"` arm (skill / private
+    ///     block flows);
+    ///   - the `parse_export_block` flat scanner (issue #85 chunk 4b),
+    ///     which save-then-parse-then-restore-pos's so the body-walking
+    ///     loop still observes the same expression tokens for
+    ///     `body_refs` / `body_word_count` accumulation.
+    fn parse_return_expr(&mut self) -> Result<ReturnExpr, ParseError> {
+        let expr = match &self.peek().kind {
+            TokenKind::LineStart { .. } | TokenKind::Eof => {
+                // Bare `return` with no expression = return none.
+                ReturnExpr::None
+            }
+            TokenKind::Ident(name) if name == "none" => {
+                self.pos += 1;
+                ReturnExpr::None
+            }
+            TokenKind::Ident(name) => {
+                let name = name.clone();
+                self.pos += 1;
+                // Check if it's a call: name(args).
+                if matches!(self.peek().kind, TokenKind::Lparen) {
+                    self.pos += 1; // consume `(`
+                    let mut args: Vec<String> = Vec::new();
+                    if !matches!(self.peek().kind, TokenKind::Rparen) {
+                        loop {
+                            match &self.peek().kind {
+                                TokenKind::Ident(a) => {
+                                    args.push(a.clone());
+                                    self.pos += 1;
+                                }
+                                TokenKind::StringLit(a) => {
+                                    args.push(a.clone());
+                                    self.pos += 1;
+                                }
+                                _ => {
+                                    return Err(ParseError::Unexpected {
+                                        span: self.peek().span,
+                                        message: "expected argument in return call".into(),
+                                    });
+                                }
+                            }
+                            match &self.peek().kind {
+                                TokenKind::Comma => {
+                                    self.pos += 1;
+                                }
+                                _ => break,
+                            }
+                        }
+                    }
+                    self.expect(&TokenKind::Rparen)?;
+                    ReturnExpr::Call { target: name, args }
+                } else {
+                    ReturnExpr::Name(name)
+                }
+            }
+            TokenKind::StringLit(s) => {
+                let s = s.clone();
+                self.pos += 1;
+                ReturnExpr::Inline(s)
+            }
+            TokenKind::LAngle => {
+                // Issue #85: output-target identifier form
+                // `return <IDENT>`. Hand the byte slice from `<` through the
+                // end of the logical line to the chunk-1 deep parser so
+                // trailing text like `return <foo>bar` is diagnosed as a
+                // malformed output target instead of becoming an opaque parse
+                // failure after the valid-looking `<foo>` prefix.
+                let langle_span = self.peek().span;
+                self.consumed_output_target_offsets.push(langle_span.start);
+                self.pos += 1;
+                // Scan to the matching `RAngle` on the same logical line.
+                // Stop on `LineStart` or `Eof` (unclosed form).
+                let mut rangle_end: Option<u32> = None;
+                let mut candidate_end = langle_span.end;
+                while !matches!(
+                    self.peek().kind,
+                    TokenKind::LineStart { .. } | TokenKind::Eof
+                ) {
+                    candidate_end = self.peek().span.end;
+                    if matches!(self.peek().kind, TokenKind::RAngle) {
+                        rangle_end = Some(self.peek().span.end);
+                        self.pos += 1;
+                        while !matches!(
+                            self.peek().kind,
+                            TokenKind::LineStart { .. } | TokenKind::Eof
+                        ) {
+                            candidate_end = self.peek().span.end;
+                            self.pos += 1;
+                        }
+                        break;
+                    }
+                    self.pos += 1;
+                }
+                match rangle_end {
+                    Some(e) => e,
+                    None => {
+                        self.emit_malformed_output_target(
+                            langle_span,
+                            OutputTargetParseError::UnclosedBracket,
+                        );
+                        return Err(ParseError::Unexpected {
+                            span: langle_span,
+                            message: "unclosed `<` in `return <IDENT>` output-target form".into(),
+                        });
+                    }
+                };
+                let form_span = Span::new(self.file_id, langle_span.start, candidate_end);
+                let slice = &self.source[langle_span.start as usize..candidate_end as usize];
+                match crate::output_target::parse_output_target(slice, form_span) {
+                    Ok(expr) => ReturnExpr::OutputTarget(expr),
+                    Err(e) => {
+                        self.emit_malformed_output_target(form_span, e);
+                        return Err(ParseError::Unexpected {
+                            span: form_span,
+                            message: "malformed `<IDENT>` output-target form after `return`".into(),
+                        });
+                    }
+                }
+            }
+            _ => {
+                return Err(ParseError::Unexpected {
+                    span: self.peek().span,
+                    message: "expected identifier, call, string, or `none` after `return`".into(),
+                });
+            }
+        };
+        Ok(expr)
     }
 
     /// Parse a sequence of flow statements at a given indent level.
@@ -1402,65 +1762,7 @@ impl<'a> Parser<'a> {
                     }
                     "return" => {
                         self.pos += 1;
-                        // Parse the return expression.
-                        let expr = match &self.peek().kind {
-                            TokenKind::LineStart { .. } | TokenKind::Eof => {
-                                // Bare `return` with no expression = return none.
-                                ReturnExpr::None
-                            }
-                            TokenKind::Ident(name) if name == "none" => {
-                                self.pos += 1;
-                                ReturnExpr::None
-                            }
-                            TokenKind::Ident(name) => {
-                                let name = name.clone();
-                                self.pos += 1;
-                                // Check if it's a call: name(args).
-                                if matches!(self.peek().kind, TokenKind::Lparen) {
-                                    self.pos += 1; // consume `(`
-                                    let mut args: Vec<String> = Vec::new();
-                                    if !matches!(self.peek().kind, TokenKind::Rparen) {
-                                        loop {
-                                            match &self.peek().kind {
-                                                TokenKind::Ident(a) => {
-                                                    args.push(a.clone());
-                                                    self.pos += 1;
-                                                }
-                                                TokenKind::StringLit(a) => {
-                                                    args.push(a.clone());
-                                                    self.pos += 1;
-                                                }
-                                                _ => {
-                                                    return Err(ParseError::Unexpected {
-                                                        span: self.peek().span,
-                                                        message: "expected argument in return call".into(),
-                                                    });
-                                                }
-                                            }
-                                            match &self.peek().kind {
-                                                TokenKind::Comma => { self.pos += 1; }
-                                                _ => break,
-                                            }
-                                        }
-                                    }
-                                    self.expect(&TokenKind::Rparen)?;
-                                    ReturnExpr::Call { target: name, args }
-                                } else {
-                                    ReturnExpr::Name(name)
-                                }
-                            }
-                            TokenKind::StringLit(s) => {
-                                let s = s.clone();
-                                self.pos += 1;
-                                ReturnExpr::Inline(s)
-                            }
-                            _ => {
-                                return Err(ParseError::Unexpected {
-                                    span: self.peek().span,
-                                    message: "expected identifier, call, string, or `none` after `return`".into(),
-                                });
-                            }
-                        };
+                        let expr = self.parse_return_expr()?;
                         Ok(FlowStmt::Return(expr))
                     }
                     "context" => {
@@ -1541,7 +1843,10 @@ impl<'a> Parser<'a> {
                                             self.pos += 1;
                                             let cond = self.parse_branch_condition()?;
                                             let body = self.parse_flow_body(body_indent)?;
-                                            elif_branches.push(ElifBranch { condition: cond, body });
+                                            elif_branches.push(ElifBranch {
+                                                condition: cond,
+                                                body,
+                                            });
                                         }
                                         TokenKind::Ident(kw) if kw == "else" => {
                                             self.pos += 1;
@@ -1619,8 +1924,13 @@ impl<'a> Parser<'a> {
                                     self.pos += 1; // consume `applies`
                                     if matches!(self.peek().kind, TokenKind::Lparen) {
                                         self.pos += 1; // consume `(`
-                                        // Skip args until `)`.
-                                        while !matches!(self.peek().kind, TokenKind::Rparen | TokenKind::Eof | TokenKind::LineStart { .. }) {
+                                                       // Skip args until `)`.
+                                        while !matches!(
+                                            self.peek().kind,
+                                            TokenKind::Rparen
+                                                | TokenKind::Eof
+                                                | TokenKind::LineStart { .. }
+                                        ) {
                                             self.pos += 1;
                                         }
                                         if matches!(self.peek().kind, TokenKind::Rparen) {
@@ -1640,7 +1950,10 @@ impl<'a> Parser<'a> {
                                 } else {
                                     Err(ParseError::Unexpected {
                                         span: dot_span,
-                                        message: format!("unexpected `.{}` after `{}`", method, kw_val),
+                                        message: format!(
+                                            "unexpected `.{}` after `{}`",
+                                            method, kw_val
+                                        ),
                                     })
                                 }
                             } else {
@@ -1656,7 +1969,11 @@ impl<'a> Parser<'a> {
                                 Diagnostic::error(
                                     "G::parse::with-on-bare-name",
                                     "`with` modifier requires a call expression (add parentheses)",
-                                    SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                    SourceSpan::from_byte_span(
+                                        self.file_label,
+                                        span,
+                                        self.line_index,
+                                    ),
                                 ),
                                 span,
                             );
@@ -1693,7 +2010,10 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
 
                     // Check for `.applies` pattern.
-                    if ident == "applies" && !parts.is_empty() && parts.last() == Some(&".".to_string()) {
+                    if ident == "applies"
+                        && !parts.is_empty()
+                        && parts.last() == Some(&".".to_string())
+                    {
                         // Check if followed by `(` — if not, it's applies-no-parens.
                         if !matches!(self.peek().kind, TokenKind::Lparen) {
                             let span = ident_span;
@@ -1701,7 +2021,11 @@ impl<'a> Parser<'a> {
                                 Diagnostic::error(
                                     "G::parse::applies-no-parens",
                                     "`.applies` must be followed by `()` — write `.applies()`",
-                                    SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                    SourceSpan::from_byte_span(
+                                        self.file_label,
+                                        span,
+                                        self.line_index,
+                                    ),
                                 ),
                                 span,
                             );
@@ -1715,13 +2039,20 @@ impl<'a> Parser<'a> {
                                     Diagnostic::error(
                                         "G::parse::applies-with-args",
                                         "`.applies()` must not be called with arguments",
-                                        SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                        SourceSpan::from_byte_span(
+                                            self.file_label,
+                                            span,
+                                            self.line_index,
+                                        ),
                                     ),
                                     span,
                                 );
                                 // Skip args until `)`.
                                 while !self.at_eof()
-                                    && !matches!(self.peek().kind, TokenKind::Rparen | TokenKind::LineStart { .. })
+                                    && !matches!(
+                                        self.peek().kind,
+                                        TokenKind::Rparen | TokenKind::LineStart { .. }
+                                    )
                                 {
                                     self.pos += 1;
                                 }
@@ -1795,6 +2126,16 @@ impl<'a> Parser<'a> {
                     // exit-1 failure with no structured ID.
                     break;
                 }
+                TokenKind::LAngle | TokenKind::RAngle => {
+                    // `<`/`>` are only legal in the output-target form
+                    // `<IDENT>` after `return` (issue #85). MVP has no
+                    // value-level `<` operator (`values-and-names.md` §No
+                    // Value-Level Operators 47–55), so they have no meaning
+                    // inside a branch condition. Mirror the `Arrow` arm:
+                    // break without consuming so an outer scan surfaces a
+                    // structured diagnostic instead of a generic exit-1.
+                    break;
+                }
             }
         }
         if parts.is_empty() {
@@ -1806,8 +2147,13 @@ impl<'a> Parser<'a> {
         // Reconstruct with smart spacing: no space before/after `.`, `(`, `)`.
         let mut result = String::new();
         for (i, part) in parts.iter().enumerate() {
-            if i > 0 && part != "." && part != "(" && part != ")" && part != ","
-                && parts[i - 1] != "." && parts[i - 1] != "("
+            if i > 0
+                && part != "."
+                && part != "("
+                && part != ")"
+                && part != ","
+                && parts[i - 1] != "."
+                && parts[i - 1] != "("
             {
                 result.push(' ');
             }
@@ -1894,7 +2240,12 @@ impl<'a> Parser<'a> {
         let end_span = self.tokens[self.pos - 1].span;
         let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
         Ok(Spanned::new(
-            ConstDecl { name, value, exported: false, generated: false },
+            ConstDecl {
+                name,
+                value,
+                exported: false,
+                generated: false,
+            },
             span,
         ))
     }
@@ -1912,7 +2263,12 @@ impl<'a> Parser<'a> {
         let end_span = self.tokens[self.pos - 1].span;
         let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
         Ok(Spanned::new(
-            ConstDecl { name, value, exported: true, generated: false },
+            ConstDecl {
+                name,
+                value,
+                exported: true,
+                generated: false,
+            },
             span,
         ))
     }
@@ -1945,7 +2301,12 @@ impl<'a> Parser<'a> {
         let end_span = self.tokens[self.pos - 1].span;
         let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
         Ok(Spanned::new(
-            ConstDecl { name, value, exported: false, generated: true },
+            ConstDecl {
+                name,
+                value,
+                exported: false,
+                generated: true,
+            },
             span,
         ))
     }
@@ -2009,7 +2370,13 @@ pub(crate) fn check_return_rules(
 ) {
     // Recurse into branch bodies to check for return-in-branch.
     for stmt in flow {
-        if let FlowStmt::Branch { then_body, elif_branches, else_body, .. } = stmt {
+        if let FlowStmt::Branch {
+            then_body,
+            elif_branches,
+            else_body,
+            ..
+        } = stmt
+        {
             check_return_rules(then_body, span, file_label, line_index, bag, true);
             for elif in elif_branches {
                 check_return_rules(&elif.body, span, file_label, line_index, bag, true);
@@ -2030,16 +2397,33 @@ pub(crate) fn check_return_rules(
         return;
     }
 
-    // G::parse::return-in-branch — return inside a branch body.
+    let only_return = &flow[return_positions[0]];
+    let is_output_target_return =
+        matches!(only_return, FlowStmt::Return(ReturnExpr::OutputTarget(_)));
+
+    // G::parse::return-in-branch — return inside a branch body. Output targets
+    // use the issue-#85-specific diagnostic because they are only legal as a
+    // terminal root-flow return.
     if in_branch {
-        bag.push(
-            Diagnostic::error(
-                "G::parse::return-in-branch",
-                "`return` is not allowed inside an `if`/`elif`/`else` branch",
-                SourceSpan::from_byte_span(file_label, span, line_index),
-            ),
-            span,
-        );
+        if is_output_target_return {
+            bag.push(
+                Diagnostic::error(
+                    "G::parse::output-target-outside-return",
+                    "output targets are only allowed as the terminal `return <name>` expression",
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+        } else {
+            bag.push(
+                Diagnostic::error(
+                    "G::parse::return-in-branch",
+                    "`return` is not allowed inside an `if`/`elif`/`else` branch",
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+        }
         return; // Don't fire other return diagnostics for in-branch returns.
     }
 
@@ -2059,14 +2443,25 @@ pub(crate) fn check_return_rules(
     // G::parse::return-not-terminal — single return not at the end.
     let pos = return_positions[0];
     if pos != flow.len() - 1 {
-        bag.push(
-            Diagnostic::error(
-                "G::parse::return-not-terminal",
-                "`return` must be the last statement in `flow:`",
-                SourceSpan::from_byte_span(file_label, span, line_index),
-            ),
-            span,
-        );
+        if is_output_target_return {
+            bag.push(
+                Diagnostic::error(
+                    "G::parse::output-target-outside-return",
+                    "output targets are only allowed as the terminal `return <name>` expression",
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+        } else {
+            bag.push(
+                Diagnostic::error(
+                    "G::parse::return-not-terminal",
+                    "`return` must be the last statement in `flow:`",
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+        }
     }
 }
 
@@ -2363,9 +2758,9 @@ skill foo()
 ";
         // Tokenize must succeed (no `-` at all).
         let (toks, _) = tokenize(src, 0).expect("tokenize should succeed");
-        assert!(toks.iter().any(
-            |t| matches!(&t.kind, crate::tokenize::TokenKind::Ident(s) if s == "return")
-        ));
+        assert!(toks
+            .iter()
+            .any(|t| matches!(&t.kind, crate::tokenize::TokenKind::Ident(s) if s == "return")));
         // And parse_with_diagnostics must NOT raise none-as-return-type.
         let (ids, _) = run(src);
         assert!(
@@ -2644,7 +3039,10 @@ skill foo()
                 _ => None,
             })
             .expect("expected an export block declaration");
-        assert!(eb2.has_return, "has_return should be true for `return none`");
+        assert!(
+            eb2.has_return,
+            "has_return should be true for `return none`"
+        );
         assert!(
             !eb2.has_meaningful_return,
             "has_meaningful_return should be false for `return none`"
@@ -2708,7 +3106,10 @@ skill foo()
         // continues to fire for this case.
         let src = "export block foo()\n    flow:\n        \"x\"\n        return \"result\"\n";
         let eb = first_export_block(src);
-        assert!(eb.has_return, "has_return should be true for `return \"result\"`");
+        assert!(
+            eb.has_return,
+            "has_return should be true for `return \"result\"`"
+        );
         assert!(
             eb.has_meaningful_return,
             "has_meaningful_return must remain true for `return \"result\"` without `->`"
@@ -2717,6 +3118,333 @@ skill foo()
             eb.return_type.is_none(),
             "return_type must be None when the header omits `->` — got {:?}",
             eb.return_type
+        );
+    }
+}
+
+#[cfg(test)]
+mod output_target_return_tests {
+    //! Issue #85 chunk 3 — wire the output-target identifier form
+    //! `return <IDENT>` into the main parser. The AST gains a new
+    //! `ReturnExpr::OutputTarget(...)` variant carrying chunk 1's
+    //! `OutputTargetExpr`. Diagnostic-ID surfacing for malformed forms is
+    //! deferred to chunk 8; chunk 3 only needs the parse path to round-trip
+    //! the identifier form and to *reject* malformed forms with an
+    //! unstructured `ParseError::Unexpected` for now.
+    use super::*;
+    use crate::ast::{Decl, FlowStmt};
+    use crate::output_target::OutputTargetExpr;
+
+    fn first_skill_flow(src: &str) -> Vec<FlowStmt> {
+        let (file, _) = parse(src, 0).expect("parse should succeed");
+        file.decls
+            .into_iter()
+            .find_map(|d| match d {
+                Decl::Skill(s) => Some(s.node.flow),
+                _ => None,
+            })
+            .expect("expected a skill declaration")
+    }
+
+    #[test]
+    fn parse_return_output_target_identifier_tracer() {
+        let src = "\
+skill foo()
+    flow:
+        return <thing>
+";
+        let flow = first_skill_flow(src);
+        match flow.last().expect("expected at least one flow stmt") {
+            FlowStmt::Return(ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id))) => {
+                assert_eq!(id.name, "thing");
+            }
+            other => panic!("expected Return(OutputTarget(Identifier)), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_return_output_target_rejects_malformed_inner_dot() {
+        // Chunk 8 will surface a structured diagnostic. Chunk 3 only
+        // promises a parser error — never silently produce an
+        // `Identifier { name: "a.b" }` and never crash.
+        let src = "\
+skill foo()
+    flow:
+        return <a.b>
+";
+        let err = parse(src, 0)
+            .err()
+            .expect("expected parse error for `<a.b>`");
+        assert!(
+            matches!(err, ParseError::Unexpected { .. }),
+            "expected ParseError::Unexpected, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn parse_return_output_target_rejects_unclosed_bracket() {
+        // `return <foo` (no `>`, EOL/EOF) must error rather than scan
+        // past the line. Chunk 8 will assign this its own diagnostic ID.
+        let src = "\
+skill foo()
+    flow:
+        return <foo
+";
+        let err = parse(src, 0)
+            .err()
+            .expect("expected parse error for unclosed `<foo`");
+        assert!(
+            matches!(err, ParseError::Unexpected { .. }),
+            "expected ParseError::Unexpected, got {:?}",
+            err
+        );
+    }
+
+    fn diagnostic_ids(src: &str) -> Vec<String> {
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let _ = parse_with_diagnostics(src, 0, "t.glyph.md", &line_index, &mut bag);
+        bag.iter().map(|d| d.id.clone()).collect()
+    }
+
+    #[test]
+    fn malformed_output_target_surfaces_structured_diagnostic() {
+        let src = "\
+skill foo()
+    flow:
+        return <a.b>
+";
+        let ids = diagnostic_ids(src);
+        assert!(
+            ids.iter()
+                .any(|id| id == "G::parse::malformed-output-target"),
+            "expected malformed-output-target diagnostic, got {ids:?}"
+        );
+    }
+
+    #[test]
+    fn trailing_text_after_output_target_surfaces_structured_diagnostic() {
+        let src = "\
+skill foo()
+    flow:
+        return <thing>bar
+";
+        let ids = diagnostic_ids(src);
+        assert!(
+            ids.iter()
+                .any(|id| id == "G::parse::malformed-output-target"),
+            "expected malformed-output-target diagnostic, got {ids:?}"
+        );
+    }
+
+    #[test]
+    fn output_target_outside_terminal_return_surfaces_structured_diagnostic() {
+        let src = "\
+skill foo()
+    flow:
+        return <thing>
+        \"continue\"
+";
+        let ids = diagnostic_ids(src);
+        assert!(
+            ids.iter()
+                .any(|id| id == "G::parse::output-target-outside-return"),
+            "expected output-target-outside-return diagnostic, got {ids:?}"
+        );
+    }
+
+    #[test]
+    fn parse_return_output_target_identifier_span_covers_whole_form() {
+        // The Identifier.span produced by chunk 1 includes the brackets.
+        // The parser must propagate that contract: its computed `form_span`
+        // must equal `<…>` byte-for-byte (start at the `<`, end after `>`).
+        // Chunk 8 relies on this span when surfacing structured diagnostics.
+        let src = "\
+skill foo()
+    flow:
+        return <bar>
+";
+        let flow = first_skill_flow(src);
+        let id = match flow.last().expect("expected a flow stmt") {
+            FlowStmt::Return(ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id))) => {
+                id.clone()
+            }
+            other => panic!("expected Return(OutputTarget(Identifier)), got {:?}", other),
+        };
+        let start = id.span.start as usize;
+        let end = id.span.end as usize;
+        assert_eq!(&src[start..end], "<bar>", "span must cover `<bar>` exactly");
+    }
+
+    #[test]
+    fn parse_return_output_target_in_private_block() {
+        let src = "\
+block helper() -> Path
+    flow:
+        return <output>
+";
+        let (file, _) = parse(src, 0).expect("parse should succeed");
+        let block_flow = file
+            .decls
+            .into_iter()
+            .find_map(|d| match d {
+                Decl::Block(b) => Some(b.node.flow),
+                _ => None,
+            })
+            .expect("expected a private-block declaration");
+        match block_flow.last().expect("expected a flow stmt") {
+            FlowStmt::Return(ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id))) => {
+                assert_eq!(id.name, "output");
+            }
+            other => panic!("expected Return(OutputTarget(Identifier)), got {:?}", other),
+        }
+    }
+}
+
+#[cfg(test)]
+mod export_block_terminal_return_tests {
+    //! Issue #85 chunk 4b (D4) — `ExportBlockDecl.terminal_return` field
+    //! captures the structurally-parsed `ReturnExpr` from the body's
+    //! `return ...` line. AST-only per D4 — IR symmetry for export blocks
+    //! is deferred to a follow-up issue.
+    use super::*;
+    use crate::ast::{Decl, ExportBlockDecl, ReturnExpr};
+    use crate::output_target::OutputTargetExpr;
+
+    fn first_export_block(src: &str) -> ExportBlockDecl {
+        let (file, _) = parse(src, 0).expect("parse should succeed");
+        file.decls
+            .into_iter()
+            .find_map(|d| match d {
+                Decl::ExportBlock(b) => Some(b.node),
+                _ => None,
+            })
+            .expect("expected an export block declaration")
+    }
+
+    #[test]
+    fn export_block_terminal_return_output_target_tracer() {
+        let src = "\
+export block foo() -> Report
+    flow:
+        \"x\"
+        return <result>
+";
+        let eb = first_export_block(src);
+        match eb.terminal_return {
+            Some(ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id))) => {
+                assert_eq!(id.name, "result");
+            }
+            other => panic!(
+                "expected Some(Return(OutputTarget(Identifier))), got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn export_block_terminal_return_name_variant() {
+        // `return some_name` → ReturnExpr::Name (matches canonical skill arm).
+        let src = "\
+export block foo() -> SomeType
+    flow:
+        \"x\"
+        return result
+";
+        let eb = first_export_block(src);
+        match eb.terminal_return {
+            Some(ReturnExpr::Name(ref n)) => assert_eq!(n, "result"),
+            other => panic!("expected Some(Return(Name)), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn export_block_terminal_return_inline_string_variant() {
+        // `return "literal"` → ReturnExpr::Inline.
+        let src = "\
+export block foo()
+    flow:
+        \"x\"
+        return \"literal payload\"
+";
+        let eb = first_export_block(src);
+        match eb.terminal_return {
+            Some(ReturnExpr::Inline(ref s)) => assert_eq!(s, "literal payload"),
+            other => panic!("expected Some(Return(Inline)), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn export_block_terminal_return_none_lowercase_variant() {
+        // `return none` → ReturnExpr::None (lowercase consumed by canonical arm).
+        let src = "\
+export block foo()
+    flow:
+        \"x\"
+        return none
+";
+        let eb = first_export_block(src);
+        assert!(
+            matches!(eb.terminal_return, Some(ReturnExpr::None)),
+            "expected Some(Return(None)), got {:?}",
+            eb.terminal_return
+        );
+    }
+
+    #[test]
+    fn export_block_terminal_return_last_write_wins() {
+        // Two `return` lines → terminal_return holds the last one.
+        // (The language requires exactly one per data-flow.md §Return
+        // Semantics line 401-403; this guard documents the parser behavior
+        // when authors break the rule.)
+        let src = "\
+export block foo() -> SomeType
+    flow:
+        return first
+        return last
+";
+        let eb = first_export_block(src);
+        match eb.terminal_return {
+            Some(ReturnExpr::Name(ref n)) => assert_eq!(n, "last"),
+            other => panic!("expected Some(Return(Name(\"last\"))), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn export_block_terminal_return_none_when_body_has_no_return() {
+        // No `return` line at all → terminal_return stays None.
+        // (`G::analyze::missing-return` covers the user-facing diagnostic
+        // via `has_return: bool`; this assertion just pins the field.)
+        let src = "\
+export block foo()
+    flow:
+        \"x\"
+";
+        let eb = first_export_block(src);
+        assert!(
+            eb.terminal_return.is_none(),
+            "expected None when body has no return, got {:?}",
+            eb.terminal_return
+        );
+    }
+
+    #[test]
+    fn export_block_output_target_must_be_terminal_flow_item() {
+        let src = "\
+export block foo() -> Report
+    flow:
+        return <result>
+        \"continue\"
+";
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let _ = parse_with_diagnostics(src, 0, "t.glyph.md", &line_index, &mut bag);
+        let ids: Vec<_> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.iter()
+                .any(|id| *id == "G::parse::output-target-outside-return"),
+            "expected output-target-outside-return diagnostic, got {ids:?}"
         );
     }
 }

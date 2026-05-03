@@ -48,6 +48,14 @@ A slot whose `name` does not resolve to a parameter or a local binding in scope 
 
 MVP expressions contain only four forms: bindings, literals, calls, and dot access (`data-flow.md` §IR Mapping). There are no value-level operators — no `+`, `-`, `*`, `/`, comparisons, or any other infix/prefix operator in expression position.
 
+Angle brackets are not comparison operators. In the MVP they are reserved for the output-target identifier form in terminal return position:
+
+```glyph
+return <current_branch>
+```
+
+Outside that position, `<name>` emits `G::parse::output-target-outside-return`.
+
 String concatenation via `+` is explicitly forbidden. Authors who need to combine context with a call should use the `with` modifier (`data-flow.md`) to pass specialization context at the call site. The Expand LLM weaves parameter context into prose instructions — manual string assembly is redundant with the pipeline's job.
 
 If the parser encounters an operator token in expression position, it emits a `G::parse::operator-in-expression` diagnostic (repairable). The Repair pass can mechanically rewrite patterns like `f("prefix " + x)` into `f(x) with "prefix"`.
@@ -118,6 +126,8 @@ Source is case-insensitive: `none`, `None`, and `NONE` are all accepted. The IR 
 ### Allowed Characters
 
 Identifiers match `[a-zA-Z_][a-zA-Z0-9_]*`. They must start with a letter or underscore and may contain letters, digits, and underscores. Hyphens are not allowed in identifiers.
+
+The output-target identifier form uses the same identifier grammar inside angle brackets. `<current_branch>` is valid; `<a.b>`, `<foo()>`, `< name >`, and `<>` are malformed output targets (`G::parse::malformed-output-target`). Quoted placeholder strings such as `return "<current_branch>"` remain string literals, but when they appear as a terminal return on a `-> DomainType` declaration the analyzer emits `G::analyze::placeholder-string-return` so Repair can rewrite them to `return <current_branch>`.
 
 ### Dot Access
 

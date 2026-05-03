@@ -5,9 +5,9 @@
 //! 2. Post-Parse AST-level: constraint hoisting, context hoisting,
 //!    section reorder to canonical layout.
 
+use crate::diagnostic::DiagBag;
 use crate::parse;
 use crate::span::LineIndex;
-use crate::diagnostic::DiagBag;
 
 /// Result of formatting a source string.
 pub struct FmtResult {
@@ -34,25 +34,27 @@ pub fn fmt_source(source: &str) -> FmtResult {
 
     // Try to parse for stratum 2.
     let line_index = LineIndex::new(&after_preparse);
-    let parsed = parse::parse_with_diagnostics(
-        &after_preparse,
-        0,
-        "<fmt>",
-        &line_index,
-        &mut bag,
-    );
+    let parsed = parse::parse_with_diagnostics(&after_preparse, 0, "<fmt>", &line_index, &mut bag);
 
     match parsed {
         Some(file) => {
             // Stratum 2: AST-level rewrites.
             let after_ast = ast_rewrite(&after_preparse, &file);
             let changed = after_ast != source;
-            FmtResult { output: after_ast, changed, diagnostics: bag }
+            FmtResult {
+                output: after_ast,
+                changed,
+                diagnostics: bag,
+            }
         }
         None => {
             // Parse failed — emit only pre-parse fixes.
             let changed = after_preparse != source;
-            FmtResult { output: after_preparse, changed, diagnostics: bag }
+            FmtResult {
+                output: after_preparse,
+                changed,
+                diagnostics: bag,
+            }
         }
     }
 }
@@ -165,7 +167,11 @@ fn ast_rewrite(source: &str, file: &crate::ast::SourceFile) -> String {
         last_end = end;
 
         let header = lines[start].trim();
-        if header.starts_with("const ") || header.starts_with("export const ") || header.starts_with("import ") || header.starts_with("generated ") {
+        if header.starts_with("const ")
+            || header.starts_with("export const ")
+            || header.starts_with("import ")
+            || header.starts_with("generated ")
+        {
             // Pass through unchanged.
             for i in start..end {
                 out.push_str(lines[i]);
@@ -226,7 +232,9 @@ struct Section {
 }
 
 /// Rewrite a declaration body (lines at indent >= 1) in canonical order.
-fn rewrite_decl_body(body_lines: &[&str], _ast_decl: Option<&crate::ast::Decl>) -> String {
+fn rewrite_decl_body(body_lines: &[&str], ast_decl: Option<&crate::ast::Decl>) -> String {
+    let placeholder_target = placeholder_string_return_target(ast_decl);
+
     // Parse lines into sections.
     let mut sections: Vec<Section> = Vec::new();
     let mut current_kind: Option<SectionKind> = None;
@@ -238,7 +246,12 @@ fn rewrite_decl_body(body_lines: &[&str], _ast_decl: Option<&crate::ast::Decl>) 
     let mut hoisted_constraints: Vec<String> = Vec::new();
     let mut hoisted_context: Vec<String> = Vec::new();
 
-    for line in body_lines {
+    for raw_line in body_lines {
+        let line_owned = placeholder_target
+            .as_deref()
+            .and_then(|target| rewrite_placeholder_return_line(raw_line, target))
+            .unwrap_or_else(|| (*raw_line).to_string());
+        let line = line_owned.as_str();
         let trimmed = line.trim();
         if trimmed.is_empty() {
             // Blank line — accumulate with current section or skip.
@@ -276,7 +289,10 @@ fn rewrite_decl_body(body_lines: &[&str], _ast_decl: Option<&crate::ast::Decl>) 
             if let Some(kind) = new_kind {
                 // Flush previous section.
                 if let Some(prev_kind) = current_kind.take() {
-                    sections.push(Section { kind: prev_kind, lines: std::mem::take(&mut current_lines) });
+                    sections.push(Section {
+                        kind: prev_kind,
+                        lines: std::mem::take(&mut current_lines),
+                    });
                 }
 
                 match kind {
@@ -329,7 +345,10 @@ fn rewrite_decl_body(body_lines: &[&str], _ast_decl: Option<&crate::ast::Decl>) 
 
     // Flush last section.
     if let Some(kind) = current_kind {
-        sections.push(Section { kind: kind, lines: current_lines });
+        sections.push(Section {
+            kind: kind,
+            lines: current_lines,
+        });
     }
 
     // Now reconstruct in canonical order: description, effects, context, constraints, flow.
@@ -411,7 +430,10 @@ fn rewrite_decl_body(body_lines: &[&str], _ast_decl: Option<&crate::ast::Decl>) 
 
     // Emit any "other" sections (blank/unknown) that didn't match canonical kinds.
     for sec in &sections {
-        if !canonical_order.contains(&sec.kind) && sec.kind != SectionKind::BodyConstraintMarker && sec.kind != SectionKind::BodyContextMarker {
+        if !canonical_order.contains(&sec.kind)
+            && sec.kind != SectionKind::BodyConstraintMarker
+            && sec.kind != SectionKind::BodyContextMarker
+        {
             for line in &sec.lines {
                 out.push_str(line);
                 out.push('\n');
@@ -431,6 +453,77 @@ fn is_constraint_marker(trimmed: &str) -> bool {
 
 fn is_context_marker(trimmed: &str) -> bool {
     trimmed.starts_with("context ") && !trimmed.starts_with("context:")
+}
+
+fn placeholder_string_return_target(ast_decl: Option<&crate::ast::Decl>) -> Option<String> {
+    let decl = ast_decl?;
+    match decl {
+        crate::ast::Decl::Skill(s) if is_domain_return_type(s.node.return_type.as_ref()) => {
+            flow_placeholder_target(&s.node.flow)
+        }
+        crate::ast::Decl::Block(b) if is_domain_return_type(b.node.return_type.as_ref()) => {
+            flow_placeholder_target(&b.node.flow)
+        }
+        crate::ast::Decl::ExportBlock(b) if is_domain_return_type(b.node.return_type.as_ref()) => {
+            return_expr_placeholder_target(b.node.terminal_return.as_ref())
+        }
+        _ => None,
+    }
+}
+
+fn flow_placeholder_target(flow: &[crate::ast::FlowStmt]) -> Option<String> {
+    flow.iter().rev().find_map(|stmt| match stmt {
+        crate::ast::FlowStmt::Return(expr) => return_expr_placeholder_target(Some(expr)),
+        _ => None,
+    })
+}
+
+fn return_expr_placeholder_target(expr: Option<&crate::ast::ReturnExpr>) -> Option<String> {
+    let Some(crate::ast::ReturnExpr::Inline(s)) = expr else {
+        return None;
+    };
+    placeholder_identifier(s).map(String::from)
+}
+
+fn placeholder_identifier(s: &str) -> Option<&str> {
+    let inner = s.strip_prefix('<')?.strip_suffix('>')?;
+    if inner.is_empty() {
+        return None;
+    }
+    let mut chars = inner.chars();
+    let first = chars.next()?;
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return None;
+    }
+    if chars.all(|c| c == '_' || c.is_ascii_alphanumeric()) {
+        Some(inner)
+    } else {
+        None
+    }
+}
+
+fn is_domain_return_type(rt: Option<&crate::span::Spanned<String>>) -> bool {
+    let Some(rt) = rt else {
+        return false;
+    };
+    crate::type_position::validate_type_position(&rt.node).is_ok()
+        && !is_builtin_type_name(&rt.node)
+}
+
+fn is_builtin_type_name(s: &str) -> bool {
+    const CANONICAL_BUILTINS: &[&str] = &["string", "int", "float", "bool", "none", "agent"];
+    let canonical = crate::domain_registry::canonicalize_identifier(s);
+    CANONICAL_BUILTINS.contains(&canonical.as_str())
+}
+
+fn rewrite_placeholder_return_line(line: &str, target: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let expected = format!("return \"<{target}>\"");
+    if trimmed != expected {
+        return None;
+    }
+    let indent_len = line.len() - line.trim_start().len();
+    Some(format!("{}return <{}>", &line[..indent_len], target))
 }
 
 /// Strip legacy `-> None` (case-insensitive) return-type annotations from
@@ -523,9 +616,7 @@ fn strip_none_return_from_line(line: &str) -> String {
         j += 1;
     }
     let ident_end = j;
-    if ident_end == ident_start
-        || !line[ident_start..ident_end].eq_ignore_ascii_case("none")
-    {
+    if ident_end == ident_start || !line[ident_start..ident_end].eq_ignore_ascii_case("none") {
         return line.to_string();
     }
     // Per the header grammar, nothing but trailing whitespace may follow
@@ -538,9 +629,7 @@ fn strip_none_return_from_line(line: &str) -> String {
     // trailing whitespace, so a final `trim_end` is defensive (handles a
     // stray `\r` on Windows line endings).
     let mut strip_start = arrow_start;
-    while strip_start > 0
-        && (bytes[strip_start - 1] == b' ' || bytes[strip_start - 1] == b'\t')
-    {
+    while strip_start > 0 && (bytes[strip_start - 1] == b' ' || bytes[strip_start - 1] == b'\t') {
         strip_start -= 1;
     }
     line[..strip_start].trim_end().to_string()
@@ -710,6 +799,41 @@ export block compute(scope = \".\") -> Path
         );
     }
 
+    #[test]
+    fn fmt_source_rewrites_placeholder_string_return_to_output_target() {
+        let src = "\
+skill current() -> BranchName
+    description: \"Return the current branch.\"
+    flow:
+        return \"<current_branch>\"
+";
+        let result = fmt_source(src);
+        assert!(result.changed, "fmt should rewrite the placeholder string");
+        assert!(
+            result.output.contains("        return <current_branch>\n"),
+            "expected output target return after fmt, got:\n{}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("return \"<current_branch>\""),
+            "placeholder string return should be gone, got:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn fmt_source_preserves_placeholder_string_return_without_domain_type() {
+        let src = "\
+skill current()
+    description: \"Return the current branch.\"
+    flow:
+        return \"<current_branch>\"
+";
+        let result = fmt_source(src);
+        assert_eq!(result.output, src);
+        assert!(!result.changed);
+    }
+
     // --- Codex pass 1 P1: strip restricted to the return-type slot ---
     // The strip helper must NOT corrupt a string-default parameter that
     // happens to contain the substring `-> None`.
@@ -751,8 +875,7 @@ export block compute(scope = \".\") -> Path
         let src = "block bar(p = \"ignore\") -> None\n    flow:\n        \"x\"\n";
         let out = strip_legacy_none_return_types(src);
         assert_eq!(
-            out,
-            "block bar(p = \"ignore\")\n    flow:\n        \"x\"\n",
+            out, "block bar(p = \"ignore\")\n    flow:\n        \"x\"\n",
             "trailing `-> None` must be stripped while `(p = \"ignore\")` is preserved, got:\n{}",
             out
         );

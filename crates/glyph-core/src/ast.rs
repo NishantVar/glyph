@@ -3,6 +3,7 @@
 //! Names are unresolved, types unchecked, roles unassigned.
 //! Walking-skeleton subset — covers the constructs in `update_docs.glyph.md`.
 
+use crate::output_target::OutputTargetExpr;
 use crate::span::{Span, Spanned};
 
 /// One source file's parsed declarations, in source order.
@@ -128,6 +129,20 @@ pub struct ExportBlockDecl {
     /// `G::analyze::export-missing-return-type` when this is `None` and
     /// `has_meaningful_return` is `true`.
     pub return_type: Option<Spanned<String>>,
+    /// Issue #85 chunk 4b (D4): structurally-parsed return expression from
+    /// the body's last `return ...` line. Populated last-write-wins over a
+    /// flow with multiple `return` statements (the language requires exactly
+    /// one per `data-flow.md` §Return Semantics line 401–403). `None` when
+    /// the body has no `return` statement at all (the analyze rule
+    /// `G::analyze::missing-return` already covers that case via
+    /// `has_return: bool`).
+    ///
+    /// Decoupled from `has_return` / `has_meaningful_return` / `flow_strings`
+    /// — those existing fields keep their pre-#85 semantics. This field is
+    /// the structural counterpart used by issue-#85 lowering once the
+    /// follow-up `IrExportBlock` work lands; it is dormant downstream until
+    /// that issue ships.
+    pub terminal_return: Option<ReturnExpr>,
 }
 
 /// A header parameter on `skill`, `block`, or `export block`.
@@ -208,6 +223,8 @@ pub enum ReturnExpr {
     Name(String),
     /// `return "inline string"`.
     Inline(String),
+    /// `return <IDENT>` — output-target identifier form (issue #85).
+    OutputTarget(OutputTargetExpr),
 }
 
 /// An entry inside the `context:` sub-section or a body-level `context` marker.

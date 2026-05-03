@@ -13,7 +13,7 @@ Both subcommands must agree on this schema. A change to the IR JSON shape requir
 
 **Scope.** `--emit-ir` operates on **skill files only** (files containing exactly one `skill` declaration). Library files (zero `skill` declarations) do not produce `.ir.json` output — the agent never runs Step 2 on a library file, and `validate-output` has no use for library IR. If a future visualizer needs library IR, a separate flag or subcommand can be added.
 
-**Node kinds in the JSON.** The JSON output contains `Skill` as the root and flow-level nodes (`Call`, `InlineInstruction`, `InstructionRef`, `Branch`, `Return`, `Constraint`, `ContextNode`) plus `Param`, `ElifBranch`, and `Expr` sub-nodes. `Block` and `ExportBlock` compilation units from `ir-schema.md` do **not** appear as separate nodes in the JSON — their content is inlined into `Call` nodes via the resolved fields (`resolved_body_text`, `callee_flow`, `callee_context`, `callee_constraints`). The JSON `"call"` kind represents a **resolved call** (post-Step-1), carrying both the base `Call` fields from `ir-schema.md` and the resolved fields from `ir-schema.md` §Resolved IR (`ResolvedCall`).
+**Node kinds in the JSON.** The JSON output contains `Skill` as the root and flow-level nodes (`Call`, `InlineInstruction`, `InstructionRef`, `Branch`, `Return`, `Constraint`, `ContextNode`) plus `OutputContract`, `Param`, `ElifBranch`, and `Expr` sub-nodes. `OutputContract` is serialized as a sidecar object on `skill.output_contract` or `call.callee_output_contract`, never as a member of a `flow` array. `Block` and `ExportBlock` compilation units from `ir-schema.md` do **not** appear as separate nodes in the JSON — their content is inlined into `Call` nodes via the resolved fields (`resolved_body_text`, `callee_flow`, `callee_context`, `callee_constraints`, `callee_output_contract`). The JSON `"call"` kind represents a **resolved call** (post-Step-1), carrying both the base `Call` fields from `ir-schema.md` and the resolved fields from `ir-schema.md` §Resolved IR (`ResolvedCall`).
 
 **Const declarations have no JSON kind.** `const`, `export const`, and `generated const` declarations (`language-surface.md` §3.4 / §3.6) do **not** serialize as their own JSON nodes. There is no `"const"` or `"const_decl"` kind in `--emit-ir` output, by design — this absence mirrors the IR schema's erase-and-inline contract for const decls (`ir-schema.md` §Top-Level Compilation Units). Const-derived values surface in the JSON only via the inlined sites:
 
@@ -65,7 +65,8 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
   "effects": ["reads_files", "writes_files"],
   "context": [ ... ],
   "constraints": [ ... ],
-  "flow": [ ... ]
+  "flow": [ ... ],
+  "output_contract": null
 }
 ```
 
@@ -81,6 +82,7 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
 | `context` | array of ContextNode | yes | Top-level declared context entries. May be empty. |
 | `constraints` | array of Constraint | yes | Top-level declared constraints only. May be empty. |
 | `flow` | array of FlowNode | yes | Ordered flow nodes. |
+| `output_contract` | OutputContract or null | yes | Output target contract for `return <name>`, or `null` when the skill has no output-target return. This field is a sibling of `flow`, not a flow entry, so it does not affect step counts. |
 
 ### Param
 
@@ -124,6 +126,7 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
   "callee_flow": null,
   "callee_context": null,
   "callee_constraints": null,
+  "callee_output_contract": null,
   "procedure_path": null
 }
 ```
@@ -146,6 +149,7 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
 | `callee_flow` | array of FlowNode or null | yes | Present only when `projection_mode != "inline"`. |
 | `callee_context` | array of ContextNode or null | yes | Present only when `projection_mode != "inline"`. |
 | `callee_constraints` | array of Constraint or null | yes | Present only when `projection_mode != "inline"`. |
+| `callee_output_contract` | OutputContract or null | yes | Callee block's output target contract when the resolved callee has `return <name>`, otherwise `null`. Present even for inline projections so Phase 6b can detect literal `<name>` leaks. |
 | `procedure_path` | string or null | yes | Relative file path. Present only when `projection_mode == "external_file"`. |
 
 **Worked example — Call with `local_refs`:**
@@ -174,11 +178,34 @@ Given source `diagnosis = analyze_error(scope)` followed by a call whose body re
   "callee_flow": null,
   "callee_context": null,
   "callee_constraints": null,
+  "callee_output_contract": null,
   "procedure_path": null
 }
 ```
 
 Here `{scope}` is a parameter slot (not in `local_refs`) and `{diagnosis}` is a local-binding slot (listed in `local_refs` with the producing node `n7`). Step 2 must resolve `{diagnosis}` into prose; `{scope}` passes through to compiled output.
+
+### OutputContract
+
+```json
+{
+  "node_id": "n9",
+  "kind": "output_contract",
+  "target_name": "current_branch",
+  "ty": { "domain_type": "branchname" },
+  "source": "synthesized_by_agent"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `node_id` | string | yes | |
+| `kind` | string | yes | Always `"output_contract"`. |
+| `target_name` | string | yes | Identifier from `return <name>`, without angle brackets. |
+| `ty` | TypeTag or null | yes | Enclosing declaration's resolved `-> DomainType`, or `null` if omitted. |
+| `source` | string | yes | OutputSource enum value. Currently `"synthesized_by_agent"`. |
+
+`OutputContract` objects appear in two places: `skill.output_contract` for the root skill and `call.callee_output_contract` for resolved block calls. They never appear inside a `flow` array.
 
 ### InlineInstruction
 

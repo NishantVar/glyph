@@ -17,6 +17,11 @@ pub enum IrNode {
     Block(IrBlock),
     Call(IrCall),
     Branch(IrBranch),
+    /// Issue #85: `return <IDENT>` output-target form. Carries the
+    /// agent-synthesized output target's name and the enclosing decl's
+    /// `-> DomainType` annotation. Chunk 5 wires JSON; chunk 6 rewrites
+    /// in expand; chunks 8/9 surface diagnostics.
+    OutputContract(IrOutputContract),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -51,6 +56,14 @@ pub struct IrSkill {
     /// (designer flag: do not match-by-Debug).
     #[serde(skip)]
     pub return_type: Option<TypeTag>,
+    /// Issue #85: optional `OutputContract` IR node id, populated when the
+    /// skill's flow ends with `return <IDENT>`. The contract carries the
+    /// target name and the lowered form of the skill's `-> DomainType`
+    /// annotation. Chunk 5 wires emit-IR (JSON); the field is `#[serde(skip)]`
+    /// here for the same reason as `return_type` — no production caller
+    /// serializes IR via the derive.
+    #[serde(skip)]
+    pub output_contract: Option<NodeId>,
 }
 
 /// Resolved parameter metadata threaded through Phase 6 Step 1 into the
@@ -109,6 +122,10 @@ pub struct IrBlock {
     /// same reason as `IrSkill::return_type`.
     #[serde(skip)]
     pub return_type: Option<TypeTag>,
+    /// Issue #85: same role as `IrSkill::output_contract`, populated when a
+    /// private block's flow ends with `return <IDENT>`.
+    #[serde(skip)]
+    pub output_contract: Option<NodeId>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -164,6 +181,33 @@ pub struct IrBranch {
 pub struct IrElifBranch {
     pub condition: String,
     pub body: Vec<NodeId>,
+}
+
+/// Issue #85: lowered form of `return <IDENT>`. Captures the agent-synthesized
+/// output target's name plus the enclosing decl's `-> DomainType`. The name
+/// `ty` (rather than `type`) avoids the Rust keyword. JSON wiring is chunk 5.
+#[derive(Clone, Debug, Serialize)]
+pub struct IrOutputContract {
+    pub node_id: NodeId,
+    pub target_name: String,
+    /// Lowered enclosing-decl annotation (`Skill`/`Block`/`ExportBlock`'s
+    /// `-> DomainType`). `None` is permitted at lowering time — the
+    /// missing-annotation diagnostic is chunk 8/9's job.
+    /// `#[serde(skip)]` matches the rest of the `TypeTag` slots in this
+    /// module (`TypeTag` has no `Serialize`; the IR-JSON emitter reads the
+    /// field directly).
+    #[serde(skip)]
+    pub ty: Option<TypeTag>,
+    pub source: OutputSource,
+}
+
+/// Issue #85: the provenance of an output contract. Today's only variant is
+/// `SynthesizedByAgent` — the agent fabricates the named output. Future
+/// variants (e.g. caller-supplied) would join this enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputSource {
+    SynthesizedByAgent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

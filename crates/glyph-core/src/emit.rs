@@ -81,6 +81,13 @@ pub fn emit(arena: &IrArena) -> String {
                 IrNode::Branch(br) => {
                     emit_branch(&mut out, arena, br, idx + 1);
                 }
+                IrNode::Call(c) if c.projection_tier == Some(1) => {
+                    out.push_str(&format!(
+                        "{}. {}\n",
+                        idx + 1,
+                        c.resolved_body.as_deref().unwrap_or_default()
+                    ));
+                }
                 IrNode::Call(c) if c.projection_tier == Some(2) => {
                     let kebab_name = c.target.replace('_', "-");
                     out.push_str(&format!(
@@ -227,6 +234,9 @@ fn emit_lettered_substeps(out: &mut String, arena: &IrArena, body: &[NodeId]) {
     for node_id in body {
         let text = match arena.get(*node_id) {
             IrNode::InlineInstruction(i) => i.text.clone(),
+            IrNode::Call(c) if c.projection_tier == Some(1) => {
+                c.resolved_body.clone().unwrap_or_default()
+            }
             IrNode::Call(c) if c.projection_tier == Some(2) => {
                 let kebab_name = c.target.replace('_', "-");
                 format!("Follow the {} procedure.", kebab_name)

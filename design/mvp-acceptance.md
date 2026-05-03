@@ -429,7 +429,7 @@ Phase 6b structural validation, implemented in `glyph validate-output`. These di
 | `G::expand::procedure-duplicate` | error |
 | `G::expand::procedure-order` | error |
 
-**Total: 77 compiler-scope diagnostic IDs** (17 Parse + 27 Analyze + 1 Imports + 5 Validate + 1 Build + 26 Validate-output).
+**Total: 82 compiler-scope diagnostic IDs** (19 Parse + 29 Analyze + 1 Imports + 5 Validate + 1 Build + 27 Validate-output).
 
 ### 4.2 Agent-scope diagnostics (not in compiler)
 

@@ -15,6 +15,7 @@ pub mod fmt;
 pub mod ir;
 pub mod kind_infer;
 pub mod lower;
+pub mod output_target;
 pub mod parse;
 pub mod slot;
 pub mod span;
