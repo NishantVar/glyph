@@ -88,9 +88,9 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
         while j < bytes.len() && bytes[j] != b'\n' {
             j += 1;
         }
-        let line_end = j;
+        let mut line_end = j;
         // Position past the newline (if any) for the next iteration.
-        let next_line_pos = if j < bytes.len() { j + 1 } else { j };
+        let mut next_line_pos = if j < bytes.len() { j + 1 } else { j };
 
         // Compute indent — count leading spaces. Reject tabs / mixed.
         let mut k = line_start;
@@ -121,7 +121,7 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
         }
         // The content of the line starts at byte index `k`.
         // Strip a trailing line comment for this line (`//` outside strings).
-        let content_end = strip_trailing_comment(bytes, k, line_end);
+        let mut content_end = strip_trailing_comment(bytes, k, line_end);
 
         // Skip blank / comment-only lines entirely (no LineStart emitted).
         let is_blank = (k..content_end).all(|p| matches!(bytes[p], b' '));
@@ -228,10 +228,39 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
                 });
                 p += 1;
             } else if b == b'"' {
-                // Walking skeleton: only single-line `"..."` strings.
+                // Triple-quoted (block) string: `"""..."""`. May span multiple
+                // lines. Per `design/values-and-names.md` §Block Strings,
+                // common leading indentation is stripped (Python `textwrap.dedent`
+                // semantics) and a single `\n` immediately after the opening
+                // `"""` or immediately before the closing `"""` is stripped
+                // from the value.
+                if p + 2 < bytes.len() && bytes[p + 1] == b'"' && bytes[p + 2] == b'"' {
+                    let start = p;
+                    let (value, end) = scan_triple_string(bytes, start)?;
+                    tokens.push(Token {
+                        kind: TokenKind::StringLit(value),
+                        span: Span::new(file_id, start as u32, end as u32),
+                    });
+                    p = end;
+                    // If the multi-line scan crossed past the current line,
+                    // re-anchor the per-line state so the rest of the line
+                    // containing the closing `"""` is tokenized normally.
+                    if p > line_end {
+                        let mut new_j = p;
+                        while new_j < bytes.len() && bytes[new_j] != b'\n' {
+                            new_j += 1;
+                        }
+                        line_end = new_j;
+                        next_line_pos = if new_j < bytes.len() { new_j + 1 } else { new_j };
+                        content_end = strip_trailing_comment(bytes, p, line_end);
+                    }
+                    continue;
+                }
+                // Inline (single-line) `"..."` string. Accumulate raw bytes so
+                // multi-byte UTF-8 sequences in the source survive verbatim.
                 let start = p;
                 p += 1;
-                let mut value = String::new();
+                let mut buf: Vec<u8> = Vec::new();
                 let mut closed = false;
                 while p < content_end {
                     let c = bytes[p];
@@ -244,24 +273,25 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
                         // Minimal escape handling: \" \\ \n \t.
                         let esc = bytes[p + 1];
                         match esc {
-                            b'"' => value.push('"'),
-                            b'\\' => value.push('\\'),
-                            b'n' => value.push('\n'),
-                            b't' => value.push('\t'),
-                            other => {
-                                value.push('\\');
-                                value.push(other as char);
+                            b'"' => buf.push(b'"'),
+                            b'\\' => buf.push(b'\\'),
+                            b'n' => buf.push(b'\n'),
+                            b't' => buf.push(b'\t'),
+                            _ => {
+                                buf.push(b'\\');
+                                buf.push(esc);
                             }
                         }
                         p += 2;
                     } else {
-                        value.push(c as char);
+                        buf.push(c);
                         p += 1;
                     }
                 }
                 if !closed {
                     return Err(TokenizeError::UnterminatedString { byte_offset: start as u32 });
                 }
+                let value = String::from_utf8(buf).expect("source is valid UTF-8");
                 tokens.push(Token {
                     kind: TokenKind::StringLit(value),
                     span: Span::new(file_id, start as u32, p as u32),
@@ -313,9 +343,15 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
                     span: Span::new(file_id, start as u32, p as u32),
                 });
             } else {
+                // Decode the actual UTF-8 char at `p` so the diagnostic
+                // reports the real character (not the lead byte cast as char).
+                let ch = source[p..]
+                    .chars()
+                    .next()
+                    .expect("source has a char at p since p < content_end <= bytes.len()");
                 return Err(TokenizeError::UnexpectedChar {
                     byte_offset: p as u32,
-                    ch: b as char,
+                    ch,
                 });
             }
         }
@@ -335,6 +371,113 @@ fn is_ident_start(b: u8) -> bool {
 
 fn is_ident_continue(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Scan a `"""..."""` block string starting at `start` (which points at the
+/// first `"` of the opening triple). Returns the post-processed value and the
+/// byte offset one past the closing `"""`.
+///
+/// Post-processing per `design/values-and-names.md` §Block Strings:
+///   1. Strip a single `\n` immediately following the opening `"""`.
+///   2. Strip a single `\n` immediately preceding the closing `"""`.
+///   3. Strip the common leading whitespace prefix from non-empty content
+///      lines (Python `textwrap.dedent` semantics).
+fn scan_triple_string(bytes: &[u8], start: usize) -> Result<(String, usize), TokenizeError> {
+    debug_assert!(
+        start + 2 < bytes.len()
+            && bytes[start] == b'"'
+            && bytes[start + 1] == b'"'
+            && bytes[start + 2] == b'"'
+    );
+    let mut p = start + 3;
+    // Accumulate bytes (not chars) so multi-byte UTF-8 sequences in the source
+    // are preserved verbatim. Escapes (`\"`, `\\`, `\n`, `\t`) decode to ASCII
+    // bytes, and unknown escapes preserve the literal `\X` source bytes.
+    let mut raw: Vec<u8> = Vec::new();
+    loop {
+        if p + 3 <= bytes.len() && &bytes[p..p + 3] == b"\"\"\"" {
+            p += 3;
+            let raw_str = String::from_utf8(raw).expect("source is valid UTF-8");
+            let value = dedent_block_string(&strip_block_newlines(&raw_str));
+            return Ok((value, p));
+        }
+        if p >= bytes.len() {
+            return Err(TokenizeError::UnterminatedString { byte_offset: start as u32 });
+        }
+        let c = bytes[p];
+        if c == b'\\' && p + 1 < bytes.len() {
+            let esc = bytes[p + 1];
+            match esc {
+                b'"' => raw.push(b'"'),
+                b'\\' => raw.push(b'\\'),
+                b'n' => raw.push(b'\n'),
+                b't' => raw.push(b'\t'),
+                _ => {
+                    raw.push(b'\\');
+                    raw.push(esc);
+                }
+            }
+            p += 2;
+        } else {
+            raw.push(c);
+            p += 1;
+        }
+    }
+}
+
+/// Strip a single `\n` from the start of a block string body, and the final
+/// `\n` plus any pure-whitespace suffix that follows it. This handles both
+/// `"""\n…\n"""` (closing `"""` at column 0) and `"""\n…\n    """` (closing
+/// `"""` indented to match content).
+fn strip_block_newlines(s: &str) -> String {
+    let mut out: &str = s;
+    if out.starts_with('\n') {
+        out = &out[1..];
+    }
+    if let Some(idx) = out.rfind('\n') {
+        if out[idx + 1..].chars().all(|c| c == ' ' || c == '\t') {
+            out = &out[..idx];
+        }
+    }
+    out.to_string()
+}
+
+/// Strip the common leading whitespace prefix from non-empty content lines.
+/// Whitespace-only lines are normalized to empty (matches Python
+/// `textwrap.dedent`).
+fn dedent_block_string(s: &str) -> String {
+    let lines: Vec<&str> = s.split('\n').collect();
+    let mut common: Option<&str> = None;
+    for line in &lines {
+        let stripped = line.trim_start_matches(|c: char| c == ' ' || c == '\t');
+        if stripped.is_empty() {
+            continue;
+        }
+        let indent = &line[..line.len() - stripped.len()];
+        common = Some(match common {
+            None => indent,
+            Some(prev) => {
+                let n = prev.bytes().zip(indent.bytes()).take_while(|(a, b)| a == b).count();
+                &prev[..n]
+            }
+        });
+    }
+    let prefix = common.unwrap_or("");
+    let mut out = String::new();
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let stripped = line.trim_start_matches(|c: char| c == ' ' || c == '\t');
+        if stripped.is_empty() {
+            // whitespace-only line → empty
+        } else if line.starts_with(prefix) {
+            out.push_str(&line[prefix.len()..]);
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
 }
 
 /// Find the effective end of the line's tokenizable content, stopping before any `//` comment.
@@ -523,6 +666,146 @@ mod tests {
         let (toks, _) = tokenize(src, 0).expect("`>` should tokenize");
         assert_eq!(toks[1].kind, TokenKind::RAngle);
         assert_eq!(toks[1].span.end - toks[1].span.start, 1);
+    }
+
+    #[test]
+    fn tokenize_triple_quoted_classic_form() {
+        // Classic block-string form per `design/values-and-names.md`
+        // §Block Strings: opening `"""` on its own line, indented body,
+        // closing `"""` at base indent. Common indent stripped, leading
+        // and trailing newlines stripped.
+        let src = "const x = \"\"\"\n    hello\n    world\n\"\"\"\n";
+        let (toks, _) = tokenize(src, 0).expect("triple-quoted should tokenize");
+        // [LineStart, "const", "x", "=", StringLit("hello\nworld"), Eof]
+        assert!(matches!(&toks[4].kind, TokenKind::StringLit(s) if s == "hello\nworld"));
+        assert_eq!(toks[5].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn tokenize_triple_quoted_single_line() {
+        // `"""hello"""` is legal and equivalent to `"hello"`.
+        let src = "const x = \"\"\"hello\"\"\"\n";
+        let (toks, _) = tokenize(src, 0).expect("single-line triple-quoted should tokenize");
+        assert!(matches!(&toks[4].kind, TokenKind::StringLit(s) if s == "hello"));
+    }
+
+    #[test]
+    fn tokenize_triple_quoted_content_on_opening_line() {
+        // Content can begin on the opening line. Min-indent calc sees `hello`
+        // (col 0) and `    world` (col 4) → min = 0, no dedent applied.
+        let src = "const x = \"\"\"hello\n    world\"\"\"\n";
+        let (toks, _) = tokenize(src, 0).expect("opening-line content should tokenize");
+        assert!(matches!(&toks[4].kind, TokenKind::StringLit(s) if s == "hello\n    world"));
+    }
+
+    #[test]
+    fn tokenize_triple_quoted_empty() {
+        // `""""""` (six quotes) is a legal empty block string.
+        let src = "const x = \"\"\"\"\"\"\n";
+        let (toks, _) = tokenize(src, 0).expect("empty triple should tokenize");
+        assert!(matches!(&toks[4].kind, TokenKind::StringLit(s) if s.is_empty()));
+    }
+
+    #[test]
+    fn tokenize_triple_quoted_unterminated() {
+        // EOF before closing `"""` is `UnterminatedString`.
+        let src = "const x = \"\"\"hello\nworld";
+        match tokenize(src, 0) {
+            Err(TokenizeError::UnterminatedString { .. }) => {}
+            other => panic!("expected UnterminatedString, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tokenize_triple_quoted_preserves_inner_double_quotes() {
+        // `"` and `""` inside a `"""` body are literal content; only `"""` closes.
+        let src = "const x = \"\"\"a\"b\"\"c\"\"\"\n";
+        let (toks, _) = tokenize(src, 0).expect("inner quotes should tokenize");
+        assert!(matches!(&toks[4].kind, TokenKind::StringLit(s) if s == "a\"b\"\"c"));
+    }
+
+    #[test]
+    fn tokenize_triple_quoted_in_description_field() {
+        // Block strings work anywhere inline strings work, including after `:`.
+        let src = "    description: \"\"\"\n        multi\n        line\n        \"\"\"\n";
+        let (toks, _) = tokenize(src, 0).expect("description block should tokenize");
+        // [LineStart, "description", Colon, StringLit("multi\nline"), Eof]
+        assert!(matches!(&toks[1].kind, TokenKind::Ident(s) if s == "description"));
+        assert_eq!(toks[2].kind, TokenKind::Colon);
+        assert!(matches!(&toks[3].kind, TokenKind::StringLit(s) if s == "multi\nline"));
+    }
+
+    #[test]
+    fn tokenize_triple_quoted_continues_outer_loop_after_close() {
+        // After the closing `"""`, the lexer must resume tokenizing the rest
+        // of the file correctly (re-anchored line state).
+        let src = "const a = \"\"\"\n    foo\n\"\"\"\nconst b = \"bar\"\n";
+        let (toks, _) = tokenize(src, 0).expect("post-close tokenization should work");
+        // First decl: [LineStart, "const", "a", "=", StringLit("foo")]
+        assert!(matches!(&toks[4].kind, TokenKind::StringLit(s) if s == "foo"));
+        // Second decl on next line: LineStart at index 5, then "const", "b", "=", StringLit("bar")
+        assert!(matches!(toks[5].kind, TokenKind::LineStart { indent: 0 }));
+        assert!(matches!(&toks[6].kind, TokenKind::Ident(s) if s == "const"));
+        assert!(matches!(&toks[7].kind, TokenKind::Ident(s) if s == "b"));
+        assert_eq!(toks[8].kind, TokenKind::Equals);
+        assert!(matches!(&toks[9].kind, TokenKind::StringLit(s) if s == "bar"));
+    }
+
+    #[test]
+    fn tokenize_triple_quoted_blank_content_lines_normalized() {
+        // Whitespace-only content lines normalize to empty (textwrap.dedent).
+        let src = "const x = \"\"\"\n    hello\n        \n    world\n\"\"\"\n";
+        let (toks, _) = tokenize(src, 0).expect("blank lines should normalize");
+        assert!(matches!(&toks[4].kind, TokenKind::StringLit(s) if s == "hello\n\nworld"));
+    }
+
+    #[test]
+    fn tokenize_triple_quoted_escapes() {
+        // Escapes (\", \\, \n, \t) work inside `"""` the same as in `"`.
+        let src = "const x = \"\"\"a\\nb\\tc\"\"\"\n";
+        let (toks, _) = tokenize(src, 0).expect("escapes should work");
+        assert!(matches!(&toks[4].kind, TokenKind::StringLit(s) if s == "a\nb\tc"));
+    }
+
+    #[test]
+    fn tokenize_inline_string_preserves_utf8() {
+        // Multi-byte UTF-8 in a regular `"..."` string must survive verbatim.
+        let src = "    description: \"café — 🌟\"\n";
+        let (toks, _) = tokenize(src, 0).expect("UTF-8 inline should tokenize");
+        assert!(matches!(&toks[3].kind, TokenKind::StringLit(s) if s == "café — 🌟"));
+    }
+
+    #[test]
+    fn tokenize_unexpected_char_reports_full_utf8_char() {
+        // A stray non-ASCII char outside a string position reports the actual
+        // character (not the lead byte cast as char).
+        let src = "skill 🌟()\n";
+        match tokenize(src, 0) {
+            Err(TokenizeError::UnexpectedChar { ch, .. }) => {
+                assert_eq!(ch, '🌟');
+            }
+            other => panic!("expected UnexpectedChar('🌟'), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tokenize_triple_quoted_preserves_utf8() {
+        // Multi-byte UTF-8 (é = C3 A9, em-dash = E2 80 94, emoji 🌟 = F0 9F 8C 9F)
+        // must round-trip through the block-string scanner unchanged.
+        let src = "const x = \"\"\"café — 🌟\"\"\"\n";
+        let (toks, _) = tokenize(src, 0).expect("UTF-8 should tokenize");
+        assert!(matches!(&toks[4].kind, TokenKind::StringLit(s) if s == "café — 🌟"));
+    }
+
+    #[test]
+    fn tokenize_triple_quoted_comment_after_close_stripped() {
+        // A `// comment` after the closing `"""` is stripped from the line
+        // (the multi-line scan re-runs strip_trailing_comment for the closing
+        // line's residual content).
+        let src = "const x = \"\"\"\n    hi\n\"\"\" // a trailing comment\n";
+        let (toks, _) = tokenize(src, 0).expect("trailing comment should not break tokenizing");
+        assert!(matches!(&toks[4].kind, TokenKind::StringLit(s) if s == "hi"));
+        assert_eq!(toks[5].kind, TokenKind::Eof);
     }
 
     #[test]

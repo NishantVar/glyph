@@ -1212,12 +1212,20 @@ fn strip_code_spans(text: &str) -> String {
             if end < bytes.len() {
                 i = end + 1; // Skip past closing backtick
             } else {
-                result.push(bytes[i] as char);
+                // Unmatched backtick — preserve it (ASCII, single byte).
+                result.push('`');
                 i += 1;
             }
         } else {
-            result.push(bytes[i] as char);
-            i += 1;
+            // Decode the UTF-8 char at `i` so multi-byte sequences (é, —, 🌟)
+            // round-trip unchanged instead of being corrupted byte-by-byte.
+            let ch = text[i..]
+                .chars()
+                .next()
+                .expect("i is on a UTF-8 char boundary");
+            let len = ch.len_utf8();
+            result.push(ch);
+            i += len;
         }
     }
     result
