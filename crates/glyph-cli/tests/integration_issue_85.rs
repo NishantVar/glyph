@@ -104,6 +104,7 @@ skill current() -> BranchName
         serde_json::from_str(&std::fs::read_to_string(ir_json_path(&path)).unwrap()).unwrap();
     let oc = &ir["skill"]["output_contract"];
     assert_eq!(oc["kind"], "output_contract");
+    assert_eq!(oc["form"], "identifier");
     assert_eq!(oc["target_name"], "current_branch");
     assert_eq!(oc["ty"], serde_json::json!({ "domain_type": "branchname" }));
     assert_eq!(oc["source"], "synthesized_by_agent");
@@ -145,6 +146,7 @@ skill current()
     assert_eq!(call["projection_mode"], "inline");
     let oc = &call["callee_output_contract"];
     assert_eq!(oc["kind"], "output_contract");
+    assert_eq!(oc["form"], "identifier");
     assert_eq!(oc["target_name"], "current_branch");
 }
 
@@ -319,4 +321,48 @@ skill current() -> BranchName
         String::from_utf8_lossy(&second.stdout),
         String::from_utf8_lossy(&second.stderr)
     );
+}
+
+/// Issue #86 AC13: `--emit-ir` JSON shape for descriptive output target.
+/// Verifies that `return <"…">` produces `form: "description"` + `description`
+/// key in the output_contract node, with no `target_name` field.
+#[test]
+fn emit_ir_descriptive_output_contract_shape() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("diagnose.glyph.md");
+    std::fs::write(
+        &path,
+        "\
+skill diagnose_issue() -> Confirmation
+    description: \"Diagnose the issue.\"
+    flow:
+        return <\"root cause analysis including affected files and severity\">
+",
+    )
+    .unwrap();
+
+    let result = run_compile_emit_ir(&path);
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "compile should succeed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+
+    let ir: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(ir_json_path(&path)).unwrap()).unwrap();
+    let oc = &ir["skill"]["output_contract"];
+    assert_eq!(oc["kind"], "output_contract");
+    assert_eq!(oc["form"], "description");
+    assert_eq!(
+        oc["description"],
+        "root cause analysis including affected files and severity"
+    );
+    assert!(
+        oc.get("target_name").is_none() || oc["target_name"].is_null(),
+        "descriptive form must not emit target_name; got: {:?}",
+        oc
+    );
+    assert_eq!(oc["source"], "synthesized_by_agent");
 }

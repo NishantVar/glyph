@@ -183,13 +183,22 @@ pub struct IrElifBranch {
     pub body: Vec<NodeId>,
 }
 
-/// Issue #85: lowered form of `return <IDENT>`. Captures the agent-synthesized
-/// output target's name plus the enclosing decl's `-> DomainType`. The name
-/// `ty` (rather than `type`) avoids the Rust keyword. JSON wiring is chunk 5.
+/// Issue #86: tagged form distinguishing identifier vs descriptive output
+/// targets. Replaces #85's flat `target_name: String` field.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub enum OutputTargetForm {
+    Identifier(String),
+    Description(String),
+}
+
+/// Issue #85/#86: lowered form of `return <IDENT>` or `return <"description">`.
+/// Captures the agent-synthesized output target plus the enclosing decl's
+/// `-> DomainType`. The name `ty` (rather than `type`) avoids the Rust keyword.
+/// JSON wiring is chunk 5 (updated in #86 chunk 2).
 #[derive(Clone, Debug, Serialize)]
 pub struct IrOutputContract {
     pub node_id: NodeId,
-    pub target_name: String,
+    pub form: OutputTargetForm,
     /// Lowered enclosing-decl annotation (`Skill`/`Block`/`ExportBlock`'s
     /// `-> DomainType`). `None` is permitted at lowering time — the
     /// missing-annotation diagnostic is chunk 8/9's job.
@@ -284,5 +293,27 @@ impl IrArena {
 
     pub(crate) fn nodes_mut(&mut self) -> &mut Vec<IrNode> {
         &mut self.nodes
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn output_contract_constructs_both_forms() {
+        use crate::ir::{IrOutputContract, NodeId, OutputSource, OutputTargetForm};
+        let id_form = IrOutputContract {
+            node_id: NodeId(0),
+            form: OutputTargetForm::Identifier("current_branch".into()),
+            ty: None,
+            source: OutputSource::SynthesizedByAgent,
+        };
+        let desc_form = IrOutputContract {
+            node_id: NodeId(1),
+            form: OutputTargetForm::Description("root cause analysis".into()),
+            ty: None,
+            source: OutputSource::SynthesizedByAgent,
+        };
+        assert!(matches!(id_form.form, OutputTargetForm::Identifier(ref n) if n == "current_branch"));
+        assert!(matches!(desc_form.form, OutputTargetForm::Description(ref d) if d == "root cause analysis"));
     }
 }

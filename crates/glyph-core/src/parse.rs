@@ -583,6 +583,14 @@ impl<'a> Parser<'a> {
                     ch
                 )
             }
+            OutputTargetParseError::EmptyDescription => {
+                "descriptive output target must not be empty; write `return <\"description\">`"
+                    .to_string()
+            }
+            OutputTargetParseError::UnterminatedDescription { .. } => {
+                "descriptive output target is missing its closing `\"`; write `return <\"description\">`"
+                    .to_string()
+            }
         };
         self.bag.push(
             Diagnostic {
@@ -3360,6 +3368,30 @@ block helper() -> Path
                 assert_eq!(id.name, "output");
             }
             other => panic!("expected Return(OutputTarget(Identifier)), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn descriptive_output_target_parses_in_terminal_return() {
+        let src = "\
+block diagnose() -> Diagnosis
+    flow:
+        return <\"root cause analysis\">
+";
+        let (file, _) = parse(src, 0).expect("parse should succeed");
+        let block_flow = file
+            .decls
+            .into_iter()
+            .find_map(|d| match d {
+                Decl::Block(b) => Some(b.node.flow),
+                _ => None,
+            })
+            .expect("expected a private-block declaration");
+        match block_flow.last().expect("expected a flow stmt") {
+            FlowStmt::Return(ReturnExpr::OutputTarget(OutputTargetExpr::Description(d))) => {
+                assert_eq!(d.content, "root cause analysis");
+            }
+            other => panic!("expected Return(OutputTarget(Description)), got {:?}", other),
         }
     }
 }

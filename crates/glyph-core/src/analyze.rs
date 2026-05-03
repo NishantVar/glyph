@@ -187,6 +187,26 @@ fn placeholder_identifier(s: &str) -> Option<&str> {
     }
 }
 
+fn placeholder_description(s: &str) -> Option<&str> {
+    // Only matches if identifier form doesn't apply (identifier takes precedence).
+    if placeholder_identifier(s).is_some() {
+        return None;
+    }
+    let inner = s.strip_prefix('<')?.strip_suffix('>')?;
+    if inner.is_empty() {
+        return None;
+    }
+    // Reject contents whose round-trip through `glyph fmt` would not be
+    // faithful: literal quotes (would yield `<""foo"">`), or characters that
+    // require source-level escaping. The tokenizer has already decoded source
+    // escapes by this point, so we'd otherwise emit a "Repairable" diagnostic
+    // that the formatter cannot actually repair.
+    if inner.contains(|c: char| c == '"' || c == '\\' || c == '\n' || c == '\t' || c == '\r') {
+        return None;
+    }
+    Some(inner)
+}
+
 fn output_target_identifier(expr: &ReturnExpr) -> Option<(&str, Span)> {
     match expr {
         ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id)) => {
@@ -299,22 +319,35 @@ fn check_placeholder_string_return(
     let ReturnExpr::Inline(s) = expr else {
         return;
     };
-    let Some(target) = placeholder_identifier(s) else {
-        return;
-    };
-    bag.push(
-        Diagnostic {
-            id: "G::analyze::placeholder-string-return".into(),
-            classification: Classification::Repairable,
-            message: format!(
-                "string placeholder return `\"<{target}>\"` should use the output target form"
-            ),
-            span: SourceSpan::from_byte_span(file_label, span, line_index),
-            related: Vec::new(),
-            hints: vec![format!("rewrite as `return <{target}>`")],
-        },
-        span,
-    );
+    if let Some(target) = placeholder_identifier(s) {
+        bag.push(
+            Diagnostic {
+                id: "G::analyze::placeholder-string-return".into(),
+                classification: Classification::Repairable,
+                message: format!(
+                    "string placeholder return `\"<{target}>\"` should use the output target form"
+                ),
+                span: SourceSpan::from_byte_span(file_label, span, line_index),
+                related: Vec::new(),
+                hints: vec![format!("rewrite as `return <{target}>`")],
+            },
+            span,
+        );
+    } else if let Some(desc) = placeholder_description(s) {
+        bag.push(
+            Diagnostic {
+                id: "G::analyze::placeholder-string-return".into(),
+                classification: Classification::Repairable,
+                message: format!(
+                    "string placeholder return `\"<{desc}>\"` should use the output target form"
+                ),
+                span: SourceSpan::from_byte_span(file_label, span, line_index),
+                related: Vec::new(),
+                hints: vec![format!("rewrite as `return <\"{desc}\">`")],
+            },
+            span,
+        );
+    }
 }
 
 fn check_flow_placeholder_string_returns(
@@ -2828,6 +2861,74 @@ skill current() -> BranchName
             "expected placeholder-string-return, got {ids:?}"
         );
         assert_eq!(bag.exit_code(), 2, "diagnostic must be repairable-tier");
+    }
+
+    #[test]
+    fn placeholder_string_return_descriptive_is_repairable_on_domain_typed_skill() {
+        let src = "\
+skill diagnose() -> Confirmation
+    description: \"Diagnose the issue.\"
+    flow:
+        return \"<root cause and severity>\"
+";
+        let bag = crate::check_source(src, 0, "test.glyph.md");
+        let ids: Vec<String> = bag.iter().map(|d| d.id.clone()).collect();
+        assert!(
+            ids.iter()
+                .any(|id| id == "G::analyze::placeholder-string-return"),
+            "expected placeholder-string-return for descriptive form, got {ids:?}"
+        );
+        assert_eq!(bag.exit_code(), 2, "diagnostic must be repairable-tier");
+        let hints: Vec<String> = bag
+            .iter()
+            .flat_map(|d| d.hints.iter().cloned())
+            .collect();
+        assert!(
+            hints.iter().any(|h| h.contains("<\"root cause and severity\">")),
+            "hint should suggest descriptive output-target form, got {hints:?}"
+        );
+    }
+
+    #[test]
+    fn placeholder_string_return_not_fired_when_inner_contains_quotes() {
+        // "<\"foo\">" has inner content containing literal quotes; the
+        // descriptive guard must reject it to avoid emitting broken syntax.
+        let src = "\
+skill diagnose() -> Confirmation
+    description: \"Diagnose the issue.\"
+    flow:
+        return \"<\\\"foo\\\">\"
+";
+        let ids = check_ids(src);
+        assert!(
+            !ids.iter()
+                .any(|id| id == "G::analyze::placeholder-string-return"),
+            "placeholder with inner quotes must NOT fire placeholder-string-return: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn placeholder_string_return_not_fired_when_inner_contains_escape_chars() {
+        // The tokenizer decodes string escapes before analyze runs, so source
+        // like `return "<root cause\nseverity>"` reaches us with a literal
+        // newline inside the string. If we emit the repairable diagnostic, the
+        // suggested rewrite would round-trip through `glyph fmt` as a no-op
+        // (decoded form != source form) — so the fix is to NOT fire on
+        // contents that contain characters needing source-level escaping.
+        let cases: &[(&str, &str)] = &[
+            ("newline", "skill d() -> Confirmation\n    flow:\n        return \"<root cause\\nseverity>\"\n"),
+            ("tab",     "skill d() -> Confirmation\n    flow:\n        return \"<root\\tcause>\"\n"),
+            ("cr",      "skill d() -> Confirmation\n    flow:\n        return \"<root\\rcause>\"\n"),
+            ("backslash", "skill d() -> Confirmation\n    flow:\n        return \"<path\\\\to\\\\foo>\"\n"),
+        ];
+        for (label, src) in cases {
+            let ids = check_ids(src);
+            assert!(
+                !ids.iter()
+                    .any(|id| id == "G::analyze::placeholder-string-return"),
+                "[{label}] placeholder with escape-requiring inner must NOT fire placeholder-string-return: {ids:?}"
+            );
+        }
     }
 
     #[test]

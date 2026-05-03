@@ -48,13 +48,14 @@ A slot whose `name` does not resolve to a parameter or a local binding in scope 
 
 MVP expressions contain only four forms: bindings, literals, calls, and dot access (`data-flow.md` §IR Mapping). There are no value-level operators — no `+`, `-`, `*`, `/`, comparisons, or any other infix/prefix operator in expression position.
 
-Angle brackets are not comparison operators. In the MVP they are reserved for the output-target identifier form in terminal return position:
+Angle brackets are not comparison operators. In the MVP they are reserved for output-target expressions in terminal return position, in two forms — identifier and descriptive:
 
 ```glyph
-return <current_branch>
+return <current_branch>                                          // identifier form
+return <"root cause analysis including affected files">          // descriptive form
 ```
 
-Outside that position, `<name>` emits `G::parse::output-target-outside-return`.
+Outside that position, both `<name>` and `<"description">` emit `G::parse::output-target-outside-return`.
 
 String concatenation via `+` is explicitly forbidden. Authors who need to combine context with a call should use the `with` modifier (`data-flow.md`) to pass specialization context at the call site. The Expand LLM weaves parameter context into prose instructions — manual string assembly is redundant with the pipeline's job.
 
@@ -128,6 +129,21 @@ Source is case-insensitive: `none`, `None`, and `NONE` are all accepted. The IR 
 Identifiers match `[a-zA-Z_][a-zA-Z0-9_]*`. They must start with a letter or underscore and may contain letters, digits, and underscores. Hyphens are not allowed in identifiers.
 
 The output-target identifier form uses the same identifier grammar inside angle brackets. `<current_branch>` is valid; `<a.b>`, `<foo()>`, `< name >`, and `<>` are malformed output targets (`G::parse::malformed-output-target`). Quoted placeholder strings such as `return "<current_branch>"` remain string literals, but when they appear as a terminal return on a `-> DomainType` declaration the analyzer emits `G::analyze::placeholder-string-return` so Repair can rewrite them to `return <current_branch>`.
+
+The output-target **descriptive form** is `<"…">` — a quoted string inside angle brackets, e.g. `<"whether the user confirmed">`. The string follows the same rules as inline strings (`§Inline Strings`): double quotes only, MVP escapes `\"` and `\\`, no interpolation, no `{name}` slots. Empty `<"">` is malformed (`G::parse::malformed-output-target`); an unterminated `<"…EOF` surfaces as the standard unterminated-string parse error rather than a dedicated output-target diagnostic. Quoted placeholder strings such as `return "<root cause analysis>"` whose inner content is not identifier-shaped also trigger `G::analyze::placeholder-string-return`; Repair rewrites them into descriptive form (`return <"root cause analysis">`) rather than the identifier form (`types.md` §Implicit Declaration).
+
+### Output-Target Forms vs Other Name Uses
+
+For quick disambiguation, Glyph distinguishes four name forms in source:
+
+| Form | Meaning |
+|---|---|
+| `name` | Ordinary identifier — resolves to a parameter, binding, const, import, or stdlib entry per `§Name Resolution` |
+| `{name}` | Name slot inside instruction text — preserved as a runtime parameter slot, or resolved into prose for a local binding (see `§No Interpolation`) |
+| `<name>` | Output target, identifier form — names a value the enclosing block's agent must synthesize as the return value |
+| `<"description">` | Output target, descriptive form — provides synthesis guidance for the return value as inline prose |
+
+The two output-target forms are interchangeable at the IR level — both lower to `OutputContract` (`ir-schema.md` §OutputContract). Use the identifier form when a short snake-case name conveys the synthesized value; use the descriptive form when the value benefits from a sentence of guidance.
 
 ### Dot Access
 
