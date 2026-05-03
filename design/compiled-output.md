@@ -312,6 +312,8 @@ Example: `return summarize_changes()` as the last flow item becomes a Step like 
 
 For output target identifiers, `return <current_branch>` folds into natural output prose such as "Produce current branch as the final output." The literal `<current_branch>` token must never appear in compiled Markdown; Phase 6b rejects leaks with `G::expand::output-target-leak`.
 
+For descriptive output targets, `return <"root cause analysis including affected files and severity">` folds into natural output prose that paraphrases the description as the synthesis target — e.g., "Produce a root cause analysis including affected files and severity as the final output." Step 2 paraphrases the description into a Step-shaped sentence; it does not paste the verbatim string. The literal `<"…">` token, the surrounding angle brackets, and the bare quoted description must never appear in compiled Markdown; Phase 6b rejects leaks with the same `G::expand::output-target-leak` diagnostic that covers the identifier form (the diagnostic's textual scan is form-agnostic — it flags both `<name>` and `<"…">` literals).
+
 **Agent-typed returns.** When the return expression has type `Agent` (e.g., `return researcher`), the return-folded prose says the agent handle itself is the result — e.g., "Your result is the researcher agent spawned above — the caller may continue sending it instructions." The compiler does **not** interpret `return <agent>` as "return the agent's output." If the author wants the agent's findings, they should use an explicit inline string: `return "Report the researcher's findings as your result."` See `stdlib.md` §Agent Value Lifecycle for the full rule.
 
 There is no separate `## Output` section in MVP.

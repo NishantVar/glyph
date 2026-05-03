@@ -51,18 +51,25 @@ Named domain types such as `RepoContext`, `Plan`, `FileSet`, and `ValidationResu
 
 Domain types are implicitly declared by first use in a `-> Type` position. No explicit `type Foo` declaration is needed in MVP. When the compiler encounters `-> Diagnosis` for the first time, it registers `Diagnosis` as a known domain type.
 
-The meaning of a domain type is contextually reinforced by return-site output targets and surrounding prose. For identifier-shaped synthesized results, authors use `return <name>`:
+The meaning of a domain type is contextually reinforced by return-site output targets and surrounding prose. Authors choose between two output-target forms depending on whether a short identifier or richer guidance better names what the agent must synthesize:
 
 ```glyph
+// Identifier form — short, name-shaped target
 export block diagnose_issue(scope) -> Diagnosis
     flow:
         inspect_repo(scope)
         return <diagnosis>
+
+// Descriptive form — quoted guidance describing what to synthesize
+export block diagnose_issue(scope) -> Diagnosis
+    flow:
+        inspect_repo(scope)
+        return <"root cause analysis including affected files and severity">
 ```
 
-The `-> Diagnosis` on the header serves as the compiler contract (nominal matching). The `<diagnosis>` target names the value the agent must synthesize in the final output. Rich descriptive output-target forms are deferred; use inline prose before the terminal return when the target needs more guidance.
+The `-> Diagnosis` on the header serves as the compiler contract (nominal matching). The output target — `<diagnosis>` (identifier form) or `<"…">` (descriptive form) — names the value the agent must synthesize in the final output and is **complementary** to the type annotation, not a substitute. Both forms inherit `ty` from the enclosing return annotation and lower to the same `OutputContract` shape, discriminated by `OutputContract.form` (`ir-schema.md` §OutputContract). Use the identifier form when the target reads cleanly as a name; use the descriptive form when the guidance for the synthesizer is what carries the meaning. Descriptive form is terminal-return-only in MVP — mid-flow output targets, if added later, must use the identifier form (`values-and-names.md` §No Value-Level Operators).
 
-Two blocks returning the same `-> Type` with different output-target names or prose guidance are valid — that guidance is local to each block's compiled output and does not participate in nominal matching.
+Two blocks returning the same `-> Type` with different output-target names, descriptions, or prose guidance are valid — that guidance is local to each block's compiled output and does not participate in nominal matching.
 
 ### What The Compiler Checks
 
@@ -135,7 +142,7 @@ Parameter type annotations are always optional. When omitted, the compiler infer
 - **`export block` with meaningful return:** `-> DomainType` is required. Missing `->` on an export block that returns a value is a repairable diagnostic; the repair pass infers a domain type name from the block name and return expression.
 - **`export block` with no meaningful return:** omit `->` entirely.
 - **`block` and `skill`:** `-> DomainType` is optional. The repair pass may suggest a domain type but never enforces one.
-- **Output target returns:** `return <name>` uses the enclosing `-> DomainType` as the IR `OutputContract.ty`. If the annotation is omitted, the output target still lowers but carries `ty: null`; authors should prefer a semantic domain type when the synthesized output is part of a public or reusable contract.
+- **Output target returns:** Both output-target forms — `return <name>` (identifier) and `return <"description">` (descriptive) — use the enclosing `-> DomainType` as the IR `OutputContract.ty`. The form does not change typing: identifier and descriptive forms inherit `ty` from the same channel, and both lower to the same `OutputContract` shape (discriminated by `OutputContract.form`, see `ir-schema.md` §OutputContract). If the annotation is omitted, the output target still lowers but carries `ty: null`; authors should prefer a semantic domain type when the synthesized output is part of a public or reusable contract.
 
 ## Interaction With Export Block Closure
 

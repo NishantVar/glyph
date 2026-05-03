@@ -18,7 +18,7 @@ Skill {
   context:           [ContextNode]         // top-level declared context only
   constraints:       [Constraint]          // top-level declared constraints only
   flow:              [FlowNode]            // ordered
-  output_contract:   OutputContract?       // present when flow ends with `return <name>`
+  output_contract:   OutputContract?       // present when flow ends with `return <name>` or `return <"description">`
 }
 
 Block {
@@ -30,7 +30,7 @@ Block {
   context:           [ContextNode]         // top-level declared context only
   constraints:       [Constraint]
   flow:              [FlowNode]
-  output_contract:   OutputContract?       // present when flow ends with `return <name>`
+  output_contract:   OutputContract?       // present when flow ends with `return <name>` or `return <"description">`
 }
 
 ExportBlock {
@@ -42,7 +42,7 @@ ExportBlock {
   context:           [ContextNode]         // top-level declared context only
   constraints:       [Constraint]
   flow:              [FlowNode]
-  output_contract:   OutputContract?       // present when flow ends with `return <name>`
+  output_contract:   OutputContract?       // present when flow ends with `return <name>` or `return <"description">`
 }
 ```
 
@@ -145,7 +145,7 @@ ElifBranch {
 
 ```
 Return {
-  value:             Expr | OutputTargetExpr // call, binding ref, literal, dot access, none, or `<name>`
+  value:             Expr | OutputTargetForm // call, binding ref, literal, dot access, none, `<name>`, or `<"description">`
 }
 ```
 
@@ -153,15 +153,21 @@ Return {
 
 ```
 OutputContract {
-  target_name:       String                // identifier inside `return <name>`
+  form:              OutputTargetForm      // identifier form (`<name>`) or descriptive form (`<"…">`)
   ty:                TypeTag?              // enclosing declaration's `-> DomainType`, if any
   source:            OutputSource          // currently SynthesizedByAgent
 }
 
-OutputTargetExpr = Identifier(name: String)
+OutputTargetForm = Identifier(name: String) | Description(text: String)
+// Identifier(name) corresponds to `return <name>` — `name` is the bare identifier inside the angle
+// brackets, stored in canonical form per `values-and-names.md` §Case Normalization.
+// Description(text) corresponds to `return <"…">` — `text` is the verbatim string content inside the
+// brackets, with inline-string escapes resolved (`\"` and `\\` per `values-and-names.md` §Inline Strings).
+// Descriptive form is terminal-return-only in MVP; mid-flow output targets, if added later, must use the
+// identifier form. See `values-and-names.md` §No Value-Level Operators and `data-flow.md` §Return Semantics.
 ```
 
-`OutputContract` is a sidecar contract for agent-synthesized output. It does not appear as an ordered `FlowNode`; it annotates the enclosing `Skill`, `Block`, or `ExportBlock` and folds into the final Step prose during Expand.
+`OutputContract` is a sidecar contract for agent-synthesized output. It does not appear as an ordered `FlowNode`; it annotates the enclosing `Skill`, `Block`, or `ExportBlock` and folds into the final Step prose during Expand. The `form` discriminates which Expand folding rule applies (see `compiled-output.md` §Return Folding and `expand.md` §3.3).
 
 ## Constraint
 

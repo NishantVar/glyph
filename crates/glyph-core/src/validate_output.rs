@@ -371,12 +371,11 @@ fn check_malformed_markdown(md: &str, violations: &mut Vec<Violation>) {
 // ---------------------------------------------------------------------------
 
 fn check_output_target_leaks(ir: &Value, md: &str, violations: &mut Vec<Violation>) {
-    let mut targets = Vec::new();
-    collect_output_contract_targets(ir, &mut targets);
-    targets.sort();
-    targets.dedup();
-    for target in targets {
-        let literal = format!("<{}>", target);
+    let mut tokens = Vec::new();
+    collect_output_contract_tokens(ir, &mut tokens);
+    tokens.sort();
+    tokens.dedup();
+    for literal in tokens {
         if md.contains(&literal) {
             violations.push(Violation::new(
                 "G::expand::output-target-leak",
@@ -386,25 +385,70 @@ fn check_output_target_leaks(ir: &Value, md: &str, violations: &mut Vec<Violatio
     }
 }
 
-fn collect_output_contract_targets(value: &Value, targets: &mut Vec<String>) {
+fn collect_output_contract_tokens(value: &Value, tokens: &mut Vec<String>) {
     match value {
         Value::Object(map) => {
             if map.get("kind").and_then(|v| v.as_str()) == Some("output_contract") {
-                if let Some(target) = map.get("target_name").and_then(|v| v.as_str()) {
-                    targets.push(target.to_string());
+                let form = map.get("form").and_then(|v| v.as_str());
+                match form {
+                    Some("identifier") => {
+                        if let Some(name) = map.get("target_name").and_then(|v| v.as_str()) {
+                            tokens.push(format!("<{name}>"));
+                        }
+                    }
+                    Some("description") => {
+                        if let Some(desc) = map.get("description").and_then(|v| v.as_str()) {
+                            // Re-escape the decoded `description` back to the
+                            // source-token shape `<"…">`. The parser in
+                            // `output_target.rs::parse_descriptive` decodes
+                            // `\"`, `\\`, `\n`, `\t`; reconstructing the
+                            // source token requires re-applying those escapes
+                            // so the leak check matches the literal source
+                            // form that may appear in compiled markdown.
+                            tokens.push(format!(
+                                "<\"{}\">",
+                                escape_for_source_token(desc)
+                            ));
+                        }
+                    }
+                    // Pre-#86 JSON without `form` discriminator — fall back to old shape.
+                    None => {
+                        if let Some(name) = map.get("target_name").and_then(|v| v.as_str()) {
+                            tokens.push(format!("<{name}>"));
+                        }
+                    }
+                    _ => {}
                 }
             }
             for child in map.values() {
-                collect_output_contract_targets(child, targets);
+                collect_output_contract_tokens(child, tokens);
             }
         }
         Value::Array(items) => {
             for item in items {
-                collect_output_contract_targets(item, targets);
+                collect_output_contract_tokens(item, tokens);
             }
         }
         _ => {}
     }
+}
+
+/// Re-escape a decoded description string back to its source-form spelling
+/// so leak detection can match the original `<"…">` token in compiled
+/// markdown. Mirrors the parser escapes in
+/// `output_target.rs::parse_descriptive` in reverse.
+fn escape_for_source_token(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1605,6 +1649,7 @@ mod tests {
                 "output_contract": {
                     "node_id": "n2",
                     "kind": "output_contract",
+                    "form": "identifier",
                     "target_name": "current_branch",
                     "ty": { "domain_type": "branchname" },
                     "source": "synthesized_by_agent"
@@ -1648,6 +1693,7 @@ mod tests {
                 "output_contract": {
                     "node_id": "n2",
                     "kind": "output_contract",
+                    "form": "identifier",
                     "target_name": "current_branch",
                     "ty": { "domain_type": "branchname" },
                     "source": "synthesized_by_agent"
@@ -2804,6 +2850,71 @@ mod tests {
                 .any(|v| v.id == "G::expand::description-shape-missing"),
             "should reject raw .applies() condition in step prose; got: {:?}",
             violations
+        );
+    }
+
+    /// Issue #86 chunk 2 follow-up: the description-form leak token must be
+    /// re-escaped back to source form so a leaked literal containing escapes
+    /// (e.g. `<"contains \"quotes\"">`) is detected. The decoded
+    /// `description` field carries unescaped content; reconstructing the
+    /// source token without re-escaping would silently miss the leak.
+    #[test]
+    fn description_form_leak_token_is_re_escaped_to_source_shape() {
+        let ir = serde_json::json!({
+            "ir_version": 1,
+            "compiler": "glyph 0.1.0",
+            "source_file": "test.glyph.md",
+            "skill": {
+                "node_id": "n0",
+                "kind": "skill",
+                "name": "test_skill",
+                "description": "A test skill.",
+                "params": [],
+                "effects": [],
+                "context": [],
+                "constraints": [],
+                "flow": [
+                    {
+                        "node_id": "n1",
+                        "kind": "inline_instruction",
+                        "text": "Do something.",
+                        "role": "step"
+                    }
+                ],
+                "output_contract": {
+                    "node_id": "n2",
+                    "kind": "output_contract",
+                    "form": "description",
+                    // Decoded content carrying both `"` and `\` characters.
+                    "description": "contains \"quotes\" and \\backslash",
+                    "ty": null,
+                    "source": "synthesized_by_agent"
+                }
+            }
+        });
+
+        // Direct check: the synthesized leak token must equal the
+        // source-shape spelling (each `"` re-escaped to `\"`, each `\` to
+        // `\\`).
+        let mut tokens = Vec::new();
+        collect_output_contract_tokens(&ir, &mut tokens);
+        assert_eq!(
+            tokens,
+            vec![r#"<"contains \"quotes\" and \\backslash">"#.to_string()],
+            "leak token must re-escape `\"` and `\\` so it matches the \
+             source `<\"…\">` literal"
+        );
+
+        // End-to-end check: a markdown file containing the source-shape
+        // literal must trigger the leak diagnostic.
+        let md = "## Instructions\n\n### Steps\n\n1. Return <\"contains \\\"quotes\\\" and \\\\backslash\">.\n";
+        let violations = validate_output(&ir.to_string(), md);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::output-target-leak"),
+            "expected output-target-leak for source-shape description token, \
+             got {violations:?}"
         );
     }
 }

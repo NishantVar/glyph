@@ -82,7 +82,7 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
 | `context` | array of ContextNode | yes | Top-level declared context entries. May be empty. |
 | `constraints` | array of Constraint | yes | Top-level declared constraints only. May be empty. |
 | `flow` | array of FlowNode | yes | Ordered flow nodes. |
-| `output_contract` | OutputContract or null | yes | Output target contract for `return <name>`, or `null` when the skill has no output-target return. This field is a sibling of `flow`, not a flow entry, so it does not affect step counts. |
+| `output_contract` | OutputContract or null | yes | Output target contract for `return <name>` or `return <"description">`, or `null` when the skill has no output-target return. This field is a sibling of `flow`, not a flow entry, so it does not affect step counts. |
 
 ### Param
 
@@ -149,7 +149,7 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
 | `callee_flow` | array of FlowNode or null | yes | Present only when `projection_mode != "inline"`. |
 | `callee_context` | array of ContextNode or null | yes | Present only when `projection_mode != "inline"`. |
 | `callee_constraints` | array of Constraint or null | yes | Present only when `projection_mode != "inline"`. |
-| `callee_output_contract` | OutputContract or null | yes | Callee block's output target contract when the resolved callee has `return <name>`, otherwise `null`. Present even for inline projections so Phase 6b can detect literal `<name>` leaks. |
+| `callee_output_contract` | OutputContract or null | yes | Callee block's output target contract when the resolved callee has `return <name>` or `return <"description">`, otherwise `null`. Present even for inline projections so Phase 6b can detect literal `<name>` or `<"…">` leaks (`G::expand::output-target-leak` covers both forms). |
 | `procedure_path` | string or null | yes | Relative file path. Present only when `projection_mode == "external_file"`. |
 
 **Worked example — Call with `local_refs`:**
@@ -187,12 +187,30 @@ Here `{scope}` is a parameter slot (not in `local_refs`) and `{diagnosis}` is a 
 
 ### OutputContract
 
+`OutputContract` JSON has two shapes discriminated by the `form` field — one for each `OutputTargetForm` variant defined in `ir-schema.md` §OutputContract. Both shapes carry the `form` discriminator alongside the form-specific value field; the discriminator is always present, never elided. Identifier form emits both `form` and `target_name`; descriptive form emits both `form` and `description`. The "absent otherwise" rule on each value field below applies cross-form (i.e., `target_name` is absent in descriptive payloads, `description` is absent in identifier payloads), not within a single form.
+
+**Identifier form** (`return <name>`):
+
 ```json
 {
   "node_id": "n9",
   "kind": "output_contract",
+  "form": "identifier",
   "target_name": "current_branch",
   "ty": { "domain_type": "branchname" },
+  "source": "synthesized_by_agent"
+}
+```
+
+**Descriptive form** (`return <"…">`):
+
+```json
+{
+  "node_id": "n9",
+  "kind": "output_contract",
+  "form": "description",
+  "description": "root cause analysis including affected files and severity",
+  "ty": { "domain_type": "diagnosis" },
   "source": "synthesized_by_agent"
 }
 ```
@@ -201,11 +219,13 @@ Here `{scope}` is a parameter slot (not in `local_refs`) and `{diagnosis}` is a 
 |---|---|---|---|
 | `node_id` | string | yes | |
 | `kind` | string | yes | Always `"output_contract"`. |
-| `target_name` | string | yes | Identifier from `return <name>`, without angle brackets. |
-| `ty` | TypeTag or null | yes | Enclosing declaration's resolved `-> DomainType`, or `null` if omitted. |
+| `form` | string | yes | Discriminator: `"identifier"` or `"description"`. Selects which of `target_name` / `description` is present. |
+| `target_name` | string | conditional | Identifier from `return <name>`, without angle brackets. **Required when `form == "identifier"`; absent otherwise.** Stored in canonical form per `values-and-names.md` §Case Normalization. |
+| `description` | string | conditional | Verbatim string content from `return <"…">`, with inline-string escapes resolved (`\"` and `\\` per `values-and-names.md` §Inline Strings). **Required when `form == "description"`; absent otherwise.** Empty string is not valid — empty `<"">` is rejected by Phase 1 with `G::parse::malformed-output-target`. |
+| `ty` | TypeTag or null | yes | Enclosing declaration's resolved `-> DomainType`, or `null` if omitted. Both forms inherit type from the same channel; the form does not change typing. |
 | `source` | string | yes | OutputSource enum value. Currently `"synthesized_by_agent"`. |
 
-`OutputContract` objects appear in two places: `skill.output_contract` for the root skill and `call.callee_output_contract` for resolved block calls. They never appear inside a `flow` array.
+`OutputContract` objects appear in two places: `skill.output_contract` for the root skill and `call.callee_output_contract` for resolved block calls. They never appear inside a `flow` array. Descriptive form is terminal-return-only in MVP — both surface positions accept either form, but mid-flow output targets (if added later) must use the identifier form (see `ir-schema.md` §OutputContract).
 
 ### InlineInstruction
 

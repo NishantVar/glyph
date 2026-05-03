@@ -11,7 +11,7 @@ use crate::ast::{
 use crate::ir::{
     IrArena, IrBlock, IrBranch, IrCall, IrConstraint, IrContext, IrElifBranch,
     IrInlineInstruction, IrNode, IrOutputContract, IrParam, IrSkill, NodeId, OutputSource,
-    Polarity, Role, Strength,
+    OutputTargetForm, Polarity, Role, Strength,
 };
 use crate::output_target::OutputTargetExpr;
 use crate::domain_registry::canonicalize_identifier;
@@ -146,16 +146,23 @@ fn lower_output_contract_for_flow(
     enclosing_return_type: Option<TypeTag>,
 ) -> Option<NodeId> {
     for stmt in flow {
-        if let FlowStmt::Return(ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id))) = stmt {
-            let next = NodeId(arena.len() as u32);
-            let oc_id = arena.push(IrNode::OutputContract(IrOutputContract {
-                node_id: next,
-                target_name: id.name.clone(),
-                ty: enclosing_return_type,
-                source: OutputSource::SynthesizedByAgent,
-            }));
-            return Some(oc_id);
-        }
+        let form = match stmt {
+            FlowStmt::Return(ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id))) => {
+                OutputTargetForm::Identifier(id.name.clone())
+            }
+            FlowStmt::Return(ReturnExpr::OutputTarget(OutputTargetExpr::Description(d))) => {
+                OutputTargetForm::Description(d.content.clone())
+            }
+            _ => continue,
+        };
+        let next = NodeId(arena.len() as u32);
+        let oc_id = arena.push(IrNode::OutputContract(IrOutputContract {
+            node_id: next,
+            form,
+            ty: enclosing_return_type,
+            source: OutputSource::SynthesizedByAgent,
+        }));
+        return Some(oc_id);
     }
     None
 }
@@ -524,11 +531,20 @@ pub fn lower_with_imports(
                     ReturnExpr::OutputTarget(_) => None,
                 };
                 return_text = text;
-                if let ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id)) = expr {
+                let form = match expr {
+                    ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id)) => {
+                        Some(OutputTargetForm::Identifier(id.name.clone()))
+                    }
+                    ReturnExpr::OutputTarget(OutputTargetExpr::Description(d)) => {
+                        Some(OutputTargetForm::Description(d.content.clone()))
+                    }
+                    _ => None,
+                };
+                if let Some(form) = form {
                     let next = NodeId(arena.len() as u32);
                     let oc_id = arena.push(IrNode::OutputContract(IrOutputContract {
                         node_id: next,
-                        target_name: id.name.clone(),
+                        form,
                         ty: skill_return_type.clone(),
                         source: OutputSource::SynthesizedByAgent,
                     }));
@@ -1326,7 +1342,7 @@ mod output_contract_lower_tests {
     //! IR-JSON serialization is chunk 5; expand-step rewriting is chunk 6;
     //! missing-annotation diagnostics are chunks 8/9.
     use super::*;
-    use crate::ir::{IrNode, IrOutputContract, OutputSource};
+    use crate::ir::{IrNode, IrOutputContract, OutputSource, OutputTargetForm};
     use crate::parse;
 
     fn lower_src(src: &str) -> IrArena {
@@ -1354,7 +1370,7 @@ skill make_report() -> Report
 ";
         let arena = lower_src(src);
         let oc = first_output_contract(&arena);
-        assert_eq!(oc.target_name, "output");
+        assert_eq!(oc.form, OutputTargetForm::Identifier("output".into()));
         assert_eq!(oc.ty, Some(TypeTag::DomainType("report".into())));
         assert_eq!(oc.source, OutputSource::SynthesizedByAgent);
     }
@@ -1396,7 +1412,7 @@ block helper() -> Path
 ";
         let arena = lower_src(src);
         let oc = first_output_contract(&arena);
-        assert_eq!(oc.target_name, "out");
+        assert_eq!(oc.form, OutputTargetForm::Identifier("out".into()));
         assert_eq!(oc.ty, Some(TypeTag::DomainType("path".into())));
         let block = arena
             .nodes()
@@ -1444,7 +1460,29 @@ skill drive()
 ";
         let arena = lower_src(src);
         let oc = first_output_contract(&arena);
-        assert_eq!(oc.target_name, "out");
+        assert_eq!(oc.form, OutputTargetForm::Identifier("out".into()));
         assert_eq!(oc.ty, None);
+    }
+
+    #[test]
+    fn lower_descriptive_output_target_produces_description_form() {
+        let src = "\
+skill root()
+    flow:
+        \"go\"
+
+block diagnose() -> Diagnosis
+    flow:
+        return <\"root cause and severity\">
+";
+        let arena = lower_src(src);
+        let oc = first_output_contract(&arena);
+        match &oc.form {
+            OutputTargetForm::Description(d) => {
+                assert_eq!(d, "root cause and severity");
+            }
+            other => panic!("expected Description, got {:?}", other),
+        }
+        assert_eq!(oc.source, OutputSource::SynthesizedByAgent);
     }
 }

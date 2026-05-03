@@ -398,9 +398,9 @@ flow:
 
 Rules:
 
-- `return <expr>` where `<expr>` is a call, binding reference, dot access, literal, `none`, or an output target identifier (`<name>`).
+- `return <expr>` where `<expr>` is a call, binding reference, dot access, literal, `none`, an output target identifier (`<name>`), or an output target description (`<"…">`).
 - `return` alone (no expression) is equivalent to `return none`.
-- `return <name>` marks an agent-synthesized output target. The name must be identifier-shaped and must not shadow an existing visible binding. Lower records it as an `OutputContract { target_name, ty, source }` using the enclosing declaration's `-> DomainType` annotation for `ty`. Expand folds it into natural prose; the literal `<name>` token must not appear in compiled Markdown.
+- `return <name>` and `return <"description">` mark an agent-synthesized output target. The identifier form's name must be identifier-shaped and must not shadow an existing visible binding. The descriptive form's quoted string follows inline-string rules — double quotes only, MVP escapes `\"` and `\\`, no interpolation, no `{name}` slots (`values-and-names.md` §Inline Strings). Lower records the return as an `OutputContract { form, ty, source }` (`ir-schema.md` §OutputContract) where `form` is `Identifier(name)` or `Description(text)` and `ty` comes from the enclosing declaration's `-> DomainType` annotation. Expand folds either form into natural prose; the literal `<name>` or `<"…">` token must not appear in compiled Markdown.
 - **Single, terminal-only.** Exactly **one** `return` statement per `skill`, `block`, or `export block`, and it must appear as the **last statement at the top level of `flow:`**. `return` is **not** allowed inside `if`/`elif`/`else` branch bodies (no early return). Multiple `return` statements in a single `flow:` are a parse error.
 - **Implicit vs. explicit:** If `return` is omitted, the body implicitly returns `none`. This applies to `skill` and private `block` declarations. **`export block` requires an explicit `return`** (even `return none`) because its output is a public contract visible to importers (see `language-surface.md` §3.3). Export blocks with a meaningful return must also declare `-> DomainType` on the header; export blocks with no meaningful return omit `->` entirely. The compiler inserts an implicit `Return { value: none }` during Lower only for `skill` and `block` — omitting `return` in an `export block` is a repairable diagnostic (`G::analyze::missing-return`). There is no per-path return-coverage analysis, because `return` is forbidden in branches and only appears once at the end of `flow:` (or not at all).
 
@@ -411,7 +411,7 @@ Parse-level diagnostics enforcing this rule:
 | `G::parse::return-not-terminal` | `return` appears before the last statement of `flow:` |
 | `G::parse::return-in-branch` | `return` appears inside an `if`/`elif`/`else` body |
 | `G::parse::multiple-returns` | More than one `return` in a single `flow:` |
-| `G::parse::output-target-outside-return` | `<name>` output-target form appears outside a terminal top-level `return` |
+| `G::parse::output-target-outside-return` | An output target form (`<name>` or `<"description">`) appears outside a terminal top-level `return` |
 
 (See `todo.md` for the deferred consideration of branch-nested early returns.)
 

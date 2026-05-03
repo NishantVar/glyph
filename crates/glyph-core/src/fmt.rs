@@ -254,8 +254,8 @@ fn rewrite_decl_body(body_lines: &[&str], ast_decl: Option<&crate::ast::Decl>) -
 
     for raw_line in body_lines {
         let line_owned = placeholder_target
-            .as_deref()
-            .and_then(|target| rewrite_placeholder_return_line(raw_line, target))
+            .as_ref()
+            .and_then(|repair| rewrite_placeholder_return_line(raw_line, repair))
             .unwrap_or_else(|| (*raw_line).to_string());
         let line = line_owned.as_str();
         let trimmed = line.trim();
@@ -461,7 +461,12 @@ fn is_context_marker(trimmed: &str) -> bool {
     trimmed.starts_with("context ") && !trimmed.starts_with("context:")
 }
 
-fn placeholder_string_return_target(ast_decl: Option<&crate::ast::Decl>) -> Option<String> {
+enum PlaceholderRepair {
+    Identifier(String),
+    Description(String),
+}
+
+fn placeholder_string_return_target(ast_decl: Option<&crate::ast::Decl>) -> Option<PlaceholderRepair> {
     let decl = ast_decl?;
     match decl {
         crate::ast::Decl::Skill(s) if is_domain_return_type(s.node.return_type.as_ref()) => {
@@ -477,18 +482,24 @@ fn placeholder_string_return_target(ast_decl: Option<&crate::ast::Decl>) -> Opti
     }
 }
 
-fn flow_placeholder_target(flow: &[crate::ast::FlowStmt]) -> Option<String> {
+fn flow_placeholder_target(flow: &[crate::ast::FlowStmt]) -> Option<PlaceholderRepair> {
     flow.iter().rev().find_map(|stmt| match stmt {
         crate::ast::FlowStmt::Return(expr) => return_expr_placeholder_target(Some(expr)),
         _ => None,
     })
 }
 
-fn return_expr_placeholder_target(expr: Option<&crate::ast::ReturnExpr>) -> Option<String> {
+fn return_expr_placeholder_target(expr: Option<&crate::ast::ReturnExpr>) -> Option<PlaceholderRepair> {
     let Some(crate::ast::ReturnExpr::Inline(s)) = expr else {
         return None;
     };
-    placeholder_identifier(s).map(String::from)
+    if let Some(id) = placeholder_identifier(s) {
+        return Some(PlaceholderRepair::Identifier(id.to_string()));
+    }
+    if let Some(desc) = placeholder_description(s) {
+        return Some(PlaceholderRepair::Description(desc.to_string()));
+    }
+    None
 }
 
 fn placeholder_identifier(s: &str) -> Option<&str> {
@@ -508,6 +519,24 @@ fn placeholder_identifier(s: &str) -> Option<&str> {
     }
 }
 
+fn placeholder_description(s: &str) -> Option<&str> {
+    // Mirrors `analyze::placeholder_description` — must reject the same set of
+    // contents so `glyph check` (which fires the diagnostic) and `glyph fmt`
+    // (which performs the rewrite) stay in sync. See the analyze.rs copy for
+    // the rationale (round-trip safety after tokenizer-level escape decoding).
+    if placeholder_identifier(s).is_some() {
+        return None;
+    }
+    let inner = s.strip_prefix('<')?.strip_suffix('>')?;
+    if inner.is_empty() {
+        return None;
+    }
+    if inner.contains(|c: char| c == '"' || c == '\\' || c == '\n' || c == '\t' || c == '\r') {
+        return None;
+    }
+    Some(inner)
+}
+
 fn is_domain_return_type(rt: Option<&crate::span::Spanned<String>>) -> bool {
     let Some(rt) = rt else {
         return false;
@@ -522,14 +551,26 @@ fn is_builtin_type_name(s: &str) -> bool {
     CANONICAL_BUILTINS.contains(&canonical.as_str())
 }
 
-fn rewrite_placeholder_return_line(line: &str, target: &str) -> Option<String> {
+fn rewrite_placeholder_return_line(line: &str, repair: &PlaceholderRepair) -> Option<String> {
     let trimmed = line.trim();
-    let expected = format!("return \"<{target}>\"");
-    if trimmed != expected {
-        return None;
-    }
     let indent_len = line.len() - line.trim_start().len();
-    Some(format!("{}return <{}>", &line[..indent_len], target))
+    let indent = &line[..indent_len];
+    match repair {
+        PlaceholderRepair::Identifier(target) => {
+            let expected = format!("return \"<{target}>\"");
+            if trimmed != expected {
+                return None;
+            }
+            Some(format!("{}return <{}>", indent, target))
+        }
+        PlaceholderRepair::Description(desc) => {
+            let expected = format!("return \"<{desc}>\"");
+            if trimmed != expected {
+                return None;
+            }
+            Some(format!("{}return <\"{}\">", indent, desc))
+        }
+    }
 }
 
 /// Strip legacy `-> None` (case-insensitive) return-type annotations from
@@ -825,6 +866,66 @@ skill current() -> BranchName
             "placeholder string return should be gone, got:\n{}",
             result.output
         );
+    }
+
+    #[test]
+    fn fmt_source_rewrites_descriptive_placeholder_string_return_to_output_target() {
+        let src = "\
+skill diagnose() -> Confirmation
+    description: \"Diagnose the issue.\"
+    flow:
+        return \"<root cause and severity>\"
+";
+        let result = fmt_source(src, false);
+        assert!(result.changed, "fmt should rewrite the descriptive placeholder string");
+        assert!(
+            result.output.contains("        return <\"root cause and severity\">\n"),
+            "expected descriptive output target return after fmt, got:\n{}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("return \"<root cause and severity>\""),
+            "placeholder string return should be gone, got:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn fmt_source_leaves_placeholder_string_return_with_inner_quotes_unrewritten() {
+        // "<\"foo\">" contains literal quotes inside the angle brackets;
+        // rewriting it would produce invalid syntax, so fmt must leave it as-is.
+        let src = "\
+skill diagnose() -> Confirmation
+    description: \"Diagnose the issue.\"
+    flow:
+        return \"<\\\"foo\\\">\"
+";
+        let result = fmt_source(src, false);
+        assert_eq!(result.output, src, "line with inner-quoted placeholder must be left unrewritten");
+        assert!(!result.changed, "fmt must not mark source as changed");
+    }
+
+    #[test]
+    fn fmt_source_leaves_placeholder_string_return_with_inner_escapes_unrewritten() {
+        // The tokenizer decodes `\n` to a literal newline inside the string,
+        // so the AST-level content no longer matches the source spelling. The
+        // descriptive guard must reject anything containing chars that require
+        // source-level escaping; otherwise fmt would silently fail to rewrite
+        // (decoded form != source form when reconstructing the line).
+        let cases: &[(&str, &str)] = &[
+            ("newline",   "skill d() -> Confirmation\n    flow:\n        return \"<root cause\\nseverity>\"\n"),
+            ("tab",       "skill d() -> Confirmation\n    flow:\n        return \"<root\\tcause>\"\n"),
+            ("cr",        "skill d() -> Confirmation\n    flow:\n        return \"<root\\rcause>\"\n"),
+            ("backslash", "skill d() -> Confirmation\n    flow:\n        return \"<path\\\\to\\\\foo>\"\n"),
+        ];
+        for (label, src) in cases {
+            let result = fmt_source(src, false);
+            assert_eq!(
+                result.output, *src,
+                "[{label}] line with escape-requiring inner placeholder must be left unrewritten"
+            );
+            assert!(!result.changed, "[{label}] fmt must not mark source as changed");
+        }
     }
 
     #[test]

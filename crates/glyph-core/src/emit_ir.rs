@@ -6,7 +6,7 @@
 
 use crate::ir::{
     IrArena, IrBranch, IrCall, IrConstraint, IrContext, IrElifBranch, IrInlineInstruction, IrNode,
-    IrOutputContract, IrParam, NodeId, OutputSource, Polarity, Role, Strength,
+    IrOutputContract, IrParam, NodeId, OutputSource, OutputTargetForm, Polarity, Role, Strength,
 };
 use crate::kind_infer::TypeTag;
 use serde_json::{json, Map, Value};
@@ -97,16 +97,24 @@ fn output_source_str(s: OutputSource) -> &'static str {
     }
 }
 
-/// Issue #85 chunk 5: serialize an `IrOutputContract` arena entry to the
-/// pinned JSON shape `{ node_id, kind: "output_contract", target_name, ty,
-/// source }`. `ty` defers to `opt_typetag_to_json` (FC8 designer relay), so
-/// `None` (missing-annotation, surfaced by chunks 8/9) lowers to JSON `null`,
-/// built-ins to lowercase strings, and `DomainType` to a single-key object.
+/// Issue #85/#86: serialize an `IrOutputContract` arena entry. For identifier
+/// form: `{ node_id, kind, form: "identifier", target_name, ty, source }`.
+/// For description form: `{ node_id, kind, form: "description", description,
+/// ty, source }`. `ty` defers to `opt_typetag_to_json` (FC8 designer relay).
 fn serialize_output_contract(oc: &IrOutputContract) -> Value {
     let mut m = Map::new();
     m.insert("node_id".into(), Value::String(node_id_str(oc.node_id)));
     m.insert("kind".into(), Value::String("output_contract".into()));
-    m.insert("target_name".into(), Value::String(oc.target_name.clone()));
+    match &oc.form {
+        OutputTargetForm::Identifier(name) => {
+            m.insert("form".into(), Value::String("identifier".into()));
+            m.insert("target_name".into(), Value::String(name.clone()));
+        }
+        OutputTargetForm::Description(desc) => {
+            m.insert("form".into(), Value::String("description".into()));
+            m.insert("description".into(), Value::String(desc.clone()));
+        }
+    }
     m.insert("ty".into(), opt_typetag_to_json(&oc.ty));
     m.insert(
         "source".into(),
@@ -982,6 +990,96 @@ skill make_report() -> Report
         assert!(
             nid.starts_with('n') && nid[1..].chars().all(|c| c.is_ascii_digit()),
             "node_id follows the `n<integer>` convention; got {nid:?}"
+        );
+    }
+
+    /// Issue #86 chunk 2 follow-up: lock the JSON shape for both
+    /// `OutputTargetForm` arms by calling `serialize_output_contract`
+    /// directly. The description arm is unreachable via `parse → lower`
+    /// until Task 3 wires up the `<"…">` parser, so this is the only
+    /// guard against the description shape regressing in the meantime.
+    #[test]
+    fn serialize_output_contract_shape_for_both_forms() {
+        use crate::ir::{IrOutputContract, NodeId, OutputSource, OutputTargetForm};
+
+        // --- description arm ---
+        let desc_oc = IrOutputContract {
+            node_id: NodeId(7),
+            form: OutputTargetForm::Description("root cause analysis".into()),
+            ty: None,
+            source: OutputSource::SynthesizedByAgent,
+        };
+        let desc_json = serialize_output_contract(&desc_oc);
+        let desc_obj = desc_json
+            .as_object()
+            .expect("description arm serializes to a JSON object");
+        assert_eq!(
+            desc_obj.get("form").and_then(|v| v.as_str()),
+            Some("description"),
+            "description arm carries form discriminator \"description\""
+        );
+        assert_eq!(
+            desc_obj.get("description").and_then(|v| v.as_str()),
+            Some("root cause analysis"),
+            "description arm carries the decoded description text"
+        );
+        assert!(
+            !desc_obj.contains_key("target_name"),
+            "description arm must NOT carry `target_name`; the two arms are \
+             mutually exclusive in JSON shape"
+        );
+        assert_eq!(
+            desc_obj.get("kind").and_then(|v| v.as_str()),
+            Some("output_contract"),
+        );
+        assert_eq!(
+            desc_obj.get("node_id").and_then(|v| v.as_str()),
+            Some("n7"),
+        );
+        assert_eq!(desc_obj.get("ty"), Some(&Value::Null));
+        assert_eq!(
+            desc_obj.get("source").and_then(|v| v.as_str()),
+            Some("synthesized_by_agent"),
+        );
+
+        // --- identifier arm (sibling assertion to lock both shapes) ---
+        let id_oc = IrOutputContract {
+            node_id: NodeId(3),
+            form: OutputTargetForm::Identifier("current_branch".into()),
+            ty: None,
+            source: OutputSource::SynthesizedByAgent,
+        };
+        let id_json = serialize_output_contract(&id_oc);
+        let id_obj = id_json
+            .as_object()
+            .expect("identifier arm serializes to a JSON object");
+        assert_eq!(
+            id_obj.get("form").and_then(|v| v.as_str()),
+            Some("identifier"),
+            "identifier arm carries form discriminator \"identifier\""
+        );
+        assert_eq!(
+            id_obj.get("target_name").and_then(|v| v.as_str()),
+            Some("current_branch"),
+            "identifier arm carries the inner identifier verbatim"
+        );
+        assert!(
+            !id_obj.contains_key("description"),
+            "identifier arm must NOT carry `description`; the two arms are \
+             mutually exclusive in JSON shape"
+        );
+        assert_eq!(
+            id_obj.get("kind").and_then(|v| v.as_str()),
+            Some("output_contract"),
+        );
+        assert_eq!(
+            id_obj.get("node_id").and_then(|v| v.as_str()),
+            Some("n3"),
+        );
+        assert_eq!(id_obj.get("ty"), Some(&Value::Null));
+        assert_eq!(
+            id_obj.get("source").and_then(|v| v.as_str()),
+            Some("synthesized_by_agent"),
         );
     }
 }
