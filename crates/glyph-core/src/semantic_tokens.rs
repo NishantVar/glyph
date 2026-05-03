@@ -1,13 +1,14 @@
-//! Semantic-token collector (M3).
+//! Semantic-token collector.
 //!
 //! Walks the lex stream + parsed AST to produce a sorted, dense list of
 //! `(line, col, length, token-type, modifiers)` tuples. The LSP layer
 //! delta-encodes these into the LSP `textDocument/semanticTokens/full`
 //! reply. Token types and modifiers are mapped onto the LSP standard set
-//! per the tree-sitter `highlights.scm` grammar (kept in
-//! `feature/tree-sitter-grammar`) so cross-editor highlighting stays in
-//! sync between tree-sitter editors (Helix, Zed, Neovim treesitter) and
-//! pure-LSP editors (VS Code, basic nvim-lspconfig).
+//! (Keyword, Function, Method, Variable, …) plus a Glyph-specific set
+//! (GlyphFlowString, GlyphContextString, GlyphBlockCall, …) introduced by
+//! issue #93 so VS Code can ship default colors that visually distinguish
+//! the four core Glyph primitives — `flow:` content, `context:` content,
+//! `text` declarations, and `block` / `export block` declarations.
 //!
 //! # Coordinate system
 //!
@@ -15,31 +16,34 @@
 //! - `line`: 0-indexed line number (LSP convention).
 //! - `start`: 0-indexed byte column from the start of the line.
 //!   Glyph rejects tabs and non-ASCII identifiers, so byte == utf-16 code
-//!   unit for everything except string-literal contents. M3 accepts the
-//!   small imprecision that string literals containing non-ASCII may
-//!   produce slightly off LSP ranges; pure-ASCII source is exact.
+//!   unit for everything except string-literal contents. Pure-ASCII source
+//!   is exact; string literals containing non-ASCII may produce slightly
+//!   off LSP ranges.
 //! - `length`: byte length of the token.
 //! - `token_type`: index into [`SemTokenType::legend`].
 //! - `modifiers`: bitset over [`SemTokenModifier::legend`].
 //!
 //! # Strategy
 //!
-//! Two passes that produce candidate tokens, then sort + dedup by start
+//! Three passes that produce candidate tokens, then sort + dedup by start
 //! position (last-write-wins for exact overlaps so the AST pass refines
 //! the lex pass):
 //!
-//! 1. **Lex pass** — re-tokenize the source. Map identifier tokens whose
-//!    text matches a hard keyword (`skill`, `block`, `if`, …) to
-//!    [`SemTokenType::Keyword`]; map type identifiers (`text`, `int`,
-//!    `float`) to [`SemTokenType::Type`]; map section labels
-//!    (`description`, `flow`, …) to keyword **only when followed by a
-//!    colon** (so they remain plain identifiers when used elsewhere).
-//!    String literals become [`SemTokenType::String`].
+//! 1. **Lex pass** — re-tokenize the source. Track current
+//!    section state (None / Description / Context / Constraints / Flow /
+//!    Effects) by watching for `<label>:` tokens at indent 1 and
+//!    top-level decl keywords at indent 0. Classify identifiers (hard
+//!    keywords, types, section labels with per-section `Glyph*` types)
+//!    and string literals (Glyph flow / context strings vs plain).
+//!    Inside flow strings, scan for `{name}` interpolations.
 //! 2. **Comment pass** — scan source bytes for `//` comments (the lexer
 //!    drops them), emit [`SemTokenType::Comment`] for each.
 //! 3. **AST pass** — parse the source (errors are silenced — partial AST
 //!    is fine here). For each declaration, classify the bound name plus
-//!    any references reachable from the declaration body.
+//!    any references reachable from the declaration body. Flow `Call`
+//!    sites are emitted as `GlyphBlockCall` when the target is a same-file
+//!    `block` / `export block` decl, otherwise `GlyphFlowCall`. Context
+//!    bare-name references are emitted as `GlyphContextNameRef`.
 
 use crate::ast::{
     BlockDecl, ContextEntry, Decl, ExportBlockDecl, FlowStmt, ImportDecl, ImportKind,
@@ -49,9 +53,13 @@ use crate::diagnostic::DiagBag;
 use crate::parse::parse_with_diagnostics_opts;
 use crate::span::{LineIndex, Span, Spanned};
 use crate::tokenize::{tokenize, Token, TokenKind};
+use std::collections::HashSet;
 
-/// LSP standard semantic token types we emit. Index in the legend ==
-/// enum discriminant.
+/// LSP semantic token types we emit. Index in the legend == enum
+/// discriminant. The first 11 are LSP-standard names; the remainder
+/// (`Glyph*`) are issue-#93 additions that the VS Code extension defaults
+/// colors for and the tree-sitter grammar mirrors as
+/// `@glyph.<area>.<role>` captures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum SemTokenType {
@@ -66,23 +74,58 @@ pub enum SemTokenType {
     Namespace = 8,
     Number = 9,
     Comment = 10,
+    /// Inline string literal inside a `flow:` body. Loud / saturated by
+    /// default in VS Code so the instructional payload stands out.
+    GlyphFlowString = 11,
+    /// Inline string literal inside a `context:` body. Muted-italic by
+    /// default so background knowledge reads quieter than flow content.
+    GlyphContextString = 12,
+    /// Call site inside `flow:` whose target is *not* a same-file `block`
+    /// or `export block` (e.g. stdlib calls, or unresolved names).
+    GlyphFlowCall = 13,
+    /// Call site inside `flow:` whose target *is* a same-file `block`
+    /// or `export block` declaration.
+    GlyphBlockCall = 14,
+    /// Bare-name reference inside `context:` (or a body-level `context`
+    /// marker) — typically points to a `text` declaration.
+    GlyphContextNameRef = 15,
+    /// `description:` section header.
+    GlyphSectionDescription = 16,
+    /// `context:` section header.
+    GlyphSectionContext = 17,
+    /// `constraints:` section header.
+    GlyphSectionConstraints = 18,
+    /// `flow:` section header.
+    GlyphSectionFlow = 19,
+    /// `{name}` interpolation slot inside a flow inline string.
+    GlyphInterpolation = 20,
 }
 
 impl SemTokenType {
     /// Names in the LSP `semanticTokensProvider.legend.tokenTypes` array.
-    pub const fn legend() -> [&'static str; 11] {
+    pub const fn legend() -> [&'static str; 21] {
         [
-            "keyword",   // 0
-            "type",      // 1
-            "function",  // 2
-            "method",    // 3
-            "parameter", // 4
-            "variable",  // 5
-            "property",  // 6
-            "string",    // 7
-            "namespace", // 8
-            "number",    // 9
-            "comment",   // 10
+            "keyword",                 // 0
+            "type",                    // 1
+            "function",                // 2
+            "method",                  // 3
+            "parameter",               // 4
+            "variable",                // 5
+            "property",                // 6
+            "string",                  // 7
+            "namespace",               // 8
+            "number",                  // 9
+            "comment",                 // 10
+            "glyphFlowString",         // 11
+            "glyphContextString",      // 12
+            "glyphFlowCall",           // 13
+            "glyphBlockCall",          // 14
+            "glyphContextNameRef",     // 15
+            "glyphSectionDescription", // 16
+            "glyphSectionContext",     // 17
+            "glyphSectionConstraints", // 18
+            "glyphSectionFlow",        // 19
+            "glyphInterpolation",      // 20
         ]
     }
 }
@@ -131,9 +174,9 @@ pub fn collect_semantic_tokens(source: &str, file_id: u32) -> Vec<RawSemToken> {
     let line_index = LineIndex::new(source);
     let mut tokens: Vec<RawSemToken> = Vec::new();
 
-    // Pass 1: lex tokens.
+    // Pass 1: lex tokens (section-aware).
     let lex_tokens = tokenize(source, file_id).map(|(t, _)| t).unwrap_or_default();
-    classify_lex_tokens(&lex_tokens, &line_index, &mut tokens);
+    classify_lex_tokens(source, &lex_tokens, &line_index, &mut tokens);
 
     // Pass 2: line comments (lexer strips them).
     classify_comments(source, &line_index, &mut tokens);
@@ -148,7 +191,8 @@ pub fn collect_semantic_tokens(source: &str, file_id: u32) -> Vec<RawSemToken> {
         &mut bag,
         true,
     ) {
-        classify_ast(&ast, source, file_id, &line_index, &mut tokens);
+        let block_names = collect_block_decl_names(&ast);
+        classify_ast(&ast, &block_names, source, file_id, &line_index, &mut tokens);
     }
 
     sort_and_dedup(&mut tokens);
@@ -157,44 +201,81 @@ pub fn collect_semantic_tokens(source: &str, file_id: u32) -> Vec<RawSemToken> {
 
 // -- Lex pass -------------------------------------------------------------
 
+/// Currently active section in the lex pass — drives string-literal
+/// classification and interpolation scanning.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Section {
+    None,
+    Description,
+    Context,
+    Constraints,
+    Flow,
+    Effects,
+}
+
 fn classify_lex_tokens(
+    source: &str,
     lex_tokens: &[Token],
     line_index: &LineIndex,
     out: &mut Vec<RawSemToken>,
 ) {
+    let mut section = Section::None;
+    let mut current_indent: u32 = 0;
+
     for (i, tok) in lex_tokens.iter().enumerate() {
         match &tok.kind {
+            TokenKind::LineStart { indent } => {
+                current_indent = *indent;
+            }
             TokenKind::Ident(text) => {
+                // Top-level decl keyword at indent 0 → reset section.
+                if current_indent == 0 && is_top_level_decl_keyword(text.as_str()) {
+                    section = Section::None;
+                }
+                // Section labels: only when followed by `:`.
+                let next_is_colon = lex_tokens
+                    .get(i + 1)
+                    .map(|t| matches!(t.kind, TokenKind::Colon))
+                    .unwrap_or(false);
+                if next_is_colon {
+                    if let Some((sec, ttype)) = section_for_label(text.as_str()) {
+                        section = sec;
+                        push_span(out, tok.span, ttype, SemTokenModifier::NONE, line_index);
+                        continue;
+                    }
+                }
+                // Hard keywords / type keywords.
                 if let Some(ttype) = classify_keyword_text(text.as_str()) {
                     push_span(out, tok.span, ttype, SemTokenModifier::NONE, line_index);
-                } else if is_section_label(text.as_str()) {
-                    // Section labels (`description`, `flow`, …) are
-                    // keywords only when immediately followed by `:`.
-                    let next_is_colon = lex_tokens
-                        .get(i + 1)
-                        .map(|t| matches!(t.kind, TokenKind::Colon))
-                        .unwrap_or(false);
-                    if next_is_colon {
-                        push_span(
-                            out,
-                            tok.span,
-                            SemTokenType::Keyword,
-                            SemTokenModifier::NONE,
-                            line_index,
-                        );
-                    }
                 }
             }
             TokenKind::StringLit(_) => {
-                push_span(out, tok.span, SemTokenType::String, SemTokenModifier::NONE, line_index);
+                let ttype = match section {
+                    Section::Flow => SemTokenType::GlyphFlowString,
+                    Section::Context => SemTokenType::GlyphContextString,
+                    _ => SemTokenType::String,
+                };
+                push_span(out, tok.span, ttype, SemTokenModifier::NONE, line_index);
+                if section == Section::Flow {
+                    classify_interpolations(source, tok.span, line_index, out);
+                }
             }
             _ => {}
         }
     }
 }
 
+/// Top-level declaration keywords that reset section state when seen at
+/// indent 0.
+fn is_top_level_decl_keyword(s: &str) -> bool {
+    matches!(s, "skill" | "block" | "export" | "generated" | "text" | "import")
+}
+
 /// Hard keywords + builtin types — always classified, regardless of
-/// surrounding tokens.
+/// surrounding tokens. `description`, `context`, `constraints`, `flow`,
+/// `effects` are *not* here; they're handled by `section_for_label` when
+/// followed by `:`. `context` falls through to keyword when not followed
+/// by `:` (e.g. body-level `context name_ref`).
 fn classify_keyword_text(s: &str) -> Option<SemTokenType> {
     match s {
         // Declaration / control flow / logical operators / markers.
@@ -223,10 +304,81 @@ fn classify_keyword_text(s: &str) -> Option<SemTokenType> {
     }
 }
 
-/// Section-label words — keywords *only* when followed by `:` (so they
-/// don't false-positive when used as identifiers elsewhere).
-fn is_section_label(s: &str) -> bool {
-    matches!(s, "description" | "effects" | "constraints" | "flow")
+/// Map a section-label identifier to its `(section, header-token-type)`
+/// pair. Only valid when the identifier is immediately followed by `:`.
+fn section_for_label(s: &str) -> Option<(Section, SemTokenType)> {
+    match s {
+        "description" => Some((Section::Description, SemTokenType::GlyphSectionDescription)),
+        "context" => Some((Section::Context, SemTokenType::GlyphSectionContext)),
+        "constraints" => Some((Section::Constraints, SemTokenType::GlyphSectionConstraints)),
+        "flow" => Some((Section::Flow, SemTokenType::GlyphSectionFlow)),
+        // `effects:` keeps the plain Keyword classification — PRD #93 does
+        // not single it out for a per-section color.
+        "effects" => Some((Section::Effects, SemTokenType::Keyword)),
+        _ => None,
+    }
+}
+
+/// Scan inside a flow-string literal span for `{name}` interpolation
+/// slots and emit a `GlyphInterpolation` token for each (covering the
+/// braces + the inner identifier).
+///
+/// `string_span` covers the whole literal *including* the surrounding
+/// quotes — we skip the open quote, search forward, and bail at the close
+/// quote.
+fn classify_interpolations(
+    source: &str,
+    string_span: Span,
+    line_index: &LineIndex,
+    out: &mut Vec<RawSemToken>,
+) {
+    // String literals always include quotes in their span; skip them.
+    let s = string_span.start as usize + 1;
+    let e = (string_span.end as usize).saturating_sub(1).min(source.len());
+    if e <= s {
+        return;
+    }
+    let bytes = source.as_bytes();
+    let mut p = s;
+    while p < e {
+        if bytes[p] == b'{' {
+            // Find matching `}` within the string, but only accept a
+            // simple `{ident}` shape.
+            let inner_start = p + 1;
+            let mut q = inner_start;
+            while q < e && bytes[q] != b'}' {
+                q += 1;
+            }
+            if q < e && bytes[q] == b'}' {
+                // Validate inner is a non-empty identifier (allow leading
+                // whitespace tolerance to keep this lenient).
+                let inner = &source[inner_start..q];
+                let trimmed = inner.trim();
+                if !trimmed.is_empty()
+                    && trimmed
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    && trimmed
+                        .bytes()
+                        .next()
+                        .map(|b| b.is_ascii_alphabetic() || b == b'_')
+                        .unwrap_or(false)
+                {
+                    let span = Span::new(string_span.file_id, p as u32, (q + 1) as u32);
+                    push_span(
+                        out,
+                        span,
+                        SemTokenType::GlyphInterpolation,
+                        SemTokenModifier::NONE,
+                        line_index,
+                    );
+                }
+                p = q + 1;
+                continue;
+            }
+        }
+        p += 1;
+    }
 }
 
 // -- Comment pass ---------------------------------------------------------
@@ -270,8 +422,30 @@ fn classify_comments(source: &str, line_index: &LineIndex, out: &mut Vec<RawSemT
 
 // -- AST pass -------------------------------------------------------------
 
+/// Collect the names of every same-file `block` / `export block`
+/// declaration. Flow `Call` sites whose target matches a name in this set
+/// are classified as `GlyphBlockCall` (vs `GlyphFlowCall` for everything
+/// else). Cross-file imported blocks are *not* included — keeping this
+/// local avoids an analyze pass dependency.
+fn collect_block_decl_names(ast: &SourceFile) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for decl in &ast.decls {
+        match decl {
+            Decl::Block(b) => {
+                names.insert(b.node.name.clone());
+            }
+            Decl::ExportBlock(eb) => {
+                names.insert(eb.node.name.clone());
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
 fn classify_ast(
     ast: &SourceFile,
+    block_names: &HashSet<String>,
     source: &str,
     file_id: u32,
     line_index: &LineIndex,
@@ -279,8 +453,12 @@ fn classify_ast(
 ) {
     for decl in &ast.decls {
         match decl {
-            Decl::Skill(s) => classify_skill(s, source, file_id, line_index, out),
-            Decl::Block(b) => classify_block(b, source, file_id, line_index, out),
+            Decl::Skill(s) => {
+                classify_skill(s, block_names, source, file_id, line_index, out)
+            }
+            Decl::Block(b) => {
+                classify_block(b, block_names, source, file_id, line_index, out)
+            }
             Decl::ExportBlock(eb) => {
                 classify_export_block(eb, source, file_id, line_index, out)
             }
@@ -292,6 +470,7 @@ fn classify_ast(
 
 fn classify_skill(
     spanned: &Spanned<Skill>,
+    block_names: &HashSet<String>,
     source: &str,
     file_id: u32,
     line_index: &LineIndex,
@@ -316,12 +495,13 @@ fn classify_skill(
         push_span(out, n.span, SemTokenType::Variable, SemTokenModifier::NONE, line_index);
     }
     for stmt in &spanned.node.flow {
-        classify_flow_stmt(stmt, line_index, out);
+        classify_flow_stmt(stmt, block_names, line_index, out);
     }
 }
 
 fn classify_block(
     spanned: &Spanned<BlockDecl>,
+    block_names: &HashSet<String>,
     source: &str,
     file_id: u32,
     line_index: &LineIndex,
@@ -340,7 +520,7 @@ fn classify_block(
     }
     classify_params(&spanned.node.params, line_index, out);
     for stmt in &spanned.node.flow {
-        classify_flow_stmt(stmt, line_index, out);
+        classify_flow_stmt(stmt, block_names, line_index, out);
     }
 }
 
@@ -363,9 +543,9 @@ fn classify_export_block(
         );
     }
     classify_params(&spanned.node.params, line_index, out);
-    // Slice 4 doesn't lower export-block flow into FlowStmt — `body_refs` is
-    // a flat list of identifier strings without spans, so we don't get
-    // call-site classifications here. Acceptable for M3.
+    // ExportBlockDecl doesn't carry FlowStmt — `body_refs` is a flat list
+    // of identifier strings without spans, so we don't get call-site
+    // classifications here. Acceptable for the highlight pass.
 }
 
 fn classify_text(
@@ -494,21 +674,31 @@ fn classify_context_entries(
 ) {
     for entry in entries {
         if let ContextEntry::NameRef(n) = entry {
-            push_span(out, n.span, SemTokenType::Variable, SemTokenModifier::NONE, line_index);
+            push_span(
+                out,
+                n.span,
+                SemTokenType::GlyphContextNameRef,
+                SemTokenModifier::NONE,
+                line_index,
+            );
         }
     }
 }
 
-fn classify_flow_stmt(stmt: &FlowStmt, line_index: &LineIndex, out: &mut Vec<RawSemToken>) {
+fn classify_flow_stmt(
+    stmt: &FlowStmt,
+    block_names: &HashSet<String>,
+    line_index: &LineIndex,
+    out: &mut Vec<RawSemToken>,
+) {
     match stmt {
         FlowStmt::Call { target, .. } => {
-            push_span(
-                out,
-                target.span,
-                SemTokenType::Function,
-                SemTokenModifier::NONE,
-                line_index,
-            );
+            let ttype = if block_names.contains(&target.node) {
+                SemTokenType::GlyphBlockCall
+            } else {
+                SemTokenType::GlyphFlowCall
+            };
+            push_span(out, target.span, ttype, SemTokenModifier::NONE, line_index);
         }
         FlowStmt::ConstraintMarker(cm) => {
             push_span(
@@ -520,20 +710,25 @@ fn classify_flow_stmt(stmt: &FlowStmt, line_index: &LineIndex, out: &mut Vec<Raw
             );
         }
         FlowStmt::ContextMarker(ContextEntry::NameRef(n)) => {
-            push_span(out, n.span, SemTokenType::Variable, SemTokenModifier::NONE, line_index);
+            push_span(
+                out,
+                n.span,
+                SemTokenType::GlyphContextNameRef,
+                SemTokenModifier::NONE,
+                line_index,
+            );
         }
         FlowStmt::ContextMarker(ContextEntry::InlineString(_)) => {}
         FlowStmt::BareName(n) => {
             push_span(out, n.span, SemTokenType::Variable, SemTokenModifier::NONE, line_index);
         }
         FlowStmt::Return(ReturnExpr::Call { target, .. }) => {
-            push_span(
-                out,
-                target.span,
-                SemTokenType::Function,
-                SemTokenModifier::NONE,
-                line_index,
-            );
+            let ttype = if block_names.contains(&target.node) {
+                SemTokenType::GlyphBlockCall
+            } else {
+                SemTokenType::GlyphFlowCall
+            };
+            push_span(out, target.span, ttype, SemTokenModifier::NONE, line_index);
         }
         FlowStmt::Return(ReturnExpr::Name(n)) => {
             push_span(out, n.span, SemTokenType::Variable, SemTokenModifier::NONE, line_index);
@@ -541,16 +736,16 @@ fn classify_flow_stmt(stmt: &FlowStmt, line_index: &LineIndex, out: &mut Vec<Raw
         FlowStmt::Return(_) => {}
         FlowStmt::Branch { then_body, elif_branches, else_body, .. } => {
             for s in then_body {
-                classify_flow_stmt(s, line_index, out);
+                classify_flow_stmt(s, block_names, line_index, out);
             }
             for elif in elif_branches {
                 for s in &elif.body {
-                    classify_flow_stmt(s, line_index, out);
+                    classify_flow_stmt(s, block_names, line_index, out);
                 }
             }
             if let Some(eb) = else_body {
                 for s in eb {
-                    classify_flow_stmt(s, line_index, out);
+                    classify_flow_stmt(s, block_names, line_index, out);
                 }
             }
         }
@@ -723,7 +918,7 @@ mod tests {
 
     #[test]
     fn legend_lengths_match_discriminants() {
-        assert_eq!(SemTokenType::legend().len(), 11);
+        assert_eq!(SemTokenType::legend().len(), 21);
         assert_eq!(SemTokenModifier::legend().len(), 4);
     }
 
@@ -733,18 +928,110 @@ mod tests {
         let tokens = collect_semantic_tokens(src, 0);
         let skill = find_token(&tokens, 0, "skill", src).expect("`skill` keyword");
         assert_eq!(skill.token_type, SemTokenType::Keyword as u32);
-        let desc = find_token(&tokens, 1, "description", src).expect("`description:` keyword");
-        assert_eq!(desc.token_type, SemTokenType::Keyword as u32);
-        let flow = find_token(&tokens, 2, "flow", src).expect("`flow:` keyword");
-        assert_eq!(flow.token_type, SemTokenType::Keyword as u32);
-        // String literals: `"main."` on line 1, `"hi"` on line 3.
+        // `description:` is now its own per-section header type.
+        let desc = find_token(&tokens, 1, "description", src).expect("`description:` header");
+        assert_eq!(desc.token_type, SemTokenType::GlyphSectionDescription as u32);
+        // `flow:` is its own per-section header type.
+        let flow = find_token(&tokens, 2, "flow", src).expect("`flow:` header");
+        assert_eq!(flow.token_type, SemTokenType::GlyphSectionFlow as u32);
+        // The description body string is plain String (not flow/context).
         let main_str = tokens
             .iter()
             .find(|t| t.line == 1 && t.token_type == SemTokenType::String as u32)
             .expect("string on description line");
-        // The lex pass returns a span for the *full literal*, including the
-        // surrounding quotes. Length 7 → "main.".
         assert_eq!(main_str.length, 7);
+    }
+
+    #[test]
+    fn flow_inline_string_is_glyph_flow_string() {
+        let src = "skill main()\n    description: \"d\"\n    flow:\n        \"do work\"\n";
+        let tokens = collect_semantic_tokens(src, 0);
+        let s = tokens
+            .iter()
+            .find(|t| t.line == 3 && t.token_type == SemTokenType::GlyphFlowString as u32)
+            .expect("flow string");
+        assert_eq!(s.length, "\"do work\"".len() as u32);
+        // And it is *not* classified as plain String.
+        let plain_strs = tokens
+            .iter()
+            .filter(|t| t.line == 3 && t.token_type == SemTokenType::String as u32)
+            .count();
+        assert_eq!(plain_strs, 0, "no plain String on the flow line");
+    }
+
+    #[test]
+    fn context_inline_string_is_glyph_context_string() {
+        let src = "skill main()\n    description: \"d\"\n    context:\n        \"background note\"\n    flow:\n        \"act\"\n";
+        let tokens = collect_semantic_tokens(src, 0);
+        let s = tokens
+            .iter()
+            .find(|t| t.line == 3 && t.token_type == SemTokenType::GlyphContextString as u32)
+            .expect("context string");
+        assert_eq!(s.length, "\"background note\"".len() as u32);
+        // And it is *not* classified as a flow string.
+        assert!(
+            !tokens
+                .iter()
+                .any(|t| t.line == 3 && t.token_type == SemTokenType::GlyphFlowString as u32),
+            "context string must not be flow-classified",
+        );
+    }
+
+    #[test]
+    fn context_name_ref_in_context_section() {
+        let src = "skill main()\n    description: \"d\"\n    context:\n        project_conventions\n    flow:\n        \"hi\"\n\ntext project_conventions = \"use kebab-case.\"\n";
+        let tokens = collect_semantic_tokens(src, 0);
+        let nref = find_token(&tokens, 3, "project_conventions", src)
+            .expect("context name ref");
+        assert_eq!(nref.token_type, SemTokenType::GlyphContextNameRef as u32);
+    }
+
+    #[test]
+    fn block_call_distinguished_from_flow_call() {
+        let src = "skill main()\n    description: \"d\"\n    flow:\n        run_block()\n        send(\"x\")\n\nblock run_block()\n    \"do it.\"\n";
+        let tokens = collect_semantic_tokens(src, 0);
+        let block_call = find_token(&tokens, 3, "run_block", src).expect("`run_block` call");
+        assert_eq!(block_call.token_type, SemTokenType::GlyphBlockCall as u32);
+        // `send` is a stdlib call (no same-file `block send`), so it gets the
+        // generic flow-call type.
+        let stdlib_call = find_token(&tokens, 4, "send", src).expect("`send` call");
+        assert_eq!(stdlib_call.token_type, SemTokenType::GlyphFlowCall as u32);
+    }
+
+    #[test]
+    fn each_section_header_has_its_own_type() {
+        let src = "skill main()\n    description: \"d\"\n    context:\n        \"k\"\n    constraints:\n        require accuracy\n    flow:\n        \"hi\"\n\ntext accuracy = \"a\"\n";
+        let tokens = collect_semantic_tokens(src, 0);
+        let desc = find_token(&tokens, 1, "description", src).expect("description");
+        assert_eq!(desc.token_type, SemTokenType::GlyphSectionDescription as u32);
+        let ctx = find_token(&tokens, 2, "context", src).expect("context");
+        assert_eq!(ctx.token_type, SemTokenType::GlyphSectionContext as u32);
+        let cons = find_token(&tokens, 4, "constraints", src).expect("constraints");
+        assert_eq!(cons.token_type, SemTokenType::GlyphSectionConstraints as u32);
+        let flow = find_token(&tokens, 6, "flow", src).expect("flow");
+        assert_eq!(flow.token_type, SemTokenType::GlyphSectionFlow as u32);
+    }
+
+    #[test]
+    fn flow_string_interpolation_classified() {
+        let src = "skill main(scope = \".\")\n    description: \"d\"\n    flow:\n        \"inspect {scope} now\"\n";
+        let tokens = collect_semantic_tokens(src, 0);
+        let interp = tokens
+            .iter()
+            .find(|t| t.line == 3 && t.token_type == SemTokenType::GlyphInterpolation as u32)
+            .expect("interpolation");
+        // `{scope}` is 7 bytes including braces.
+        assert_eq!(interp.length, "{scope}".len() as u32);
+    }
+
+    #[test]
+    fn context_keyword_without_colon_stays_keyword() {
+        // Body-level `context name_ref` (no `:`) — `context` should stay
+        // a plain keyword (not GlyphSectionContext).
+        let src = "skill main()\n    description: \"d\"\n    context project_conventions\n    flow:\n        \"hi\"\n\ntext project_conventions = \"x\"\n";
+        let tokens = collect_semantic_tokens(src, 0);
+        let ctx = find_token(&tokens, 2, "context", src).expect("context kw");
+        assert_eq!(ctx.token_type, SemTokenType::Keyword as u32);
     }
 
     #[test]
@@ -765,9 +1052,9 @@ mod tests {
         let run_decl = find_token(&tokens, 5, "run", src).expect("`run` block name");
         assert_eq!(run_decl.token_type, SemTokenType::Method as u32);
         assert!(run_decl.modifiers & SemTokenModifier::DECLARATION != 0);
-        // `run` in the call site (line 3) is a function reference.
+        // `run` in the call site (line 3) is now a Glyph block call.
         let run_call = find_token(&tokens, 3, "run", src).expect("`run` call site");
-        assert_eq!(run_call.token_type, SemTokenType::Function as u32);
+        assert_eq!(run_call.token_type, SemTokenType::GlyphBlockCall as u32);
     }
 
     #[test]
@@ -853,7 +1140,7 @@ mod tests {
     fn dedup_keeps_ast_classification_over_lex() {
         // `description` would be picked up by the section-label lex rule
         // because it's followed by `:`. Ensure the result is still a
-        // single `description` keyword token (no duplicates from the
+        // single `description` token (no duplicates from the
         // sort/dedup step).
         let src = "skill main()\n    description: \"d\"\n    flow:\n        \"hi\"\n";
         let tokens = collect_semantic_tokens(src, 0);
