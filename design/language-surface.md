@@ -79,7 +79,7 @@ Top-level declarations introduce their body by indentation alone. They do not us
 
 Sub-sections within a declaration body use a colon-terminated keyword. MVP sub-section keywords:
 
-`constraints:`, `context:`, `description:`, `effects:`, `flow:`
+`constraints:`, `context:`, `description:`, `effects:` *(gated — requires `--enable-effects`)*, `flow:`
 
 `inputs:`, `outputs:`, and `when_to_use:` are deferred from MVP (see [todo.md](todo.md)). Header parameters cover input definition; `return` in `flow:` covers output; `description:` covers routing.
 

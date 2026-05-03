@@ -1,6 +1,5 @@
 export block inspect_repo(scope = ".") -> Report
     description: "Inspect the repository structure and identify key files."
-    effects: reads_files
 
     flow:
         "Read the project structure in {scope} by listing all directories, subdirectories, and files in the project root and recursively scanning each nested folder to build a comprehensive understanding of the overall file tree layout and organization of the entire codebase."
@@ -13,7 +12,6 @@ export block inspect_repo(scope = ".") -> Report
 
 export block run_tests(scope = ".") -> TestResult
     description: "Run the project test suite and collect results."
-    effects: reads_files, runs_commands
 
     flow:
         "Identify the test framework used in {scope}."

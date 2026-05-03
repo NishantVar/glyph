@@ -3,8 +3,6 @@ skill update_docs()
     require accuracy
     avoid stale_references
 
-    effects: reads_files, writes_files
-
     flow:
         "Scan the repository for files with documentation."
         "Compare each document against the current code for accuracy."

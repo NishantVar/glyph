@@ -1,0 +1,128 @@
+================================================================================
+If / elif / else with comparison conditions
+================================================================================
+
+skill main()
+    flow:
+        if mode == "fast"
+            "Do the fast thing."
+            "Log metrics."
+        elif mode == "slow"
+            "Do the slow thing."
+        else
+            "Do the default thing."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (if_statement
+            condition: (condition
+              (comparison
+                (identifier)
+                (string_literal
+                  (string_content))))
+            (flow_statement
+              (inline_instruction
+                (string_literal
+                  (string_content))))
+            (flow_statement
+              (inline_instruction
+                (string_literal
+                  (string_content))))
+            (elif_clause
+              condition: (condition
+                (comparison
+                  (identifier)
+                  (string_literal
+                    (string_content))))
+              (flow_statement
+                (inline_instruction
+                  (string_literal
+                    (string_content)))))
+            (else_clause
+              (flow_statement
+                (inline_instruction
+                  (string_literal
+                    (string_content)))))))))))
+
+================================================================================
+If with applies, and, not predicates
+================================================================================
+
+skill foo()
+    flow:
+        if block_x.applies() and not is_dry_run
+            "Run block_x."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (if_statement
+            condition: (condition
+              (applies_expression
+                receiver: (identifier))
+              (identifier))
+            (flow_statement
+              (inline_instruction
+                (string_literal
+                  (string_content))))))))))
+
+================================================================================
+Branch-internal markers
+================================================================================
+
+skill foo()
+    flow:
+        if mode == "strict"
+            require accuracy
+            avoid stale_references
+            "Do strict thing."
+
+text accuracy = "x"
+text stale_references = "y"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (if_statement
+            condition: (condition
+              (comparison
+                (identifier)
+                (string_literal
+                  (string_content))))
+            (flow_statement
+              (require_marker
+                (identifier)))
+            (flow_statement
+              (avoid_marker
+                (identifier)))
+            (flow_statement
+              (inline_instruction
+                (string_literal
+                  (string_content)))))))))
+  (text_declaration
+    name: (identifier)
+    value: (string_literal
+      (string_content)))
+  (text_declaration
+    name: (identifier)
+    value: (string_literal
+      (string_content))))

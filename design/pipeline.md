@@ -83,7 +83,7 @@ Analyze tries to understand the source as deeply as it can using deterministic r
 
 - **Type inference.** Traces types through the call graph. Where types cannot be inferred and are not needed for a call-boundary check, marks as untyped (acceptable in MVP per `types.md`).
 
-- **Effect inference.** Walks the call graph and unions effects per `ir-and-semantics.md` §3. Checks that any author-declared `effects:` is a superset of the inferred set.
+- **Effect inference.** *(Gated — requires `--enable-effects`; skipped when the flag is off.)* Walks the call graph and unions effects per `ir-and-semantics.md` §3. Checks that any author-declared `effects:` is a superset of the inferred set.
 
 - **Closure checking.** For `export block` declarations, verifies closure requirements per `data-flow.md`.
 
@@ -113,7 +113,7 @@ Mechanical transformations where the correct fix is unambiguous:
 - Duplicate import merging: two imports from the same file merge into one statement (per `imports.md` §6).
 - Unused import removal: imported names not referenced anywhere in the file are removed (per `imports.md` §7).
 - Source section reordering: sections within a declaration body are reordered to the recommended convention (per `ir-and-semantics.md` §4).
-- Missing `effects:` auto-fill: when a declaration omits `effects:` entirely and the inferred set (from the call graph) is non-empty, 3a inserts an `effects:` sub-section with the inferred set and emits `G::repair::inferred-effects` (warning, informational). This is deterministic — the call graph is fully resolved by Phase 2. Applies uniformly to skills, blocks, and export blocks (per `ir-and-semantics.md` §3).
+- Missing `effects:` auto-fill: *(gated — requires `--enable-effects`; skipped when the flag is off)* when a declaration omits `effects:` entirely and the inferred set (from the call graph) is non-empty, 3a inserts an `effects:` sub-section with the inferred set and emits `G::repair::inferred-effects` (warning, informational). This is deterministic — the call graph is fully resolved by Phase 2. Applies uniformly to skills, blocks, and export blocks (per `ir-and-semantics.md` §3).
 
 ### 3b. LLM-assisted repair (only runs if repairable diagnostics remain after 3a)
 

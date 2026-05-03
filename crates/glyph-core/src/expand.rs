@@ -372,7 +372,7 @@ mod tests {
         let (file, _) = parse::parse(src, 0).expect("source should parse");
         let arena = lower::lower(&file).expect("source should lower");
         let arena = expand_step1(arena);
-        emit::emit(&arena)
+        emit::emit(&arena, false)
     }
 
     #[test]

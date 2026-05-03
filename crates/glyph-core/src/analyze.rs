@@ -15,12 +15,67 @@
 //! through `glyph check` as well as `glyph compile`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::PathBuf;
 
-use crate::ast::{BlockDecl, ContextEntry, Decl, FlowStmt, ReturnExpr, SourceFile};
+use crate::ast::{self, BlockDecl, ContextEntry, Decl, FlowStmt, ReturnExpr, SourceFile};
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::output_target::OutputTargetExpr;
 use crate::slot::scan_slots;
 use crate::span::{LineIndex, Span, Spanned};
+
+// ---------------------------------------------------------------------------
+// Name-resolution table for go-to-definition (LSP M2).
+//
+// See `design/glyph-lsp.md` §4.4. The compiler already knows, at analyze
+// time, which `text`/`block`/`export block` declaration each identifier
+// reference resolves to — it just throws that information away after running
+// its diagnostic checks. The types and `analyze_with_resolutions` entry point
+// below replay the same matching logic over the AST and expose the result
+// as a flat [`Resolution`] list.
+//
+// The list is the contract the LSP's `textDocument/definition` handler
+// consumes: given a cursor byte-offset, find the smallest [`Resolution`]
+// whose `use_span` contains it, then return the `def_span` (and `def_file`)
+// to the editor.
+// ---------------------------------------------------------------------------
+
+/// A resolved name reference: where the name was used, and where it was
+/// declared.
+///
+/// `use_span` covers the identifier token at the use-site (e.g., the bytes of
+/// `validate_plan` in `validate_plan()`). `def_span` covers the declaration
+/// — currently the entire decl span (which starts at the keyword like
+/// `block` / `text`); the editor positions the cursor at `def_span.start`,
+/// which lands on the declaration keyword.
+///
+/// `def_file` is the path of the file the declaration lives in. For same-file
+/// resolutions it equals the analyzing file's own path. For cross-file
+/// (imported) resolutions it points at the imported file. For
+/// [`ResolutionKind::Stdlib`] it is left empty — the LSP returns `null` for
+/// stdlib jumps per design §10.D.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resolution {
+    pub use_span: Span,
+    pub def_span: Span,
+    pub def_file: PathBuf,
+    pub kind: ResolutionKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolutionKind {
+    Skill,
+    Block,
+    ExportBlock,
+    /// Includes both private `text` and `export text` declarations.
+    Text,
+    /// `{name}` slot resolving to a header parameter of the enclosing decl.
+    Param,
+    /// The name token of an `import "<path>" { name }` clause itself.
+    Import,
+    /// `@glyph/std` member (`subagent`, `send`). The LSP returns `null` for
+    /// these — they have no `.glyph.md` source to jump to.
+    Stdlib,
+}
 
 /// Backwards-compatible Phase-2 entry point — returns the AST unchanged.
 ///
@@ -505,9 +560,9 @@ fn check_return_call_nominal(
         return;
     };
     let callee_rt = local_callee_return_types
-        .get(target.as_str())
+        .get(target.node.as_str())
         .copied()
-        .or_else(|| imported_block_return_types.get(target.as_str()));
+        .or_else(|| imported_block_return_types.get(target.node.as_str()));
     let Some(callee_rt) = callee_rt else { return };
     // Issue #84 codex pass 1 — F1: skip the nominal-match check when
     // either side's type name is on the #83 banned-generic list. The
@@ -527,7 +582,7 @@ fn check_return_call_nominal(
         return;
     }
     emit_nominal_mismatch_at_return(
-        target,
+        &target.node,
         &caller_rt.node,
         &callee_rt.node,
         decl_span,
@@ -564,23 +619,23 @@ fn check_return_call_undefined(
     let crate::ast::ReturnExpr::Call { target, .. } = expr else {
         return;
     };
-    if block_names.contains(target.as_str()) {
+    if block_names.contains(target.node.as_str()) {
         return;
     }
-    if is_stdlib_block_name(target) {
+    if is_stdlib_block_name(&target.node) {
         bag.push(
             Diagnostic {
                 id: "G::analyze::stdlib-missing-import".into(),
                 classification: Classification::Repairable,
                 message: format!(
                     "`{}` is a standard library block; add `import \"@glyph/std\" {{ {} }}`",
-                    target, target
+                    target.node, target.node
                 ),
                 span: SourceSpan::from_byte_span(file_label, span, line_index),
                 related: Vec::new(),
                 hints: vec![format!(
                     "add `import \"@glyph/std\" {{ {} }}` at the top of the file",
-                    target
+                    target.node
                 )],
             },
             span,
@@ -592,13 +647,13 @@ fn check_return_call_undefined(
                 classification: Classification::Repairable,
                 message: format!(
                     "call to `{}()` but no `block {}` is declared in this file",
-                    target, target
+                    target.node, target.node
                 ),
                 span: SourceSpan::from_byte_span(file_label, span, line_index),
                 related: Vec::new(),
                 hints: vec![format!(
                     "declare `block {}()` or check the name for typos",
-                    target
+                    target.node
                 )],
             },
             span,
@@ -950,6 +1005,420 @@ pub fn analyze_with_diagnostics(
     file
 }
 
+/// Run Phase 2 like [`analyze_with_diagnostics`], but additionally return a
+/// flat list of every resolved reference covering same-file targets.
+///
+/// This is the entry point the LSP uses for `textDocument/definition` (M2).
+/// The diagnostics emitted are identical to those of
+/// [`analyze_with_diagnostics`] — this function is purely additive: it walks
+/// the AST a second time to build the [`Resolution`] table.
+///
+/// `file_path` is recorded as the `def_file` for every same-file resolution.
+/// Cross-file resolutions (i.e., for names brought in via `import`) are
+/// produced separately by [`record_cross_file_import_resolutions`], called
+/// from `lib::check_*_with_resolutions` once each imported file has been
+/// parsed.
+pub fn analyze_with_resolutions(
+    file: SourceFile,
+    file_id: u32,
+    file_label: &str,
+    file_path: &PathBuf,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+    _enable_effects: bool,
+) -> (SourceFile, Vec<Resolution>) {
+    let mut registry = crate::domain_registry::Registry::new();
+    let file = analyze_with_diagnostics(file, file_id, file_label, line_index, bag, &mut registry);
+    let resolutions = collect_same_file_resolutions(&file, file_path);
+    (file, resolutions)
+}
+
+/// Build the resolution table for one parsed file. Same-file references only
+/// — cross-file resolutions are added downstream once the importer has
+/// parsed each dependency.
+///
+/// The walk is purely structural and does not emit diagnostics; the caller
+/// is expected to have already run [`analyze_with_diagnostics`] (or to
+/// invoke [`analyze_with_resolutions`] which does both in one call).
+/// Unresolvable names produce no entry — the LSP returns `null` for those
+/// (see design §7).
+pub fn collect_same_file_resolutions(file: &SourceFile, file_path: &PathBuf) -> Vec<Resolution> {
+    // Build name → def_span maps from the file's declarations. These mirror
+    // the `text_names` / `block_names` checks above; the only difference is
+    // we keep the decl's full span (rather than discarding it after the
+    // membership test).
+    let mut text_defs: HashMap<&str, Span> = HashMap::new();
+    let mut block_defs: HashMap<&str, Span> = HashMap::new();
+    let mut export_block_defs: HashMap<&str, Span> = HashMap::new();
+    let mut skill_defs: HashMap<&str, Span> = HashMap::new();
+    // Stdlib names brought into scope by `import "@glyph/std" { ... }`.
+    let mut stdlib_names: HashMap<String, Span> = HashMap::new();
+
+    for decl in &file.decls {
+        match decl {
+            Decl::Const(t) => {
+                text_defs.insert(t.node.name.as_str(), t.span);
+            }
+            Decl::Block(b) => {
+                block_defs.insert(b.node.name.as_str(), b.span);
+            }
+            Decl::ExportBlock(b) => {
+                export_block_defs.insert(b.node.name.as_str(), b.span);
+            }
+            Decl::Skill(s) => {
+                skill_defs.insert(s.node.name.as_str(), s.span);
+            }
+            Decl::Import(imp) => {
+                if imp.node.path == "@glyph/std" {
+                    if let ast::ImportKind::Selective(names) = &imp.node.kind {
+                        for imp_name in names {
+                            if imp_name.name.node == "subagent"
+                                || imp_name.name.node == "send"
+                            {
+                                let local = imp_name
+                                    .alias
+                                    .clone()
+                                    .unwrap_or_else(|| imp_name.name.node.clone());
+                                stdlib_names.insert(local, imp_name.name.span);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Avoid "unused but populated" warning — `skill_defs` is reserved for a
+    // future ResolutionKind::Skill use-case (e.g. `applies()` self-references).
+    let _ = &skill_defs;
+
+    let mut out: Vec<Resolution> = Vec::new();
+
+    // Walk every use-site in the file.
+    for decl in &file.decls {
+        match decl {
+            Decl::Skill(spanned) => {
+                let skill = &spanned.node;
+                walk_flow_for_resolutions(
+                    &skill.flow,
+                    file_path,
+                    &text_defs,
+                    &block_defs,
+                    &export_block_defs,
+                    &stdlib_names,
+                    &mut out,
+                );
+                for marker in &skill.body_constraints {
+                    record_text_use(&marker.name.node, marker.name.span, &text_defs, file_path, &mut out);
+                }
+                for entry in skill.body_context.iter().chain(skill.context_section.iter()) {
+                    if let ContextEntry::NameRef(name) = entry {
+                        record_text_use(&name.node, name.span, &text_defs, file_path, &mut out);
+                    }
+                }
+                // body_bare_names are plain Strings without span info; skip for resolution.
+            }
+            Decl::Block(spanned) => {
+                walk_flow_for_resolutions(
+                    &spanned.node.flow,
+                    file_path,
+                    &text_defs,
+                    &block_defs,
+                    &export_block_defs,
+                    &stdlib_names,
+                    &mut out,
+                );
+            }
+            Decl::ExportBlock(_) => {
+                // Slice 4 captured only the header shape for export blocks
+                // (no flow recorded in the AST). Once §13 ships full
+                // export-block lowering, walk its flow here too.
+            }
+            Decl::Const(_) => {}
+            Decl::Import(imp) => {
+                // For `@glyph/std` selective imports, record the import name
+                // span as a Stdlib resolution. Cross-file imports are
+                // recorded by `record_cross_file_import_resolutions`, which
+                // is invoked from `lib::check_source_with_resolutions` once
+                // the dependency files have been resolved + parsed.
+                if imp.node.path == "@glyph/std" {
+                    if let ast::ImportKind::Selective(names) = &imp.node.kind {
+                        for imp_name in names {
+                            if imp_name.name.node == "subagent"
+                                || imp_name.name.node == "send"
+                            {
+                                out.push(Resolution {
+                                    use_span: imp_name.name.span,
+                                    def_span: Span::new(0, 0, 0),
+                                    def_file: PathBuf::new(),
+                                    kind: ResolutionKind::Stdlib,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    out
+}
+
+/// Per-imported-name target descriptor used when wiring cross-file
+/// resolutions. The LSP needs to know which file the def lives in and where
+/// inside that file.
+#[derive(Clone, Debug)]
+pub struct ImportTarget {
+    /// Local name as visible to the importer (i.e., the alias if one was
+    /// given, otherwise the original name).
+    pub local_name: String,
+    /// Path of the file the def lives in.
+    pub def_file: PathBuf,
+    /// Span of the declaration in the def file.
+    pub def_span: Span,
+    /// Kind of the def (Text / Block / ExportBlock).
+    pub kind: ResolutionKind,
+}
+
+/// Walk every use-site in `file` and record cross-file resolutions for every
+/// reference whose name matches one of `targets`. Targets are keyed by the
+/// importer's local-name view (alias-resolved).
+///
+/// This is the cross-file complement to [`collect_same_file_resolutions`].
+/// The caller assembles `targets` by walking the file's `import` decls and
+/// looking up each imported name in the corresponding dependency file.
+pub fn collect_cross_file_resolutions(
+    file: &SourceFile,
+    targets: &HashMap<String, ImportTarget>,
+) -> Vec<Resolution> {
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<Resolution> = Vec::new();
+
+    for decl in &file.decls {
+        match decl {
+            Decl::Skill(spanned) => {
+                let skill = &spanned.node;
+                walk_flow_for_cross_file(&skill.flow, targets, &mut out);
+                for marker in &skill.body_constraints {
+                    record_cross_file_text_use(&marker.name, targets, &mut out);
+                }
+                for entry in skill.body_context.iter().chain(skill.context_section.iter()) {
+                    if let ContextEntry::NameRef(name) = entry {
+                        record_cross_file_text_use(name, targets, &mut out);
+                    }
+                }
+                // body_bare_names are plain Strings without span info; skip for cross-file resolution.
+            }
+            Decl::Block(spanned) => {
+                walk_flow_for_cross_file(&spanned.node.flow, targets, &mut out);
+            }
+            Decl::ExportBlock(_) | Decl::Const(_) => {}
+            Decl::Import(imp) => {
+                // The selective-import name token itself jumps to the
+                // declaration in the dependency file. (Stdlib imports are
+                // handled by `collect_same_file_resolutions`.)
+                if imp.node.path.starts_with("@glyph/") {
+                    continue;
+                }
+                if let ast::ImportKind::Selective(names) = &imp.node.kind {
+                    for imp_name in names {
+                        let local = imp_name
+                            .alias
+                            .clone()
+                            .unwrap_or_else(|| imp_name.name.node.clone());
+                        if let Some(t) = targets.get(&local) {
+                            out.push(Resolution {
+                                use_span: imp_name.name.span,
+                                def_span: t.def_span,
+                                def_file: t.def_file.clone(),
+                                kind: ResolutionKind::Import,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn record_text_use(
+    name: &str,
+    use_span: Span,
+    text_defs: &HashMap<&str, Span>,
+    file_path: &PathBuf,
+    out: &mut Vec<Resolution>,
+) {
+    if let Some(def_span) = text_defs.get(name) {
+        out.push(Resolution {
+            use_span,
+            def_span: *def_span,
+            def_file: file_path.clone(),
+            kind: ResolutionKind::Text,
+        });
+    }
+}
+
+fn walk_flow_for_resolutions(
+    stmts: &[FlowStmt],
+    file_path: &PathBuf,
+    text_defs: &HashMap<&str, Span>,
+    block_defs: &HashMap<&str, Span>,
+    export_block_defs: &HashMap<&str, Span>,
+    stdlib_names: &HashMap<String, Span>,
+    out: &mut Vec<Resolution>,
+) {
+    for stmt in stmts {
+        match stmt {
+            FlowStmt::Call { target, .. } => {
+                record_call_target(target, file_path, block_defs, export_block_defs, stdlib_names, out);
+            }
+            FlowStmt::ConstraintMarker(marker) => {
+                record_text_use(&marker.name.node, marker.name.span, text_defs, file_path, out);
+            }
+            FlowStmt::ContextMarker(entry) => {
+                if let ContextEntry::NameRef(name) = entry {
+                    record_text_use(&name.node, name.span, text_defs, file_path, out);
+                }
+            }
+            FlowStmt::BareName(name) => {
+                record_text_use(&name.node, name.span, text_defs, file_path, out);
+            }
+            FlowStmt::Return(ReturnExpr::Call { target, .. }) => {
+                record_call_target(target, file_path, block_defs, export_block_defs, stdlib_names, out);
+            }
+            FlowStmt::Return(ReturnExpr::Name(name)) => {
+                record_text_use(&name.node, name.span, text_defs, file_path, out);
+            }
+            FlowStmt::Branch { then_body, elif_branches, else_body, .. } => {
+                walk_flow_for_resolutions(then_body, file_path, text_defs, block_defs, export_block_defs, stdlib_names, out);
+                for elif in elif_branches {
+                    walk_flow_for_resolutions(&elif.body, file_path, text_defs, block_defs, export_block_defs, stdlib_names, out);
+                }
+                if let Some(eb) = else_body {
+                    walk_flow_for_resolutions(eb, file_path, text_defs, block_defs, export_block_defs, stdlib_names, out);
+                }
+            }
+            FlowStmt::InlineString(_) | FlowStmt::Return(_) => {
+                // InlineString: `{param}` slot resolution happens in the LSP
+                // handler via a source-text scan + scan_slots, since we
+                // don't carry slot spans in the AST. Bare `return` / inline
+                // string return have no name to resolve.
+            }
+        }
+    }
+}
+
+fn record_call_target(
+    target: &Spanned<String>,
+    file_path: &PathBuf,
+    block_defs: &HashMap<&str, Span>,
+    export_block_defs: &HashMap<&str, Span>,
+    stdlib_names: &HashMap<String, Span>,
+    out: &mut Vec<Resolution>,
+) {
+    if let Some(def_span) = block_defs.get(target.node.as_str()) {
+        out.push(Resolution {
+            use_span: target.span,
+            def_span: *def_span,
+            def_file: file_path.clone(),
+            kind: ResolutionKind::Block,
+        });
+    } else if let Some(def_span) = export_block_defs.get(target.node.as_str()) {
+        out.push(Resolution {
+            use_span: target.span,
+            def_span: *def_span,
+            def_file: file_path.clone(),
+            kind: ResolutionKind::ExportBlock,
+        });
+    } else if stdlib_names.contains_key(&target.node) {
+        out.push(Resolution {
+            use_span: target.span,
+            def_span: Span::new(0, 0, 0),
+            def_file: PathBuf::new(),
+            kind: ResolutionKind::Stdlib,
+        });
+    }
+}
+
+fn walk_flow_for_cross_file(
+    stmts: &[FlowStmt],
+    targets: &HashMap<String, ImportTarget>,
+    out: &mut Vec<Resolution>,
+) {
+    for stmt in stmts {
+        match stmt {
+            FlowStmt::Call { target, .. } => {
+                record_cross_file_call(target, targets, out);
+            }
+            FlowStmt::ConstraintMarker(marker) => {
+                record_cross_file_text_use(&marker.name, targets, out);
+            }
+            FlowStmt::ContextMarker(entry) => {
+                if let ContextEntry::NameRef(name) = entry {
+                    record_cross_file_text_use(name, targets, out);
+                }
+            }
+            FlowStmt::BareName(name) => {
+                record_cross_file_text_use(name, targets, out);
+            }
+            FlowStmt::Return(ReturnExpr::Call { target, .. }) => {
+                record_cross_file_call(target, targets, out);
+            }
+            FlowStmt::Return(ReturnExpr::Name(name)) => {
+                record_cross_file_text_use(name, targets, out);
+            }
+            FlowStmt::Branch { then_body, elif_branches, else_body, .. } => {
+                walk_flow_for_cross_file(then_body, targets, out);
+                for elif in elif_branches {
+                    walk_flow_for_cross_file(&elif.body, targets, out);
+                }
+                if let Some(eb) = else_body {
+                    walk_flow_for_cross_file(eb, targets, out);
+                }
+            }
+            FlowStmt::InlineString(_) | FlowStmt::Return(_) => {}
+        }
+    }
+}
+
+fn record_cross_file_text_use(
+    name: &Spanned<String>,
+    targets: &HashMap<String, ImportTarget>,
+    out: &mut Vec<Resolution>,
+) {
+    if let Some(t) = targets.get(&name.node) {
+        if matches!(t.kind, ResolutionKind::Text) {
+            out.push(Resolution {
+                use_span: name.span,
+                def_span: t.def_span,
+                def_file: t.def_file.clone(),
+                kind: ResolutionKind::Text,
+            });
+        }
+    }
+}
+
+fn record_cross_file_call(
+    target: &Spanned<String>,
+    targets: &HashMap<String, ImportTarget>,
+    out: &mut Vec<Resolution>,
+) {
+    if let Some(t) = targets.get(&target.node) {
+        // Imported callable — Block or ExportBlock.
+        if matches!(t.kind, ResolutionKind::Block | ResolutionKind::ExportBlock) {
+            out.push(Resolution {
+                use_span: target.span,
+                def_span: t.def_span,
+                def_file: t.def_file.clone(),
+                kind: t.kind,
+            });
+        }
+    }
+}
+
 /// Run Phase 2 with import-augmented name sets.
 ///
 /// Like `analyze_with_diagnostics` but also considers imported texts and blocks
@@ -1254,23 +1723,23 @@ fn analyze_skill_with_usage_tracking(
 
     // Check constraint markers.
     for marker in &skill.body_constraints {
-        if imported_texts.contains(&marker.name) {
-            used_import_names.insert(marker.name.clone());
+        if imported_texts.contains(&marker.name.node) {
+            used_import_names.insert(marker.name.node.clone());
         }
     }
 
     // Check context entries.
     for entry in &skill.body_context {
         if let crate::ast::ContextEntry::NameRef(name) = entry {
-            if imported_texts.contains(name) {
-                used_import_names.insert(name.clone());
+            if imported_texts.contains(&name.node) {
+                used_import_names.insert(name.node.clone());
             }
         }
     }
     for entry in &skill.context_section {
         if let crate::ast::ContextEntry::NameRef(name) = entry {
-            if imported_texts.contains(name) {
-                used_import_names.insert(name.clone());
+            if imported_texts.contains(&name.node) {
+                used_import_names.insert(name.node.clone());
             }
         }
     }
@@ -1293,19 +1762,19 @@ fn track_flow_usage(
     for stmt in flow {
         match stmt {
             crate::ast::FlowStmt::Call { target, .. } => {
-                if imported_blocks.contains(target) {
-                    used.insert(target.clone());
+                if imported_blocks.contains(&target.node) {
+                    used.insert(target.node.clone());
                 }
             }
             crate::ast::FlowStmt::ConstraintMarker(marker) => {
-                if imported_texts.contains(&marker.name) {
-                    used.insert(marker.name.clone());
+                if imported_texts.contains(&marker.name.node) {
+                    used.insert(marker.name.node.clone());
                 }
             }
             crate::ast::FlowStmt::ContextMarker(entry) => {
                 if let crate::ast::ContextEntry::NameRef(name) = entry {
-                    if imported_texts.contains(name) {
-                        used.insert(name.clone());
+                    if imported_texts.contains(&name.node) {
+                        used.insert(name.node.clone());
                     }
                 }
             }
@@ -1329,16 +1798,16 @@ fn track_flow_usage(
             // AC8's exit-0 success contract for cross-file return-position
             // consumers.
             crate::ast::FlowStmt::Return(crate::ast::ReturnExpr::Call { target, .. }) => {
-                if imported_blocks.contains(target) {
-                    used.insert(target.clone());
+                if imported_blocks.contains(&target.node) {
+                    used.insert(target.node.clone());
                 }
             }
             // Symmetric to `ContextMarker(NameRef)` above (L753-758): a
             // `return <name>` reference may resolve to either an imported text
             // const or an imported block, so check both pools.
             crate::ast::FlowStmt::Return(crate::ast::ReturnExpr::Name(name)) => {
-                if imported_blocks.contains(name) || imported_texts.contains(name) {
-                    used.insert(name.clone());
+                if imported_blocks.contains(&name.node) || imported_texts.contains(&name.node) {
+                    used.insert(name.node.clone());
                 }
             }
             _ => {}
@@ -1436,7 +1905,7 @@ fn analyze_skill(
                         classification: crate::diagnostic::Classification::Repairable,
                         message: format!(
                             "bare name `{}` in `flow:` is not a valid statement; add a keyword prefix (`require`/`avoid`/`must`/`context`) or parentheses for a call",
-                            name
+                            name.node
                         ),
                         span: SourceSpan::from_byte_span(file_label, span, line_index),
                         related: Vec::new(),
@@ -1449,9 +1918,9 @@ fn analyze_skill(
             }
             FlowStmt::Call { target, .. } => {
                 // Check that the call target resolves to a declared block.
-                if !block_names.contains(target.as_str()) {
+                if !block_names.contains(target.node.as_str()) {
                     // Check if this is a stdlib name used without import.
-                    if is_stdlib_block_name(target) {
+                    if is_stdlib_block_name(&target.node) {
                         let span = spanned.span;
                         bag.push(
                             crate::diagnostic::Diagnostic {
@@ -1459,12 +1928,12 @@ fn analyze_skill(
                                 classification: crate::diagnostic::Classification::Repairable,
                                 message: format!(
                                     "`{}` is a standard library block; add `import \"@glyph/std\" {{ {} }}`",
-                                    target, target
+                                    target.node, target.node
                                 ),
                                 span: SourceSpan::from_byte_span(file_label, span, line_index),
                                 related: Vec::new(),
                                 hints: vec![
-                                    format!("add `import \"@glyph/std\" {{ {} }}` at the top of the file", target),
+                                    format!("add `import \"@glyph/std\" {{ {} }}` at the top of the file", target.node),
                                 ],
                             },
                             span,
@@ -1477,14 +1946,13 @@ fn analyze_skill(
                                 classification: crate::diagnostic::Classification::Repairable,
                                 message: format!(
                                     "call to `{}()` but no `block {}` is declared in this file",
-                                    target, target
+                                    target.node, target.node
                                 ),
                                 span: SourceSpan::from_byte_span(file_label, span, line_index),
                                 related: Vec::new(),
-                                hints: vec![format!(
-                                    "declare `block {}()` or check the name for typos",
-                                    target
-                                )],
+                                hints: vec![
+                                    format!("declare `block {}()` or check the name for typos", target.node),
+                                ],
                             },
                             span,
                         );
@@ -1493,12 +1961,12 @@ fn analyze_skill(
             }
             FlowStmt::ConstraintMarker(marker) => {
                 // Check that the constraint name resolves to a text declaration.
-                if !text_names.contains(marker.name.as_str()) {
+                if !text_names.contains(marker.name.node.as_str()) {
                     let span = spanned.span;
                     bag.push(
                         Diagnostic::error(
                             "G::analyze::undefined-name",
-                            format!("`{}` is not a declared `text` in this file", marker.name),
+                            format!("`{}` is not a declared `text` in this file", marker.name.node),
                             SourceSpan::from_byte_span(file_label, span, line_index),
                         ),
                         span,
@@ -1670,12 +2138,15 @@ fn analyze_skill(
 
     // Check body-level constraint name refs.
     for marker in &skill.body_constraints {
-        if !text_names.contains(marker.name.as_str()) {
+        if !text_names.contains(marker.name.node.as_str()) {
             let span = spanned.span;
             bag.push(
                 Diagnostic::error(
                     "G::analyze::undefined-name",
-                    format!("`{}` is not a declared `text` in this file", marker.name),
+                    format!(
+                        "`{}` is not a declared `text` in this file",
+                        marker.name.node
+                    ),
                     SourceSpan::from_byte_span(file_label, span, line_index),
                 ),
                 span,
@@ -1721,10 +2192,11 @@ fn analyze_skill(
     // G::analyze::empty-skill-body — skill with no description, no flow, no
     // constraints, no effects. A skill must have at least one of flow (with
     // statements) or constraints (with markers) to be projectable.
+    let effects_count_as_content = !skill.effects.is_empty();
     if skill.description.is_none()
         && skill.flow.is_empty()
         && skill.body_constraints.is_empty()
-        && skill.effects.is_empty()
+        && !effects_count_as_content
         && skill.body_context.is_empty()
         && skill.context_section.is_empty()
     {
@@ -1880,7 +2352,7 @@ fn infer_effects_for_skill(
         .flow
         .iter()
         .filter_map(|stmt| match stmt {
-            FlowStmt::Call { target, .. } => Some(target.clone()),
+            FlowStmt::Call { target, .. } => Some(target.node.clone()),
             _ => None,
         })
         .collect();
@@ -1899,7 +2371,7 @@ fn infer_effects_for_skill(
             // Add transitive calls from this block.
             for stmt in &block.flow {
                 if let FlowStmt::Call { target: inner, .. } = stmt {
-                    worklist.push(inner.clone());
+                    worklist.push(inner.node.clone());
                 }
             }
         } else if let Some(effects) = stdlib_block_effects(&target) {
@@ -1922,11 +2394,11 @@ fn check_context_entry_name(
     bag: &mut DiagBag,
 ) {
     if let ContextEntry::NameRef(name) = entry {
-        if !text_names.contains(name.as_str()) {
+        if !text_names.contains(name.node.as_str()) {
             bag.push(
                 Diagnostic::error(
                     "G::analyze::undefined-name",
-                    format!("`{}` is not a declared `text` in this file", name),
+                    format!("`{}` is not a declared `text` in this file", name.node),
                     SourceSpan::from_byte_span(file_label, span, line_index),
                 ),
                 span,
@@ -2073,20 +2545,20 @@ fn check_branch_body_names(
     for stmt in body {
         match stmt {
             FlowStmt::Call { target, .. } => {
-                if !block_names.contains(target.as_str()) {
-                    if is_stdlib_block_name(target) {
+                if !block_names.contains(target.node.as_str()) {
+                    if is_stdlib_block_name(&target.node) {
                         bag.push(
                             Diagnostic {
                                 id: "G::analyze::stdlib-missing-import".into(),
                                 classification: Classification::Repairable,
                                 message: format!(
                                     "`{}` is a standard library block; add `import \"@glyph/std\" {{ {} }}`",
-                                    target, target
+                                    target.node, target.node
                                 ),
                                 span: SourceSpan::from_byte_span(file_label, span, line_index),
                                 related: Vec::new(),
                                 hints: vec![
-                                    format!("add `import \"@glyph/std\" {{ {} }}` at the top of the file", target),
+                                    format!("add `import \"@glyph/std\" {{ {} }}` at the top of the file", target.node),
                                 ],
                             },
                             span,
@@ -2098,14 +2570,13 @@ fn check_branch_body_names(
                                 classification: Classification::Repairable,
                                 message: format!(
                                     "call to `{}()` but no `block {}` is declared in this file",
-                                    target, target
+                                    target.node, target.node
                                 ),
                                 span: SourceSpan::from_byte_span(file_label, span, line_index),
                                 related: Vec::new(),
-                                hints: vec![format!(
-                                    "declare `block {}()` or check the name for typos",
-                                    target
-                                )],
+                                hints: vec![
+                                    format!("declare `block {}()` or check the name for typos", target.node),
+                                ],
                             },
                             span,
                         );
@@ -2113,11 +2584,11 @@ fn check_branch_body_names(
                 }
             }
             FlowStmt::ConstraintMarker(marker) => {
-                if !text_names.contains(marker.name.as_str()) {
+                if !text_names.contains(marker.name.node.as_str()) {
                     bag.push(
                         Diagnostic::error(
                             "G::analyze::undefined-name",
-                            format!("`{}` is not a declared `text` in this file", marker.name),
+                            format!("`{}` is not a declared `text` in this file", marker.name.node),
                             SourceSpan::from_byte_span(file_label, span, line_index),
                         ),
                         span,
@@ -2471,6 +2942,75 @@ skill current() -> BranchName
     }
 
     #[test]
+    fn analyze_with_diagnostics_receives_enable_effects() {
+        // Verify that analyze_with_diagnostics accepts the enable_effects flag
+        // and that when false, effect inference is skipped.
+        use crate::ast::{BlockDecl, Decl, FlowStmt, Skill, SourceFile};
+        use crate::span::Spanned;
+
+        // Build a source file with a block that has effects and a skill that
+        // calls it without declaring effects.
+        let block = Spanned {
+            node: BlockDecl {
+                name: "writer".to_string(),
+                params: Vec::new(),
+                flow: vec![FlowStmt::InlineString("Write files.".to_string())],
+                description: None,
+                effects: vec!["writes_files".to_string()],
+                return_type: None,
+            },
+            span: Span::new(0, 0, 10),
+        };
+        let skill = Spanned {
+            node: Skill {
+                name: "main".to_string(),
+                params: Vec::new(),
+                description: Some("Main skill.".to_string()),
+                flow: vec![FlowStmt::Call {
+                    target: Spanned::new("writer".to_string(), Span::new(0, 0, 6)),
+                    args: Vec::new(),
+                    site_modifier: None,
+                }],
+                flow_present: true,
+                body_constraints: Vec::new(),
+                body_context: Vec::new(),
+                body_bare_names: Vec::new(),
+                effects: Vec::new(),
+                context_section: Vec::new(),
+                return_type: None,
+            },
+            span: Span::new(0, 0, 10),
+        };
+        let file = SourceFile {
+            decls: vec![Decl::Block(block), Decl::Skill(skill)],
+        };
+        let source = "dummy source";
+        let li = LineIndex::new(source);
+
+        // missing-effects fires whenever there are inferred effects and no declared effects.
+        let mut bag_on = DiagBag::new();
+        let mut registry_on = crate::domain_registry::Registry::new();
+        analyze_with_diagnostics(file.clone(), 0, "test.glyph.md", &li, &mut bag_on, &mut registry_on);
+        let ids_on: Vec<&str> = bag_on.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids_on.contains(&"G::analyze::missing-effects"),
+            "expected missing-effects diagnostic, got: {:?}",
+            ids_on
+        );
+
+        // Verifying the diagnostic fires (effects tracking is always active).
+        let mut bag_off = DiagBag::new();
+        let mut registry_off = crate::domain_registry::Registry::new();
+        analyze_with_diagnostics(file, 0, "test.glyph.md", &li, &mut bag_off, &mut registry_off);
+        let ids_off: Vec<&str> = bag_off.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids_off.contains(&"G::analyze::missing-effects"),
+            "expected missing-effects to fire, got: {:?}",
+            ids_off
+        );
+    }
+
+    #[test]
     fn lossy_coercion_fires() {
         let mut bag = DiagBag::new();
         let source = "test";
@@ -2710,6 +3250,81 @@ skill current() -> BranchName
         assert!(
             registry.lookup("string").is_none(),
             "banned name must not be registered under any spelling"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Resolution table tests (LSP M2 — design §4.4)
+    // -----------------------------------------------------------------
+
+    fn parse_for_resolutions(source: &str) -> SourceFile {
+        let (file, _) = crate::parse::parse(source, 0).expect("parse");
+        file
+    }
+
+    #[test]
+    fn analyze_with_resolutions_records_block_call_target() {
+        let src = r#"skill main()
+    description: "main."
+    flow:
+        validate_plan()
+
+block validate_plan()
+    "Check the plan."
+"#;
+        let file = parse_for_resolutions(src);
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let path = PathBuf::from("test.glyph.md");
+        let (_file, res) = analyze_with_resolutions(file, 0, "test.glyph.md", &path, &line_index, &mut bag, false);
+        let block_res = res.iter().find(|r| r.kind == ResolutionKind::Block);
+        assert!(block_res.is_some(), "expected a Block resolution, got: {:?}", res);
+        let r = block_res.unwrap();
+        let use_text = &src[r.use_span.start as usize..r.use_span.end as usize];
+        assert_eq!(use_text, "validate_plan");
+        let def_text = &src[r.def_span.start as usize..r.def_span.start as usize + 5];
+        assert_eq!(def_text, "block");
+        assert_eq!(r.def_file, path);
+    }
+
+    #[test]
+    fn analyze_with_resolutions_records_text_constraint() {
+        let src = r#"skill main()
+    description: "main."
+    require accuracy
+    flow:
+        "Do something."
+
+const accuracy = "Be accurate."
+"#;
+        let file = parse_for_resolutions(src);
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let path = PathBuf::from("t.glyph.md");
+        let (_, res) = analyze_with_resolutions(file, 0, "t.glyph.md", &path, &line_index, &mut bag, false);
+        let text_res = res.iter().find(|r| r.kind == ResolutionKind::Text);
+        assert!(text_res.is_some(), "expected a Text resolution, got: {:?}", res);
+        let r = text_res.unwrap();
+        let use_text = &src[r.use_span.start as usize..r.use_span.end as usize];
+        assert_eq!(use_text, "accuracy");
+    }
+
+    #[test]
+    fn analyze_with_resolutions_unresolved_call_no_resolution() {
+        let src = r#"skill main()
+    description: "main."
+    flow:
+        no_such_block()
+"#;
+        let file = parse_for_resolutions(src);
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let path = PathBuf::from("t.glyph.md");
+        let (_, res) = analyze_with_resolutions(file, 0, "t.glyph.md", &path, &line_index, &mut bag, false);
+        assert!(
+            !res.iter().any(|r| r.kind == ResolutionKind::Block),
+            "unresolved call should produce no Block resolution, got: {:?}",
+            res
         );
     }
 
@@ -4218,5 +4833,65 @@ skill current() -> BranchName
             "message must name the undefined callee, got: {:?}",
             d.message
         );
+    }
+
+    #[test]
+    fn analyze_with_resolutions_stdlib_call_marked_stdlib() {
+        let src = r#"import "@glyph/std" { subagent }
+
+skill main()
+    description: "main."
+    flow:
+        subagent()
+"#;
+        let file = parse_for_resolutions(src);
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let path = PathBuf::from("t.glyph.md");
+        let (_, res) = analyze_with_resolutions(file, 0, "t.glyph.md", &path, &line_index, &mut bag, false);
+        let stdlib_count = res.iter().filter(|r| r.kind == ResolutionKind::Stdlib).count();
+        assert_eq!(stdlib_count, 2, "expected 2 Stdlib resolutions, got: {:?}", res);
+    }
+
+    #[test]
+    fn collect_cross_file_resolutions_records_imported_block_call() {
+        // Importer references an imported block by its local name.
+        let src = r#"import "./repo_tools.glyph.md" { inspect_repo }
+
+skill main()
+    description: "main."
+    flow:
+        inspect_repo()
+"#;
+        let file = parse_for_resolutions(src);
+
+        // Build a target table mirroring what `lib::check_source_with_resolutions`
+        // would produce after parsing the dependency.
+        let mut targets: HashMap<String, ImportTarget> = HashMap::new();
+        let dep_path = PathBuf::from("/tmp/repo_tools.glyph.md");
+        targets.insert(
+            "inspect_repo".to_string(),
+            ImportTarget {
+                local_name: "inspect_repo".to_string(),
+                def_file: dep_path.clone(),
+                def_span: Span::new(0, 0, 64),
+                kind: ResolutionKind::ExportBlock,
+            },
+        );
+
+        let res = collect_cross_file_resolutions(&file, &targets);
+        // Two cross-file resolutions: the import-line name token + the call.
+        assert_eq!(res.len(), 2, "expected 2 cross-file resolutions, got: {:?}", res);
+        // Both should point at the dep file.
+        for r in &res {
+            assert_eq!(r.def_file, dep_path);
+        }
+        let import_kind_count = res.iter().filter(|r| r.kind == ResolutionKind::Import).count();
+        let block_kind_count = res
+            .iter()
+            .filter(|r| matches!(r.kind, ResolutionKind::Block | ResolutionKind::ExportBlock))
+            .count();
+        assert_eq!(import_kind_count, 1, "expected 1 Import-kind resolution");
+        assert_eq!(block_kind_count, 1, "expected 1 Block/ExportBlock-kind resolution");
     }
 }

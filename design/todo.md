@@ -2,6 +2,10 @@
 
 Items deferred from MVP decisions that should be revisited in future tiers.
 
+## Effects (Gated)
+
+- **Effect inference for call-graph-free skills.** The effects subsystem is gated behind `--enable-effects` (default: off) because effect inference only walks `FlowStmt::Call` targets. Skills that perform effectful actions directly via inline instructions (no block calls) get an empty inferred set, causing all declared effects to be spuriously flagged as over-declared (`G::analyze::effects-over-declared`). To re-enable effects: (1) fix inference to handle skills with no call graph (e.g., trust author declarations when there are zero calls, or infer from instruction text), (2) flip the `--enable-effects` default to on. The full effects design in `ir-and-semantics.md` §3 remains the target — only the implementation gate needs removal.
+
 ## Values & Literals
 
 - **Extended escape sequences in inline strings.** MVP supports only `\"` and `\\`. Consider adding `\n`, `\t`, and Unicode escapes (`\uXXXX`) post-MVP if real authoring needs emerge.
@@ -20,7 +24,7 @@ Items deferred from MVP decisions that should be revisited in future tiers.
 
 ## Compiled Output Sections (Deferred From MVP)
 
-MVP compiled output contains YAML frontmatter (`name`, `description`, `effects`), a conditional `## Parameters` section, and `## Instructions` (with `### Context`, `### Steps`, and `### Constraints`). The following sections were removed from MVP but may be restored post-MVP if author or agent-consumption needs emerge:
+MVP compiled output contains YAML frontmatter (`name`, `description`, and `effects` when `--enable-effects` is on), a conditional `## Parameters` section, and `## Instructions` (with `### Context`, `### Steps`, and `### Constraints`). The following sections were removed from MVP but may be restored post-MVP if author or agent-consumption needs emerge:
 
 - **`## Inputs` section.** Removed in favor of the `## Parameters` section, which lists parameter names, descriptions, and optional defaults. Parameters appear as `{param}` references in Steps and Constraints, resolved by the consuming LLM at runtime. The `inputs:` source sub-section header remains deferred; parameter declarations in the skill header are sufficient for MVP.
 - **`## Output` section.** Removed because `return` folds into the final Step. Restore if output contracts become rich enough (typed return shapes, post-conditions) that folding them into prose loses information. Also revisit the `outputs:` source sub-section header.
@@ -123,3 +127,4 @@ Features explicitly deferred from the v0 CLI surface (see `cli.md` §What Is Not
 ## Tooling & Adjacent Skills
 
 - **Recursive multi-file lifting in `glyph-lift`.** The `glyph-lift` skill (reverse direction: `.md` skill file → `.glyph.md` source) treats external file references in v1 as `import "<path>"` declarations only — it does not recursively lift the referenced files. The user runs the lifter again on each referenced file manually. Post-MVP: add a recursive mode that walks file references, lifts each file, and emits a multi-file project. Requires a cycle-rejection guard (paralleling the compiler's import cycle rejection in `imports.md`) and a strategy for when a referenced file is already in `.glyph.md` form (no-op vs. re-lift).
+- **Remove `_effects_stub` from the tree-sitter grammar.** `tree-sitter-glyph/grammar.js` carries a hidden `_effects_stub` rule (introduced in M2 commit `b9e0761`) that structurally consumes `effects: a, b, c\n` lines without producing an AST node or any highlight captures. It exists solely to prevent the parse-recovery cascade on three corpus files that still contain `effects:` lines (`crates/glyph-cli/tests/corpus/valid/update_docs.glyph.md`, `imports/repo_tools.glyph.md`, `imports/fix_bug.glyph.md`) — without it, `tree-sitter highlight` breaks on `repo_tools.glyph.md` because `effects:` is the first body line. **`effects:` is permanently out of MVP** (per the M2 brief and `language-surface.md`), so once those three corpus files are cleaned of `effects:` lines, the stub becomes dead. To remove: delete the `_effects_stub` rule and its two references inside `declaration_body` and `export_block_body` in `grammar.js`, regenerate (`tree-sitter generate`), and confirm `tree-sitter test` plus highlight invocations still pass. Mechanical, no design implications.

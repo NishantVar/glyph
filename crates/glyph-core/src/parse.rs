@@ -44,6 +44,7 @@ pub fn parse(source: &str, file_id: u32) -> Result<(SourceFile, LineIndex), Pars
         source,
         consumed_arrow_offsets: Vec::new(),
         consumed_output_target_offsets: Vec::new(),
+        enable_effects: false,
     };
     let file = p.parse_file()?;
     Ok((file, line_index))
@@ -68,6 +69,22 @@ pub fn parse_with_diagnostics(
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
+) -> Option<SourceFile> {
+    parse_with_diagnostics_opts(source, file_id, file_label, line_index, bag, false)
+}
+
+/// Diagnostic-aware Phase 1 entry point with effects gate.
+///
+/// When `enable_effects` is false, any `effects:` sub-section on `skill`,
+/// `block`, or `export block` declarations produces a `G::parse::effects-disabled`
+/// error diagnostic and parsing halts.
+pub fn parse_with_diagnostics_opts(
+    source: &str,
+    file_id: u32,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+    enable_effects: bool,
 ) -> Option<SourceFile> {
     // Tokenize. Indent-shape failures (`TabIndent`, `MixedIndent`) are wired to
     // **repairable** structured diagnostics here per `pipeline.md` Phase 1
@@ -200,6 +217,7 @@ pub fn parse_with_diagnostics(
             source,
             consumed_arrow_offsets: Vec::new(),
             consumed_output_target_offsets: Vec::new(),
+            enable_effects,
         };
         let parsed = p.parse_file();
         (
@@ -373,6 +391,9 @@ struct Parser<'a> {
     /// to reject all other angle-bracket output-target forms with the
     /// structured `G::parse::output-target-outside-return` diagnostic.
     consumed_output_target_offsets: Vec<u32>,
+    /// When `false`, parsing an `effects:` sub-section emits
+    /// `G::parse::effects-disabled` and the section is skipped.
+    enable_effects: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -770,7 +791,7 @@ impl<'a> Parser<'a> {
                 let mut names = Vec::new();
                 if !matches!(self.peek().kind, TokenKind::Rbrace) {
                     loop {
-                        let (name, _) = self.expect_ident(None)?;
+                        let (name, name_span) = self.expect_ident(None)?;
                         let alias = if let TokenKind::Ident(kw) = &self.peek().kind {
                             if kw == "as" {
                                 self.pos += 1;
@@ -782,7 +803,7 @@ impl<'a> Parser<'a> {
                         } else {
                             None
                         };
-                        names.push(ImportName { name, alias });
+                        names.push(ImportName { name: Spanned::new(name, name_span), alias });
                         match &self.peek().kind {
                             TokenKind::Comma => {
                                 self.pos += 1;
@@ -1064,33 +1085,51 @@ impl<'a> Parser<'a> {
                                     description = Some(s);
                                 }
                                 "effects" => {
-                                    self.pos += 1;
-                                    let colon_span = self.expect(&TokenKind::Colon)?;
-                                    loop {
-                                        let (eff, _) = self.expect_ident(None)?;
-                                        effects.push(eff);
-                                        match &self.peek().kind {
-                                            TokenKind::Comma => {
-                                                self.pos += 1;
-                                            }
-                                            _ => break,
-                                        }
-                                    }
-                                    // Validate `none` exclusivity for blocks too.
-                                    if effects.contains(&"none".to_string()) && effects.len() > 1 {
-                                        let span = Span::new(
-                                            self.file_id,
-                                            colon_span.start,
-                                            colon_span.end,
-                                        );
+                                    if !self.enable_effects {
+                                        let eff_span = self.peek().span;
                                         self.bag.push(
                                             Diagnostic::error(
-                                                "G::parse::none-with-effects",
-                                                "`effects: none` must not appear alongside other effect keywords",
-                                                SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                                "G::parse::effects-disabled",
+                                                "effects are not enabled; pass `--enable-effects` to use this feature",
+                                                SourceSpan::from_byte_span(self.file_label, eff_span, self.line_index),
                                             ),
-                                            span,
+                                            eff_span,
                                         );
+                                        // Skip the rest of the line.
+                                        while !self.at_eof()
+                                            && !matches!(self.peek().kind, TokenKind::LineStart { .. })
+                                        {
+                                            self.pos += 1;
+                                        }
+                                    } else {
+                                        self.pos += 1;
+                                        let colon_span = self.expect(&TokenKind::Colon)?;
+                                        loop {
+                                            let (eff, _) = self.expect_ident(None)?;
+                                            effects.push(eff);
+                                            match &self.peek().kind {
+                                                TokenKind::Comma => {
+                                                    self.pos += 1;
+                                                }
+                                                _ => break,
+                                            }
+                                        }
+                                        // Validate `none` exclusivity for blocks too.
+                                        if effects.contains(&"none".to_string()) && effects.len() > 1 {
+                                            let span = Span::new(
+                                                self.file_id,
+                                                colon_span.start,
+                                                colon_span.end,
+                                            );
+                                            self.bag.push(
+                                                Diagnostic::error(
+                                                    "G::parse::none-with-effects",
+                                                    "`effects: none` must not appear alongside other effect keywords",
+                                                    SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                                ),
+                                                span,
+                                            );
+                                        }
                                     }
                                 }
                                 "flow" => {
@@ -1312,31 +1351,49 @@ impl<'a> Parser<'a> {
                 }
             }
             "effects" => {
-                self.pos += 1;
-                let colon_span = self.expect(&TokenKind::Colon)?;
-                // Short form only — comma-separated idents on the same line.
-                loop {
-                    let (eff, _) = self.expect_ident(None)?;
-                    effects.push(eff);
-                    match &self.peek().kind {
-                        TokenKind::Comma => {
-                            self.pos += 1;
-                        }
-                        _ => break,
-                    }
-                }
-                // Validate `none` exclusivity: `none` must not appear alongside
-                // other effect keywords → G::parse::none-with-effects (error).
-                if effects.contains(&"none".to_string()) && effects.len() > 1 {
-                    let span = Span::new(self.file_id, colon_span.start, colon_span.end);
+                if !self.enable_effects {
+                    let span = kw_span;
                     self.bag.push(
                         Diagnostic::error(
-                            "G::parse::none-with-effects",
-                            "`effects: none` must not appear alongside other effect keywords",
+                            "G::parse::effects-disabled",
+                            "effects are not enabled; pass `--enable-effects` to use this feature",
                             SourceSpan::from_byte_span(self.file_label, span, self.line_index),
                         ),
                         span,
                     );
+                    // Skip the rest of the line.
+                    while !self.at_eof()
+                        && !matches!(self.peek().kind, TokenKind::LineStart { .. })
+                    {
+                        self.pos += 1;
+                    }
+                } else {
+                    self.pos += 1;
+                    let colon_span = self.expect(&TokenKind::Colon)?;
+                    // Short form only — comma-separated idents on the same line.
+                    loop {
+                        let (eff, _) = self.expect_ident(None)?;
+                        effects.push(eff);
+                        match &self.peek().kind {
+                            TokenKind::Comma => {
+                                self.pos += 1;
+                            }
+                            _ => break,
+                        }
+                    }
+                    // Validate `none` exclusivity: `none` must not appear alongside
+                    // other effect keywords → G::parse::none-with-effects (error).
+                    if effects.contains(&"none".to_string()) && effects.len() > 1 {
+                        let span = Span::new(self.file_id, colon_span.start, colon_span.end);
+                        self.bag.push(
+                            Diagnostic::error(
+                                "G::parse::none-with-effects",
+                                "`effects: none` must not appear alongside other effect keywords",
+                                SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                            ),
+                            span,
+                        );
+                    }
                 }
             }
             "require" | "avoid" | "must" => {
@@ -1359,8 +1416,8 @@ impl<'a> Parser<'a> {
                     }
                     _ => unreachable!(),
                 };
-                let (name, _) = self.expect_ident(None)?;
-                body_constraints.push(ConstraintMarker { marker: kind, name });
+                let (name, name_span) = self.expect_ident(None)?;
+                body_constraints.push(ConstraintMarker { marker: kind, name: Spanned::new(name, name_span) });
             }
             "context" => {
                 self.pos += 1;
@@ -1434,8 +1491,9 @@ impl<'a> Parser<'a> {
                                     }
                                     TokenKind::Ident(name) => {
                                         let v = name.clone();
+                                        let name_span = self.peek().span;
                                         self.pos += 1;
-                                        context_section.push(ContextEntry::NameRef(v));
+                                        context_section.push(ContextEntry::NameRef(Spanned::new(v, name_span)));
                                     }
                                     _ => {
                                         return Err(ParseError::Unexpected {
@@ -1455,8 +1513,9 @@ impl<'a> Parser<'a> {
                     match &self.peek().kind {
                         TokenKind::Ident(name) => {
                             let v = name.clone();
+                            let name_span = self.peek().span;
                             self.pos += 1;
-                            body_context.push(ContextEntry::NameRef(v));
+                            body_context.push(ContextEntry::NameRef(Spanned::new(v, name_span)));
                         }
                         TokenKind::StringLit(s) => {
                             let lit_span = self.peek().span;
@@ -1527,8 +1586,8 @@ impl<'a> Parser<'a> {
                                             });
                                         }
                                     };
-                                    let (name, _) = self.expect_ident(None)?;
-                                    body_constraints.push(ConstraintMarker { marker: kind, name });
+                                    let (name, name_span) = self.expect_ident(None)?;
+                                    body_constraints.push(ConstraintMarker { marker: kind, name: Spanned::new(name, name_span) });
                                 }
                                 _ => {
                                     return Err(ParseError::Unexpected {
@@ -1593,6 +1652,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Ident(name) => {
                 let name = name.clone();
+                let name_span = self.peek().span;
                 self.pos += 1;
                 // Check if it's a call: name(args).
                 if matches!(self.peek().kind, TokenKind::Lparen) {
@@ -1625,9 +1685,9 @@ impl<'a> Parser<'a> {
                         }
                     }
                     self.expect(&TokenKind::Rparen)?;
-                    ReturnExpr::Call { target: name, args }
+                    ReturnExpr::Call { target: Spanned::new(name, name_span), args }
                 } else {
-                    ReturnExpr::Name(name)
+                    ReturnExpr::Name(Spanned::new(name, name_span))
                 }
             }
             TokenKind::StringLit(s) => {
@@ -1734,6 +1794,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Ident(kw) => {
                 let kw_val = kw.clone();
+                let kw_val_span = self.peek().span;
                 match kw_val.as_str() {
                     "require" | "avoid" | "must" => {
                         self.pos += 1;
@@ -1754,10 +1815,10 @@ impl<'a> Parser<'a> {
                             }
                             _ => unreachable!(),
                         };
-                        let (name, _) = self.expect_ident(None)?;
+                        let (name, name_span) = self.expect_ident(None)?;
                         Ok(FlowStmt::ConstraintMarker(ConstraintMarker {
                             marker: kind,
-                            name,
+                            name: Spanned::new(name, name_span),
                         }))
                     }
                     "return" => {
@@ -1770,8 +1831,9 @@ impl<'a> Parser<'a> {
                         match &self.peek().kind {
                             TokenKind::Ident(name) => {
                                 let v = name.clone();
+                                let name_span = self.peek().span;
                                 self.pos += 1;
-                                Ok(FlowStmt::ContextMarker(ContextEntry::NameRef(v)))
+                                Ok(FlowStmt::ContextMarker(ContextEntry::NameRef(Spanned::new(v, name_span))))
                             }
                             TokenKind::StringLit(s) => {
                                 let v = s.clone();
@@ -1820,7 +1882,7 @@ impl<'a> Parser<'a> {
                             ),
                             span,
                         );
-                        Ok(FlowStmt::BareName(kw_val))
+                        Ok(FlowStmt::BareName(Spanned::new(kw_val, kw_val_span)))
                     }
                     "if" => {
                         self.pos += 1;
@@ -1910,7 +1972,7 @@ impl<'a> Parser<'a> {
                             // Check for optional `with "modifier"`.
                             let site_modifier = self.try_parse_with_modifier()?;
                             Ok(FlowStmt::Call {
-                                target: kw_val,
+                                target: Spanned::new(kw_val, kw_val_span),
                                 args,
                                 site_modifier,
                             })
@@ -1946,7 +2008,7 @@ impl<'a> Parser<'a> {
                                         dot_span,
                                     );
                                     // Return a BareName so parsing can continue.
-                                    Ok(FlowStmt::BareName(kw_val))
+                                    Ok(FlowStmt::BareName(Spanned::new(kw_val, kw_val_span)))
                                 } else {
                                     Err(ParseError::Unexpected {
                                         span: dot_span,
@@ -1982,9 +2044,9 @@ impl<'a> Parser<'a> {
                             if matches!(self.peek().kind, TokenKind::StringLit(_)) {
                                 self.pos += 1;
                             }
-                            Ok(FlowStmt::BareName(kw_val))
+                            Ok(FlowStmt::BareName(Spanned::new(kw_val, kw_val_span)))
                         } else {
-                            Ok(FlowStmt::BareName(kw_val))
+                            Ok(FlowStmt::BareName(Spanned::new(kw_val, kw_val_span)))
                         }
                     }
                 }
@@ -3354,7 +3416,7 @@ export block foo() -> SomeType
 ";
         let eb = first_export_block(src);
         match eb.terminal_return {
-            Some(ReturnExpr::Name(ref n)) => assert_eq!(n, "result"),
+            Some(ReturnExpr::Name(ref n)) => assert_eq!(n.node, "result"),
             other => panic!("expected Some(Return(Name)), got {:?}", other),
         }
     }
@@ -3406,7 +3468,7 @@ export block foo() -> SomeType
 ";
         let eb = first_export_block(src);
         match eb.terminal_return {
-            Some(ReturnExpr::Name(ref n)) => assert_eq!(n, "last"),
+            Some(ReturnExpr::Name(ref n)) => assert_eq!(n.node, "last"),
             other => panic!("expected Some(Return(Name(\"last\"))), got {:?}", other),
         }
     }

@@ -1,0 +1,92 @@
+================================================================================
+Constraints section with all four marker forms
+================================================================================
+
+skill foo()
+    constraints:
+        require accuracy
+        avoid stale_references
+        must root_cause_before_fix
+        must avoid silent_failures
+    flow:
+        "x"
+
+text accuracy = "x"
+text stale_references = "y"
+text root_cause_before_fix = "z"
+text silent_failures = "w"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (constraints_section
+        (require_marker
+          (identifier))
+        (avoid_marker
+          (identifier))
+        (must_marker
+          (identifier))
+        (must_avoid_marker
+          (identifier)))
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content)))))))
+  (text_declaration
+    name: (identifier)
+    value: (string_literal
+      (string_content)))
+  (text_declaration
+    name: (identifier)
+    value: (string_literal
+      (string_content)))
+  (text_declaration
+    name: (identifier)
+    value: (string_literal
+      (string_content)))
+  (text_declaration
+    name: (identifier)
+    value: (string_literal
+      (string_content))))
+
+================================================================================
+Typed parameters with return type and type annotations
+================================================================================
+
+block make_plan(ctx: Context, risk: String = "medium") -> Plan
+    flow:
+        "x"
+        return draft
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (block_declaration
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        (type_annotation
+          type: (type_identifier)))
+      (parameter
+        name: (identifier)
+        (type_annotation
+          type: (type_identifier))
+        default: (string_literal
+          (string_content))))
+    (return_type
+      type: (type_identifier))
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))
+        (flow_statement
+          (return_statement
+            value: (identifier)))))))

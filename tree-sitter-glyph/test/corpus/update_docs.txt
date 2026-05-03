@@ -1,0 +1,56 @@
+================================================================================
+Skill with body-level markers and flow
+================================================================================
+
+skill update_docs()
+    description: "Update repository documentation to match current code."
+    require accuracy
+    avoid stale_references
+    flow:
+        "Scan the repository for files with documentation."
+        "Compare each document against the current code for accuracy."
+        "Update any sections that are outdated or incorrect."
+        "Verify all cross-references and links are still valid."
+
+text accuracy = "Ensure all documentation accurately reflects the current code."
+text stale_references = "Leaving references to removed or renamed symbols."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (description_section
+        content: (string_literal
+          (string_content)))
+      (require_marker
+        (identifier))
+      (avoid_marker
+        (identifier))
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content)))))))
+  (text_declaration
+    name: (identifier)
+    value: (string_literal
+      (string_content)))
+  (text_declaration
+    name: (identifier)
+    value: (string_literal
+      (string_content))))

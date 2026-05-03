@@ -1,0 +1,28 @@
+================================================================================
+Skill with comments
+================================================================================
+
+// A simple skill
+skill hello()
+    description: "Say hello."
+    flow:
+        // greet the user
+        "Say hello to the user."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (comment)
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (description_section
+        content: (string_literal
+          (string_content)))
+      (flow_section
+        (comment)
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))

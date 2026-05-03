@@ -1,0 +1,121 @@
+================================================================================
+int and float bindings, with and without export
+================================================================================
+
+int max_attempts = 3
+export int default_max_attempts = 3
+float threshold = 0.8
+export float default_temperature = 0.7
+
+skill foo()
+    flow:
+        "x"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (int_declaration
+    name: (identifier)
+    value: (integer_literal))
+  (int_declaration
+    name: (identifier)
+    value: (integer_literal))
+  (float_declaration
+    name: (identifier)
+    value: (float_literal))
+  (float_declaration
+    name: (identifier)
+    value: (float_literal))
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))
+
+================================================================================
+Generated text and generated block declarations
+================================================================================
+
+skill foo()
+    flow:
+        inspect_failure(scope)
+        summarize_changes()
+
+generated text root_cause_before_fix = "Identify the root cause."
+
+generated block inspect_failure(area)
+    "Inspect the failure in {area}."
+
+generated block summarize_changes()
+    "Summarize what was changed."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (call_expression
+            function: (identifier)
+            (argument_list
+              (argument
+                (identifier)))))
+        (flow_statement
+          (call_expression
+            function: (identifier)
+            (argument_list))))))
+  (generated_text_declaration
+    name: (identifier)
+    value: (string_literal
+      (string_content)))
+  (generated_block_declaration
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)))
+    (inline_instruction
+      (string_literal
+        (string_content)
+        (interpolation
+          (identifier))
+        (string_content))))
+  (generated_block_declaration
+    name: (identifier)
+    (parameter_list)
+    (inline_instruction
+      (string_literal
+        (string_content)))))
+
+================================================================================
+Export text bindings
+================================================================================
+
+export text safety_rules = "Never execute destructive operations without confirmation."
+
+skill foo()
+    flow:
+        "x"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (text_declaration
+    name: (identifier)
+    value: (string_literal
+      (string_content)))
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))

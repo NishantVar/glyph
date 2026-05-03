@@ -126,9 +126,9 @@ fn resolve_context_entry(
     match entry {
         ContextEntry::InlineString(s) => Ok(s.clone()),
         ContextEntry::NameRef(name) => texts
-            .get(name)
+            .get(&name.node)
             .cloned()
-            .ok_or_else(|| LowerError::UndefinedContextRef(name.clone())),
+            .ok_or_else(|| LowerError::UndefinedContextRef(name.node.clone())),
     }
 }
 
@@ -186,9 +186,9 @@ fn lower_flow_body(
                 // conditional Step prose. Create an InlineInstruction with
                 // the constraint text so it can be emitted as a sub-step.
                 let resolved = texts
-                    .get(&marker.name)
+                    .get(&marker.name.node)
                     .cloned()
-                    .ok_or_else(|| LowerError::UndefinedConstraintRef(marker.name.clone()))?;
+                    .ok_or_else(|| LowerError::UndefinedConstraintRef(marker.name.node.clone()))?;
                 let prefix = match marker.marker {
                     ConstraintMarkerKind::Require => "",
                     ConstraintMarkerKind::Avoid => "Do not: ",
@@ -215,7 +215,7 @@ fn lower_flow_body(
                 ids.push(id);
             }
             FlowStmt::Call { target, args, site_modifier } => {
-                let resolved_body = if let Some(block) = blocks.get(target.as_str()) {
+                let resolved_body = if let Some(block) = blocks.get(target.node.as_str()) {
                     let body_text = resolve_block_body_text(block, texts)?;
                     Some(body_text)
                 } else {
@@ -226,13 +226,13 @@ fn lower_flow_body(
                 // body-text resolution; stdlib calls (no map entry) → None.
                 // Cross-file resolution is deferred to D17.
                 let return_type = blocks
-                    .get(target.as_str())
+                    .get(target.node.as_str())
                     .and_then(|b| b.return_type.as_ref())
                     .map(|s| name_to_typetag(s.node.as_str()));
                 let next = NodeId(arena.len() as u32);
                 let id = arena.push(IrNode::Call(IrCall {
                     node_id: next,
-                    target: target.clone(),
+                    target: target.node.clone(),
                     args: args.clone(),
                     resolved_body,
                     site_modifier: site_modifier.clone(),
@@ -382,8 +382,8 @@ pub fn lower_with_imports(
                 .flow
                 .iter()
                 .filter_map(|stmt| match stmt {
-                    FlowStmt::Call { target, .. } => Some(target.clone()),
-                    FlowStmt::Return(ReturnExpr::Call { target, .. }) => Some(target.clone()),
+                    FlowStmt::Call { target, .. } => Some(target.node.clone()),
+                    FlowStmt::Return(ReturnExpr::Call { target, .. }) => Some(target.node.clone()),
                     _ => None,
                 })
                 .collect();
@@ -393,12 +393,12 @@ pub fn lower_with_imports(
                 .iter()
                 .filter_map(|stmt| match stmt {
                     FlowStmt::InlineString(s) => Some(s.clone()),
-                    FlowStmt::Call { target, .. } => Some(format!("call {}", target)),
+                    FlowStmt::Call { target, .. } => Some(format!("call {}", target.node)),
                     FlowStmt::Branch { condition, .. } => Some(format!("if {}", condition)),
-                    FlowStmt::ConstraintMarker(m) => Some(format!("constraint {}", m.name)),
+                    FlowStmt::ConstraintMarker(m) => Some(format!("constraint {}", m.name.node)),
                     FlowStmt::ContextMarker(_) => Some("context".to_string()),
                     FlowStmt::Return(_) => Some("return".to_string()),
-                    FlowStmt::BareName(n) => Some(n.clone()),
+                    FlowStmt::BareName(n) => Some(n.node.clone()),
                 })
                 .collect();
             let block_return_type: Option<TypeTag> = block
@@ -450,9 +450,9 @@ pub fn lower_with_imports(
             FlowStmt::ConstraintMarker(marker) => {
                 // Flow-top-level constraint → hoist to declaration's constraints list.
                 let resolved = texts
-                    .get(&marker.name)
+                    .get(&marker.name.node)
                     .cloned()
-                    .ok_or_else(|| LowerError::UndefinedConstraintRef(marker.name.clone()))?;
+                    .ok_or_else(|| LowerError::UndefinedConstraintRef(marker.name.node.clone()))?;
                 let (strength, polarity) = match marker.marker {
                     ConstraintMarkerKind::Require => (Strength::Soft, Polarity::Require),
                     ConstraintMarkerKind::Avoid => (Strength::Soft, Polarity::Avoid),
@@ -480,7 +480,7 @@ pub fn lower_with_imports(
             }
             FlowStmt::Call { target, args, site_modifier } => {
                 // Create an IrCall node. Resolve callee body if block exists.
-                let resolved_body = if let Some(block) = blocks.get(target.as_str()) {
+                let resolved_body = if let Some(block) = blocks.get(target.node.as_str()) {
                     let body_text = resolve_block_body_text(block, &texts)?;
                     Some(body_text)
                 } else {
@@ -490,13 +490,13 @@ pub fn lower_with_imports(
                 // see the matching site in `lower_flow_body` above for the
                 // shared rationale.
                 let return_type = blocks
-                    .get(target.as_str())
+                    .get(target.node.as_str())
                     .and_then(|b| b.return_type.as_ref())
                     .map(|s| name_to_typetag(s.node.as_str()));
                 let next = NodeId(arena.len() as u32);
                 let id = arena.push(IrNode::Call(IrCall {
                     node_id: next,
-                    target: target.clone(),
+                    target: target.node.clone(),
                     args: args.clone(),
                     resolved_body,
                     site_modifier: site_modifier.clone(),
@@ -512,12 +512,12 @@ pub fn lower_with_imports(
                     ReturnExpr::None => None,
                     ReturnExpr::Call { target, args } => {
                         if args.is_empty() {
-                            Some(format!("{}()", target))
+                            Some(format!("{}()", target.node))
                         } else {
-                            Some(format!("{}({})", target, args.join(", ")))
+                            Some(format!("{}({})", target.node, args.join(", ")))
                         }
                     }
-                    ReturnExpr::Name(name) => Some(name.clone()),
+                    ReturnExpr::Name(name) => Some(name.node.clone()),
                     ReturnExpr::Inline(s) => Some(s.clone()),
                     // Issue #85: handled out-of-band below — push an
                     // `IrOutputContract` instead of folding into return text.
@@ -581,9 +581,9 @@ pub fn lower_with_imports(
     let mut constraint_ids: Vec<NodeId> = Vec::new();
     for marker in &skill.body_constraints {
         let resolved = texts
-            .get(&marker.name)
+            .get(&marker.name.node)
             .cloned()
-            .ok_or_else(|| LowerError::UndefinedConstraintRef(marker.name.clone()))?;
+            .ok_or_else(|| LowerError::UndefinedConstraintRef(marker.name.node.clone()))?;
         let (strength, polarity) = match marker.marker {
             ConstraintMarkerKind::Require => (Strength::Soft, Polarity::Require),
             ConstraintMarkerKind::Avoid => (Strength::Soft, Polarity::Avoid),
@@ -889,7 +889,7 @@ block make_plan() -> Plan
         \"compute the plan\"
 ";
         let arena = lower_skill(src);
-        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph.md")
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph.md", false)
             .expect("arena should serialize");
         let v: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
         // Find the call inside skill.flow[*] with target == "make_plan".
@@ -920,7 +920,7 @@ skill make_report() -> Report
         \"do work\"
 ";
         let arena = lower_skill(src);
-        let json_str = crate::emit_ir::serialize_ir_json(&arena, "make_report.glyph.md")
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "make_report.glyph.md", false)
             .expect("arena with root skill should serialize");
         let v: serde_json::Value =
             serde_json::from_str(&json_str).expect("emitter output should parse as JSON");
@@ -954,7 +954,7 @@ skill greet() -> String
         let skill = root_skill(&arena);
         assert_eq!(skill.return_type, Some(TypeTag::String));
 
-        let json_str = crate::emit_ir::serialize_ir_json(&arena, "greet.glyph.md")
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "greet.glyph.md", false)
             .expect("arena should serialize");
         let v: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
         assert_eq!(v["skill"]["return_type"], serde_json::json!("string"));
@@ -973,7 +973,7 @@ skill drive()
         let arena = lower_skill(src);
         assert!(root_skill(&arena).return_type.is_none());
 
-        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph.md")
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph.md", false)
             .expect("arena should serialize");
         let v: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
         assert_eq!(v["skill"]["return_type"], serde_json::Value::Null);
@@ -995,7 +995,7 @@ skill drive()
         let call = find_call(&arena, "unresolved_target");
         assert!(call.return_type.is_none());
 
-        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph.md")
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph.md", false)
             .expect("arena should serialize");
         let v: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
         let flow = v["skill"]["flow"].as_array().expect("flow array");
@@ -1030,7 +1030,7 @@ skill main()
              return_type must be None at the lower layer"
         );
 
-        let json_str = crate::emit_ir::serialize_ir_json(&arena, "main.glyph.md")
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "main.glyph.md", false)
             .expect("arena should serialize");
         let v: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
         let flow = v["skill"]["flow"].as_array().expect("flow array");
@@ -1148,7 +1148,7 @@ skill drive() -> List
              generic-type-name warning is the user-facing channel, not lower."
         );
 
-        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph.md")
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph.md", false)
             .expect("arena should serialize");
         let v: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
         assert_eq!(

@@ -1,0 +1,230 @@
+================================================================================
+Multi-line parameter list (bracket-depth suppression)
+================================================================================
+
+skill summarize(
+    scope = ".",
+    target,
+    style: String = "concise",
+)
+    flow:
+        "Summarize {scope} into {target}."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        default: (string_literal
+          (string_content)))
+      (parameter
+        name: (identifier))
+      (parameter
+        name: (identifier)
+        (type_annotation
+          type: (type_identifier))
+        default: (string_literal
+          (string_content))))
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content)
+              (interpolation
+                (identifier))
+              (string_content)
+              (interpolation
+                (identifier))
+              (string_content))))))))
+
+================================================================================
+Multi-line argument list and named arguments
+================================================================================
+
+skill foo()
+    flow:
+        result = compute(
+            scope,
+            mode = "fast",
+            limit = 10,
+        )
+        return result
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (variable_binding
+            name: (identifier)
+            value: (call_expression
+              function: (identifier)
+              (argument_list
+                (argument
+                  (identifier))
+                (argument
+                  name: (identifier)
+                  value: (string_literal
+                    (string_content)))
+                (argument
+                  name: (identifier)
+                  value: (integer_literal))))))
+        (flow_statement
+          (return_statement
+            value: (identifier)))))))
+
+================================================================================
+Triple-quoted block string in text binding
+================================================================================
+
+text rules = """
+Never execute destructive operations.
+Always confirm before deleting files.
+"""
+
+skill foo()
+    flow:
+        "x"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (text_declaration
+    name: (identifier)
+    value: (block_string
+      (block_string_content)))
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))
+
+================================================================================
+Block string with literal "" mid-content (followed by non-special)
+================================================================================
+
+text rules = """before""world"""
+
+skill foo()
+    flow:
+        "x"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (text_declaration
+    name: (identifier)
+    value: (block_string
+      (block_string_content)
+      (block_string_content)
+      (block_string_content)))
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))
+
+================================================================================
+Block string with literal "" immediately before interpolation
+================================================================================
+
+text rules = """before""{name}after"""
+
+skill foo()
+    flow:
+        "x"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (text_declaration
+    name: (identifier)
+    value: (block_string
+      (block_string_content)
+      (interpolation
+        (identifier))
+      (block_string_content)))
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))
+
+================================================================================
+Block string with leading and consecutive embedded quotes around interpolations
+================================================================================
+
+text rules = """""{a}""{b}"""
+
+skill foo()
+    flow:
+        "x"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (text_declaration
+    name: (identifier)
+    value: (block_string
+      (interpolation
+        (identifier))
+      (interpolation
+        (identifier))))
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))
+
+================================================================================
+Block string with single literal " mid-content
+================================================================================
+
+text rules = """one"two"""
+
+skill foo()
+    flow:
+        "x"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (text_declaration
+    name: (identifier)
+    value: (block_string
+      (block_string_content)
+      (block_string_content)
+      (block_string_content)))
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/glyph-core", "crates/glyph-cli"]
+members = ["crates/glyph-core", "crates/glyph-cli", "crates/glyph-lsp"]
 resolver = "2"
 
 [workspace.package]
@@ -13,4 +13,8 @@ serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 codespan-reporting = "0.11"
 glyph-core = { path = "crates/glyph-core" }
+glyph-lsp = { path = "crates/glyph-lsp" }
 tempfile = "3"
+# LSP server stack (M1).
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "io-std", "io-util", "sync", "macros", "time", "net"] }

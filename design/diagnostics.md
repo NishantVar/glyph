@@ -84,7 +84,8 @@ Representative diagnostics implied by the current design.
 | `G::parse::tab-indent` | repairable | Tabs used instead of 4-space indentation (`language-surface.md` §2.2) |
 | `G::parse::mixed-indent` | repairable | Tabs and spaces on the same line (`language-surface.md` §2.2) |
 | `G::parse::nested-flow` | error | `flow:` inside `flow:` (`data-flow.md`) |
-| `G::parse::none-with-effects` | error | `effects: none, reads_files` — `none` alongside other keywords (`ir-and-semantics.md` §3). Detectable in Parse because the token sequence is unambiguous, but semantically an error — `none` exclusivity is a hard rule, not repairable. |
+| `G::parse::effects-disabled` | error | `effects:` sub-section used without `--enable-effects`. The effects subsystem is gated; remove the `effects:` line or pass `--enable-effects` (`ir-and-semantics.md` §3). |
+| `G::parse::none-with-effects` | error | *(Gated — requires `--enable-effects`.)* `effects: none, reads_files` — `none` alongside other keywords (`ir-and-semantics.md` §3). Detectable in Parse because the token sequence is unambiguous, but semantically an error — `none` exclusivity is a hard rule, not repairable. |
 | `G::parse::multiple-with` | error | Chained `with ... with ...` on a single call (`data-flow.md`) |
 | `G::parse::with-on-bare-name` | error | `with` modifier on a non-call statement (`data-flow.md`) |
 | `G::parse::operator-in-expression` | repairable | Operator token (`+`, `-`, `*`, `/`, etc.) in expression position; MVP has no value-level operators (`values-and-names.md`) |
@@ -116,9 +117,9 @@ Representative diagnostics implied by the current design.
 | `G::analyze::duplicate-import` | repairable | Same file imported twice; merged (`imports.md` §6) |
 | `G::analyze::unused-import` | repairable | Imported name never referenced; removed (`imports.md` §7) |
 | `G::analyze::ambiguous-role` | repairable | Can't determine instruction role from context (`ir-and-semantics.md` §2) |
-| `G::analyze::effects-under-declared` | error | Declared effects are a subset of inferred effects (`ir-and-semantics.md` §3) |
-| `G::analyze::effects-over-declared` | warning | Declared effects include keywords not inferred from the body; non-blocking, surfaced for author cleanup (`ir-and-semantics.md` §3) |
-| `G::analyze::missing-effects` | repairable | A declaration (skill, block, or export block) omits `effects:` entirely and the inferred set is non-empty; Phase 3a auto-adds the inferred effects (`ir-and-semantics.md` §3) |
+| `G::analyze::effects-under-declared` | error | *(Gated — requires `--enable-effects`.)* Declared effects are a subset of inferred effects (`ir-and-semantics.md` §3) |
+| `G::analyze::effects-over-declared` | warning | *(Gated — requires `--enable-effects`.)* Declared effects include keywords not inferred from the body; non-blocking, surfaced for author cleanup (`ir-and-semantics.md` §3) |
+| `G::analyze::missing-effects` | repairable | *(Gated — requires `--enable-effects`.)* A declaration (skill, block, or export block) omits `effects:` entirely and the inferred set is non-empty; Phase 3a auto-adds the inferred effects (`ir-and-semantics.md` §3) |
 | `G::analyze::nominal-mismatch` | error | Type name mismatch at a call boundary (`types.md`) |
 | `G::analyze::generic-type-name` | warning | An identifier in return-type position (`-> ReturnType` on `skill`, `export block`, or private `block` declaration headers) is one of the 13 banned generic type names: `String`, `Int`, `Float`, `Bool`, `None`, `List`, `Set`, `Map`, `Array`, `Dict`, `Tuple`, `Object`, `Any`. Match is case-insensitive (ASCII). Non-blocking; compilation continues. Suggestion: replace the generic name with a domain type that carries semantic meaning (e.g., `BranchName`, `FilePath`, `Summary`) (`types.md` §Primitive Kinds (IR-Only)). **Precedence:** `-> None` in return-type position is intercepted earlier by `G::parse::none-as-return-type` (repairable, Phase 3a auto-fix); this diagnostic surfaces end-to-end for the other 12 banned names. The validator retains `None` in its banned list for defense in depth at any future call sites where parse interception does not apply. |
 | `G::analyze::lossy-coercion` | error | Lossy numeric conversion, e.g. `3.7` where integer expected (`values-and-names.md`) |
@@ -200,7 +201,7 @@ Phase 6b structural validation, implemented in the `glyph validate-output` subco
 | `G::repair::generated-const` | warning | A `generated const` was materialized for an undefined bare name (`repair.md` §5) |
 | `G::repair::generated-block` | warning | A `generated block` was materialized for an undefined parens-call (`repair.md` §5) |
 | `G::repair::branch-extracted` | warning | A nested `Branch` was auto-extracted into a `generated block` to keep compiled output at one level of sub-steps (`repair.md` §4.9) |
-| `G::repair::inferred-effects` | warning | Phase 3a deterministically inferred and auto-added an `effects:` sub-section for a declaration that omitted it; informational — the author should review the added effects (`ir-and-semantics.md` §3, `pipeline.md` Phase 3a) |
+| `G::repair::inferred-effects` | warning | *(Gated — requires `--enable-effects`.)* Phase 3a deterministically inferred and auto-added an `effects:` sub-section for a declaration that omitted it; informational — the author should review the added effects (`ir-and-semantics.md` §3, `pipeline.md` Phase 3a) |
 | `G::repair::constraint-tension` | warning | Phase 3c LLM scan identified two constraints in the same declaration that are in friction but both reasonable to hold (`repair.md` §4.10). Build proceeds; both constraints survive into compiled output. |
 
 ### Repair execution failures

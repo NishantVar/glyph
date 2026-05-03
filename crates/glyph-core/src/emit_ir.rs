@@ -415,7 +415,7 @@ fn find_block_by_name<'a>(arena: &'a IrArena, name: &str) -> Option<&'a crate::i
 ///
 /// Returns the JSON string. The arena must have a root skill set.
 /// Returns `None` if the arena has no root skill (library file — no IR JSON produced).
-pub fn serialize_ir_json(arena: &IrArena, source_file: &str) -> Option<String> {
+pub fn serialize_ir_json(arena: &IrArena, source_file: &str, enable_effects: bool) -> Option<String> {
     let root_id = arena.root_skill()?;
     let skill = match arena.get(root_id) {
         IrNode::Skill(s) => s,
@@ -467,11 +467,11 @@ pub fn serialize_ir_json(arena: &IrArena, source_file: &str) -> Option<String> {
     );
 
     // effects
-    let effects: Vec<Value> = skill
-        .effects
-        .iter()
-        .map(|e| Value::String(e.clone()))
-        .collect();
+    let effects: Vec<Value> = if enable_effects {
+        skill.effects.iter().map(|e| Value::String(e.clone())).collect()
+    } else {
+        Vec::new()
+    };
     skill_obj.insert("effects".into(), Value::Array(effects));
 
     // context
@@ -620,7 +620,7 @@ mod output_contract_emit_tests {
     fn ir_json(src: &str) -> Value {
         let (file, _) = parse::parse(src, 0).expect("source should parse");
         let arena = lower::lower(&file).expect("source should lower");
-        let s = serialize_ir_json(&arena, "test.glyph")
+        let s = serialize_ir_json(&arena, "test.glyph", false)
             .expect("arena has a root skill so JSON is produced");
         serde_json::from_str(&s).expect("emitter output is valid JSON")
     }
@@ -632,7 +632,7 @@ mod output_contract_emit_tests {
         let (file, _) = parse::parse(src, 0).expect("source should parse");
         let arena = lower::lower(&file).expect("source should lower");
         let arena = expand::expand_step1(arena);
-        let s = serialize_ir_json(&arena, "test.glyph")
+        let s = serialize_ir_json(&arena, "test.glyph", false)
             .expect("arena has a root skill so JSON is produced");
         serde_json::from_str(&s).expect("emitter output is valid JSON")
     }
@@ -805,8 +805,8 @@ skill make_report() -> Report
 ";
         let (file, _) = parse::parse(src, 0).expect("source should parse");
         let arena = lower::lower(&file).expect("source should lower");
-        let a = serialize_ir_json(&arena, "test.glyph").expect("first emit");
-        let b = serialize_ir_json(&arena, "test.glyph").expect("second emit");
+        let a = serialize_ir_json(&arena, "test.glyph", false).expect("first emit");
+        let b = serialize_ir_json(&arena, "test.glyph", false).expect("second emit");
         assert_eq!(a, b, "two emits of the same arena must be byte-identical");
     }
 
@@ -828,7 +828,7 @@ skill make_report() -> Report
 ";
         let (file, _) = parse::parse(src, 0).expect("source should parse");
         let arena = lower::lower(&file).expect("source should lower");
-        let ir_json = serialize_ir_json(&arena, "test.glyph").expect("emit");
+        let ir_json = serialize_ir_json(&arena, "test.glyph", false).expect("emit");
         // Minimal compiled-output md skeleton matching the single-step skill.
         let md = "\
 # make_report
