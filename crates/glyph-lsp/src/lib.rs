@@ -713,8 +713,10 @@ block validate_plan()
         assert_eq!(def_text, "block");
     }
 
-    /// Cursor on a same-file bare-name binding reference jumps to the `text`
-    /// declaration.
+    /// Cursor on a same-file bare-name binding reference jumps to the `const`
+    /// declaration. Post-#81 the `text` keyword was removed and consts took
+    /// over value bindings; `ResolutionKind::Text` is retained as the unified
+    /// label for the resolution kind.
     #[test]
     fn bare_name_resolves_to_text_decl() {
         let src = r#"skill main()
@@ -723,7 +725,7 @@ block validate_plan()
     flow:
         "Be careful."
 
-text accuracy = "Be accurate."
+const accuracy = "Be accurate."
 "#;
         let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph.md", false)
             .expect("parse");
@@ -735,8 +737,8 @@ text accuracy = "Be accurate."
             .find(|r| off >= r.use_span.start && off < r.use_span.end)
             .expect("expected a Text resolution under the cursor");
         assert_eq!(r.kind, ResolutionKind::Text);
-        let def_text = &src[r.def_span.start as usize..r.def_span.start as usize + 4];
-        assert_eq!(def_text, "text");
+        let def_text = &src[r.def_span.start as usize..r.def_span.start as usize + 5];
+        assert_eq!(def_text, "const");
     }
 
     /// Cursor on a stdlib reference returns no jump (`Stdlib` kind, which
@@ -842,7 +844,7 @@ block validate_plan()
         let dep_path = dir.path().join("dep.glyph.md");
         // Dep has its own diagnostic (`require ghost` → undefined-name).
         let dep_text = "\
-export text alpha = \"alpha.\"
+export const alpha = \"alpha.\"
 
 skill dep_skill()
     description: \"dep skill.\"
