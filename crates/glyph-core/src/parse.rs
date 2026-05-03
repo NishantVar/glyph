@@ -2429,6 +2429,15 @@ impl<'a> Parser<'a> {
     fn parse_generated_block(&mut self) -> Result<Spanned<BlockDecl>, ParseError> {
         let (_, gen_span) = self.expect_ident(Some("generated"))?;
         let mut decl = self.parse_block_decl()?;
+        if let Some(rt) = &decl.node.return_type {
+            return Err(ParseError::Unexpected {
+                span: rt.span,
+                message: "`generated block` does not admit a return type \
+                          (see design/language-surface.md §3.7); \
+                          promote to a hand-authored `block` if one is needed"
+                    .to_string(),
+            });
+        }
         decl.node.generated = true;
         decl.span = Span::new(gen_span.file_id, gen_span.start, decl.span.end);
         Ok(decl)
@@ -2752,6 +2761,26 @@ generated block summarize_changes()
                 assert!(b.node.params.is_empty());
             }
             other => panic!("expected Decl::Block, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn generated_block_rejects_return_type() {
+        // §3.7: `generated block` does not admit a return-type slot.
+        let err = parse(
+            "generated block fix() -> Report\n    \"do thing\"\n",
+            0,
+        )
+        .err();
+        match err {
+            Some(ParseError::Unexpected { ref message, .. }) => {
+                assert!(
+                    message.contains("return type"),
+                    "expected return-type rejection, got: {}",
+                    message
+                );
+            }
+            other => panic!("expected ParseError::Unexpected, got {:?}", other),
         }
     }
 

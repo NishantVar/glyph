@@ -281,6 +281,7 @@ fn classify_keyword_text(s: &str) -> Option<SemTokenType> {
         // Declaration / control flow / logical operators / markers.
         "skill"
         | "block"
+        | "const"
         | "export"
         | "generated"
         | "import"
