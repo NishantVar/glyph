@@ -6,7 +6,7 @@ This document is the single authoritative reference for the LLM repair pass and 
 
 The repair pass is a source-to-source pass that turns invalid or under-specified Glyph source into valid, still-readable Glyph source before deterministic IR compilation.
 
-Repair is not just a safety net for experienced authors — it is the **primary content generation mechanism for novice authors**. A novice using only the kernel surface (`skill`, `require`/`avoid`, `flow:`, quoted strings, calls with parens, `with` modifier) writes source that contains many undefined bare names and parens-calls. Repair materializes these as `generated text` and `generated block` declarations so the source compiles; those generated definitions are the novice's effective "library" until they promote entries to hand-written `text` or `block`. This is why repair emits **single-string** generated bodies — short enough to minimize drift from author intent, reviewable at a glance, and easy to promote.
+Repair is not just a safety net for experienced authors — it is the **primary content generation mechanism for novice authors**. A novice using only the kernel surface (`skill`, `require`/`avoid`, `flow:`, quoted strings, calls with parens, `with` modifier) writes source that contains many undefined bare names and parens-calls. Repair materializes these as `generated const` and `generated block` declarations so the source compiles; those generated definitions are the novice's effective "library" until they promote entries to hand-written `const` or `block`. This is why repair emits **single-string** generated bodies — short enough to minimize drift from author intent, reviewable at a glance, and easy to promote.
 
 ```text
 loose or invalid Glyph source
@@ -24,7 +24,7 @@ The repair pass is not the compiler. It fixes compiler-blocking issues so the no
 
 The repair pass must not:
 
-- replace readable aliases with long generated text or inline shorthand instruction names as full prose at use sites;
+- replace readable aliases with long generated const values or inline shorthand instruction names as full prose at use sites;
 - reinterpret the skill's purpose;
 - reorder workflow steps unless the source is structurally invalid and no smaller repair exists;
 - silently invent behavior that was not implied by the source;
@@ -67,7 +67,7 @@ The repaired file should still look like the author's Glyph file. The pass prese
 - ordering and section structure;
 - indentation style where possible;
 - inline text and string content;
-- imports and local text blocks unless a diagnostic requires changing them.
+- imports and local const declarations unless a diagnostic requires changing them.
 
 ### 4.2 Prefer Minimal Syntax
 
@@ -111,7 +111,7 @@ When potency is ambiguous, repair should either choose the weakest compiling for
 
 Running repair twice on the same source, diagnostics, imports, standard library, and compiler schema produces no further source changes after the first accepted repair.
 
-Detection mechanism: if a bare name already resolves to any declaration -- `text`, `generated text`, import, parameter, or local binding -- repair skips it. No fingerprinting, hashing, or version tracking; the mechanism is: "does this name resolve to something?" If yes, do not regenerate.
+Detection mechanism: if a bare name already resolves to any declaration -- `const`, `generated const`, import, parameter, or local binding -- repair skips it. No fingerprinting, hashing, or version tracking; the mechanism is: "does this name resolve to something?" If yes, do not regenerate.
 
 Repair may change the file again only when one of its inputs changes:
 
@@ -131,7 +131,7 @@ Glyph source may be duck-typed and inferred. The repair pass adds type annotatio
 max_attempts = 3
 ```
 
-becomes `max_attempts: Int = 3` only if the compiler needs that annotation.
+becomes `max_attempts: RetryCount = 3` only if the compiler needs a domain-type annotation to resolve ambiguity.
 
 ### 4.7 Use Diagnostics Over Guesswork
 
@@ -148,12 +148,12 @@ Add an explicit step marker or output marker.
 
 Compound names like `avoid_unrelated_edits` are valid identifiers and are **not** forcibly split into marker-plus-concept form. Both `avoid_unrelated_edits` (single identifier) and `avoid unrelated_edits` (marker keyword + concept name) are accepted authoring styles.
 
-When a compound name resolves to a declaration (`text`, `generated text`, import, etc.), the compiler infers role, strength, and polarity from the declaration's text content, with the name prefix (`avoid_*`, `must_*`) as supporting evidence. No splitting or renaming occurs.
+When a compound name resolves to a declaration (`const`, `generated const`, import, etc.), the compiler infers role, strength, and polarity from the declaration's text content, with the name prefix (`avoid_*`, `must_*`) as supporting evidence. No splitting or renaming occurs.
 
 When a compound name is unresolved, repair generates a definition under the full compound name with the full semantics baked into the text body. For example, an unresolved `avoid_unrelated_edits` produces:
 
 ```glyph
-generated text avoid_unrelated_edits = "Do not make changes outside the requested scope."
+generated const avoid_unrelated_edits = "Do not make changes outside the requested scope."
 ```
 
 The definition carries the polarity in its text. No splitting, no renaming.
@@ -215,7 +215,7 @@ The author resolves manually: rename one of the conflicting declarations, or exp
 
 Phase 3 has three sub-steps:
 
-- **3a — deterministic auto-fixes.** Tab→spaces, unused import removal, etc. No LLM. 3a operates in two strata mirroring `glyph fmt` (`cli.md` §`glyph fmt`): pre-Parse text-level rewrites (tab → 4 spaces, mixed-indent normalization) run first on raw source and may turn a previously-rejecting source into one Phase 1 can accept; post-Parse AST-level rewrites (unconditional constraint hoisting, duplicate import merging, unused import removal, source section reordering) require a successful Phase 1. If Phase 1 fails after the pre-Parse pass, only the pre-Parse fixes are written and the parse diagnostic is surfaced to subsequent phases; AST-level rewrites are skipped.
+- **3a — deterministic auto-fixes.** Tab→spaces, unused import removal, etc. No LLM. 3a operates in two strata mirroring `glyph fmt` (`cli.md` §`glyph fmt`): pre-Parse text-level rewrites (tab → 4 spaces, mixed-indent normalization, legacy `-> None` strip on declaration headers — see §7) run first on raw source and may turn a previously-rejecting source into one Phase 1 can accept; post-Parse AST-level rewrites (unconditional constraint hoisting, duplicate import merging, unused import removal, source section reordering) require a successful Phase 1. If Phase 1 fails after the pre-Parse pass, only the pre-Parse fixes are written and the parse diagnostic is surfaced to subsequent phases; AST-level rewrites are skipped.
 - **3b — LLM-assisted repairs.** Driven by `repairable` diagnostics from Phase 2 (undefined names, ambiguous roles, missing returns, etc.).
 - **3c — constraint conflict scan.** Always runs (when triggered by constraint count). Independent of Phase 2 diagnostics.
 
@@ -260,27 +260,27 @@ It does **not** scan across scopes — a callee's scoped constraints (carried as
 
 ## 5. Generated Definitions
 
-Repair materializes two kinds of generated declarations: `generated text` for undefined bare names used with keyword prefixes, and `generated block` for undefined parens-calls and undefined bare names in `flow:`. Both follow the same stability, placement, promotion, and idempotence rules. The choice mirrors the text/block distinction (`language-surface.md` §1): `text` declarations are named string constants with no callable interface; `block` declarations are callable and encapsulate instructions. Repair preserves this distinction — a bare name used with a keyword prefix (`require`/`avoid`/`must`/`context`) materializes as `generated text`; a parens-call materializes as `generated block`. A bare name in `flow:` without a keyword prefix is a compile error (`G::analyze::text-in-flow`); Repair adds parentheses and materializes as `generated block`.
+Repair materializes two kinds of generated declarations: `generated const` for undefined bare names used with keyword prefixes, and `generated block` for undefined parens-calls and undefined bare names in `flow:`. Both follow the same stability, placement, promotion, and idempotence rules. The choice mirrors the const/block distinction (`language-surface.md` §1): `const` declarations are named string constants with no callable interface; `block` declarations are callable and encapsulate instructions. Repair preserves this distinction — a bare name used with a keyword prefix (`require`/`avoid`/`must`/`context`) materializes as `generated const`; a parens-call materializes as `generated block`. A bare name in `flow:` without a keyword prefix is a compile error (`G::analyze::const-in-flow`); Repair adds parentheses and materializes as `generated block`.
 
 ### 5.1 Syntax
 
-**`generated text`** — for undefined bare names used with keyword prefixes (`require`/`avoid`/`must`/`context`):
+**`generated const`** — for undefined bare names used with keyword prefixes (`require`/`avoid`/`must`/`context`):
 
 ```
-generated text <name> = <string-literal>
+generated const <name> = <string-literal>
 ```
 
 Examples:
 
 ```glyph
-generated text root_cause_before_fix = """
+generated const root_cause_before_fix = """
     Identify the root cause before proposing or applying a fix.
 """
 
-generated text validate_before_success = "Run the full validation suite and confirm all checks pass before reporting success."
+generated const validate_before_success = "Run the full validation suite and confirm all checks pass before reporting success."
 ```
 
-**`generated block`** — for undefined parens-calls (the use site has parentheses, with or without arguments), and for undefined bare names in `flow:` without a keyword prefix (Repair adds parens to fix `G::analyze::text-in-flow`):
+**`generated block`** — for undefined parens-calls (the use site has parentheses, with or without arguments), and for undefined bare names in `flow:` without a keyword prefix (Repair adds parens to fix `G::analyze::const-in-flow`):
 
 ```
 generated block <name>(<params>)
@@ -301,11 +301,11 @@ Rules common to both:
 
 - `generated` is already reserved (`values-and-names.md`, Reserved Words section). No new reserved words.
 - String literals follow `values-and-names.md`: inline `"..."` or block `"""..."""`, no interpolation.
-- The repair pass picks the kind from the use site: parens-call → `generated block`; bare name with keyword prefix (`require`/`avoid`/`must`/`context`) → `generated text`; bare name in `flow:` without keyword prefix → Repair adds parens (fixing `G::analyze::text-in-flow`) and materializes as `generated block`. Never both for the same name.
+- The repair pass picks the kind from the use site: parens-call → `generated block`; bare name with keyword prefix (`require`/`avoid`/`must`/`context`) → `generated const`; bare name in `flow:` without keyword prefix → Repair adds parens (fixing `G::analyze::const-in-flow`) and materializes as `generated block`. Never both for the same name.
 
-Rules specific to `generated text`:
+Rules specific to `generated const`:
 
-- Same shape as `text`. No parameters, no return type, no body with sub-sections.
+- Same shape as `const`. No parameters, no return type, no body with sub-sections.
 - Not a callable. A bare name resolves to its string content; a parenthesized form is a compile error.
 
 Rules specific to `generated block`:
@@ -316,20 +316,20 @@ Rules specific to `generated block`:
 
 ### 5.2 Repair-Only Authorship
 
-Only the LLM repair pass emits `generated text` and `generated block` declarations. Authors do not hand-write them. Authors who want to define names manually use `text`, `block`, or `export block`.
+Only the LLM repair pass emits `generated const` and `generated block` declarations. Authors do not hand-write them. Authors who want to define names manually use `const`, `block`, or `export block`.
 
-This preserves a clean separation: `generated` means machine-created; `text`/`block` means author-created.
+This preserves a clean separation: `generated` means machine-created; `const`/`block` means author-created.
 
 ### 5.3 Placement
 
-All generated declarations (both `generated text` and `generated block`) must appear after all non-generated top-level declarations in the source file. The compiler enforces this ordering rule. The repair pass appends generated declarations to the end of the file.
+All generated declarations (both `generated const` and `generated block`) must appear after all non-generated top-level declarations in the source file. The repair pass appends generated declarations to the end of the file. Compiler enforcement of this ordering rule is deferred (planned analyze-pass diagnostic, working name `G::analyze::generated-placement`); until that issue lands, the rule is a documented contract that the repair pass and authors honor manually. See [language-surface.md](language-surface.md) §3.6 and §3.7 for the matching deferral notes on the surface side.
 
 Example file structure:
 
 ```glyph
 import "./repo_tools.glyph.md" { unrelated_edits }
 
-text short_note = "Keep changes minimal."
+const short_note = "Keep changes minimal."
 
 skill fix_bug(scope = ".")
     avoid unrelated_edits
@@ -339,7 +339,7 @@ skill fix_bug(scope = ".")
         inspect_failure(scope) with "focus on auth boundaries"
         return summarize_changes()
 
-generated text preserve_existing_patterns = "Follow the repository's existing patterns before introducing new abstractions."
+generated const preserve_existing_patterns = "Follow the repository's existing patterns before introducing new abstractions."
 
 generated block inspect_failure(area)
     "Inspect the failure in {area} and identify what is failing."
@@ -364,7 +364,7 @@ This turns LLM materialization of undefined names into a one-time source repair 
 
 ### 5.5 No-Shadowing Rule
 
-Both `generated text` and `generated block` participate in the no-shadowing rule (`values-and-names.md`, No Shadowing section). If an author-written declaration (`text`, `block`, or `export block`) exists with the same name as a generated one in the same file, the compiler emits a warning and deletes the generated declaration, keeping the author-written version.
+Both `generated const` and `generated block` participate in the no-shadowing rule (`values-and-names.md`, No Shadowing section). If an author-written declaration (`const`, `block`, or `export block`) exists with the same name as a generated one in the same file, the compiler emits a warning and deletes the generated declaration, keeping the author-written version.
 
 This is the only case where the compiler auto-deletes a declaration. The author's explicit declaration always supersedes the machine-generated version.
 
@@ -372,19 +372,19 @@ This is the only case where the compiler auto-deletes a declaration. The author'
 
 Authors may interact with generated declarations in three ways. All work through existing name resolution and the idempotence rule; no special compiler behavior is needed.
 
-- **Edit the body.** The declaration stays `generated text` / `generated block`. Repair sees the name is defined and skips it. For `generated block`, edits are still constrained to the single-string body until promoted.
-- **Promote to `text` or `block`.** Delete the word `generated`. For a promoted `block`, the author may then add `flow:`, `effects:`, `constraints:`, and a proper body with multiple steps. The declaration may also be moved anywhere in the file.
-- **Promote to imported library.** Move the content into another `.glyph.md` file as `export text` or `export block`, import it back, and delete the local `generated` declaration.
+- **Edit the body.** The declaration stays `generated const` / `generated block`. Repair sees the name is defined and skips it. For `generated block`, edits are still constrained to the single-string body until promoted.
+- **Promote to `const` or `block`.** Delete the word `generated`. For a promoted `block`, the author may then add `flow:`, `effects:`, `constraints:`, and a proper body with multiple steps. The declaration may also be moved anywhere in the file.
+- **Promote to imported library.** Move the content into another `.glyph.md` file as `export const` or `export block`, import it back, and delete the local `generated` declaration.
 
 ### 5.7 Not Exportable
 
-Neither `export generated text` nor `export generated block` is a valid declaration form. A generated definition is local to the file where repair created it. To share across files, the author must first promote it to `export text` or `export block`.
+Neither `export generated const` nor `export generated block` is a valid declaration form. A generated definition is local to the file where repair created it. To share across files, the author must first promote it to `export const` or `export block`.
 
 ### 5.8 Compile-Time Behavior
 
 Generated declarations compile identically to their hand-written counterparts:
 
-- `generated text`: at the usage site, the bare name is replaced by the string content.
+- `generated const`: at the usage site, the bare name is replaced by the string content.
 - `generated block`: at the usage site, the call expands to the single-string body, with `{param}` references preserved as named slots and the optional `with` modifier applied by the expand pass.
 - The declaration itself produces nothing in compiled output. The `generated` marker is erased. No provenance marker appears in the compiled `.md` file.
 
@@ -404,14 +404,18 @@ Glyph uses `//` (double slash) for line comments. Block comments and doc-comment
 The repair pass may add:
 
 - explicit role or constraint markers when context makes the intended role, strength, and polarity very clear;
-- `generated text` definitions for unresolved compound names (e.g. `avoid_unrelated_edits`), with full semantics baked into the text body;
+- `generated const` definitions for unresolved compound names (e.g. `avoid_unrelated_edits`), with full semantics baked into the text body;
 - missing type annotations;
 - local declarations for author-defined shorthand;
-- stable `generated text` definitions for undefined bare names used with keyword prefixes (`require`/`avoid`/`must`/`context`);
+- stable `generated const` definitions for undefined bare names used with keyword prefixes (`require`/`avoid`/`must`/`context`);
 - stable `generated block` definitions for undefined parens-calls and undefined bare names in `flow:` (single-string bodies);
 - missing imports when the referenced library is obvious from available context (deferred from MVP — see `todo.md`);
 - missing `effects:` on any declaration (skill, block, or export block) whose inferred set is non-empty — Phase 3a deterministically inserts an `effects:` sub-section with the inferred set into the source, triggered by `G::analyze::missing-effects`, and emits `G::repair::inferred-effects` (warning, informational) so the author knows what was added (see `ir-and-semantics.md` §3 and `diagnostics.md`);
 - missing `description:` on a `skill` — Phase 3b generates a single-string description from the skill name, parameters, and body, and adds it as a `description:` sub-section, triggered by `G::analyze::missing-description` (see `ir-and-semantics.md` §4 and `diagnostics.md`);
+- placeholder string returns on domain-typed declarations — Phase 3a rewrites a terminal `return "<…>"` whose enclosing declaration has `-> DomainType` into the appropriate output-target form, triggered by `G::analyze::placeholder-string-return`. The repair bifurcates on placeholder shape (both branches are deterministic, no LLM):
+  - **Identifier-shaped contents** (`return "<current_branch>"` where the inside text matches `IDENTIFIER` per `values-and-names.md`) rewrite to **identifier form**: `return <current_branch>`.
+  - **Non-identifier-shaped contents** (`return "<root cause analysis including affected files and severity>"` — anything containing whitespace, punctuation, or characters disallowed in identifiers) rewrite to **descriptive form**: `return <"root cause analysis including affected files and severity">`. The placeholder's leading `<` and trailing `>` are stripped; the residual text becomes the description, with literal `"` and `\` escaped per `values-and-names.md` §Inline Strings. Empty placeholders (`return "<>"`) are not repaired (the rewrite would produce empty `<"">` which is itself malformed per `G::parse::malformed-output-target`).
+  Plain strings without `<…>` framing and untyped declarations are preserved.
 - `export` on a block only when an importability diagnostic makes the author's intent clear;
 - missing block delimiters or indentation fixes;
 - explicit section headers when the source already implies the section;
@@ -420,7 +424,8 @@ The repair pass may add:
 The repair pass may remove:
 
 - duplicate declarations that make resolution impossible;
-- syntax that is invalid and has a clear local correction.
+- syntax that is invalid and has a clear local correction;
+- legacy `-> None` return-type annotations on `skill` / `block` / `export block` / `generated block` declaration headers — the `None` type annotation has been removed in MVP, and a declaration with no meaningful return omits `->` entirely (`types.md` §`none` Value, `language-surface.md` §3.3). Implemented as a Phase 3a pre-Parse text-level rewrite (`glyph fmt` stratum 1): the trailing ` -> None` is stripped from indent-0 declaration headers, case-insensitive on `none`, with identifier-boundary semantics. The value keyword `none` (in `return none`, `effects: none`, and other value positions per `values-and-names.md` §None) is preserved untouched. Triggered by `G::parse::none-as-return-type` (`diagnostics.md`).
 
 The repair pass should not remove meaningful instructions.
 
@@ -461,7 +466,7 @@ Repair has three failure modes, each with its own policy.
 
 The numbers (3 transient retries, 3 convergence iterations) are compiler-config values, not hardcoded constants.
 
-**Quality.** Semantic wrongness — a rewrite that parses, validates, and converges but does not match author intent — is not detected by the compiler. The mitigation is the per-generation warning (`G::repair::generated-text` / `G::repair::generated-block`) plus author review of generated definitions (§5). This is a social contract, not an automated check.
+**Quality.** Semantic wrongness — a rewrite that parses, validates, and converges but does not match author intent — is not detected by the compiler. The mitigation is the per-generation warning (`G::repair::generated-const` / `G::repair::generated-block`) plus author review of generated definitions (§5). This is a social contract, not an automated check.
 
 ## 9. Multi-File Repair
 
@@ -469,7 +474,7 @@ The numbers (3 transient retries, 3 convergence iterations) are compiler-config 
 
 This restriction eliminates cross-file trigger propagation: one file's repair cannot force another file to re-run from Phase 1. Each file's repair loop is self-contained.
 
-**Imports as resolution targets, not as repair targets.** Repair is allowed to *resolve* against existing imports — if an unresolved bare name happens to match an already-imported declaration (selectively imported name, qualified-call alias, or stdlib entry the author already imported), repair prefers that resolution over materializing a `generated text` / `generated block` (per §4.5 idempotence detection: "does this name resolve to something? If yes, do not regenerate"). Repair may also add markers (`avoid`, `require`, `must`) in front of imported names when the diagnostic chain calls for it. What repair never does is *modify the import set itself*: it cannot add a new `import` statement, change an import's `as` alias, switch between selective and whole-module form, or rewrite an imported file's declarations. The post-repair source's import block is byte-identical to the pre-repair version unless §4.4 (intent potency) or a deterministic 3a rewrite (duplicate-import merging, unused-import removal) explicitly triggered.
+**Imports as resolution targets, not as repair targets.** Repair is allowed to *resolve* against existing imports — if an unresolved bare name happens to match an already-imported declaration (selectively imported name, qualified-call alias, or stdlib entry the author already imported), repair prefers that resolution over materializing a `generated const` / `generated block` (per §4.5 idempotence detection: "does this name resolve to something? If yes, do not regenerate"). Repair may also add markers (`avoid`, `require`, `must`) in front of imported names when the diagnostic chain calls for it. What repair never does is *modify the import set itself*: it cannot add a new `import` statement, change an import's `as` alias, switch between selective and whole-module form, or rewrite an imported file's declarations. The post-repair source's import block is byte-identical to the pre-repair version unless §4.4 (intent potency) or a deterministic 3a rewrite (duplicate-import merging, unused-import removal) explicitly triggered.
 
 **Generated bodies do not introduce cross-file dependencies.** A `generated block` body is a single instruction string with `{param}` slots (§5.1, single-string rule). It is not a `flow:` block and cannot contain calls into other declarations — neither same-file nor imported. This sidesteps the question of whether a repair-generated body could legitimately reference an imported callee: by construction, it never does. If the author's intent requires composing imported callees, the right surface is a hand-written `block` or `export block`, not a generated definition.
 
@@ -491,7 +496,7 @@ This invariant is what enables the cache-key-by-post-repair-source-hash strategy
 
 ## 11. Determinism and Reproducibility
 
-Repair is LLM-driven and **not byte-deterministic** across runs. Two compiles of the same pre-repair source can produce different post-repair source — different `generated text` wording, different choices among defensible repairs. The compiler accepts this non-determinism by design: Repair is the primary content-generation mechanism for novice authors (§1), and forcing determinism would either gut its capability or require seeding/temperature controls that don't transfer across model versions.
+Repair is LLM-driven and **not byte-deterministic** across runs. Two compiles of the same pre-repair source can produce different post-repair source — different `generated const` wording, different choices among defensible repairs. The compiler accepts this non-determinism by design: Repair is the primary content-generation mechanism for novice authors (§1), and forcing determinism would either gut its capability or require seeding/temperature controls that don't transfer across model versions.
 
 **Authoring workflow.** The expected model is:
 
@@ -512,7 +517,7 @@ This makes downstream builds (CI, other contributors) reproducible by constructi
 ## 12. Open Questions
 
 - **Diagnostic taxonomy.** The diagnostic shape and classification tiers are defined in [diagnostics.md](diagnostics.md). The full catalog of individual diagnostics will be built out as the compiler is implemented.
-- **Security and trust.** Prevent repair from adding imports, effects, exports, or generated text that broadens behavior beyond the author's apparent intent.
-- **Generation limits.** Whether the compiler should limit the number of `generated text` declarations per file.
-- **Migration hashing.** Whether `generated text` should carry a compiler-generated hash for migration detection when language rules change.
-- **Tooling.** IDE highlighting, gutter markers, or quick-fix actions for promoting `generated text` to `text`.
+- **Security and trust.** Prevent repair from adding imports, effects, exports, or generated const values that broaden behavior beyond the author's apparent intent.
+- **Generation limits.** Whether the compiler should limit the number of `generated const` declarations per file.
+- **Migration hashing.** Whether `generated const` should carry a compiler-generated hash for migration detection when language rules change.
+- **Tooling.** IDE highlighting, gutter markers, or quick-fix actions for promoting `generated const` to `const`.

@@ -46,8 +46,8 @@
 //!    bare-name references are emitted as `GlyphContextNameRef`.
 
 use crate::ast::{
-    BlockDecl, ContextEntry, Decl, ExportBlockDecl, FlowStmt, ImportDecl, ImportKind,
-    ReturnExpr, Skill, SourceFile, TextDecl,
+    BlockDecl, ConstDecl, ContextEntry, Decl, ExportBlockDecl, FlowStmt, ImportDecl, ImportKind,
+    ReturnExpr, Skill, SourceFile,
 };
 use crate::diagnostic::DiagBag;
 use crate::parse::parse_with_diagnostics_opts;
@@ -462,7 +462,7 @@ fn classify_ast(
             Decl::ExportBlock(eb) => {
                 classify_export_block(eb, source, file_id, line_index, out)
             }
-            Decl::Text(t) => classify_text(t, source, file_id, line_index, out),
+            Decl::Const(c) => classify_const(c, source, file_id, line_index, out),
             Decl::Import(i) => classify_import(i, source, file_id, line_index, out),
         }
     }
@@ -491,9 +491,8 @@ fn classify_skill(
     classify_constraints(&spanned.node.body_constraints, line_index, out);
     classify_context_entries(&spanned.node.body_context, line_index, out);
     classify_context_entries(&spanned.node.context_section, line_index, out);
-    for n in &spanned.node.body_bare_names {
-        push_span(out, n.span, SemTokenType::Variable, SemTokenModifier::NONE, line_index);
-    }
+    // body_bare_names are plain Strings without span info (M2 upgrade pending);
+    // skip semantic token emission for them.
     for stmt in &spanned.node.flow {
         classify_flow_stmt(stmt, block_names, line_index, out);
     }
@@ -548,17 +547,19 @@ fn classify_export_block(
     // classifications here. Acceptable for the highlight pass.
 }
 
-fn classify_text(
-    spanned: &Spanned<TextDecl>,
+fn classify_const(
+    spanned: &Spanned<ConstDecl>,
     source: &str,
     file_id: u32,
     line_index: &LineIndex,
     out: &mut Vec<RawSemToken>,
 ) {
-    let kws: &[&str] = if spanned.node.exported {
-        &["export", "text"]
+    let kws: &[&str] = if spanned.node.generated {
+        &["generated", "const"]
+    } else if spanned.node.exported {
+        &["export", "const"]
     } else {
-        &["text"]
+        &["const"]
     };
     if let Some(name_span) = find_name_after_keywords(source, file_id, spanned.span, kws) {
         push_span(
@@ -979,7 +980,7 @@ mod tests {
 
     #[test]
     fn context_name_ref_in_context_section() {
-        let src = "skill main()\n    description: \"d\"\n    context:\n        project_conventions\n    flow:\n        \"hi\"\n\ntext project_conventions = \"use kebab-case.\"\n";
+        let src = "skill main()\n    description: \"d\"\n    context:\n        project_conventions\n    flow:\n        \"hi\"\n\nconst project_conventions = \"use kebab-case.\"\n";
         let tokens = collect_semantic_tokens(src, 0);
         let nref = find_token(&tokens, 3, "project_conventions", src)
             .expect("context name ref");
@@ -1059,7 +1060,7 @@ mod tests {
 
     #[test]
     fn text_decl_is_readonly_variable() {
-        let src = "skill main()\n    description: \"d\"\n    require accuracy\n    flow:\n        \"hi\"\n\ntext accuracy = \"be accurate.\"\n";
+        let src = "skill main()\n    description: \"d\"\n    require accuracy\n    flow:\n        \"hi\"\n\nconst accuracy = \"be accurate.\"\n";
         let tokens = collect_semantic_tokens(src, 0);
         let decl = find_token(&tokens, 6, "accuracy", src).expect("text decl name");
         assert_eq!(decl.token_type, SemTokenType::Variable as u32);

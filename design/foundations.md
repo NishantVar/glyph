@@ -35,7 +35,7 @@ Each item is 1-2 sentences; detailed rules live in the linked design docs.
 
 ## Language Core
 
-12. **The core language is intentionally small.** MVP top-level declarations: `import`, `text`, `export block`, `block`, `skill`. Interior primitives: `flow`, `call`, `if`, constraints, `return`. See `language-surface.md`.
+12. **The core language is intentionally small.** MVP top-level declarations: `import`, `const`, `export block`, `block`, `skill`. Interior primitives: `flow`, `call`, `if`, constraints, `return`. See `language-surface.md`.
 
 13. **The source language is forgiving; the IR is strict.** Authors may omit annotations and use duck-typed values; compilation normalizes permissive source into an explicit, typed IR.
 
@@ -65,7 +65,7 @@ Each item is 1-2 sentences; detailed rules live in the linked design docs.
 
 ## Modularity and Reuse
 
-23. **Only explicit exports are importable.** Ordinary `block`s and non-exported `text` are private; `export block` and `export text` are required for cross-file reuse, and exported blocks must be self-contained (see `imports.md`).
+23. **Only explicit exports are importable.** Ordinary `block`s and non-exported `const` are private; `export block` and `export const` are required for cross-file reuse, and exported blocks must be self-contained (see `imports.md`).
 
 24. **The abstraction hierarchy is `skill` > `export block` > private `block`.** A `skill` is the compiled public unit; an `export block` is the importable reusable unit; a private `block` is internal structure (see `language-surface.md`).
 
@@ -91,4 +91,4 @@ Each item is 1-2 sentences; detailed rules live in the linked design docs.
 
 ## Learnability
 
-33. **Novice learnability is a first-principles goal.** A new author should be able to write a useful skill using a small kernel: `skill`, `require`/`avoid`/`must`, `flow:`, quoted inline strings, calls with parentheses, and the `with` modifier. Every other construct (blocks, named text, types, effects, imports) must be discoverable later or inferred by the compiler and repair pass; the novice surface must not require learning them up front.
+33. **Novice learnability is a first-principles goal.** A new author should be able to write a useful skill using a small kernel: `skill`, `require`/`avoid`/`must`, `flow:`, quoted inline strings, calls with parentheses, and the `with` modifier. Every other construct (blocks, named constants, types, effects, imports) must be discoverable later or inferred by the compiler and repair pass; the novice surface must not require learning them up front.

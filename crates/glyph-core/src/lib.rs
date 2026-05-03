@@ -7,17 +7,21 @@
 pub mod analyze;
 pub mod ast;
 pub mod diagnostic;
+pub mod domain_registry;
 pub mod emit;
 pub mod emit_ir;
 pub mod expand;
 pub mod fmt;
 pub mod ir;
+pub mod kind_infer;
 pub mod lower;
+pub mod output_target;
 pub mod parse;
 pub mod semantic_tokens;
 pub mod slot;
 pub mod span;
 pub mod tokenize;
+pub mod type_position;
 pub mod validate;
 pub mod validate_output;
 
@@ -101,7 +105,8 @@ pub fn compile_source_with_effects(
         }
     };
 
-    let file = analyze::analyze_with_diagnostics(file, file_id, file_label, &line_index, &mut bag, enable_effects);
+    let mut registry = domain_registry::Registry::new();
+    let file = analyze::analyze_with_diagnostics(file, file_id, file_label, &line_index, &mut bag, &mut registry);
     if bag.has_error() || bag.has_repairable() {
         return Ok(CompileOutcome::Diagnostics(bag));
     }
@@ -134,7 +139,8 @@ pub fn check_source_with_effects(source: &str, file_id: u32, file_label: &str, e
     // Phase 2 (Analyze) — slice 4 adds the parameter-related diagnostics
     // (`G::analyze::unknown-param-slot`, `G::analyze::missing-param-default`).
     if let Some(file) = parsed {
-        let _ = analyze::analyze_with_diagnostics(file, file_id, file_label, &line_index, &mut bag, enable_effects);
+        let mut registry = domain_registry::Registry::new();
+        let _ = analyze::analyze_with_diagnostics(file, file_id, file_label, &line_index, &mut bag, &mut registry);
     }
 
     bag
@@ -326,7 +332,7 @@ fn collect_cross_file_targets(
             // Find the declaration in the dependency file by exported name.
             for dep_decl in &dep_file.decls {
                 match dep_decl {
-                    Decl::Text(t) if t.node.exported && t.node.name == imp_name.name.node => {
+                    Decl::Const(t) if t.node.exported && t.node.name == imp_name.name.node => {
                         out.insert(
                             local.clone(),
                             analyze::ImportTarget {
@@ -418,6 +424,12 @@ pub struct ExportedNames {
     pub skills: HashSet<String>,
     /// Names of private (non-exported) declarations.
     pub privates: HashSet<String>,
+    /// Issue #84 Chunk 4 (D15 / Option-Y): per-exported-block declared
+    /// `-> Type` annotation, keyed by the block's name. `Spanned<String>`
+    /// preserves the producer-file span (chunk-4 captures-but-does-not-render
+    /// per D15 — the consumer only renders the *caller's* `-> Type` span).
+    /// Absent when an exported block omits the annotation.
+    pub block_return_types: HashMap<String, crate::span::Spanned<String>>,
 }
 
 /// Extract the exported names from a parsed source file.
@@ -427,18 +439,27 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
         blocks: HashSet::new(),
         skills: HashSet::new(),
         privates: HashSet::new(),
+        block_return_types: HashMap::new(),
     };
     for decl in &file.decls {
         match decl {
-            Decl::Text(t) => {
-                if t.node.exported {
-                    exports.texts.insert(t.node.name.clone());
+            Decl::Const(c) => {
+                // Exported consts share the `texts` namespace (post-issue-#81
+                // `const` is the sole value-binding form); non-exported
+                // (including `generated const`) are private.
+                if c.node.exported {
+                    exports.texts.insert(c.node.name.clone());
                 } else {
-                    exports.privates.insert(t.node.name.clone());
+                    exports.privates.insert(c.node.name.clone());
                 }
             }
             Decl::ExportBlock(b) => {
                 exports.blocks.insert(b.node.name.clone());
+                if let Some(rt) = b.node.return_type.as_ref() {
+                    exports
+                        .block_return_types
+                        .insert(b.node.name.clone(), rt.clone());
+                }
             }
             Decl::Block(b) => {
                 exports.privates.insert(b.node.name.clone());
@@ -668,6 +689,10 @@ fn check_one_file(
     let mut seen_import_paths: HashMap<PathBuf, Span> = HashMap::new();
     let mut used_import_names: HashSet<String> = HashSet::new();
     let mut all_import_names: Vec<(String, Span)> = Vec::new();
+    // Issue #84 Chunk 4 (D15 / Option-Y): per-import-statement aliased
+    // return-type map (consumer-local name → producer `Spanned<-> Type>`).
+    let mut imported_block_return_types: HashMap<String, crate::span::Spanned<String>> =
+        HashMap::new();
 
     for decl in &file.decls {
         if let Decl::Import(import_spanned) = decl {
@@ -787,6 +812,12 @@ fn check_one_file(
                             imported_texts.insert(local.to_string());
                         } else if dep_exports.blocks.contains(&imp_name.name.node) {
                             imported_blocks.insert(local.to_string());
+                            // Issue #84 Chunk 4: re-key the producer-side
+                            // block return type under the consumer-local name.
+                            if let Some(rt) = dep_exports.block_return_types.get(&imp_name.name.node) {
+                                imported_block_return_types
+                                    .insert(local.to_string(), rt.clone());
+                            }
                         } else {
                             bags.entry(key.clone()).or_default().push(
                                 Diagnostic::error(
@@ -809,7 +840,14 @@ fn check_one_file(
                         imported_texts.insert(format!("{}.{}", alias, t));
                     }
                     for b in &dep_exports.blocks {
-                        imported_blocks.insert(format!("{}.{}", alias, b));
+                        let qualified = format!("{}.{}", alias, b);
+                        imported_blocks.insert(qualified.clone());
+                        // Issue #84 Chunk 4: prefix imported block return
+                        // types under `alias.name` to match the consumer's
+                        // call-site spelling.
+                        if let Some(rt) = dep_exports.block_return_types.get(b) {
+                            imported_block_return_types.insert(qualified, rt.clone());
+                        }
                     }
                 }
             }
@@ -817,6 +855,7 @@ fn check_one_file(
     }
 
     // Run Phase 2 with import-augmented name sets.
+    let mut registry = domain_registry::Registry::new();
     let _ = analyze::analyze_with_imports(
         &file,
         0,
@@ -827,7 +866,8 @@ fn check_one_file(
         &imported_blocks,
         &mut used_import_names,
         &HashMap::new(),
-        enable_effects,
+        &mut registry,
+        &imported_block_return_types,
     );
 
     // Unused import detection.
@@ -1231,6 +1271,10 @@ struct ResolvedImports {
     text_values: std::collections::BTreeMap<String, String>,
     block_bodies: HashMap<String, String>,
     block_descriptions: HashMap<String, String>,
+    /// Issue #84 Chunk 4 (D15 / Option-Y): aliased imported-block return
+    /// types. Keyed by the *consumer-side* local name (post-alias /
+    /// post-prefix), valued by the producer-file `Spanned<-> Type>`.
+    block_return_types: HashMap<String, crate::span::Spanned<String>>,
 }
 
 /// Build the full resolved import data for a consumer file.
@@ -1247,6 +1291,7 @@ fn build_resolved_imports(
         text_values: std::collections::BTreeMap::new(),
         block_bodies: HashMap::new(),
         block_descriptions: HashMap::new(),
+        block_return_types: HashMap::new(),
     };
 
     let source = match std::fs::read_to_string(consumer) {
@@ -1291,6 +1336,14 @@ fn build_resolved_imports(
                             if let Some(desc) = file_block_descriptions.get(&(resolved.clone(), imp_name.name.node.clone())) {
                                 result.block_descriptions.insert(local.to_string(), desc.clone());
                             }
+                            // Issue #84 Chunk 4 (D15 / Option-Y): re-key the
+                            // exporter-side block return type under the
+                            // consumer-side local (post-alias) name so the
+                            // chunk-4 check resolves callees by the spelling
+                            // the consumer actually wrote.
+                            if let Some(rt) = exports.block_return_types.get(&imp_name.name.node) {
+                                result.block_return_types.insert(local.to_string(), rt.clone());
+                            }
                         }
                     }
                 }
@@ -1309,7 +1362,13 @@ fn build_resolved_imports(
                             result.block_bodies.insert(qualified.clone(), body.clone());
                         }
                         if let Some(desc) = file_block_descriptions.get(&(resolved.clone(), name.clone())) {
-                            result.block_descriptions.insert(qualified, desc.clone());
+                            result.block_descriptions.insert(qualified.clone(), desc.clone());
+                        }
+                        // Issue #84 Chunk 4 (D15 / Option-Y): whole-module
+                        // imports prefix every block name with `alias.` —
+                        // mirror the same prefix on return types.
+                        if let Some(rt) = exports.block_return_types.get(name) {
+                            result.block_return_types.insert(qualified, rt.clone());
                         }
                     }
                 }
@@ -1336,11 +1395,22 @@ fn extract_and_store_exports(
         Err(_) => return,
     };
     let exports = extract_exports(&parsed);
-    // Store text values.
+    // Store exported `const` values for cross-file inline resolution. Values
+    // are rendered as source-text (kind-agnostic at inline sites per #81
+    // chunk 2 / Option C — Text-equivalent observable output). Bool values
+    // are normalized to lowercase here per `design/values-and-names.md`
+    // §Booleans, mirroring the local `lower::collect_consts` boundary.
     for decl in &parsed.decls {
-        if let Decl::Text(t) = decl {
-            if t.node.exported {
-                file_text_values.insert((file.to_path_buf(), t.node.name.clone()), t.node.value.clone());
+        if let Decl::Const(c) = decl {
+            if c.node.exported {
+                let rendered = match &c.node.value {
+                    ast::ConstValue::Bool(s) => s.to_ascii_lowercase(),
+                    other => other.rendered().to_string(),
+                };
+                file_text_values.insert(
+                    (file.to_path_buf(), c.node.name.clone()),
+                    rendered,
+                );
             }
         }
     }
@@ -1422,11 +1492,17 @@ fn compile_source_with_resolved_imports(
 
     let mut used_import_names: HashSet<String> = HashSet::new();
 
+    let mut registry = domain_registry::Registry::new();
+    // Issue #84 Chunk 4 (D15 / Option-Y): the per-file
+    // `ResolvedImports.block_return_types` map carries the producer-side
+    // `Spanned<-> Type>` for every imported (selective + whole-module)
+    // exported block, re-keyed under the consumer's local spelling.
     let file = analyze::analyze_with_imports(
         &file, file_id, file_label, &line_index, &mut bag,
         &resolved_imports.text_names, &all_imported_blocks, &mut used_import_names,
         &resolved_imports.block_descriptions,
-        enable_effects,
+        &mut registry,
+        &resolved_imports.block_return_types,
     );
     if bag.has_error() || bag.has_repairable() {
         return Ok(CompileOutcome::Diagnostics(bag));
@@ -2126,6 +2202,474 @@ skill main()
         );
     }
 
+    // --- Issue #82 chunk 2: G::analyze::export-missing-return-type ---
+
+    #[test]
+    fn export_block_meaningful_return_without_arrow_fires() {
+        // AC2(a): An export block whose body has `return <expr>` (where <expr>
+        // is not the `none` value-keyword) and whose header lacks
+        // `-> DomainType` must fire `G::analyze::export-missing-return-type`
+        // as repairable.
+        let src = "\
+export block compute(x = \"default\")
+    flow:
+        \"Compute something.\"
+        return x
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::export-missing-return-type"),
+            "expected G::analyze::export-missing-return-type for meaningful return without `->`, got: {:?}",
+            ids
+        );
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::export-missing-return-type")
+            .unwrap();
+        assert_eq!(
+            diag.classification,
+            diagnostic::Classification::Repairable,
+            "export-missing-return-type must be Repairable"
+        );
+    }
+
+    #[test]
+    fn export_block_return_none_without_arrow_no_export_missing_return_type() {
+        // AC2(b): `return none` at the end of an export block body is the
+        // value-position `none` keyword (no meaningful return). With no
+        // `-> DomainType` on the header, the new diagnostic must NOT fire.
+        // The legacy `missing-return` also must not fire because there *is*
+        // an explicit `return`.
+        let src = "\
+export block notify(msg = \"hello\")
+    flow:
+        \"Send a notification.\"
+        return none
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::export-missing-return-type"),
+            "must NOT fire export-missing-return-type for `return none`, got: {:?}",
+            ids
+        );
+        assert!(
+            !ids.contains(&"G::analyze::missing-return"),
+            "must NOT fire missing-return when `return none` is present, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn export_block_meaningful_return_with_arrow_passes_clean() {
+        // AC2(c): An export block with `-> DomainType` on the header and a
+        // meaningful return must NOT fire `export-missing-return-type`.
+        let src = "\
+export block compute(x = \"default\") -> Path
+    flow:
+        \"Compute something.\"
+        return x
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::export-missing-return-type"),
+            "must NOT fire export-missing-return-type when `-> Path` is present, got: {:?}",
+            ids
+        );
+        // And neither the parser's `none-as-return-type` nor analyze's
+        // `missing-return` should fire.
+        assert!(
+            !ids.contains(&"G::analyze::missing-return"),
+            "must NOT fire missing-return when return is present, got: {:?}",
+            ids
+        );
+        assert!(
+            !ids.contains(&"G::parse::none-as-return-type"),
+            "must NOT fire none-as-return-type for `-> Path`, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn export_block_no_return_still_fires_missing_return_only() {
+        // AC2(d): When the export block body has no `return` at all,
+        // `missing-return` (legacy) fires, but the new
+        // `export-missing-return-type` does NOT — there is no meaningful
+        // return to require an annotation.
+        let src = "\
+export block compute(x = \"default\")
+    flow:
+        \"Compute something.\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::missing-return"),
+            "expected G::analyze::missing-return when body has no return, got: {:?}",
+            ids
+        );
+        assert!(
+            !ids.contains(&"G::analyze::export-missing-return-type"),
+            "must NOT fire export-missing-return-type when there is no return at all, got: {:?}",
+            ids
+        );
+    }
+
+    // --- Issue #83: G::analyze::generic-type-name ---
+
+    #[test]
+    fn return_type_string_on_skill_fires_warning() {
+        // AC2 + AC3 (emit half): a skill header with `-> String` (banned
+        // generic type name) must fire `G::analyze::generic-type-name` at
+        // warning tier.
+        let src = "\
+skill foo() -> String
+    description: \"Foo.\"
+    flow:
+        \"do something\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::generic-type-name"),
+            "expected G::analyze::generic-type-name for `-> String` on skill, got: {:?}",
+            ids
+        );
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::generic-type-name")
+            .unwrap();
+        assert_eq!(
+            diag.classification,
+            diagnostic::Classification::Warning,
+            "generic-type-name must be Warning tier"
+        );
+        assert!(
+            diag.message.contains("String"),
+            "warning message should mention the offending identifier `String`, got: {:?}",
+            diag.message
+        );
+        assert!(
+            !diag.hints.is_empty(),
+            "warning should carry a hint suggesting domain types"
+        );
+    }
+
+    #[test]
+    fn return_type_string_on_export_block_fires_warning() {
+        // Banned `-> String` on an export-block header fires the warning.
+        let src = "\
+export block compute(x = \"d\") -> String
+    flow:
+        \"x\"
+        return x
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::generic-type-name"),
+            "expected G::analyze::generic-type-name for `-> String` on export block, got: {:?}",
+            ids
+        );
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::generic-type-name")
+            .unwrap();
+        assert_eq!(diag.classification, diagnostic::Classification::Warning);
+    }
+
+    #[test]
+    fn return_type_string_on_block_fires_warning() {
+        // Banned `-> String` on a private `block` header fires the warning.
+        // Per D7 (planner-83 decision): private blocks are in scope for AC2.
+        let src = "\
+skill main()
+    description: \"Main.\"
+    flow:
+        helper()
+
+block helper() -> String
+    description: \"Helper.\"
+    flow:
+        \"work\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::generic-type-name"),
+            "expected G::analyze::generic-type-name for `-> String` on private block, got: {:?}",
+            ids
+        );
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::generic-type-name")
+            .unwrap();
+        assert_eq!(diag.classification, diagnostic::Classification::Warning);
+    }
+
+    #[test]
+    fn valid_domain_return_type_emits_no_generic_warning() {
+        // Negative case: `-> BranchName` is a legitimate domain type and
+        // must NOT trigger generic-type-name.
+        let src = "\
+skill foo() -> BranchName
+    description: \"Foo.\"
+    flow:
+        \"do something\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::generic-type-name"),
+            "must NOT fire generic-type-name for valid domain type, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn compilation_continues_after_generic_type_name_warning() {
+        // AC4: warning is non-blocking — a banned `-> String` must NOT halt
+        // compilation. Fixture is a valid skill in every other respect; the
+        // only diagnostic should be the warning, and exit_code should be 0.
+        let src = "\
+skill foo() -> String
+    description: \"Foo.\"
+    flow:
+        \"do something\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::generic-type-name"),
+            "fixture should fire generic-type-name; got: {:?}",
+            ids
+        );
+        assert!(
+            !bag.has_error(),
+            "compilation must not halt on a generic-type-name warning, got errors: {:?}",
+            ids
+        );
+        assert!(
+            !bag.has_repairable(),
+            "generic-type-name must not be repairable-tier (would set exit 2), got: {:?}",
+            ids
+        );
+        assert_eq!(
+            bag.exit_code(),
+            0,
+            "warning-only bag must produce exit code 0 (`build-foundation.md` §A6), got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn multiple_banned_return_types_in_one_file_no_dedup() {
+        // No-dedup rule: every banned occurrence in source produces its own
+        // warning, each with its own span. Author needs to fix each one.
+        let src = "\
+skill main() -> String
+    description: \"Main.\"
+    flow:
+        helper()
+
+block helper() -> Int
+    description: \"Helper.\"
+    flow:
+        \"work\"
+
+export block compute(x = \"d\") -> Bool
+    flow:
+        \"x\"
+        return x
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let warnings: Vec<&Diagnostic> = bag
+            .iter()
+            .filter(|d| d.id == "G::analyze::generic-type-name")
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            3,
+            "expected 3 generic-type-name warnings (one per banned return type, no dedup), got {}: {:?}",
+            warnings.len(),
+            warnings.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
+        );
+        // Each warning carries a distinct span (no dedup means distinct origins).
+        let starts: HashSet<(u32, u32)> = warnings
+            .iter()
+            .map(|d| (d.span.start.line, d.span.start.col))
+            .collect();
+        assert_eq!(
+            starts.len(),
+            3,
+            "expected 3 distinct warning spans, got duplicates: {:?}",
+            warnings.iter().map(|d| &d.span).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn offender_appears_verbatim_in_warning_message() {
+        // Survives a refactor that mistakenly canonicalizes the offender
+        // (e.g. emits "String" in the message when source said "string").
+        let src = "\
+skill foo() -> string
+    description: \"Foo.\"
+    flow:
+        \"do something\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::generic-type-name")
+            .expect("expected generic-type-name warning for `-> string`");
+        assert!(
+            diag.message.contains("string"),
+            "warning message must echo the offender verbatim (lowercase `string`), got: {:?}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn return_type_warning_span_targets_the_annotation() {
+        // Pins span convention: warning span starts at the `->` arrow on
+        // the header line (mirrors `parse.rs::try_parse_return_type` and
+        // `G::parse::none-as-return-type`).
+        let src = "\
+skill foo() -> String
+    description: \"Foo.\"
+    flow:
+        \"do something\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::generic-type-name")
+            .expect("expected generic-type-name warning");
+        // Header is line 1; `->` starts at byte 12 (0-indexed) in
+        // "skill foo() -> String", which is col 13 (1-indexed).
+        assert_eq!(
+            diag.span.start.line, 1,
+            "warning span should start on the header line, got line {}",
+            diag.span.start.line
+        );
+        let arrow_col = src.lines().next().unwrap().find("->").unwrap() as u32 + 1;
+        assert_eq!(
+            diag.span.start.col, arrow_col,
+            "warning span should start at the `->` arrow (col {}), got col {}",
+            arrow_col, diag.span.start.col
+        );
+    }
+
+    #[test]
+    fn agent_return_type_does_not_warn() {
+        // `Agent` is a legitimate IR-internal `TypeTag` for stdlib
+        // `subagent()` — must NOT trigger generic-type-name.
+        let src = "\
+skill foo() -> Agent
+    description: \"Foo.\"
+    flow:
+        \"do something\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::generic-type-name"),
+            "must NOT fire generic-type-name for `-> Agent`, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn return_type_none_fires_parse_repairable_not_analyze_generic_warning() {
+        // D9: `-> None` in author-facing source is intercepted by
+        // `G::parse::none-as-return-type` (#82, repairable, Phase 3a auto-fix)
+        // and never reaches the analyze-tier validator. `None` stays in the
+        // banned list (defense in depth for any future call site that
+        // bypasses parse), but for the author-visible exit-code path the
+        // parse repairable always wins. This test pins the cross-issue
+        // precedence — if either diagnostic moves, it breaks loud.
+        let src = "\
+skill foo() -> None
+    description: \"Foo.\"
+    flow:
+        \"do something\"
+";
+        let bag = check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::none-as-return-type"),
+            "expected `-> None` to fire G::parse::none-as-return-type (repairable, #82); got: {:?}",
+            ids,
+        );
+        assert!(
+            !ids.contains(&"G::analyze::generic-type-name"),
+            "must NOT also fire G::analyze::generic-type-name — parse intercept takes precedence over the analyze warning; got: {:?}",
+            ids,
+        );
+    }
+
+    #[test]
+    fn banned_return_types_warn_on_imports_path() {
+        // AC2 imports-path parity: every header-bearing decl arm
+        // (skill / export block / private block) must fire the warning when
+        // analysis runs through `analyze_with_imports` (the path used by
+        // `check_file` whenever the file has any `import` declaration).
+        // Regression: the `Decl::Block` arm in `analyze_with_imports` was a
+        // no-op before this fix, silently skipping private blocks reached
+        // through the imports path.
+        let dir = tempfile::tempdir().unwrap();
+
+        // lib.glyph.md — exports a const so the importer has something to import.
+        let lib_path = dir.path().join("lib.glyph.md");
+        std::fs::write(
+            &lib_path,
+            r#"export const greeting = "hello"
+"#,
+        )
+        .unwrap();
+
+        // main.glyph.md — has an `import` (forces the imports path) and one
+        // banned return type per header-bearing decl kind.
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(
+            &main_path,
+            r#"import "./lib.glyph.md" { greeting }
+
+skill main() -> String
+    description: "Main."
+    require greeting
+    flow:
+        helper()
+
+block helper() -> Int
+    description: "Helper."
+    flow:
+        "work"
+
+export block compute(x = "d") -> Bool
+    flow:
+        "x"
+        return x
+"#,
+        )
+        .unwrap();
+
+        let bag = check_file(&main_path);
+        let warnings: Vec<&Diagnostic> = bag
+            .iter()
+            .filter(|d| d.id == "G::analyze::generic-type-name")
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            3,
+            "imports path must fire the warning at every header-bearing decl site (skill/block/export block); got {}: {:?}",
+            warnings.len(),
+            warnings.iter().map(|d| d.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn return_not_terminal_fires_diagnostic() {
         // AC3: G::parse::return-not-terminal — return before the last statement.
@@ -2398,9 +2942,9 @@ skill main()
 
     #[test]
     fn applies_on_non_block_fires_error() {
-        // AC7: applies-on-non-block fires when receiver is a text declaration.
+        // AC7: applies-on-non-block fires when receiver is a const declaration.
         let src = "\
-text my_text = \"Some text.\"
+const my_text = \"Some text.\"
 
 skill main()
     description: \"Main skill.\"
@@ -2466,7 +3010,7 @@ skill main()
     fn context_in_branch_stays_inline() {
         // AC9: context marker inside a branch body stays inline, does not surface in ### Context.
         let src = "\
-text project_info = \"This is a monorepo project.\"
+const project_info = \"This is a monorepo project.\"
 
 skill main()
     description: \"Main skill.\"
@@ -2505,7 +3049,7 @@ skill main()
     fn constraint_in_branch_stays_inline() {
         // AC9-parallel: constraint marker inside a branch body stays inline.
         let src = "\
-text no_breaking_changes = \"Do not break backwards compatibility.\"
+const no_breaking_changes = \"Do not break backwards compatibility.\"
 
 skill main()
     description: \"Main skill.\"
@@ -2918,9 +3462,9 @@ skill fix_bug()
         // and repo_tools.glyph.md.
         let dir = tempfile::tempdir().unwrap();
 
-        // prefs.glyph.md — export text
+        // prefs.glyph.md — export const
         let prefs_path = dir.path().join("prefs.glyph.md");
-        std::fs::write(&prefs_path, r#"export text preserve_existing_patterns = "Prefer existing patterns."
+        std::fs::write(&prefs_path, r#"export const preserve_existing_patterns = "Prefer existing patterns."
 "#).unwrap();
 
         // repo_tools.glyph.md — export block
@@ -2976,7 +3520,7 @@ skill main()
 
         std::fs::write(&b_path, r#"import "./a.glyph.md" { something }
 
-export text something = "Hello."
+export const something = "Hello."
 "#).unwrap();
 
         let bag = check_file(&a_path);
@@ -3003,8 +3547,8 @@ export text something = "Hello."
         let dir = tempfile::tempdir().unwrap();
 
         let lib_path = dir.path().join("lib.glyph.md");
-        std::fs::write(&lib_path, r#"text private_text = "This is private."
-export text public_text = "This is public."
+        std::fs::write(&lib_path, r#"const private_text = "This is private."
+export const public_text = "This is public."
 "#).unwrap();
 
         let main_path = dir.path().join("main.glyph.md");
@@ -3060,7 +3604,7 @@ skill main()
         let dir = tempfile::tempdir().unwrap();
 
         let lib_path = dir.path().join("lib.glyph.md");
-        std::fs::write(&lib_path, r#"export text greeting = "Hello."
+        std::fs::write(&lib_path, r#"export const greeting = "Hello."
 "#).unwrap();
 
         let main_path = dir.path().join("main.glyph.md");
@@ -3090,8 +3634,8 @@ skill main()
         let dir = tempfile::tempdir().unwrap();
 
         let lib_path = dir.path().join("lib.glyph.md");
-        std::fs::write(&lib_path, r#"export text greeting = "Hello."
-export text farewell = "Goodbye."
+        std::fs::write(&lib_path, r#"export const greeting = "Hello."
+export const farewell = "Goodbye."
 "#).unwrap();
 
         let main_path = dir.path().join("main.glyph.md");
@@ -3115,6 +3659,79 @@ skill main()
         assert!(
             diag.message.contains("farewell"),
             "should mention the unused name, got: {}", diag.message
+        );
+    }
+
+    /// Issue #84 Chunk 7a: an imported block that is consumed *only* in
+    /// `return imported_block()` position should be recognized as used. Pre-fix,
+    /// `track_flow_usage` (analyze.rs) only walked `FlowStmt::Call`,
+    /// `ConstraintMarker`, `ContextMarker`, and `Branch` — `FlowStmt::Return`
+    /// fell into the catch-all `_` arm, so `return imported_block()` did not
+    /// mark the import as used and `G::analyze::unused-import` fired
+    /// spuriously, blocking AC8's exit-0 success contract for cross-file
+    /// nominal-match consumers. Post-fix, the import is correctly marked used.
+    #[test]
+    fn imported_block_used_in_return_call_position_does_not_fire_unused_import() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let lib_path = dir.path().join("lib.glyph.md");
+        std::fs::write(&lib_path, r#"export block do_thing()
+    description: "Do a thing."
+    flow:
+        "Do it."
+"#).unwrap();
+
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(&main_path, r#"import "./lib.glyph.md" { do_thing }
+
+skill main()
+    description: "Main."
+    flow:
+        return do_thing()
+"#).unwrap();
+
+        let bag = check_file(&main_path);
+        let unused_for_do_thing = bag.iter().any(|d| {
+            d.id == "G::analyze::unused-import" && d.message.contains("do_thing")
+        });
+        assert!(
+            !unused_for_do_thing,
+            "`return do_thing()` should mark `do_thing` as used; got diagnostics: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>(),
+        );
+    }
+
+    /// Issue #84 Chunk 7a: companion to the `Return(Call)` test — a
+    /// `return imported_name` (no parens, bare-name reference) should also
+    /// mark the import as used. The `Name` arm is symmetric with
+    /// `ContextMarker(NameRef)` (analyze.rs L753-758) and checks both
+    /// `imported_texts` and `imported_blocks` since a bare name could resolve
+    /// to either pool.
+    #[test]
+    fn imported_name_used_in_return_name_position_does_not_fire_unused_import() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let lib_path = dir.path().join("lib.glyph.md");
+        std::fs::write(&lib_path, r#"export const greeting = "Hello."
+"#).unwrap();
+
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(&main_path, r#"import "./lib.glyph.md" { greeting }
+
+skill main()
+    description: "Main."
+    flow:
+        return greeting
+"#).unwrap();
+
+        let bag = check_file(&main_path);
+        let unused_for_greeting = bag.iter().any(|d| {
+            d.id == "G::analyze::unused-import" && d.message.contains("greeting")
+        });
+        assert!(
+            !unused_for_greeting,
+            "`return greeting` should mark `greeting` as used; got diagnostics: {:?}",
+            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>(),
         );
     }
 
@@ -3205,9 +3822,9 @@ skill gamma()
         // list is reversed.
         let dir = tempfile::tempdir().unwrap();
 
-        // lib.glyph.md — standalone (no skill, just an export text — library)
+        // lib.glyph.md — standalone (no skill, just an export const — library)
         std::fs::write(dir.path().join("lib.glyph.md"), "\
-export text greeting = \"Hello from lib.\"
+export const greeting = \"Hello from lib.\"
 ").unwrap();
 
         // consumer.glyph.md — imports from lib but is self-contained for compile
@@ -3377,7 +3994,7 @@ this is broken!!!
     fn ac4_library_with_zero_exports_fires_no_exports_in_library() {
         // A file with zero skills AND zero exports is an error.
         let src = "\
-text private_text = \"This is private.\"
+const private_text = \"This is private.\"
 block helper()
     \"Do something.\"
 ";
@@ -3393,14 +4010,14 @@ block helper()
 
     #[test]
     fn ac1_export_text_only_library_compiles_exit_zero() {
-        // A library file with only export text declarations should compile
+        // A library file with only export const declarations should compile
         // successfully (exit 0) and produce zero .md output.
         let dir = tempfile::tempdir().unwrap();
 
         let prefs_path = dir.path().join("prefs.glyph.md");
         std::fs::write(&prefs_path, "\
-export text terminal_mux = \"tmux\"
-export text validation_strictness = \"high\"
+export const terminal_mux = \"tmux\"
+export const validation_strictness = \"high\"
 ").unwrap();
 
         let sources: Vec<PathBuf> = vec![prefs_path];
@@ -3419,8 +4036,8 @@ export text validation_strictness = \"high\"
         // check_source on a library file with exports should produce zero
         // errors (no no-exports-in-library, no other issues).
         let src = "\
-export text terminal_mux = \"tmux\"
-export text validation_strictness = \"high\"
+export const terminal_mux = \"tmux\"
+export const validation_strictness = \"high\"
 ";
         let bag = check_source(src, 0, "prefs.glyph.md");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
@@ -3460,7 +4077,7 @@ export block shared_util(x = \"default\")
         // Export block referencing its own params and exported text should
         // NOT fire closure-violation.
         let src = "\
-export text greeting = \"Hello.\"
+export const greeting = \"Hello.\"
 
 export block shared_util(x = \"default\")
     flow:
@@ -3480,8 +4097,8 @@ export block shared_util(x = \"default\")
     fn name_collision_fires_for_duplicate_export_names() {
         // Two exports sharing the same name should fire G::analyze::name-collision.
         let src = "\
-export text greeting = \"Hello.\"
-export text greeting = \"Hi.\"
+export const greeting = \"Hello.\"
+export const greeting = \"Hi.\"
 ";
         let bag = check_source(src, 0, "lib.glyph.md");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
@@ -3497,9 +4114,9 @@ export text greeting = \"Hi.\"
     fn ac5_exports_visited_in_source_order() {
         // Exports should be extracted in source order for deterministic output.
         let src = "\
-export text zebra = \"Z.\"
-export text alpha = \"A.\"
-export text middle = \"M.\"
+export const zebra = \"Z.\"
+export const alpha = \"A.\"
+export const middle = \"M.\"
 ";
         let (file, _) = parse::parse(src, 0).expect("should parse");
         let exports = extract_exports(&file);
@@ -3511,7 +4128,7 @@ export text middle = \"M.\"
 
         // Verify source-order by walking decls directly.
         let names: Vec<&str> = file.decls.iter().filter_map(|d| match d {
-            ast::Decl::Text(t) if t.node.exported => Some(t.node.name.as_str()),
+            ast::Decl::Const(c) if c.node.exported => Some(c.node.name.as_str()),
             _ => None,
         }).collect();
         assert_eq!(names, vec!["zebra", "alpha", "middle"],
@@ -3535,7 +4152,7 @@ export text middle = \"M.\"
         }
 
         let repo_tools_src = format!("\
-export block inspect_repo(scope = \".\")
+export block inspect_repo(scope = \".\") -> Path
     description: \"Inspect the repository for issues.\"
     flow:
 {}        return scope
@@ -3592,12 +4209,12 @@ export block inspect_repo(scope = \".\")
         }
 
         let repo_tools_src = format!("\
-export block inspect_repo(scope = \".\")
+export block inspect_repo(scope = \".\") -> Path
     description: \"Inspect the repository for issues.\"
     flow:
 {}        return scope
 
-export block run_tests(target = \"all\")
+export block run_tests(target = \"all\") -> TestResult
     description: \"Run the project test suite.\"
     flow:
 {}        return target
@@ -3641,7 +4258,7 @@ export block run_tests(target = \"all\")
         }
 
         let lib_src = format!("\
-export block inspect_repo(scope = \".\")
+export block inspect_repo(scope = \".\") -> Path
     description: \"Inspect the repository for issues.\"
     flow:
 {}        return scope
@@ -3692,7 +4309,7 @@ skill audit_code()
         }
 
         let repo_tools_src = format!("\
-export block inspect_repo(scope = \".\")
+export block inspect_repo(scope = \".\") -> Path
     description: \"Inspect the repository for issues.\"
     flow:
 {}        return scope
@@ -3962,6 +4579,54 @@ skill foo()
         assert_eq!(bag.exit_code(), 2, "mixed-indent is repairable (exit 2)");
     }
 
+    #[test]
+    fn cross_file_nominal_mismatch_fires_via_check_file() {
+        // Issue #84 Chunk 4: end-to-end Option-Y plumbing test. Two files —
+        // a library exports `do_thing() -> Plan`; a consumer skill declares
+        // `-> Report` and `return do_thing()`. The cross-file
+        // `nominal-mismatch` diagnostic must fire through the import-aware
+        // pipeline, not just from manually-constructed maps in unit tests.
+        //
+        // Without the Option-Y plumbing
+        // (`ExportedNames.block_return_types` populated from `extract_exports`
+        // and threaded through `ResolvedImports` / `check_file_recursive`),
+        // the consumer's check sees an empty imported-return-types map and
+        // silently skips the mismatch.
+        let dir = tempfile::tempdir().unwrap();
+
+        let lib_path = dir.path().join("lib.glyph.md");
+        std::fs::write(&lib_path, "export block do_thing() -> Plan\n    description: \"Make a plan.\"\n    flow:\n        return \"a plan was made\"\n").unwrap();
+
+        let main_path = dir.path().join("main.glyph.md");
+        std::fs::write(
+            &main_path,
+            "import \"./lib.glyph.md\" { do_thing }\n\nskill main() -> Report\n    description: \"Main.\"\n    flow:\n        return do_thing()\n",
+        )
+        .unwrap();
+
+        let bag = check_file(&main_path);
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::nominal-mismatch"),
+            "expected G::analyze::nominal-mismatch from cross-file pipeline, got: {:?}",
+            ids
+        );
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::nominal-mismatch")
+            .unwrap();
+        assert!(
+            diag.message.contains("Report") && diag.message.contains("Plan"),
+            "message must name both caller's `Report` and callee's `Plan`, got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("do_thing"),
+            "message must name the call target `do_thing`, got: {}",
+            diag.message
+        );
+    }
+
     // --- Effects gate: flag-off behavior ---
 
     #[test]
@@ -4133,7 +4798,7 @@ skill main()
         let dep_path = dir.path().join("dep.glyph.md");
         // `dep_text` references an undefined name → fires `undefined-name`.
         let dep_text = "\
-export text alpha = \"alpha.\"
+export const alpha = \"alpha.\"
 
 skill dep_skill()
     description: \"dep skill.\"
@@ -4202,7 +4867,7 @@ skill main()
         // (importer is the file with the buggy `import` line).
         let dir = tempfile::tempdir().unwrap();
         let dep_path = dir.path().join("dep.glyph.md");
-        std::fs::write(&dep_path, "text private_text = \"private.\"\n").unwrap();
+        std::fs::write(&dep_path, "const private_text = \"private.\"\n").unwrap();
 
         let importer_path = dir.path().join("main.glyph.md");
         let importer_src = "\
@@ -4232,7 +4897,7 @@ skill main()
         // Sanity: check_file_partition + merge == check_file_with_effects.
         let dir = tempfile::tempdir().unwrap();
         let dep_path = dir.path().join("dep.glyph.md");
-        std::fs::write(&dep_path, "export text alpha = \"alpha.\"\n").unwrap();
+        std::fs::write(&dep_path, "export const alpha = \"alpha.\"\n").unwrap();
         let main_path = dir.path().join("main.glyph.md");
         std::fs::write(
             &main_path,

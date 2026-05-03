@@ -194,6 +194,50 @@ fn fmt_check_exits_0_when_already_formatted() {
 }
 
 #[test]
+fn fmt_preserves_generated_const_and_skill_when_mixed() {
+    // Regression: chunk 4's `decl_starts` recognizer didn't include the
+    // `generated ` prefix, so a `generated const` line at top level was
+    // absorbed into the previous decl's range. With the bug, fmt's section
+    // reorder (which moves `flow:` after `description:`) inserts the
+    // generated-const line BETWEEN description and flow, corrupting both
+    // the skill body layout and the generated-const placement. The pin:
+    // the generated const must end up AFTER the skill's flow body.
+    let src = fmt_corpus_path("generated_const_after_skill.glyph.md");
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let tmp_path = tmp.path().to_path_buf();
+    std::fs::copy(&src, &tmp_path).unwrap();
+
+    let output = run_fmt(&tmp_path);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    let result = std::fs::read_to_string(&tmp_path).unwrap();
+    // Skill body must remain intact and reorder flow after description.
+    assert!(result.contains("skill demo()"), "skill header preserved");
+    let desc_pos = result.find("    description: \"Demo skill.\"").expect("skill description preserved");
+    let flow_pos = result.find("    flow:").expect("skill flow section preserved");
+    let step_pos = result.find("        \"step one\"").expect("skill flow body preserved");
+    let generated_pos = result
+        .find("generated const helper_text = \"Generated helper string.\"")
+        .expect("generated const declaration should pass through unchanged");
+    // Canonical order inside skill: description before flow.
+    assert!(desc_pos < flow_pos, "description should come before flow in skill body");
+    // The bug: generated const lands between description and flow.
+    // Fix asserts: generated const must be AFTER the skill body's last line.
+    assert!(
+        generated_pos > step_pos,
+        "generated const must follow the entire skill body, not be embedded inside it; got:\n{}",
+        result,
+    );
+
+    // Idempotency: running fmt again must not change anything.
+    let first = result.clone();
+    let output = run_fmt(&tmp_path);
+    assert!(output.status.success());
+    let second = std::fs::read_to_string(&tmp_path).unwrap();
+    assert_eq!(first, second, "fmt should be idempotent on mixed generated-const + skill");
+}
+
+#[test]
 fn fmt_is_idempotent() {
     // Use the most complex fixture (non-canonical order).
     let src = fmt_corpus_path("noncanonical_order.glyph.md");
@@ -216,6 +260,113 @@ fn fmt_is_idempotent() {
     // --check should confirm no changes needed.
     let output = run_fmt_check_with_effects(&tmp_path);
     assert_eq!(output.status.code(), Some(0), "--check after two formats should exit 0");
+}
+
+#[test]
+fn fmt_strips_legacy_none_return_type() {
+    // Issue #82 AC5: the deterministic repair pass rewrites legacy
+    // `-> None` (case-insensitive) headers by omitting `->` entirely.
+    // Multi-decl fixture exercises:
+    // - skill header `-> None` stripped
+    // - private block header `-> None` stripped
+    // - valid `-> Path` header preserved
+    // - body `return none` (value-position keyword) untouched
+    let src = fmt_corpus_path("legacy_none_return.glyph.md");
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let tmp_path = tmp.path().to_path_buf();
+    std::fs::copy(&src, &tmp_path).unwrap();
+
+    let output = run_fmt(&tmp_path);
+    assert!(
+        output.status.success(),
+        "glyph fmt should exit 0; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let result = std::fs::read_to_string(&tmp_path).unwrap();
+
+    // Legacy headers must be stripped of `-> None`.
+    assert!(
+        !result.contains("-> None"),
+        "no `-> None` should remain after fmt, got:\n{}",
+        result
+    );
+    assert!(
+        !result.contains("-> none"),
+        "no `-> none` should remain after fmt, got:\n{}",
+        result
+    );
+    assert!(
+        result.contains("skill cleanup()\n"),
+        "skill header should be stripped to `skill cleanup()`, got:\n{}",
+        result
+    );
+    assert!(
+        result.contains("block helper()\n"),
+        "block header should be stripped to `block helper()`, got:\n{}",
+        result
+    );
+
+    // Valid `-> Path` header must survive.
+    assert!(
+        result.contains("export block compute(scope = \".\") -> Path"),
+        "valid `-> Path` header must be preserved, got:\n{}",
+        result
+    );
+
+    // Body `return none` value-keyword must be untouched.
+    assert!(
+        result.contains("return none"),
+        "body `return none` should remain untouched, got:\n{}",
+        result
+    );
+
+    // Idempotence: a second fmt produces byte-identical output.
+    let output2 = run_fmt(&tmp_path);
+    assert!(
+        output2.status.success(),
+        "second fmt should exit 0; stderr: {}",
+        String::from_utf8_lossy(&output2.stderr)
+    );
+    let result2 = std::fs::read_to_string(&tmp_path).unwrap();
+    assert_eq!(
+        result, result2,
+        "fmt should be idempotent on legacy `-> None` source"
+    );
+
+    // --check after the strip should exit 0 (no further changes needed).
+    let check_output = run_fmt_check(&tmp_path);
+    assert_eq!(
+        check_output.status.code(),
+        Some(0),
+        "--check after fmt should exit 0; stderr: {}",
+        String::from_utf8_lossy(&check_output.stderr)
+    );
+
+    // AC7-3: the rewritten multi-decl source must parse + analyze cleanly via
+    // `glyph check` (exit 0) — confirms the repair pass produces source that
+    // flows through Phase 1 + Phase 2 without surfacing the original
+    // `G::parse::none-as-return-type` diagnostic.
+    let glyph_check_output = Command::new(glyph_bin())
+        .arg("check")
+        .arg(&tmp_path)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("failed to spawn glyph binary for post-fmt check");
+    assert_eq!(
+        glyph_check_output.status.code(),
+        Some(0),
+        "post-fmt `glyph check` must exit 0; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&glyph_check_output.stdout),
+        String::from_utf8_lossy(&glyph_check_output.stderr),
+    );
+    let post_fmt_stdout = String::from_utf8_lossy(&glyph_check_output.stdout);
+    assert!(
+        !post_fmt_stdout.contains("G::parse::none-as-return-type"),
+        "post-fmt `glyph check` stdout must not contain G::parse::none-as-return-type, got:\n{}",
+        post_fmt_stdout,
+    );
 }
 
 /// Regression: `glyph fmt --enable-effects` must preserve `effects:` sections.

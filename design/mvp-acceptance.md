@@ -40,8 +40,8 @@ skill update_docs()
         "Update any sections that are outdated or incorrect."
         "Verify all cross-references and links are still valid."
 
-text accuracy = "Ensure all documentation accurately reflects the current code."
-text stale_references = "Leaving references to removed or renamed symbols."
+const accuracy = "Ensure all documentation accurately reflects the current code."
+const stale_references = "Leaving references to removed or renamed symbols."
 ```
 
 ### Expected output: `update_docs.md`
@@ -72,11 +72,11 @@ effects: [reads_files, writes_files]
 
 | Phase | What happens |
 |-------|-------------|
-| 1 Parse | Parses skill header, `text` declarations, constraint markers, `flow:` with 4 inline strings. No imports → trivial DAG. |
-| 2 Analyze | `accuracy` and `stale_references` resolve to same-file `text` bindings. `require`/`avoid` markers set constraint role+polarity. Effects match (declared ⊇ inferred). Zero diagnostics → pipeline continues. |
+| 1 Parse | Parses skill header, `const` declarations, constraint markers, `flow:` with 4 inline strings. No imports → trivial DAG. |
+| 2 Analyze | `accuracy` and `stale_references` resolve to same-file `const` bindings. `require`/`avoid` markers set constraint role+polarity. Effects match (declared ⊇ inferred). Zero diagnostics → pipeline continues. |
 | 4 Lower | Inline strings become `InlineInstruction` nodes with `role: Step`. Constraint markers + resolved text become `Constraint` nodes with strength/polarity. Node IDs assigned. |
 | 5 Validate | All checks pass: node IDs unique, no unresolved callees, no cycles, no empty steps. |
-| 6 Step 1 | `text` refs on constraints already resolved to strings. Inline strings pass through. No `Call` nodes → no projection tier decisions. |
+| 6 Step 1 | `const` refs on constraints already resolved to strings. Inline strings pass through. No `Call` nodes → no projection tier decisions. |
 | 7 Emit | Assembles frontmatter (name, description, effects), `## Instructions` with `### Steps` (4 items) and `### Constraints` (2 items). No `## Parameters`, no `### Context`. Writes `update_docs.md`. |
 
 ### CLI test
@@ -111,13 +111,13 @@ The compiler produces **mechanical expansion** — resolved body text from Step 
 
 | File | What it tests |
 |------|---------------|
-| `update_docs.glyph.md` | Walking skeleton. Parameterless, inline strings only, explicit text defs, no calls. |
-| `fix_bug.glyph.md` | Flagship. Parameters with defaults, `block` defs, `text` defs, `with` modifier (stored in IR, not applied in `.md`), `return`, constraint markers at body level. Exercises call expansion, projection tier assignment, return folding. |
+| `update_docs.glyph.md` | Walking skeleton. Parameterless, inline strings only, explicit const defs, no calls. |
+| `fix_bug.glyph.md` | Flagship. Parameters with defaults, `block` defs, `const` defs, `with` modifier (stored in IR, not applied in `.md`), `return`, constraint markers at body level. Exercises call expansion, projection tier assignment, return folding. |
 | `constraint_only.glyph.md` | Skill with `constraints:` section but no `flow:`. Tests `### Steps` omission in output. |
 | `branching.glyph.md` | Skill with `if`/`elif`/`else` in flow. Tests conditional projection (lettered sub-steps per arm). Note: `==` in `if` conditions is branch-condition syntax, not a value-level operator — does not trigger `G::parse::operator-in-expression`. |
 | `effects_over_declared.glyph.md` | Skill that declares more effects than inferred. Compiles successfully; emits `G::analyze::effects-over-declared` warning (stderr). |
 | `explicit_blocks.glyph.md` | Skill with 4+ statement private block. Tests Tier 2 same-file procedure projection. |
-| `library_text_only.glyph.md` | Library file with only `export text` constants. Tests zero `.md` emission, no error. |
+| `library_text_only.glyph.md` | Library file with only `export const` constants. Tests zero `.md` emission, no error. |
 | `library_with_blocks.glyph.md` | Library file with `export block` declarations. Tests library compilation path and procedure emission rules. |
 
 ### 2.2 `repairable/` — Stops at Phase 2 (exit code 2)
@@ -196,21 +196,21 @@ Topological compile order: `prefs` → `repo_tools` → {`fix_bug`, `review_pr`,
 ```glyph
 // Team-wide coding preferences.
 
-export text preserve_existing_patterns = """
+export const preserve_existing_patterns = """
 Prefer the repository's existing patterns, helper APIs, naming, and file
 organization before introducing a new abstraction or style.
 """
 
-export text safety_first = """
+export const safety_first = """
 Never execute destructive operations without explicit confirmation.
 """
 
-export text minimal_changes = """
+export const minimal_changes = """
 Make the smallest change that solves the problem.
 """
 ```
 
-**Tests:** Library with only `export text`. Zero `.md` emission. Names importable by consumers.
+**Tests:** Library with only `export const`. Zero `.md` emission. Names importable by consumers.
 
 ### 3.2 `repo_tools.glyph.md` — Reusable procedures library
 
@@ -257,7 +257,7 @@ skill fix_bug(scope = ".")
         validate_fix()
         return summarize_changes()
 
-text unrelated_edits = "Making changes outside the requested scope or fixing unrelated issues."
+const unrelated_edits = "Making changes outside the requested scope or fixing unrelated issues."
 
 block identify_root_cause()
     flow:
@@ -279,7 +279,7 @@ block summarize_changes()
         "List what was changed and why."
 ```
 
-**Tests:** Selective import from two libraries. Cross-file name resolution. `with` modifier on imported call (stored in IR; mechanical `.md` uses resolved body text without modifier application). Mix of imported text, local text, local blocks. Tier 1 inline (small blocks) + Tier 2 same-file procedure (if any block exceeds threshold). Return folding. Constraint rendering with imported `preserve_existing_patterns`.
+**Tests:** Selective import from two libraries. Cross-file name resolution. `with` modifier on imported call (stored in IR; mechanical `.md` uses resolved body text without modifier application). Mix of imported const, local const, local blocks. Tier 1 inline (small blocks) + Tier 2 same-file procedure (if any block exceeds threshold). Return folding. Constraint rendering with imported `preserve_existing_patterns`.
 
 ### 3.4 `review_pr.glyph.md` — Skill with branching
 
@@ -303,8 +303,8 @@ skill review_pr(scope = ".", risk = "medium")
         "Summarize findings with actionable feedback."
         return "Produce a structured review with approval status and comments."
 
-text thorough_review = "Review every changed file, not just the ones that look interesting."
-text check_tests = "Verify that tests exist for changed behavior and that they pass."
+const thorough_review = "Review every changed file, not just the ones that look interesting."
+const check_tests = "Verify that tests exist for changed behavior and that they pass."
 ```
 
 **Tests:** Branching (`if`/`else`) with conditional projection. Multiple imports from same library. Parameters with defaults. Two constraint markers. Imported `export block` called in branch body. Tests lettered sub-step rendering.
@@ -370,7 +370,7 @@ Every diagnostic below is emitted by the deterministic compiler (Phases 1, 2, 4,
 | `G::analyze::no-exports-in-library` | error |
 | `G::analyze::missing-param-default` | error |
 | `G::analyze::missing-description` | repairable |
-| `G::analyze::text-in-flow` | repairable |
+| `G::analyze::const-in-flow` | repairable |
 | `G::analyze::applies-on-non-block` | error |
 | `G::analyze::applies-on-undescribed-block` | repairable |
 
@@ -429,13 +429,13 @@ Phase 6b structural validation, implemented in `glyph validate-output`. These di
 | `G::expand::procedure-duplicate` | error |
 | `G::expand::procedure-order` | error |
 
-**Total: 77 compiler-scope diagnostic IDs** (17 Parse + 27 Analyze + 1 Imports + 5 Validate + 1 Build + 26 Validate-output).
+**Total: 82 compiler-scope diagnostic IDs** (19 Parse + 29 Analyze + 1 Imports + 5 Validate + 1 Build + 27 Validate-output).
 
 ### 4.2 Agent-scope diagnostics (not in compiler)
 
 These diagnostics are the responsibility of the external agent skill that drives Repair (Phase 3) and Expand Step 2 (Phase 6). They are part of the Glyph spec but not implemented in the compiler binary.
 
-**Repair notifications (5):** `G::repair::generated-text`, `G::repair::generated-block`, `G::repair::branch-extracted`, `G::repair::inferred-effects`, `G::repair::constraint-tension`
+**Repair notifications (5):** `G::repair::generated-const`, `G::repair::generated-block`, `G::repair::branch-extracted`, `G::repair::inferred-effects`, `G::repair::constraint-tension`
 
 **Repair execution failures (5):** `G::repair::llm-unavailable`, `G::repair::output-invalid`, `G::repair::no-convergence`, `G::repair::constraint-contradiction`, `G::repair::constraint-scan-malformed`
 

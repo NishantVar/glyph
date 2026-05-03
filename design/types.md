@@ -1,6 +1,6 @@
 # Glyph Types
 
-This document defines the MVP type vocabulary for Glyph source files. It covers primitive type names, named domain types, the role of types in compilation, and deferred structural features.
+This document defines the MVP type vocabulary for Glyph source files. It covers named domain types, implicit type declaration, the role of types in compilation, and deferred structural features.
 
 ## Status
 
@@ -19,31 +19,23 @@ Types in MVP do not carry structural definitions. The compiler does not check wh
 
 This follows foundations: forgiving source, strict IR and foundations: core language is small. Most Glyph skills are linear flows where values pass through by name and the agent figures out the domain semantics from context. Heavy cross-file structural validation is the exception, not the rule, and can be added later without breaking existing source.
 
-## Primitive Types
+## Primitive Kinds (IR-Only)
 
-Each value kind from `values-and-names.md` has a canonical type name.
+Glyph's author-facing surface has no primitive or generic-collection type names. Authors never write the primitives `String`, `Int`, `Float`, `Bool`, `None`, the generic collections `List`, `Set`, `Map`, `Array`, `Dict`, `Tuple`, or the catch-alls `Object`, `Any` as type annotations — only semantic domain types like `Plan`, `RepoContext`, or `Diagnosis` are valid in `-> ReturnType` and `name: Type` positions. (Parameterized collection forms like `List[T]` are deferred entirely; see §Deferred. The `Agent` `TypeTag` variant in `ir-schema.md` §Enums is a stdlib-specific kind for `subagent()` results, not a generic type, and is **not** in the banned set.) Pipeline-precedence note: `-> None` in author-facing source is intercepted at parse time by `G::parse::none-as-return-type` (repairable, Phase 3a auto-fix per `diagnostics.md`); the analyze-tier `G::analyze::generic-type-name` warning therefore does not surface for `None` in return-type position end-to-end. The validator that owns the 13-name list still includes `None` for defense in depth at any future call sites where parse interception does not apply.
 
-| Value kind | Type name | Literal examples |
-|---|---|---|
-| Inline or block string | `String` | `"hello"`, `"""..."""` |
-| Integer | `Int` | `3`, `-1` |
-| Float | `Float` | `0.8`, `3.14` |
-| Boolean | `Bool` | `true`, `false` |
-| Absence of value | `None` | `none` |
+The compiler still tracks primitive kinds internally in the IR, inferred from literals, defaults, and usage context. The `TypeTag` enum in `ir-schema.md` retains `string`, `int`, `float`, `bool`, and `none` variants for internal analysis, coercion checks, and default-value validation. These kinds are never surfaced to authors.
+
+**Rationale.** Glyph's compiled output is consumed by LLMs. `-> String` carries no useful semantic signal to an LLM. `-> BranchName` does. Primitive type names are a holdover from languages where types serve compilers; in Glyph, types serve the agent reading the compiled output.
 
 ### Casing
 
 PascalCase is the recommended convention for all type names. This matches every existing example in the design docs (`RepoContext`, `Plan`, `FileSet`, `ReviewResult`, `ValidationResult`, `FailureReport`, `Summary`).
 
-PascalCase is convention, not enforcement. Since identifiers are case-normalized per `values-and-names.md`, Case Normalization section, `String` and `string` resolve to the same name. The compiler accepts either; PascalCase is recommended because it visually distinguishes type names from value names and parameters.
-
-### No `Number` Supertype
-
-`values-and-names.md`, Numeric Coercion section, already handles integer-to-float and float-to-integer conversion through lossless coercion at call boundaries. A `Number` supertype would introduce subtyping machinery with no authoring benefit in the MVP.
+PascalCase is convention, not enforcement. Since identifiers are case-normalized per `values-and-names.md`, Case Normalization section, `RepoContext` and `repo_context` resolve to the same name. The compiler accepts either; PascalCase is recommended because it visually distinguishes type names from value names and parameters.
 
 ## Named Domain Types
 
-Authors may use any identifier as a type name in parameter annotations and return types.
+Authors may use any identifier as a type name in parameter annotations and return types. Domain types are the only type names valid in author-facing source.
 
 ```glyph
 block inspect_repo(scope) -> RepoContext
@@ -54,6 +46,30 @@ export block validate_changes(files: FileSet, strict = true) -> ValidationResult
 ```
 
 Named domain types such as `RepoContext`, `Plan`, `FileSet`, and `ValidationResult` are **opaque tags**. They have no formal definition in MVP source. The compiler tracks them by name for nominal matching but does not assign them structural shape.
+
+### Implicit Declaration
+
+Domain types are implicitly declared by first use in a `-> Type` position. No explicit `type Foo` declaration is needed in MVP. When the compiler encounters `-> Diagnosis` for the first time, it registers `Diagnosis` as a known domain type.
+
+The meaning of a domain type is contextually reinforced by return-site output targets and surrounding prose. Authors choose between two output-target forms depending on whether a short identifier or richer guidance better names what the agent must synthesize:
+
+```glyph
+// Identifier form — short, name-shaped target
+export block diagnose_issue(scope) -> Diagnosis
+    flow:
+        inspect_repo(scope)
+        return <diagnosis>
+
+// Descriptive form — quoted guidance describing what to synthesize
+export block diagnose_issue(scope) -> Diagnosis
+    flow:
+        inspect_repo(scope)
+        return <"root cause analysis including affected files and severity">
+```
+
+The `-> Diagnosis` on the header serves as the compiler contract (nominal matching). The output target — `<diagnosis>` (identifier form) or `<"…">` (descriptive form) — names the value the agent must synthesize in the final output and is **complementary** to the type annotation, not a substitute. Both forms inherit `ty` from the enclosing return annotation and lower to the same `OutputContract` shape, discriminated by `OutputContract.form` (`ir-schema.md` §OutputContract). Use the identifier form when the target reads cleanly as a name; use the descriptive form when the guidance for the synthesizer is what carries the meaning. Descriptive form is terminal-return-only in MVP — mid-flow output targets, if added later, must use the identifier form (`values-and-names.md` §No Value-Level Operators).
+
+Two blocks returning the same `-> Type` with different output-target names, descriptions, or prose guidance are valid — that guidance is local to each block's compiled output and does not participate in nominal matching.
 
 ### What The Compiler Checks
 
@@ -69,21 +85,14 @@ Field access such as `result.findings` is not validated against the type in MVP.
 
 Domain type names follow the same identifier rules as all other names: `[a-zA-Z_][a-zA-Z0-9_]*` per `values-and-names.md`, Allowed Characters section. PascalCase is recommended for types. The no-shadowing rule from `values-and-names.md`, No Shadowing section, applies: if a type name collides with a parameter or binding after case normalization, the compiler rejects the program.
 
-## `none` Value And `None` Type
+## `none` Value (No `None` Type Annotation)
 
-`none` is a reserved keyword and value representing the absence of a value (`values-and-names.md`, None section). Since identifiers are case-normalized, `none` and `None` resolve to the same name.
+`none` is a reserved keyword and value representing the absence of a value (`values-and-names.md`, None section). It is valid in value positions: `return none`, `result = none`, `effects: none`.
 
-Recommended convention:
-
-- **Value position:** lowercase `none` — `return none`, `result = none`, `effects: none`.
-- **Type position:** PascalCase `None` — `-> None`, `name: None`.
-
-The compiler accepts either casing in either position. The convention exists for readability.
-
-`None` as a return type means "this block produces no meaningful value." It is required on export blocks that exist only for their instructions or effects:
+`None` as a type annotation (`-> None`) is dropped. A block that produces no meaningful return value simply omits the `->` from its declaration header:
 
 ```glyph
-export block emit_safety_warning() -> None
+export block emit_safety_warning()
     effects: none
 
     flow:
@@ -91,9 +100,11 @@ export block emit_safety_warning() -> None
         return none
 ```
 
+No `->` on a declaration means "no meaningful return value." The `none` value keyword remains for use in `return none`, `effects: none`, and other value positions.
+
 ### No `Never` Type
 
-The MVP does not include a bottom type. `None` covers the "returns nothing" case. A `Never` type for blocks that unconditionally fail or diverge may be added post-MVP if real need emerges.
+The MVP does not include a bottom type. Omitting `->` covers the "returns nothing" case. A `Never` type for blocks that unconditionally fail or diverge may be added post-MVP if real need emerges.
 
 ## Type-Name Identifier Rules
 
@@ -108,25 +119,34 @@ No separate type keyword, sigil, or capitalization rule is needed for the parser
 
 ## Interaction With Declaration Headers
 
-`language-surface.md` reserves the `name: Type` and `-> ReturnType` slots. This document fills those slots:
+`language-surface.md` reserves the `name: Type` and `-> ReturnType` slots. This document fills those slots. Only domain type names are valid in these positions — primitive type names are not part of the author-facing surface.
 
 ```glyph
-// Parameter type annotation (optional)
-skill implement_feature(scope: String, risk: String = "medium")
+// Parameter type annotation (optional, domain types only)
+skill implement_feature(scope: PathSpec, risk: RiskLevel = "medium")
 
-// Return type annotation (optional on skill and block, mandatory on export block)
+// Return type annotation (optional on skill and block)
 block validate(plan: Plan) -> ValidationResult
 
-export block inspect_failure(scope: String) -> FailureReport
+// Export block with meaningful return: -> DomainType required
+export block inspect_failure(scope: PathSpec) -> FailureReport
+
+// Export block with no meaningful return: omit -> entirely
+export block emit_safety_warning()
 ```
 
 Parameter type annotations are always optional. When omitted, the compiler infers the type from usage context or defaults to an untyped parameter that accepts any value. When present, the compiler performs nominal matching at call sites.
 
-Return type annotations are optional on `skill` and `block`, mandatory on `export block` per `language-surface.md`, Export Block section. On export blocks, the return type is part of the import contract.
+### Return Type Requirements
+
+- **`export block` with meaningful return:** `-> DomainType` is required. Missing `->` on an export block that returns a value is a repairable diagnostic; the repair pass infers a domain type name from the block name and return expression.
+- **`export block` with no meaningful return:** omit `->` entirely.
+- **`block` and `skill`:** `-> DomainType` is optional. The repair pass may suggest a domain type but never enforces one.
+- **Output target returns:** Both output-target forms — `return <name>` (identifier) and `return <"description">` (descriptive) — use the enclosing `-> DomainType` as the IR `OutputContract.ty`. The form does not change typing: identifier and descriptive forms inherit `ty` from the same channel, and both lower to the same `OutputContract` shape (discriminated by `OutputContract.form`, see `ir-schema.md` §OutputContract). If the annotation is omitted, the output target still lowers but carries `ty: null`; authors should prefer a semantic domain type when the synthesized output is part of a public or reusable contract.
 
 ## Interaction With Export Block Closure
 
-Export blocks must declare `-> ReturnType` so callers have a clear contract (see `data-flow.md` for the export-block closure rule). In MVP, this contract is nominal:
+Export blocks that return a meaningful value must declare `-> DomainType` so callers have a clear contract (see `data-flow.md` for the export-block closure rule). Export blocks with no meaningful return omit `->` entirely. In MVP, this contract is nominal:
 
 ```glyph
 // repo_tools.glyph.md
@@ -162,7 +182,8 @@ See `compiled-output.md` for how types surface in the final Markdown.
 
 The following type features are deferred beyond the MVP:
 
-- **Structural type definitions.** A `type Name = { field1, field2 }` declaration form that gives named types an explicit shape the compiler can check. This is the most likely next addition when cross-file structural validation becomes a real authoring need.
+- **Explicit `type` declarations.** A `type Name = { field1, field2 }` declaration form that gives named types an explicit structural shape the compiler can check. MVP uses implicit declaration (first use in `-> Type` creates the type). Explicit declarations are the most likely next addition when cross-file structural validation becomes a real authoring need.
+- **Structural type definitions.** Giving named types an explicit shape (fields, nested types) that the compiler can validate against. Blocked on explicit `type` declarations.
 - **Inline structural contracts.** A `name: { findings, severity }` annotation form for duck-typed parameters. Currently, the compiler infers field access from usage but does not expose a source syntax for declaring structural shape inline.
 - **Structural type checking.** Validating that field access like `result.findings` is compatible with the declared or inferred type. The compiler records field access in the IR but does not reject unverifiable access in MVP.
 - **Collection types.** `List[T]`, `Set[T]`, `Map[K, V]`, or similar parameterized types. Existing examples use opaque names like `FileSet` which serve the same documentary purpose without requiring generic type machinery.
@@ -170,6 +191,8 @@ The following type features are deferred beyond the MVP:
 - **Enum and union types.** Per `values-and-names.md`, Enums And Symbols section, enumerated values are represented as strings in MVP. Dedicated enum types with exhaustiveness checking may be added later.
 - **Type aliases.** A shorthand for renaming or combining existing types.
 - **`Never` / bottom type.** For blocks that unconditionally fail or diverge.
+- **Divergent output-target guidance warnings.** When the same `-> Type` appears on multiple blocks with substantially different output-target names or prose guidance, the compiler could warn that the type name may be overloaded. Deferred because output guidance is local to each block's compiled output and does not affect nominal matching.
+- **LLM-phase semantic type mismatch detection.** The LLM repair pass could potentially catch semantic type mismatches (passing a string where an int is expected) using name and usage context. Deferred post-MVP; for now, the compiler infers primitive kinds from literals and defaults only.
 
 ## Open Syntax Choices
 

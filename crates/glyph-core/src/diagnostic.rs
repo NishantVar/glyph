@@ -18,6 +18,15 @@ use serde::Serialize;
 
 use crate::span::{LineIndex, Span};
 
+/// Stable diagnostic id for the warning fired when an author writes one of
+/// the banned generic type names (e.g. `String`, `Int`, `List`) in type
+/// position in a `.glyph.md` source file.
+///
+/// Warning tier — non-blocking; compilation continues. Closest neighbor in
+/// classification + phase is `G::analyze::effects-over-declared`. See
+/// `design/diagnostics.md` §Classification.
+pub const GENERIC_TYPE_NAME_DIAG_ID: &str = "G::analyze::generic-type-name";
+
 /// The three trust tiers from `pipeline.md` Phase 2.
 ///
 /// Stable serialization: lowercase string for JSON output.

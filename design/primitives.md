@@ -39,7 +39,7 @@ A constraint does not say "do this step now." It says "when acting, follow this 
 - Body-level constraint markers on a `skill`, `block`, or `export block`
 - Flow-level constraint markers, which are hoisted when unconditional
 - Constraint markers inside `if`/`elif`/`else` branch bodies, which remain branch-scoped
-- `text`, `export text`, or `generated text` names referenced from constraint positions
+- `const`, `export const`, or `generated const` names referenced from constraint positions
 - Inline quoted strings in constraint positions with an explicit marker
 - Scoped constraints imported through called blocks; these remain local to the call/procedure region
 
@@ -58,7 +58,7 @@ Context is not imperative. It does not tell the agent to do anything, and it doe
 - Body-level `context` markers
 - Flow-level `context` markers, which are hoisted when unconditional
 - `context` markers inside `if`/`elif`/`else` branch bodies, which remain branch-scoped
-- `text`, `export text`, or `generated text` names referenced from context positions
+- `const`, `export const`, or `generated const` names referenced from context positions
 - Inline quoted strings in context positions
 
 **IR role:** `Context` / `ContextNode`.
@@ -77,7 +77,7 @@ Interface defines how a skill or block connects to its caller, selector, importe
 - `skill`, `block`, and `export block` headers as callable declarations
 - Parameter lists on callable headers: `skill foo(scope, risk = "medium")`
 - Parameter type annotations: `name: Type`
-- Parameter defaults, including literals and named `text`/`int`/`float` constants
+- Parameter defaults, including literals and named `const` values
 - Return type annotations: `-> ReturnType`
 - `return expr` statements, including implicit `return none` where allowed
 - `effects:` declarations, as the callable's capability/side-effect contract
@@ -100,10 +100,9 @@ Binding is the naming primitive. By itself, naming does not act, restrict, infor
 | `skill name(...)` | Skill entrypoint name |
 | `block name(...)` / `export block name(...)` | Callable block name |
 | `generated block name(...)` | Repair-materialized callable name |
-| `text name = "..."` / `export text name = "..."` | Named string constant |
-| `int name = N` / `export int name = N` | Named integer constant |
-| `float name = N` / `export float name = N` | Named float constant |
-| `generated text name = "..."` | Repair-materialized string constant |
+| `const name = "..."` / `export const name = "..."` | Named string constant |
+| `const name = N` / `export const name = N` | Named integer or float constant |
+| `generated const name = "..."` | Repair-materialized string constant |
 | Parameter `name` in a callable header | Invocation-supplied value name |
 | `ctx = inspect_repo(scope)` in `flow:` | Local result name |
 | `import "./path" { name }` | Imported declaration name |
@@ -181,9 +180,9 @@ Decomposes into:
 
 ## Design Notes
 
-### `text` spans binding, constraint, and context
+### `const` spans binding, constraint, and context
 
-`text` is a binding that holds passive string content. The declaration itself belongs to the binding primitive. The content's semantic role is assigned by use position:
+`const` is a binding that holds passive string content. The declaration itself belongs to the binding primitive. The content's semantic role is assigned by use position:
 
 - Referenced in `constraints:` or after a constraint marker -> constraint
 - Referenced in `context:` or after a `context` marker -> context

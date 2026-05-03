@@ -25,9 +25,9 @@ skill fix_bug(scope = ".")
         validate_fix()
         return summarize_changes()
 
-text unrelated_edits = "Making changes outside the requested scope or fixing unrelated issues."
+const unrelated_edits = "Making changes outside the requested scope or fixing unrelated issues."
 
-text codebase_assumptions = "This codebase follows standard project conventions and has a test suite."
+const codebase_assumptions = "This codebase follows standard project conventions and has a test suite."
 
 block deep_investigation()
     description: "The bug spans multiple subsystems or layers."

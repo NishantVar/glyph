@@ -4,4 +4,4 @@ skill check_code()
         validate_style
         "Review the code."
 
-text validate_style = "Ensure consistent formatting."
+const validate_style = "Ensure consistent formatting."

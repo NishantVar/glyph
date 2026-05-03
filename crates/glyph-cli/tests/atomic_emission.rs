@@ -162,9 +162,9 @@ fn procedure_files_stale_tmp_cleaned() {
         .join("\n");
     let source = format!(
         "\
-export text shared_val = \"x\"
+export const shared_val = \"x\"
 
-export block setup_env(shell = \"bash\")
+export block setup_env(shell = \"bash\") -> Path
     flow:
 {}
         return shell

@@ -61,6 +61,11 @@ pub fn validate_output(ir_json: &str, md: &str) -> Vec<Violation> {
     // Check malformed markdown
     check_malformed_markdown(md, &mut violations);
 
+    // Output-target leak check. The IR owns the authored target names; compiled
+    // Markdown may mention the natural name, but must never preserve the
+    // literal `<name>` token.
+    check_output_target_leaks(&ir, md, &mut violations);
+
     // Parse markdown structure
     let md_struct = parse_md_structure(md);
 
@@ -362,6 +367,91 @@ fn check_malformed_markdown(md: &str, violations: &mut Vec<Violation>) {
 }
 
 // ---------------------------------------------------------------------------
+// Check: output-target-leak
+// ---------------------------------------------------------------------------
+
+fn check_output_target_leaks(ir: &Value, md: &str, violations: &mut Vec<Violation>) {
+    let mut tokens = Vec::new();
+    collect_output_contract_tokens(ir, &mut tokens);
+    tokens.sort();
+    tokens.dedup();
+    for literal in tokens {
+        if md.contains(&literal) {
+            violations.push(Violation::new(
+                "G::expand::output-target-leak",
+                format!("compiled Markdown preserved literal output target `{literal}`"),
+            ));
+        }
+    }
+}
+
+fn collect_output_contract_tokens(value: &Value, tokens: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            if map.get("kind").and_then(|v| v.as_str()) == Some("output_contract") {
+                let form = map.get("form").and_then(|v| v.as_str());
+                match form {
+                    Some("identifier") => {
+                        if let Some(name) = map.get("target_name").and_then(|v| v.as_str()) {
+                            tokens.push(format!("<{name}>"));
+                        }
+                    }
+                    Some("description") => {
+                        if let Some(desc) = map.get("description").and_then(|v| v.as_str()) {
+                            // Re-escape the decoded `description` back to the
+                            // source-token shape `<"…">`. The parser in
+                            // `output_target.rs::parse_descriptive` decodes
+                            // `\"`, `\\`, `\n`, `\t`; reconstructing the
+                            // source token requires re-applying those escapes
+                            // so the leak check matches the literal source
+                            // form that may appear in compiled markdown.
+                            tokens.push(format!(
+                                "<\"{}\">",
+                                escape_for_source_token(desc)
+                            ));
+                        }
+                    }
+                    // Pre-#86 JSON without `form` discriminator — fall back to old shape.
+                    None => {
+                        if let Some(name) = map.get("target_name").and_then(|v| v.as_str()) {
+                            tokens.push(format!("<{name}>"));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for child in map.values() {
+                collect_output_contract_tokens(child, tokens);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_output_contract_tokens(item, tokens);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Re-escape a decoded description string back to its source-form spelling
+/// so leak detection can match the original `<"…">` token in compiled
+/// markdown. Mirrors the parser escapes in
+/// `output_target.rs::parse_descriptive` in reverse.
+fn escape_for_source_token(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Check: section shape (extra-h2, missing-instructions, extra-h3)
 // ---------------------------------------------------------------------------
 
@@ -517,11 +607,7 @@ fn compute_expected_step_count(flow: &[Value]) -> usize {
     count
 }
 
-fn check_step_order(
-    md_struct: &MdStructure,
-    flow: &[Value],
-    violations: &mut Vec<Violation>,
-) {
+fn check_step_order(md_struct: &MdStructure, flow: &[Value], violations: &mut Vec<Violation>) {
     // Extract step-projecting node targets/texts from IR in order
     let mut ir_step_keys: Vec<String> = Vec::new();
     for node in flow {
@@ -530,10 +616,7 @@ fn check_step_order(
             "call" => {
                 let role = node.get("role").and_then(|r| r.as_str()).unwrap_or("");
                 if role == "step" {
-                    let target = node
-                        .get("target")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("");
+                    let target = node.get("target").and_then(|t| t.as_str()).unwrap_or("");
                     ir_step_keys.push(target.to_string());
                 }
             }
@@ -542,7 +625,11 @@ fn check_step_order(
                 if role == "step" {
                     let text = node.get("text").and_then(|t| t.as_str()).unwrap_or("");
                     // Use first few words as key
-                    let key: String = text.split_whitespace().take(5).collect::<Vec<_>>().join(" ");
+                    let key: String = text
+                        .split_whitespace()
+                        .take(5)
+                        .collect::<Vec<_>>()
+                        .join(" ");
                     ir_step_keys.push(key);
                 }
             }
@@ -554,10 +641,7 @@ fn check_step_order(
                 }
             }
             "branch" => {
-                let cond = node
-                    .get("condition")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or("");
+                let cond = node.get("condition").and_then(|c| c.as_str()).unwrap_or("");
                 ir_step_keys.push(format!("branch:{}", cond));
             }
             _ => {}
@@ -572,8 +656,7 @@ fn check_step_order(
             // For step-order-mismatch, we check if each IR step's content appears
             // in the corresponding md step. This is approximate but catches
             // obvious reorderings.
-            for (i, (ir_key, md_item)) in
-                ir_step_keys.iter().zip(section.items.iter()).enumerate()
+            for (i, (ir_key, md_item)) in ir_step_keys.iter().zip(section.items.iter()).enumerate()
             {
                 if ir_key.starts_with("branch:") {
                     continue; // Branch steps are harder to match; skip for now
@@ -637,7 +720,7 @@ fn check_substep_count(md_struct: &MdStructure, skill: &Value, violations: &mut 
                 }
                 step_idx += 1;
             }
-            "return" => {} // folds, doesn't increment
+            "return" => {}     // folds, doesn't increment
             "constraint" => {} // doesn't count as step
             _ => {}
         }
@@ -697,11 +780,7 @@ fn count_step_projecting_nodes(body: &[Value]) -> usize {
 // Check: constraint-count-mismatch
 // ---------------------------------------------------------------------------
 
-fn check_constraint_count(
-    md_struct: &MdStructure,
-    skill: &Value,
-    violations: &mut Vec<Violation>,
-) {
+fn check_constraint_count(md_struct: &MdStructure, skill: &Value, violations: &mut Vec<Violation>) {
     let ir_constraint_count = skill
         .get("constraints")
         .and_then(|c| c.as_array())
@@ -870,11 +949,7 @@ fn find_curly_refs(md: &str) -> Vec<String> {
             if end < bytes.len() && bytes[end] == b'}' {
                 let name = &md[start..end];
                 // Only consider simple identifiers (no spaces, no special chars)
-                if !name.is_empty()
-                    && name
-                        .chars()
-                        .all(|c| c.is_alphanumeric() || c == '_')
-                {
+                if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
                     if !refs.contains(&name.to_string()) {
                         refs.push(name.to_string());
                     }
@@ -972,9 +1047,7 @@ fn find_curly_refs_in_str(s: &str) -> Vec<String> {
             }
             if end < bytes.len() && bytes[end] == b'}' {
                 let name = &s[start..end];
-                if !name.is_empty()
-                    && name.chars().all(|c| c.is_alphanumeric() || c == '_')
-                {
+                if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
                     refs.push(name.to_string());
                 }
             }
@@ -1024,10 +1097,7 @@ fn check_modifier_leaked_in_flow(flow: &[Value], md: &str, violations: &mut Vec<
                 if md.contains(modifier) {
                     violations.push(Violation::new(
                         "G::expand::modifier-leaked",
-                        format!(
-                            "`with` modifier `{}` appears verbatim in output",
-                            modifier
-                        ),
+                        format!("`with` modifier `{}` appears verbatim in output", modifier),
                     ));
                 }
             }
@@ -1065,11 +1135,7 @@ fn check_content_shape(md_struct: &MdStructure, violations: &mut Vec<Violation>)
                 if sentences > 3 {
                     violations.push(Violation::new(
                         "G::expand::step-too-long",
-                        format!(
-                            "step {} has {} sentences (max 3)",
-                            i + 1,
-                            sentences
-                        ),
+                        format!("step {} has {} sentences (max 3)", i + 1, sentences),
                     ));
                 }
             } else {
@@ -1099,11 +1165,7 @@ fn check_content_shape(md_struct: &MdStructure, violations: &mut Vec<Violation>)
             if sentences > 1 {
                 violations.push(Violation::new(
                     "G::expand::constraint-multi-sentence",
-                    format!(
-                        "constraint {} has {} sentences (max 1)",
-                        i + 1,
-                        sentences
-                    ),
+                    format!("constraint {} has {} sentences (max 1)", i + 1, sentences),
                 ));
             }
         }
@@ -1199,7 +1261,12 @@ fn check_procedures(md_struct: &MdStructure, skill: &Value, violations: &mut Vec
 
     let actual_names: Vec<String> = actual_procedures
         .iter()
-        .map(|h3| h3.name.strip_prefix("Procedure: ").unwrap_or("").to_string())
+        .map(|h3| {
+            h3.name
+                .strip_prefix("Procedure: ")
+                .unwrap_or("")
+                .to_string()
+        })
         .collect();
 
     // procedure-count-mismatch
@@ -1244,14 +1311,9 @@ fn check_procedures(md_struct: &MdStructure, skill: &Value, violations: &mut Vec
 
     // procedure-step-count-mismatch: check item count against callee flow
     for proc_section in &actual_procedures {
-        let proc_name = proc_section
-            .name
-            .strip_prefix("Procedure: ")
-            .unwrap_or("");
+        let proc_name = proc_section.name.strip_prefix("Procedure: ").unwrap_or("");
         // Find the corresponding call in IR to get callee_flow
-        if let Some(callee_flow_count) =
-            find_callee_flow_count(flow, proc_name)
-        {
+        if let Some(callee_flow_count) = find_callee_flow_count(flow, proc_name) {
             if proc_section.items.len() != callee_flow_count {
                 violations.push(Violation::new(
                     "G::expand::procedure-step-count-mismatch",
@@ -1271,17 +1333,11 @@ fn check_procedures(md_struct: &MdStructure, skill: &Value, violations: &mut Vec
     if let Some(steps) = find_instructions_h3(md_struct, "Steps") {
         for proc_name in &unique_procedures {
             let kebab = to_kebab(proc_name);
-            let referenced = steps
-                .items
-                .iter()
-                .any(|item| item.text.contains(&kebab));
+            let referenced = steps.items.iter().any(|item| item.text.contains(&kebab));
             if !referenced {
                 violations.push(Violation::new(
                     "G::expand::procedure-ref-missing",
-                    format!(
-                        "no step references procedure `{}`",
-                        kebab
-                    ),
+                    format!("no step references procedure `{}`", kebab),
                 ));
             }
         }
@@ -1567,13 +1623,103 @@ mod tests {
         );
     }
 
+    #[test]
+    fn output_target_leak_is_rejected() {
+        let ir = serde_json::json!({
+            "ir_version": 1,
+            "compiler": "glyph 0.1.0",
+            "source_file": "test.glyph.md",
+            "skill": {
+                "node_id": "n0",
+                "kind": "skill",
+                "name": "test_skill",
+                "description": "A test skill.",
+                "params": [],
+                "effects": [],
+                "context": [],
+                "constraints": [],
+                "flow": [
+                    {
+                        "node_id": "n1",
+                        "kind": "inline_instruction",
+                        "text": "Do something.",
+                        "role": "step"
+                    }
+                ],
+                "output_contract": {
+                    "node_id": "n2",
+                    "kind": "output_contract",
+                    "form": "identifier",
+                    "target_name": "current_branch",
+                    "ty": { "domain_type": "branchname" },
+                    "source": "synthesized_by_agent"
+                }
+            }
+        })
+        .to_string();
+        let md = "## Instructions\n\n### Steps\n\n1. Return <current_branch>.\n";
+        let violations = validate_output(&ir, md);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::output-target-leak"),
+            "expected output-target-leak, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn natural_output_target_name_is_allowed() {
+        let ir = serde_json::json!({
+            "ir_version": 1,
+            "compiler": "glyph 0.1.0",
+            "source_file": "test.glyph.md",
+            "skill": {
+                "node_id": "n0",
+                "kind": "skill",
+                "name": "test_skill",
+                "description": "A test skill.",
+                "params": [],
+                "effects": [],
+                "context": [],
+                "constraints": [],
+                "flow": [
+                    {
+                        "node_id": "n1",
+                        "kind": "inline_instruction",
+                        "text": "Produce current branch as the final output.",
+                        "role": "step"
+                    }
+                ],
+                "output_contract": {
+                    "node_id": "n2",
+                    "kind": "output_contract",
+                    "form": "identifier",
+                    "target_name": "current_branch",
+                    "ty": { "domain_type": "branchname" },
+                    "source": "synthesized_by_agent"
+                }
+            }
+        })
+        .to_string();
+        let md = "## Instructions\n\n### Steps\n\n1. Produce current branch as the final output.\n";
+        let violations = validate_output(&ir, md);
+        assert!(
+            !violations
+                .iter()
+                .any(|v| v.id == "G::expand::output-target-leak"),
+            "natural prose should not trip the leak check: {violations:?}"
+        );
+    }
+
     // --- frontmatter-returned ---
     #[test]
     fn frontmatter_returned() {
         // Step 2 injected a second frontmatter block in the body
         let md = "---\nname: test\n---\n---\nextra: junk\n---\n## Instructions\n\n### Steps\n\n1. Do something.\n";
         let violations = validate_output(&minimal_ir(), md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::frontmatter-returned"));
+        assert!(violations
+            .iter()
+            .any(|v| v.id == "G::expand::frontmatter-returned"));
     }
 
     #[test]
@@ -1581,8 +1727,13 @@ mod tests {
         // Legitimate Emit-produced frontmatter should be stripped and not flagged
         let md = "---\nname: test_skill\ndescription: A test skill.\n---\n## Instructions\n\n### Steps\n\n1. Do something.\n";
         let violations = validate_output(&minimal_ir(), md);
-        assert!(!violations.iter().any(|v| v.id == "G::expand::frontmatter-returned"),
-            "legitimate frontmatter should not be flagged: {:?}", violations);
+        assert!(
+            !violations
+                .iter()
+                .any(|v| v.id == "G::expand::frontmatter-returned"),
+            "legitimate frontmatter should not be flagged: {:?}",
+            violations
+        );
     }
 
     // --- malformed-markdown ---
@@ -1590,7 +1741,9 @@ mod tests {
     fn malformed_markdown() {
         let md = "just some text with no headings";
         let violations = validate_output(&minimal_ir(), md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::malformed-markdown"));
+        assert!(violations
+            .iter()
+            .any(|v| v.id == "G::expand::malformed-markdown"));
     }
 
     // --- extra-h2 ---
@@ -1606,7 +1759,9 @@ mod tests {
     fn missing_instructions() {
         let md = "## Something Else\n\n### Steps\n\n1. Do something.\n";
         let violations = validate_output(&minimal_ir(), md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::missing-instructions"));
+        assert!(violations
+            .iter()
+            .any(|v| v.id == "G::expand::missing-instructions"));
     }
 
     // --- extra-h3 ---
@@ -1685,8 +1840,15 @@ mod tests {
 2. Report findings.
 ";
         let violations = validate_output(&ir, &md);
-        let extra_h3 = violations.iter().filter(|v| v.id == "G::expand::extra-h3").collect::<Vec<_>>();
-        assert!(extra_h3.is_empty(), "should not flag valid H3s: {:?}", extra_h3);
+        let extra_h3 = violations
+            .iter()
+            .filter(|v| v.id == "G::expand::extra-h3")
+            .collect::<Vec<_>>();
+        assert!(
+            extra_h3.is_empty(),
+            "should not flag valid H3s: {:?}",
+            extra_h3
+        );
     }
 
     // --- step-count-mismatch ---
@@ -1694,7 +1856,9 @@ mod tests {
     fn step_count_mismatch() {
         let md = "## Instructions\n\n### Steps\n\n1. Do something.\n2. Extra step.\n";
         let violations = validate_output(&minimal_ir(), md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::step-count-mismatch"));
+        assert!(violations
+            .iter()
+            .any(|v| v.id == "G::expand::step-count-mismatch"));
     }
 
     // --- substep-count-mismatch ---
@@ -1735,7 +1899,9 @@ mod tests {
         // Only 1 sub-item instead of 3 (2 then + 1 else)
         let md = "## Instructions\n\n### Steps\n\n1. If has tests:\n   a. Run tests.\n";
         let violations = validate_output(&ir, md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::substep-count-mismatch"));
+        assert!(violations
+            .iter()
+            .any(|v| v.id == "G::expand::substep-count-mismatch"));
     }
 
     // --- constraint-count-mismatch ---
@@ -1766,7 +1932,9 @@ mod tests {
         // Only 1 constraint instead of 2
         let md = "## Instructions\n\n### Steps\n\n1. Do something.\n\n### Constraints\n\n- First constraint.\n";
         let violations = validate_output(&ir, md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::constraint-count-mismatch"));
+        assert!(violations
+            .iter()
+            .any(|v| v.id == "G::expand::constraint-count-mismatch"));
     }
 
     // --- context-count-mismatch ---
@@ -1795,9 +1963,12 @@ mod tests {
         }).to_string();
 
         // Only 1 context instead of 2
-        let md = "## Instructions\n\n### Context\n\n- Context A.\n\n### Steps\n\n1. Do something.\n";
+        let md =
+            "## Instructions\n\n### Context\n\n- Context A.\n\n### Steps\n\n1. Do something.\n";
         let violations = validate_output(&ir, md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::context-count-mismatch"));
+        assert!(violations
+            .iter()
+            .any(|v| v.id == "G::expand::context-count-mismatch"));
     }
 
     // --- step-order-mismatch ---
@@ -1826,7 +1997,13 @@ mod tests {
         // Reversed order
         let md = "## Instructions\n\n### Steps\n\n1. Fix the issue.\n2. Analyze the code.\n";
         let violations = validate_output(&ir, md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::step-order-mismatch"), "violations: {:?}", violations);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::step-order-mismatch"),
+            "violations: {:?}",
+            violations
+        );
     }
 
     // --- invented-param-ref ---
@@ -1834,7 +2011,9 @@ mod tests {
     fn invented_param_ref() {
         let md = "## Instructions\n\n### Steps\n\n1. Do something in {unknown_param}.\n";
         let violations = validate_output(&minimal_ir(), md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::invented-param-ref"));
+        assert!(violations
+            .iter()
+            .any(|v| v.id == "G::expand::invented-param-ref"));
     }
 
     // --- dropped-param-ref ---
@@ -1882,7 +2061,13 @@ mod tests {
         // MD doesn't use {scope}
         let md = "## Parameters\n- **scope**: Area to focus on (default: \".\")\n\n## Instructions\n\n### Steps\n\n1. Inspect the area for issues.\n";
         let violations = validate_output(&ir, md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::dropped-param-ref"), "violations: {:?}", violations);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::dropped-param-ref"),
+            "violations: {:?}",
+            violations
+        );
     }
 
     // --- unresolved-local-ref ---
@@ -1944,12 +2129,20 @@ mod tests {
                     }
                 ]
             }
-        }).to_string();
+        })
+        .to_string();
 
         // MD still has {diagnosis} as a literal token
-        let md = "## Instructions\n\n### Steps\n\n1. Analyze the code.\n2. Fix based on {diagnosis}.\n";
+        let md =
+            "## Instructions\n\n### Steps\n\n1. Analyze the code.\n2. Fix based on {diagnosis}.\n";
         let violations = validate_output(&ir, md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::unresolved-local-ref"), "violations: {:?}", violations);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::unresolved-local-ref"),
+            "violations: {:?}",
+            violations
+        );
     }
 
     // --- modifier-leaked ---
@@ -1990,12 +2183,19 @@ mod tests {
                     }
                 ]
             }
-        }).to_string();
+        })
+        .to_string();
 
         // MD contains the modifier verbatim
         let md = "## Instructions\n\n### Steps\n\n1. Inspect the code. focus on auth boundaries.\n";
         let violations = validate_output(&ir, md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::modifier-leaked"), "violations: {:?}", violations);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::modifier-leaked"),
+            "violations: {:?}",
+            violations
+        );
     }
 
     // --- params-section-mismatch ---
@@ -2026,7 +2226,13 @@ mod tests {
         // Only 1 param listed instead of 2
         let md = "## Parameters\n- **scope**: The scope\n\n## Instructions\n\n### Steps\n\n1. Do something.\n";
         let violations = validate_output(&ir, md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::params-section-mismatch"), "violations: {:?}", violations);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::params-section-mismatch"),
+            "violations: {:?}",
+            violations
+        );
     }
 
     // --- params-section-missing ---
@@ -2056,7 +2262,9 @@ mod tests {
         // No ## Parameters section
         let md = "## Instructions\n\n### Steps\n\n1. Do something.\n";
         let violations = validate_output(&ir, md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::params-section-missing"));
+        assert!(violations
+            .iter()
+            .any(|v| v.id == "G::expand::params-section-missing"));
     }
 
     // --- params-section-spurious ---
@@ -2064,7 +2272,9 @@ mod tests {
     fn params_section_spurious() {
         let md = "## Parameters\n- **scope**: something\n\n## Instructions\n\n### Steps\n\n1. Do something.\n";
         let violations = validate_output(&minimal_ir(), md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::params-section-spurious"));
+        assert!(violations
+            .iter()
+            .any(|v| v.id == "G::expand::params-section-spurious"));
     }
 
     // --- step-too-long ---
@@ -2072,7 +2282,13 @@ mod tests {
     fn step_too_long() {
         let md = "## Instructions\n\n### Steps\n\n1. First sentence. Second sentence. Third sentence. Fourth sentence.\n";
         let violations = validate_output(&minimal_ir(), md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::step-too-long"), "violations: {:?}", violations);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::step-too-long"),
+            "violations: {:?}",
+            violations
+        );
     }
 
     // --- constraint-multi-sentence ---
@@ -2101,7 +2317,13 @@ mod tests {
 
         let md = "## Instructions\n\n### Steps\n\n1. Do something.\n\n### Constraints\n\n- Don't do bad things. Also don't do other bad things.\n";
         let violations = validate_output(&ir, md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::constraint-multi-sentence"), "violations: {:?}", violations);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::constraint-multi-sentence"),
+            "violations: {:?}",
+            violations
+        );
     }
 
     // --- procedure-count-mismatch ---
@@ -2149,7 +2371,13 @@ mod tests {
         // No procedure section
         let md = "## Instructions\n\n### Steps\n\n1. Review the code (follow the review-code procedure below).\n";
         let violations = validate_output(&ir, md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::procedure-count-mismatch"), "violations: {:?}", violations);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::procedure-count-mismatch"),
+            "violations: {:?}",
+            violations
+        );
     }
 
     // --- procedure-name-mismatch ---
@@ -2196,7 +2424,13 @@ mod tests {
 
         let md = "## Instructions\n\n### Steps\n\n1. Review the code (follow the wrong-name procedure below).\n\n### Procedure: wrong-name\n\n1. Scan.\n";
         let violations = validate_output(&ir, md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::procedure-name-mismatch"), "violations: {:?}", violations);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::procedure-name-mismatch"),
+            "violations: {:?}",
+            violations
+        );
     }
 
     // --- procedure-step-count-mismatch ---
@@ -2245,7 +2479,13 @@ mod tests {
         // Procedure section has 1 item instead of 2
         let md = "## Instructions\n\n### Steps\n\n1. Review the code (follow the review-code procedure below).\n\n### Procedure: review-code\n\n1. Scan.\n";
         let violations = validate_output(&ir, md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::procedure-step-count-mismatch"), "violations: {:?}", violations);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::procedure-step-count-mismatch"),
+            "violations: {:?}",
+            violations
+        );
     }
 
     // --- procedure-ref-missing ---
@@ -2293,7 +2533,13 @@ mod tests {
         // Step doesn't mention the procedure name
         let md = "## Instructions\n\n### Steps\n\n1. Review the code.\n\n### Procedure: review-code\n\n1. Scan.\n";
         let violations = validate_output(&ir, md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::procedure-ref-missing"), "violations: {:?}", violations);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::procedure-ref-missing"),
+            "violations: {:?}",
+            violations
+        );
     }
 
     // --- procedure-ref-dangling ---
@@ -2341,7 +2587,13 @@ mod tests {
         // Step references review-code but no procedure section exists
         let md = "## Instructions\n\n### Steps\n\n1. Review the code (follow the review-code procedure below).\n";
         let violations = validate_output(&ir, md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::procedure-ref-dangling"), "violations: {:?}", violations);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::procedure-ref-dangling"),
+            "violations: {:?}",
+            violations
+        );
     }
 
     // --- procedure-duplicate ---
@@ -2368,7 +2620,13 @@ mod tests {
 
         let md = "## Instructions\n\n### Steps\n\n1. Do something.\n\n### Procedure: review-code\n\n1. Scan.\n\n### Procedure: review-code\n\n1. Report.\n";
         let violations = validate_output(&ir, md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::procedure-duplicate"), "violations: {:?}", violations);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::procedure-duplicate"),
+            "violations: {:?}",
+            violations
+        );
     }
 
     // --- procedure-order ---
@@ -2437,7 +2695,13 @@ mod tests {
         // Wrong order: step-b before step-a
         let md = "## Instructions\n\n### Steps\n\n1. Do step-a procedure.\n2. Do step-b procedure.\n\n### Procedure: step-b\n\n1. B1.\n\n### Procedure: step-a\n\n1. A1.\n";
         let violations = validate_output(&ir, md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::procedure-order"), "violations: {:?}", violations);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::procedure-order"),
+            "violations: {:?}",
+            violations
+        );
     }
 
     // --- sentence counting ---
@@ -2520,10 +2784,15 @@ mod tests {
         let md = "## Instructions\n\n### Steps\n\n1. Decide which approach applies:\n   a. Fork with plan.\n   b. Fork with summary.\n";
         let violations = validate_output(&ir, md);
         // Should pass without branch-specific errors
-        let branch_errors: Vec<_> = violations.iter()
+        let branch_errors: Vec<_> = violations
+            .iter()
             .filter(|v| v.id.contains("substep") || v.id.contains("step-count"))
             .collect();
-        assert!(branch_errors.is_empty(), "unexpected branch errors: {:?}", branch_errors);
+        assert!(
+            branch_errors.is_empty(),
+            "unexpected branch errors: {:?}",
+            branch_errors
+        );
     }
 
     #[test]
@@ -2576,9 +2845,76 @@ mod tests {
         let md = "## Instructions\n\n### Steps\n\n1. If fork_with_plan.applies():\n   a. Fork with plan.\n   b. Fork with summary.\n";
         let violations = validate_output(&ir, md);
         assert!(
-            violations.iter().any(|v| v.id == "G::expand::description-shape-missing"),
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::description-shape-missing"),
             "should reject raw .applies() condition in step prose; got: {:?}",
             violations
+        );
+    }
+
+    /// Issue #86 chunk 2 follow-up: the description-form leak token must be
+    /// re-escaped back to source form so a leaked literal containing escapes
+    /// (e.g. `<"contains \"quotes\"">`) is detected. The decoded
+    /// `description` field carries unescaped content; reconstructing the
+    /// source token without re-escaping would silently miss the leak.
+    #[test]
+    fn description_form_leak_token_is_re_escaped_to_source_shape() {
+        let ir = serde_json::json!({
+            "ir_version": 1,
+            "compiler": "glyph 0.1.0",
+            "source_file": "test.glyph.md",
+            "skill": {
+                "node_id": "n0",
+                "kind": "skill",
+                "name": "test_skill",
+                "description": "A test skill.",
+                "params": [],
+                "effects": [],
+                "context": [],
+                "constraints": [],
+                "flow": [
+                    {
+                        "node_id": "n1",
+                        "kind": "inline_instruction",
+                        "text": "Do something.",
+                        "role": "step"
+                    }
+                ],
+                "output_contract": {
+                    "node_id": "n2",
+                    "kind": "output_contract",
+                    "form": "description",
+                    // Decoded content carrying both `"` and `\` characters.
+                    "description": "contains \"quotes\" and \\backslash",
+                    "ty": null,
+                    "source": "synthesized_by_agent"
+                }
+            }
+        });
+
+        // Direct check: the synthesized leak token must equal the
+        // source-shape spelling (each `"` re-escaped to `\"`, each `\` to
+        // `\\`).
+        let mut tokens = Vec::new();
+        collect_output_contract_tokens(&ir, &mut tokens);
+        assert_eq!(
+            tokens,
+            vec![r#"<"contains \"quotes\" and \\backslash">"#.to_string()],
+            "leak token must re-escape `\"` and `\\` so it matches the \
+             source `<\"…\">` literal"
+        );
+
+        // End-to-end check: a markdown file containing the source-shape
+        // literal must trigger the leak diagnostic.
+        let md = "## Instructions\n\n### Steps\n\n1. Return <\"contains \\\"quotes\\\" and \\\\backslash\">.\n";
+        let violations = validate_output(&ir.to_string(), md);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::output-target-leak"),
+            "expected output-target-leak for source-shape description token, \
+             got {violations:?}"
         );
     }
 }

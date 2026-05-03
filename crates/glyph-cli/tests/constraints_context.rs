@@ -91,7 +91,7 @@ fn constraint_only_compiles_with_constraints_no_steps() {
 
 #[test]
 fn require_text_resolves_and_renders_constraint() {
-    // update_docs.glyph.md has `require accuracy` + `text accuracy = "..."`.
+    // update_docs.glyph.md has `require accuracy` + `const accuracy = "..."`.
     // Copy to tempdir to avoid parallel-test races on the shared output file.
     let dir = tempfile::tempdir().unwrap();
     let src = fixture("valid", "update_docs.glyph.md");

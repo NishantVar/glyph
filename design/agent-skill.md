@@ -103,7 +103,7 @@ The agent receives diagnostics in this shape (via `--format json`):
       "classification": "repairable",
       "message": "bare name 'preserve_existing_patterns' does not resolve",
       "span": { "file": "foo.glyph.md", "start": {"line": 3, "col": 5}, "end": {"line": 3, "col": 33} },
-      "hints": ["Add a 'text' or 'generated text' declaration for this name."]
+      "hints": ["Add a 'const' or 'generated const' declaration for this name."]
     }
   ]
 }
@@ -115,11 +115,11 @@ In multi-file builds, `--format json` emits **NDJSON**: one complete `{"file": .
 
 Each repairable diagnostic has a specific fix pattern. The agent applies these to the source file.
 
-**Naming and placement rule:** All `generated text` and `generated block` declarations go **after** all non-generated top-level declarations in the file. If an author later writes a same-named declaration, the generated one is superseded and should be deleted.
+**Naming and placement rule:** All `generated const` and `generated block` declarations go **after** all non-generated top-level declarations in the file. If an author later writes a same-named declaration, the generated one is superseded and should be deleted.
 
-**No-overwrite rule.** Repair never silently overwrites, deletes, or renames an existing declaration — generated or otherwise — to make room for a generated one. If the LLM proposes a `generated text` or `generated block` whose name collides with any existing top-level declaration in the file, the compile hard-fails with `G::analyze::name-collision`. The author resolves the collision manually: rename one of the conflicting declarations, or explicitly delete the stale `generated` declaration themselves. Repair is also forbidden from mutating any existing declaration with the conflicting name.
+**No-overwrite rule.** Repair never silently overwrites, deletes, or renames an existing declaration — generated or otherwise — to make room for a generated one. If the LLM proposes a `generated const` or `generated block` whose name collides with any existing top-level declaration in the file, the compile hard-fails with `G::analyze::name-collision`. The author resolves the collision manually: rename one of the conflicting declarations, or explicitly delete the stale `generated` declaration themselves. Repair is also forbidden from mutating any existing declaration with the conflicting name.
 
-**Formatting hygiene for repair output.** The agent's repair output must already be formatted: 4-space indentation only (no tabs), `generated text` and `generated block` declarations appended after all non-generated top-level declarations, no double blank lines. `glyph fmt` is not re-invoked between repair iterations (see §Workflow State Machine), so the LLM's rewrite must satisfy the formatting rules itself.
+**Formatting hygiene for repair output.** The agent's repair output must already be formatted: 4-space indentation only (no tabs), `generated const` and `generated block` declarations appended after all non-generated top-level declarations, no double blank lines. `glyph fmt` is not re-invoked between repair iterations (see §Workflow State Machine), so the LLM's rewrite must satisfy the formatting rules itself.
 
 #### Parse-phase repairables
 
@@ -135,7 +135,7 @@ Each repairable diagnostic has a specific fix pattern. The agent applies these t
 
 | Diagnostic ID | Fix |
 |---|---|
-| `G::analyze::undefined-name` | Add a `generated text <name> = "<single-string content>"` declaration at the bottom of the file (after all non-generated declarations). Infer the content from the name and its usage context in the flow. |
+| `G::analyze::undefined-name` | Add a `generated const <name> = "<single-string content>"` declaration at the bottom of the file (after all non-generated declarations). Infer the content from the name and its usage context in the flow. |
 | `G::analyze::undefined-call` | Add a `generated block <name>(<inferred-params>)` with a single-string body (the `flow:`-omitted shorthand per `language-surface.md` §3.2). Infer parameter names from the call arguments. The body should be a single instruction string describing what the block does. Place after all non-generated declarations. |
 | `G::analyze::duplicate-import` | Remove the duplicate `import` line, keeping the first occurrence. |
 | `G::analyze::unused-import` | Remove the `import` line for the unused name. |
@@ -151,9 +151,9 @@ Each repairable diagnostic has a specific fix pattern. The agent applies these t
 
 - **Fix all diagnostics in one pass.** Apply all fixes to the source file before re-invoking the compiler. Don't fix one at a time.
 - **Preserve author intent.** Don't rename things, reorder unrelated code, or add features. Fix only what the diagnostics flag.
-- **Generated content is minimal.** `generated text` bodies are one sentence. `generated block` bodies are one instruction string. Don't over-elaborate.
+- **Generated content is minimal.** `generated const` bodies are one sentence. `generated block` bodies are one instruction string. Don't over-elaborate.
 - **Infer from context.** When generating content for `undefined-name` or `undefined-call`, read the name itself and its usage in the surrounding flow to write a reasonable single-string body. E.g., `preserve_existing_patterns` → `"Follow the repository's existing patterns before introducing new abstractions."`
-- **Don't export generated declarations.** `export generated text` and `export generated block` are invalid syntax.
+- **Don't export generated declarations.** `export generated const` and `export generated block` are invalid syntax.
 
 ## Phase 3c: Constraint Conflict Scan
 
@@ -343,6 +343,6 @@ For MVP, the agent skill ships **inside the `glyph` repo** at a known path (e.g.
 - **`cli.md`** — exit code 3 added for invocation errors (previously overloaded on exit 2). `validate-output` subcommand added.
 - **`build-foundation.md`** — exit code contract is 0/1/2/3, matching `cli.md`.
 - **`diagnostics.md`** — 26 `G::expand::*` diagnostic IDs are compiler-scope (implemented in `validate-output`), not agent-scope.
-- **`mvp-acceptance.md`** — the 26 agent-scope 6b diagnostics move to compiler-scope under `validate-output`. Agent-scope diagnostic count is 11 (5 repair notifications + 5 repair execution failures + 1 expand `llm-unavailable`). Compiler-scope is 77 (17 Parse + 27 Analyze + 1 Imports + 5 Validate + 1 Build + 26 Validate-output).
+- **`mvp-acceptance.md`** — the 27 agent-scope 6b diagnostics move to compiler-scope under `validate-output`. Agent-scope diagnostic count is 11 (5 repair notifications + 5 repair execution failures + 1 expand `llm-unavailable`). Compiler-scope is 82 (19 Parse + 29 Analyze + 1 Imports + 5 Validate + 1 Build + 27 Validate-output).
 - **`ir-schema.md`** — JSON serialization shapes defined here are the `serde_json` projection of the Rust IR types from `ir-schema.md`.
 - **`compiled-output.md`** — constraint wording exemplars in §Step 2 are the authoritative patterns for the open question in `compiled-output.md` §Open Questions.

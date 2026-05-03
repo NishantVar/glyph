@@ -1,5 +1,6 @@
 //! IR node schema (walking-skeleton subset) and arena per `design/build-foundation.md` §A4.
 
+use crate::kind_infer::TypeTag;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -16,6 +17,11 @@ pub enum IrNode {
     Block(IrBlock),
     Call(IrCall),
     Branch(IrBranch),
+    /// Issue #85: `return <IDENT>` output-target form. Carries the
+    /// agent-synthesized output target's name and the enclosing decl's
+    /// `-> DomainType` annotation. Chunk 5 wires JSON; chunk 6 rewrites
+    /// in expand; chunks 8/9 surface diagnostics.
+    OutputContract(IrOutputContract),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -39,6 +45,25 @@ pub struct IrSkill {
     /// `None` means no explicit return (implicit `none`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub return_text: Option<String>,
+    /// Issue #84 chunk 6: lowered form of the `-> DomainType` annotation on
+    /// the skill header (per `design/language-surface.md` §3.1 line 161).
+    /// `None` means the author wrote no annotation. Built-ins lower to their
+    /// `TypeTag` variant; everything else lowers to
+    /// `DomainType(canonicalize_identifier(name))`. The IR-JSON emitter in
+    /// `emit_ir::serialize_ir_json` consumes this; the serde derive here is
+    /// incidental (no production caller serializes IR via the derive), so
+    /// the field is `#[serde(skip)]` to avoid forcing `TypeTag: Serialize`
+    /// (designer flag: do not match-by-Debug).
+    #[serde(skip)]
+    pub return_type: Option<TypeTag>,
+    /// Issue #85: optional `OutputContract` IR node id, populated when the
+    /// skill's flow ends with `return <IDENT>`. The contract carries the
+    /// target name and the lowered form of the skill's `-> DomainType`
+    /// annotation. Chunk 5 wires emit-IR (JSON); the field is `#[serde(skip)]`
+    /// here for the same reason as `return_type` — no production caller
+    /// serializes IR via the derive.
+    #[serde(skip)]
+    pub output_contract: Option<NodeId>,
 }
 
 /// Resolved parameter metadata threaded through Phase 6 Step 1 into the
@@ -89,6 +114,18 @@ pub struct IrBlock {
     /// Names of blocks called from this block's flow (outgoing call edges).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outgoing_calls: Vec<String>,
+    /// Issue #84 chunk 6: lowered form of the `-> DomainType` annotation on
+    /// the block header (per `design/language-surface.md` §3.2 line 198).
+    /// Per planner h.1 decision, Block `return_type` is stored on IR but NOT
+    /// emitted as a top-level Block JSON kind; it surfaces in IR-JSON via
+    /// the caller's `IrCall.return_type` lookup. `#[serde(skip)]` for the
+    /// same reason as `IrSkill::return_type`.
+    #[serde(skip)]
+    pub return_type: Option<TypeTag>,
+    /// Issue #85: same role as `IrSkill::output_contract`, populated when a
+    /// private block's flow ends with `return <IDENT>`.
+    #[serde(skip)]
+    pub output_contract: Option<NodeId>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -113,6 +150,15 @@ pub struct IrCall {
     /// E.g., `repo_tools/inspect-repo.md`. Populated by Expand Step 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub procedure_path: Option<String>,
+    /// Issue #84 chunk 6: the callee's lowered `-> DomainType` annotation, when
+    /// the callee is a same-file block (resolved at lower time via the
+    /// `lower::blocks` map). `None` for stdlib calls and cross-file calls
+    /// (D17: cross-file `Call.return_type` resolution via imported
+    /// `block_return_types` is a deferred follow-up). The IR-JSON emitter
+    /// renders this slot via `opt_typetag_to_json`. `#[serde(skip)]` for the
+    /// same reason as `IrSkill::return_type`.
+    #[serde(skip)]
+    pub return_type: Option<TypeTag>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -135,6 +181,42 @@ pub struct IrBranch {
 pub struct IrElifBranch {
     pub condition: String,
     pub body: Vec<NodeId>,
+}
+
+/// Issue #86: tagged form distinguishing identifier vs descriptive output
+/// targets. Replaces #85's flat `target_name: String` field.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub enum OutputTargetForm {
+    Identifier(String),
+    Description(String),
+}
+
+/// Issue #85/#86: lowered form of `return <IDENT>` or `return <"description">`.
+/// Captures the agent-synthesized output target plus the enclosing decl's
+/// `-> DomainType`. The name `ty` (rather than `type`) avoids the Rust keyword.
+/// JSON wiring is chunk 5 (updated in #86 chunk 2).
+#[derive(Clone, Debug, Serialize)]
+pub struct IrOutputContract {
+    pub node_id: NodeId,
+    pub form: OutputTargetForm,
+    /// Lowered enclosing-decl annotation (`Skill`/`Block`/`ExportBlock`'s
+    /// `-> DomainType`). `None` is permitted at lowering time — the
+    /// missing-annotation diagnostic is chunk 8/9's job.
+    /// `#[serde(skip)]` matches the rest of the `TypeTag` slots in this
+    /// module (`TypeTag` has no `Serialize`; the IR-JSON emitter reads the
+    /// field directly).
+    #[serde(skip)]
+    pub ty: Option<TypeTag>,
+    pub source: OutputSource,
+}
+
+/// Issue #85: the provenance of an output contract. Today's only variant is
+/// `SynthesizedByAgent` — the agent fabricates the named output. Future
+/// variants (e.g. caller-supplied) would join this enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputSource {
+    SynthesizedByAgent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -211,5 +293,27 @@ impl IrArena {
 
     pub(crate) fn nodes_mut(&mut self) -> &mut Vec<IrNode> {
         &mut self.nodes
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn output_contract_constructs_both_forms() {
+        use crate::ir::{IrOutputContract, NodeId, OutputSource, OutputTargetForm};
+        let id_form = IrOutputContract {
+            node_id: NodeId(0),
+            form: OutputTargetForm::Identifier("current_branch".into()),
+            ty: None,
+            source: OutputSource::SynthesizedByAgent,
+        };
+        let desc_form = IrOutputContract {
+            node_id: NodeId(1),
+            form: OutputTargetForm::Description("root cause analysis".into()),
+            ty: None,
+            source: OutputSource::SynthesizedByAgent,
+        };
+        assert!(matches!(id_form.form, OutputTargetForm::Identifier(ref n) if n == "current_branch"));
+        assert!(matches!(desc_form.form, OutputTargetForm::Description(ref d) if d == "root cause analysis"));
     }
 }

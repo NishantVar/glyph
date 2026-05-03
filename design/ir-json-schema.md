@@ -13,7 +13,14 @@ Both subcommands must agree on this schema. A change to the IR JSON shape requir
 
 **Scope.** `--emit-ir` operates on **skill files only** (files containing exactly one `skill` declaration). Library files (zero `skill` declarations) do not produce `.ir.json` output — the agent never runs Step 2 on a library file, and `validate-output` has no use for library IR. If a future visualizer needs library IR, a separate flag or subcommand can be added.
 
-**Node kinds in the JSON.** The JSON output contains `Skill` as the root and flow-level nodes (`Call`, `InlineInstruction`, `InstructionRef`, `Branch`, `Return`, `Constraint`, `ContextNode`) plus `Param`, `ElifBranch`, and `Expr` sub-nodes. `Block` and `ExportBlock` compilation units from `ir-schema.md` do **not** appear as separate nodes in the JSON — their content is inlined into `Call` nodes via the resolved fields (`resolved_body_text`, `callee_flow`, `callee_context`, `callee_constraints`). The JSON `"call"` kind represents a **resolved call** (post-Step-1), carrying both the base `Call` fields from `ir-schema.md` and the resolved fields from `ir-schema.md` §Resolved IR (`ResolvedCall`).
+**Node kinds in the JSON.** The JSON output contains `Skill` as the root and flow-level nodes (`Call`, `InlineInstruction`, `InstructionRef`, `Branch`, `Return`, `Constraint`, `ContextNode`) plus `OutputContract`, `Param`, `ElifBranch`, and `Expr` sub-nodes. `OutputContract` is serialized as a sidecar object on `skill.output_contract` or `call.callee_output_contract`, never as a member of a `flow` array. `Block` and `ExportBlock` compilation units from `ir-schema.md` do **not** appear as separate nodes in the JSON — their content is inlined into `Call` nodes via the resolved fields (`resolved_body_text`, `callee_flow`, `callee_context`, `callee_constraints`, `callee_output_contract`). The JSON `"call"` kind represents a **resolved call** (post-Step-1), carrying both the base `Call` fields from `ir-schema.md` and the resolved fields from `ir-schema.md` §Resolved IR (`ResolvedCall`).
+
+**Const declarations have no JSON kind.** `const`, `export const`, and `generated const` declarations (`language-surface.md` §3.4 / §3.6) do **not** serialize as their own JSON nodes. There is no `"const"` or `"const_decl"` kind in `--emit-ir` output, by design — this absence mirrors the IR schema's erase-and-inline contract for const decls (`ir-schema.md` §Top-Level Compilation Units). Const-derived values surface in the JSON only via the inlined sites:
+
+- **`Param.default`** (see §Param) — when a const is bound as a parameter default, the resolved literal appears in the Value-union shape (`{"kind": "string|int|float|bool|none", "value": ...}`).
+- **`InstructionRef.resolved_text`** (see §InstructionRef (resolved)) — when a const is referenced bare-name in `flow:` / `constraints:` / `context:`, its string content is inlined into `resolved_text`. No `TypeTag` field accompanies it, since const-as-instruction is always string-typed.
+
+The matching `TypeTag` for primitive consts is inferred at the lowering boundary and flows into the JSON via the `Value` variant chosen and via `Param.type` when applicable; it is never serialized as a free-standing const-decl attribute. The library-files-emit-no-IR-JSON rule (above, in §Scope) is independent — it applies to whole files regardless of declaration kind.
 
 ## Top-Level Envelope
 
@@ -54,10 +61,12 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
   "name": "fix_bug",
   "description": "Debug and fix a bug with minimal changes.",
   "params": [ ... ],
+  "return_type": null,
   "effects": ["reads_files", "writes_files"],
   "context": [ ... ],
   "constraints": [ ... ],
-  "flow": [ ... ]
+  "flow": [ ... ],
+  "output_contract": null
 }
 ```
 
@@ -68,10 +77,12 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
 | `name` | string | yes | Skill declaration name. |
 | `description` | string | yes | Always present after Repair. |
 | `params` | array of Param | yes | May be empty. |
+| `return_type` | TypeTag or null | yes | Resolved from the `skill <name>(...) -> <ReturnType>` declaration header (`language-surface.md` §3.1). Skill return types are optional in source; when omitted, this field is `null`. The annotation folds into the final Step prose during Expand and does not surface as a separate JSON section. |
 | `effects` | array of string | yes | Inferred effect set. Empty array when `none`. |
 | `context` | array of ContextNode | yes | Top-level declared context entries. May be empty. |
 | `constraints` | array of Constraint | yes | Top-level declared constraints only. May be empty. |
 | `flow` | array of FlowNode | yes | Ordered flow nodes. |
+| `output_contract` | OutputContract or null | yes | Output target contract for `return <name>` or `return <"description">`, or `null` when the skill has no output-target return. This field is a sibling of `flow`, not a flow entry, so it does not affect step counts. |
 
 ### Param
 
@@ -115,6 +126,7 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
   "callee_flow": null,
   "callee_context": null,
   "callee_constraints": null,
+  "callee_output_contract": null,
   "procedure_path": null
 }
 ```
@@ -137,6 +149,7 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
 | `callee_flow` | array of FlowNode or null | yes | Present only when `projection_mode != "inline"`. |
 | `callee_context` | array of ContextNode or null | yes | Present only when `projection_mode != "inline"`. |
 | `callee_constraints` | array of Constraint or null | yes | Present only when `projection_mode != "inline"`. |
+| `callee_output_contract` | OutputContract or null | yes | Callee block's output target contract when the resolved callee has `return <name>` or `return <"description">`, otherwise `null`. Present even for inline projections so Phase 6b can detect literal `<name>` or `<"…">` leaks (`G::expand::output-target-leak` covers both forms). |
 | `procedure_path` | string or null | yes | Relative file path. Present only when `projection_mode == "external_file"`. |
 
 **Worked example — Call with `local_refs`:**
@@ -165,11 +178,54 @@ Given source `diagnosis = analyze_error(scope)` followed by a call whose body re
   "callee_flow": null,
   "callee_context": null,
   "callee_constraints": null,
+  "callee_output_contract": null,
   "procedure_path": null
 }
 ```
 
 Here `{scope}` is a parameter slot (not in `local_refs`) and `{diagnosis}` is a local-binding slot (listed in `local_refs` with the producing node `n7`). Step 2 must resolve `{diagnosis}` into prose; `{scope}` passes through to compiled output.
+
+### OutputContract
+
+`OutputContract` JSON has two shapes discriminated by the `form` field — one for each `OutputTargetForm` variant defined in `ir-schema.md` §OutputContract. Both shapes carry the `form` discriminator alongside the form-specific value field; the discriminator is always present, never elided. Identifier form emits both `form` and `target_name`; descriptive form emits both `form` and `description`. The "absent otherwise" rule on each value field below applies cross-form (i.e., `target_name` is absent in descriptive payloads, `description` is absent in identifier payloads), not within a single form.
+
+**Identifier form** (`return <name>`):
+
+```json
+{
+  "node_id": "n9",
+  "kind": "output_contract",
+  "form": "identifier",
+  "target_name": "current_branch",
+  "ty": { "domain_type": "branchname" },
+  "source": "synthesized_by_agent"
+}
+```
+
+**Descriptive form** (`return <"…">`):
+
+```json
+{
+  "node_id": "n9",
+  "kind": "output_contract",
+  "form": "description",
+  "description": "root cause analysis including affected files and severity",
+  "ty": { "domain_type": "diagnosis" },
+  "source": "synthesized_by_agent"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `node_id` | string | yes | |
+| `kind` | string | yes | Always `"output_contract"`. |
+| `form` | string | yes | Discriminator: `"identifier"` or `"description"`. Selects which of `target_name` / `description` is present. |
+| `target_name` | string | conditional | Identifier from `return <name>`, without angle brackets. **Required when `form == "identifier"`; absent otherwise.** Stored in canonical form per `values-and-names.md` §Case Normalization. |
+| `description` | string | conditional | Verbatim string content from `return <"…">`, with inline-string escapes resolved (`\"` and `\\` per `values-and-names.md` §Inline Strings). **Required when `form == "description"`; absent otherwise.** Empty string is not valid — empty `<"">` is rejected by Phase 1 with `G::parse::malformed-output-target`. |
+| `ty` | TypeTag or null | yes | Enclosing declaration's resolved `-> DomainType`, or `null` if omitted. Both forms inherit type from the same channel; the form does not change typing. |
+| `source` | string | yes | OutputSource enum value. Currently `"synthesized_by_agent"`. |
+
+`OutputContract` objects appear in two places: `skill.output_contract` for the root skill and `call.callee_output_contract` for resolved block calls. They never appear inside a `flow` array. Descriptive form is terminal-return-only in MVP — both surface positions accept either form, but mid-flow output targets (if added later) must use the identifier form (see `ir-schema.md` §OutputContract).
 
 ### InlineInstruction
 
@@ -206,8 +262,8 @@ Here `{scope}` is a parameter slot (not in `local_refs`) and `{diagnosis}` is a 
 |---|---|---|---|
 | `node_id` | string | yes | |
 | `kind` | string | yes | Always `"instruction_ref"`. |
-| `name` | string | yes | Resolved name of the referenced text declaration. |
-| `resolved_text` | string | yes | Content of the referenced `text`/`generated text`. |
+| `name` | string | yes | Resolved name of the referenced const declaration. |
+| `resolved_text` | string | yes | Content of the referenced `const`/`generated const`. |
 | `role` | string | yes | Role enum value. |
 | `constraint_attrs` | object or null | yes | Present only when `role` is `"constraint"`. Shape: `{"strength": "...", "polarity": "..."}`. |
 
@@ -409,6 +465,8 @@ Built-in types serialize as plain strings. Domain types serialize as an object.
 | Built-in | `"string"`, `"int"`, `"float"`, `"bool"`, `"none"`, `"agent"` |
 | Domain type | `{"domain_type": "repo_context"}` |
 
+The `"domain_type"` value is the **canonical form** of the author's type name per `values-and-names.md` §Case Normalization (e.g., `RepoContext` and `repo_context` both serialize as `"repo_context"`). Cross-file nominal matching at call boundaries (`types.md` §What The Compiler Checks) compares canonical names by string equality.
+
 ## Versioning and Stability
 
 ### `ir_version` semantics
@@ -449,6 +507,7 @@ A complete `fix_bug.ir.json` for the `fix_bug` skill from `expand.md` §8.
         "default": { "kind": "string", "value": "." }
       }
     ],
+    "return_type": null,
     "effects": ["reads_files", "writes_files", "runs_commands"],
     "context": [
       {

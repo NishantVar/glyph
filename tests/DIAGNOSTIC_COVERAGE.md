@@ -2,7 +2,7 @@
 
 Single source of truth mapping every compiler-scope diagnostic ID to at least one triggering test.
 
-## Parse diagnostics (17)
+## Parse diagnostics (19)
 
 | Diagnostic ID | Test Location |
 |---|---|
@@ -23,8 +23,10 @@ Single source of truth mapping every compiler-scope diagnostic ID to at least on
 | `G::parse::multiple-skills` | glyph-core::tests::parse_multiple_skills_diagnostic |
 | `G::parse::applies-no-parens` | glyph-core::tests::applies_no_parens_fires_diagnostic |
 | `G::parse::applies-with-args` | glyph-core::tests::applies_with_args_fires_diagnostic |
+| `G::parse::malformed-output-target` | glyph-core::parse::output_target_return_tests::malformed_output_target_surfaces_structured_diagnostic |
+| `G::parse::output-target-outside-return` | glyph-core::parse::output_target_return_tests::output_target_outside_terminal_return_surfaces_structured_diagnostic |
 
-## Analyze diagnostics (27)
+## Analyze diagnostics (29)
 
 | Diagnostic ID | Test Location |
 |---|---|
@@ -44,6 +46,8 @@ Single source of truth mapping every compiler-scope diagnostic ID to at least on
 | `G::analyze::nominal-mismatch` | glyph-core::analyze::tests::nominal_mismatch_fires |
 | `G::analyze::lossy-coercion` | glyph-core::analyze::tests::lossy_coercion_fires |
 | `G::analyze::missing-return` | glyph-core::tests::export_block_requires_return |
+| `G::analyze::output-target-shadows-binding` | glyph-core::analyze::tests::output_target_name_must_not_shadow_visible_binding |
+| `G::analyze::placeholder-string-return` | glyph-core::analyze::tests::placeholder_string_return_is_repairable_on_domain_typed_skill |
 | `G::analyze::closure-violation` | glyph-core::tests::ac3_closure_violation_on_private_free_variable |
 | `G::analyze::stdlib-missing-import` | glyph-core::tests::stdlib_missing_import_fires_for_subagent |
 | `G::analyze::unknown-param-slot` | glyph-cli::diagnostics_invalid::unknown_param_slot_emits_analyze_diagnostic |
@@ -78,7 +82,7 @@ Single source of truth mapping every compiler-scope diagnostic ID to at least on
 |---|---|
 | `G::build::skipped-due-to-failed-import` | glyph-core::tests::ac3_failure_skips_dependent_with_warning |
 
-## Validate-output / Expand diagnostics (26)
+## Validate-output / Expand diagnostics (27)
 
 | Diagnostic ID | Test Location |
 |---|---|
@@ -93,6 +97,7 @@ Single source of truth mapping every compiler-scope diagnostic ID to at least on
 | `G::expand::invented-param-ref` | glyph-core::validate_output::tests::invented_param_ref |
 | `G::expand::dropped-param-ref` | glyph-core::validate_output::tests::dropped_param_ref |
 | `G::expand::unresolved-local-ref` | glyph-core::validate_output::tests::unresolved_local_ref |
+| `G::expand::output-target-leak` | glyph-core::validate_output::tests::output_target_leak_is_rejected |
 | `G::expand::modifier-leaked` | glyph-core::validate_output::tests::modifier_leaked |
 | `G::expand::params-section-mismatch` | glyph-core::validate_output::tests::params_section_mismatch |
 | `G::expand::params-section-missing` | glyph-core::validate_output::tests::params_section_missing |
@@ -111,6 +116,6 @@ Single source of truth mapping every compiler-scope diagnostic ID to at least on
 
 ## Summary
 
-- **Total diagnostic IDs:** 77
-- **Total with triggering tests:** 77
+- **Total diagnostic IDs:** 82
+- **Total with triggering tests:** 82
 - **Coverage:** 100%

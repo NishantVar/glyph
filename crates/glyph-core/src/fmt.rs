@@ -5,9 +5,9 @@
 //! 2. Post-Parse AST-level: constraint hoisting, context hoisting,
 //!    section reorder to canonical layout.
 
+use crate::diagnostic::DiagBag;
 use crate::parse;
 use crate::span::LineIndex;
-use crate::diagnostic::DiagBag;
 
 /// Result of formatting a source string.
 pub struct FmtResult {
@@ -31,29 +31,36 @@ pub fn fmt_source(source: &str, enable_effects: bool) -> FmtResult {
 
     // Stratum 1: pre-parse text-level rewrites.
     let after_preparse = preparse_rewrite(source);
+    // Issue #82 chunk 3: strip legacy `-> None` return-type annotations
+    // from declaration headers so the parser never sees them. The parser
+    // would otherwise emit `G::parse::none-as-return-type` (Repairable) and
+    // drop the slot anyway; doing the rewrite at the text layer means
+    // `ast_rewrite`'s verbatim header copy emits the cleaned-up form.
+    let after_preparse = strip_legacy_none_return_types(&after_preparse);
 
     // Try to parse for stratum 2.
     let line_index = LineIndex::new(&after_preparse);
-    let parsed = parse::parse_with_diagnostics_opts(
-        &after_preparse,
-        0,
-        "<fmt>",
-        &line_index,
-        &mut bag,
-        enable_effects,
-    );
+    let parsed = parse::parse_with_diagnostics_opts(&after_preparse, 0, "<fmt>", &line_index, &mut bag, enable_effects);
 
     match parsed {
         Some(file) => {
             // Stratum 2: AST-level rewrites.
             let after_ast = ast_rewrite(&after_preparse, &file);
             let changed = after_ast != source;
-            FmtResult { output: after_ast, changed, diagnostics: bag }
+            FmtResult {
+                output: after_ast,
+                changed,
+                diagnostics: bag,
+            }
         }
         None => {
             // Parse failed — emit only pre-parse fixes.
             let changed = after_preparse != source;
-            FmtResult { output: after_preparse, changed, diagnostics: bag }
+            FmtResult {
+                output: after_preparse,
+                changed,
+                diagnostics: bag,
+            }
         }
     }
 }
@@ -118,7 +125,7 @@ fn ast_rewrite(source: &str, file: &crate::ast::SourceFile) -> String {
         return source.to_string();
     }
 
-    // Find declaration header lines (indent 0, starts with skill/block/export/text/import).
+    // Find declaration header lines (indent 0, starts with skill/block/export/const/import).
     let mut decl_ranges: Vec<(usize, usize)> = Vec::new(); // (start_line, end_line exclusive)
     let mut decl_starts: Vec<usize> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
@@ -131,8 +138,9 @@ fn ast_rewrite(source: &str, file: &crate::ast::SourceFile) -> String {
             if trimmed.starts_with("skill ")
                 || trimmed.starts_with("block ")
                 || trimmed.starts_with("export block ")
-                || trimmed.starts_with("export text ")
-                || trimmed.starts_with("text ")
+                || trimmed.starts_with("export const ")
+                || trimmed.starts_with("const ")
+                || trimmed.starts_with("generated ")
                 || trimmed.starts_with("import ")
             {
                 decl_starts.push(i);
@@ -151,7 +159,7 @@ fn ast_rewrite(source: &str, file: &crate::ast::SourceFile) -> String {
         decl_ranges.push((start, end));
     }
 
-    // For simple declarations (text, import), just pass through.
+    // For simple declarations (const, import), just pass through.
     // For skill/block/export block, do the rewrite.
     let mut out = String::new();
     let mut last_end = 0;
@@ -165,7 +173,11 @@ fn ast_rewrite(source: &str, file: &crate::ast::SourceFile) -> String {
         last_end = end;
 
         let header = lines[start].trim();
-        if header.starts_with("text ") || header.starts_with("export text ") || header.starts_with("import ") {
+        if header.starts_with("const ")
+            || header.starts_with("export const ")
+            || header.starts_with("import ")
+            || header.starts_with("generated ")
+        {
             // Pass through unchanged.
             for i in start..end {
                 out.push_str(lines[i]);
@@ -226,7 +238,9 @@ struct Section {
 }
 
 /// Rewrite a declaration body (lines at indent >= 1) in canonical order.
-fn rewrite_decl_body(body_lines: &[&str], _ast_decl: Option<&crate::ast::Decl>) -> String {
+fn rewrite_decl_body(body_lines: &[&str], ast_decl: Option<&crate::ast::Decl>) -> String {
+    let placeholder_target = placeholder_string_return_target(ast_decl);
+
     // Parse lines into sections.
     let mut sections: Vec<Section> = Vec::new();
     let mut current_kind: Option<SectionKind> = None;
@@ -238,7 +252,12 @@ fn rewrite_decl_body(body_lines: &[&str], _ast_decl: Option<&crate::ast::Decl>) 
     let mut hoisted_constraints: Vec<String> = Vec::new();
     let mut hoisted_context: Vec<String> = Vec::new();
 
-    for line in body_lines {
+    for raw_line in body_lines {
+        let line_owned = placeholder_target
+            .as_ref()
+            .and_then(|repair| rewrite_placeholder_return_line(raw_line, repair))
+            .unwrap_or_else(|| (*raw_line).to_string());
+        let line = line_owned.as_str();
         let trimmed = line.trim();
         if trimmed.is_empty() {
             // Blank line — accumulate with current section or skip.
@@ -276,7 +295,10 @@ fn rewrite_decl_body(body_lines: &[&str], _ast_decl: Option<&crate::ast::Decl>) 
             if let Some(kind) = new_kind {
                 // Flush previous section.
                 if let Some(prev_kind) = current_kind.take() {
-                    sections.push(Section { kind: prev_kind, lines: std::mem::take(&mut current_lines) });
+                    sections.push(Section {
+                        kind: prev_kind,
+                        lines: std::mem::take(&mut current_lines),
+                    });
                 }
 
                 match kind {
@@ -329,7 +351,10 @@ fn rewrite_decl_body(body_lines: &[&str], _ast_decl: Option<&crate::ast::Decl>) 
 
     // Flush last section.
     if let Some(kind) = current_kind {
-        sections.push(Section { kind: kind, lines: current_lines });
+        sections.push(Section {
+            kind: kind,
+            lines: current_lines,
+        });
     }
 
     // Now reconstruct in canonical order: description, effects, context, constraints, flow.
@@ -411,7 +436,10 @@ fn rewrite_decl_body(body_lines: &[&str], _ast_decl: Option<&crate::ast::Decl>) 
 
     // Emit any "other" sections (blank/unknown) that didn't match canonical kinds.
     for sec in &sections {
-        if !canonical_order.contains(&sec.kind) && sec.kind != SectionKind::BodyConstraintMarker && sec.kind != SectionKind::BodyContextMarker {
+        if !canonical_order.contains(&sec.kind)
+            && sec.kind != SectionKind::BodyConstraintMarker
+            && sec.kind != SectionKind::BodyContextMarker
+        {
             for line in &sec.lines {
                 out.push_str(line);
                 out.push('\n');
@@ -431,4 +459,532 @@ fn is_constraint_marker(trimmed: &str) -> bool {
 
 fn is_context_marker(trimmed: &str) -> bool {
     trimmed.starts_with("context ") && !trimmed.starts_with("context:")
+}
+
+enum PlaceholderRepair {
+    Identifier(String),
+    Description(String),
+}
+
+fn placeholder_string_return_target(ast_decl: Option<&crate::ast::Decl>) -> Option<PlaceholderRepair> {
+    let decl = ast_decl?;
+    match decl {
+        crate::ast::Decl::Skill(s) if is_domain_return_type(s.node.return_type.as_ref()) => {
+            flow_placeholder_target(&s.node.flow)
+        }
+        crate::ast::Decl::Block(b) if is_domain_return_type(b.node.return_type.as_ref()) => {
+            flow_placeholder_target(&b.node.flow)
+        }
+        crate::ast::Decl::ExportBlock(b) if is_domain_return_type(b.node.return_type.as_ref()) => {
+            return_expr_placeholder_target(b.node.terminal_return.as_ref())
+        }
+        _ => None,
+    }
+}
+
+fn flow_placeholder_target(flow: &[crate::ast::FlowStmt]) -> Option<PlaceholderRepair> {
+    flow.iter().rev().find_map(|stmt| match stmt {
+        crate::ast::FlowStmt::Return(expr) => return_expr_placeholder_target(Some(expr)),
+        _ => None,
+    })
+}
+
+fn return_expr_placeholder_target(expr: Option<&crate::ast::ReturnExpr>) -> Option<PlaceholderRepair> {
+    let Some(crate::ast::ReturnExpr::Inline(s)) = expr else {
+        return None;
+    };
+    if let Some(id) = placeholder_identifier(s) {
+        return Some(PlaceholderRepair::Identifier(id.to_string()));
+    }
+    if let Some(desc) = placeholder_description(s) {
+        return Some(PlaceholderRepair::Description(desc.to_string()));
+    }
+    None
+}
+
+fn placeholder_identifier(s: &str) -> Option<&str> {
+    let inner = s.strip_prefix('<')?.strip_suffix('>')?;
+    if inner.is_empty() {
+        return None;
+    }
+    let mut chars = inner.chars();
+    let first = chars.next()?;
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return None;
+    }
+    if chars.all(|c| c == '_' || c.is_ascii_alphanumeric()) {
+        Some(inner)
+    } else {
+        None
+    }
+}
+
+fn placeholder_description(s: &str) -> Option<&str> {
+    // Mirrors `analyze::placeholder_description` — must reject the same set of
+    // contents so `glyph check` (which fires the diagnostic) and `glyph fmt`
+    // (which performs the rewrite) stay in sync. See the analyze.rs copy for
+    // the rationale (round-trip safety after tokenizer-level escape decoding).
+    if placeholder_identifier(s).is_some() {
+        return None;
+    }
+    let inner = s.strip_prefix('<')?.strip_suffix('>')?;
+    if inner.is_empty() {
+        return None;
+    }
+    if inner.contains(|c: char| c == '"' || c == '\\' || c == '\n' || c == '\t' || c == '\r') {
+        return None;
+    }
+    Some(inner)
+}
+
+fn is_domain_return_type(rt: Option<&crate::span::Spanned<String>>) -> bool {
+    let Some(rt) = rt else {
+        return false;
+    };
+    crate::type_position::validate_type_position(&rt.node).is_ok()
+        && !is_builtin_type_name(&rt.node)
+}
+
+fn is_builtin_type_name(s: &str) -> bool {
+    const CANONICAL_BUILTINS: &[&str] = &["string", "int", "float", "bool", "none", "agent"];
+    let canonical = crate::domain_registry::canonicalize_identifier(s);
+    CANONICAL_BUILTINS.contains(&canonical.as_str())
+}
+
+fn rewrite_placeholder_return_line(line: &str, repair: &PlaceholderRepair) -> Option<String> {
+    let trimmed = line.trim();
+    let indent_len = line.len() - line.trim_start().len();
+    let indent = &line[..indent_len];
+    match repair {
+        PlaceholderRepair::Identifier(target) => {
+            let expected = format!("return \"<{target}>\"");
+            if trimmed != expected {
+                return None;
+            }
+            Some(format!("{}return <{}>", indent, target))
+        }
+        PlaceholderRepair::Description(desc) => {
+            let expected = format!("return \"<{desc}>\"");
+            if trimmed != expected {
+                return None;
+            }
+            Some(format!("{}return <\"{}\">", indent, desc))
+        }
+    }
+}
+
+/// Strip legacy `-> None` (case-insensitive) return-type annotations from
+/// declaration headers. Issue #82 dropped the `-> None` annotation in favor
+/// of an omitted `->`; this text-level pass rewrites legacy sources during
+/// `glyph fmt` so they conform to the new surface.
+///
+/// Applies only to lines at indent 0 that begin with a declaration keyword
+/// (`skill `, `block `, `export block `, `generated block `). Body lines and
+/// non-declaration top-level lines are excluded by construction, so the
+/// `none` value-position keyword (`return none`, `effects: none`, …) is
+/// untouched.
+///
+/// Detection mirrors `parse::Parser::try_parse_return_type`'s ident-boundary
+/// check: locate `->`, skip interior whitespace, read an ident, and match
+/// case-insensitively against `none`. Matching ident is stripped along with
+/// the preceding whitespace and `->`, then the line's trailing whitespace is
+/// trimmed so `skill foo()  ->  None  ` becomes `skill foo()`.
+///
+/// Idempotent: once stripped, no `-> none` remains, so a second pass is a
+/// no-op.
+fn strip_legacy_none_return_types(source: &str) -> String {
+    let lines: Vec<&str> = source.split('\n').collect();
+    let mut out = String::with_capacity(source.len());
+    for (idx, line) in lines.iter().enumerate() {
+        if is_decl_header_line(line) {
+            out.push_str(&strip_none_return_from_line(line));
+        } else {
+            out.push_str(line);
+        }
+        if idx + 1 < lines.len() {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// True iff `line` is a declaration header line (indent 0, declaration
+/// keyword prefix). Used to scope `strip_legacy_none_return_types` to
+/// headers only.
+fn is_decl_header_line(line: &str) -> bool {
+    if line.starts_with(' ') || line.starts_with('\t') {
+        return false;
+    }
+    line.starts_with("skill ")
+        || line.starts_with("block ")
+        || line.starts_with("export block ")
+        || line.starts_with("generated block ")
+}
+
+/// Strip a trailing `-> None` (case-insensitive) annotation from a single
+/// declaration header line. If no match is found, returns the line
+/// unchanged. Trailing whitespace is trimmed on a successful strip so the
+/// result has no dangling space.
+///
+/// The match is restricted to the **return-type slot** — i.e., the substring
+/// strictly after the rightmost `)` on the line (the parameter-list close).
+/// This prevents a `-> None` substring inside a string-default parameter
+/// (e.g. `block foo(msg = "a -> None")`) from being silently stripped.
+/// Per the header grammar, only whitespace may sit between the param-close
+/// and the return-type `->`, and only whitespace may follow the type ident
+/// — both are enforced so we leave malformed or overdecorated lines alone.
+fn strip_none_return_from_line(line: &str) -> String {
+    let bytes = line.as_bytes();
+    // Locate the parameter-list close. If the line has no `)` at all, it's
+    // not a well-formed declaration header — leave it alone.
+    let close = match bytes.iter().rposition(|&b| b == b')') {
+        Some(p) => p,
+        None => return line.to_string(),
+    };
+    // Examine only the post-`)` substring.
+    let mut j = close + 1;
+    // Whitespace before `->`.
+    while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+        j += 1;
+    }
+    // Need a literal `->` next. If anything else (or end-of-line), bail.
+    if j + 1 >= bytes.len() || bytes[j] != b'-' || bytes[j + 1] != b'>' {
+        return line.to_string();
+    }
+    let arrow_start = j;
+    j += 2;
+    // Whitespace after `->`.
+    while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+        j += 1;
+    }
+    // Read the type ident.
+    let ident_start = j;
+    while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+        j += 1;
+    }
+    let ident_end = j;
+    if ident_end == ident_start || !line[ident_start..ident_end].eq_ignore_ascii_case("none") {
+        return line.to_string();
+    }
+    // Per the header grammar, nothing but trailing whitespace may follow
+    // the return-type ident. If anything else appears, leave the line alone.
+    if bytes[ident_end..].iter().any(|&b| b != b' ' && b != b'\t') {
+        return line.to_string();
+    }
+    // Match found. Strip from the run of whitespace immediately preceding
+    // `->` through end-of-line; the prefix already ends at `)` with no
+    // trailing whitespace, so a final `trim_end` is defensive (handles a
+    // stray `\r` on Windows line endings).
+    let mut strip_start = arrow_start;
+    while strip_start > 0 && (bytes[strip_start - 1] == b' ' || bytes[strip_start - 1] == b'\t') {
+        strip_start -= 1;
+    }
+    line[..strip_start].trim_end().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Issue #82 chunk 3: G::parse::none-as-return-type repair ---
+
+    #[test]
+    fn strip_none_return_skill_basic() {
+        let src = "skill foo() -> None\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, "skill foo()\n    flow:\n        \"x\"\n");
+    }
+
+    #[test]
+    fn strip_none_return_lowercase() {
+        let src = "skill foo() -> none\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, "skill foo()\n    flow:\n        \"x\"\n");
+    }
+
+    #[test]
+    fn strip_none_return_uppercase() {
+        let src = "skill foo() -> NONE\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, "skill foo()\n    flow:\n        \"x\"\n");
+    }
+
+    #[test]
+    fn strip_none_return_extra_interior_spaces() {
+        let src = "skill foo()  ->  None\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, "skill foo()\n    flow:\n        \"x\"\n");
+    }
+
+    #[test]
+    fn strip_none_return_trailing_whitespace() {
+        let src = "skill foo() -> None  \n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, "skill foo()\n    flow:\n        \"x\"\n");
+    }
+
+    #[test]
+    fn strip_none_return_block() {
+        let src = "block helper() -> None\n    description: \"d\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, "block helper()\n    description: \"d\"\n");
+    }
+
+    #[test]
+    fn strip_none_return_export_block() {
+        let src = "export block widget() -> None\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, "export block widget()\n    flow:\n        \"x\"\n");
+    }
+
+    #[test]
+    fn strip_none_return_generated_block() {
+        // Defensive: design says `generated block` headers don't admit `->`,
+        // but a legacy file that mistakenly has one should still get cleaned.
+        let src = "generated block reword() -> None\n    description: \"d\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, "generated block reword()\n    description: \"d\"\n");
+    }
+
+    #[test]
+    fn strip_none_return_preserves_valid_arrow_type() {
+        // A valid `-> SomeType` header must survive untouched.
+        let src = "skill foo() -> SomeType\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, src, "valid `-> SomeType` must not be touched");
+    }
+
+    #[test]
+    fn strip_none_return_does_not_match_none_prefix() {
+        // Ident-boundary: `-> nonexistent` must not match `none`.
+        let src = "skill foo() -> nonexistent\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, src, "`-> nonexistent` must not be matched as `none`");
+    }
+
+    #[test]
+    fn strip_none_return_does_not_touch_body_return_none() {
+        // The `none` value-keyword in the body must survive.
+        let src = "skill foo()\n    flow:\n        return none\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, src, "body `return none` must be untouched");
+    }
+
+    #[test]
+    fn strip_none_return_does_not_touch_body_arrow_none() {
+        // A body line that happens to contain `-> None` (e.g. inside a
+        // string literal) must survive — only header lines are scanned.
+        let src = "skill foo()\n    flow:\n        \"a -> None marker\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, src, "body line with `-> None` text must be untouched");
+    }
+
+    #[test]
+    fn strip_none_return_multi_decl_only_legacy_stripped() {
+        // Mixed file: legacy `-> None` stripped; valid `-> Path` preserved.
+        let src = "\
+skill cleanup() -> None
+    flow:
+        \"clean up\"
+
+export block compute(scope = \".\") -> Path
+    flow:
+        \"compute\"
+        return scope
+";
+        let out = strip_legacy_none_return_types(src);
+        let expected = "\
+skill cleanup()
+    flow:
+        \"clean up\"
+
+export block compute(scope = \".\") -> Path
+    flow:
+        \"compute\"
+        return scope
+";
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn strip_none_return_idempotent() {
+        // Running the strip a second time must be a no-op.
+        let src = "skill foo() -> None\n    flow:\n        \"x\"\n";
+        let once = strip_legacy_none_return_types(src);
+        let twice = strip_legacy_none_return_types(&once);
+        assert_eq!(once, twice, "strip must be idempotent");
+        // And on already-clean source, the strip must be a no-op.
+        let clean = "skill foo()\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(clean);
+        assert_eq!(out, clean, "already-clean source must be unchanged");
+    }
+
+    #[test]
+    fn strip_none_return_no_trailing_newline() {
+        // Source without a trailing newline must round-trip cleanly.
+        let src = "skill foo() -> None";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(out, "skill foo()");
+    }
+
+    #[test]
+    fn fmt_source_strips_legacy_none_return() {
+        // End-to-end: `fmt_source` produces a cleaned-up output and
+        // `changed: true` when the only difference is `-> None`.
+        let src = "skill foo() -> None\n    flow:\n        \"x\"\n";
+        let result = fmt_source(src, false);
+        assert!(result.changed, "fmt should report changed=true");
+        assert!(
+            !result.output.contains("-> None"),
+            "no `-> None` should remain, got:\n{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("skill foo()"),
+            "stripped header should be present, got:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn fmt_source_rewrites_placeholder_string_return_to_output_target() {
+        let src = "\
+skill current() -> BranchName
+    description: \"Return the current branch.\"
+    flow:
+        return \"<current_branch>\"
+";
+        let result = fmt_source(src, false);
+        assert!(result.changed, "fmt should rewrite the placeholder string");
+        assert!(
+            result.output.contains("        return <current_branch>\n"),
+            "expected output target return after fmt, got:\n{}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("return \"<current_branch>\""),
+            "placeholder string return should be gone, got:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn fmt_source_rewrites_descriptive_placeholder_string_return_to_output_target() {
+        let src = "\
+skill diagnose() -> Confirmation
+    description: \"Diagnose the issue.\"
+    flow:
+        return \"<root cause and severity>\"
+";
+        let result = fmt_source(src, false);
+        assert!(result.changed, "fmt should rewrite the descriptive placeholder string");
+        assert!(
+            result.output.contains("        return <\"root cause and severity\">\n"),
+            "expected descriptive output target return after fmt, got:\n{}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("return \"<root cause and severity>\""),
+            "placeholder string return should be gone, got:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn fmt_source_leaves_placeholder_string_return_with_inner_quotes_unrewritten() {
+        // "<\"foo\">" contains literal quotes inside the angle brackets;
+        // rewriting it would produce invalid syntax, so fmt must leave it as-is.
+        let src = "\
+skill diagnose() -> Confirmation
+    description: \"Diagnose the issue.\"
+    flow:
+        return \"<\\\"foo\\\">\"
+";
+        let result = fmt_source(src, false);
+        assert_eq!(result.output, src, "line with inner-quoted placeholder must be left unrewritten");
+        assert!(!result.changed, "fmt must not mark source as changed");
+    }
+
+    #[test]
+    fn fmt_source_leaves_placeholder_string_return_with_inner_escapes_unrewritten() {
+        // The tokenizer decodes `\n` to a literal newline inside the string,
+        // so the AST-level content no longer matches the source spelling. The
+        // descriptive guard must reject anything containing chars that require
+        // source-level escaping; otherwise fmt would silently fail to rewrite
+        // (decoded form != source form when reconstructing the line).
+        let cases: &[(&str, &str)] = &[
+            ("newline",   "skill d() -> Confirmation\n    flow:\n        return \"<root cause\\nseverity>\"\n"),
+            ("tab",       "skill d() -> Confirmation\n    flow:\n        return \"<root\\tcause>\"\n"),
+            ("cr",        "skill d() -> Confirmation\n    flow:\n        return \"<root\\rcause>\"\n"),
+            ("backslash", "skill d() -> Confirmation\n    flow:\n        return \"<path\\\\to\\\\foo>\"\n"),
+        ];
+        for (label, src) in cases {
+            let result = fmt_source(src, false);
+            assert_eq!(
+                result.output, *src,
+                "[{label}] line with escape-requiring inner placeholder must be left unrewritten"
+            );
+            assert!(!result.changed, "[{label}] fmt must not mark source as changed");
+        }
+    }
+
+    #[test]
+    fn fmt_source_preserves_placeholder_string_return_without_domain_type() {
+        let src = "\
+skill current()
+    description: \"Return the current branch.\"
+    flow:
+        return \"<current_branch>\"
+";
+        let result = fmt_source(src, false);
+        assert_eq!(result.output, src);
+        assert!(!result.changed);
+    }
+
+    // --- Codex pass 1 P1: strip restricted to the return-type slot ---
+    // The strip helper must NOT corrupt a string-default parameter that
+    // happens to contain the substring `-> None`.
+
+    #[test]
+    fn strip_preserves_string_default_containing_arrow_none() {
+        // `block foo(msg = "a -> None")` has NO trailing return-type
+        // annotation; the `-> None` is part of the string default. The
+        // strip must leave the line untouched.
+        let src = "block foo(msg = \"a -> None\")\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(
+            out, src,
+            "string-default containing `-> None` must be preserved untouched, got:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn strip_preserves_string_default_containing_arrow_none_lowercase() {
+        // Lowercase variant inside a string default — same protection
+        // (the strip is case-insensitive on the type ident, so the
+        // pre-fix bug would corrupt this too).
+        let src = "skill foo(default = \"x -> none y\")\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(
+            out, src,
+            "string-default containing `-> none` must be preserved untouched, got:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn strip_trailing_none_with_string_default_preserved() {
+        // Both conditions in one line: a string default that does NOT
+        // contain `-> None` PLUS a real trailing `-> None` annotation.
+        // The trailing annotation must be stripped; the parameter list
+        // (including its string default) must survive intact.
+        let src = "block bar(p = \"ignore\") -> None\n    flow:\n        \"x\"\n";
+        let out = strip_legacy_none_return_types(src);
+        assert_eq!(
+            out, "block bar(p = \"ignore\")\n    flow:\n        \"x\"\n",
+            "trailing `-> None` must be stripped while `(p = \"ignore\")` is preserved, got:\n{}",
+            out
+        );
+    }
 }

@@ -13,10 +13,12 @@ Skill {
   name:              String
   description:       String                // always present after Repair
   params:            [Param]
+  return_type:       TypeTag?              // optional per `language-surface.md` §3.1; when present, annotates the IR's `OutputContract` and the `return` expression folds into the final Step prose
   effects:           [EffectKeyword]       // full inferred set (union of all callees)
   context:           [ContextNode]         // top-level declared context only
   constraints:       [Constraint]          // top-level declared constraints only
   flow:              [FlowNode]            // ordered
+  output_contract:   OutputContract?       // present when flow ends with `return <name>` or `return <"description">`
 }
 
 Block {
@@ -28,21 +30,35 @@ Block {
   context:           [ContextNode]         // top-level declared context only
   constraints:       [Constraint]
   flow:              [FlowNode]
+  output_contract:   OutputContract?       // present when flow ends with `return <name>` or `return <"description">`
 }
 
 ExportBlock {
   name:              String
   description:       String?               // present iff `BLOCKNAME.applies()` is consulted somewhere reachable; see `ir-and-semantics.md` §Block Trigger Predicate
   params:            [Param]
-  return_type:       TypeTag               // mandatory on export block
+  return_type:       TypeTag?              // present when the export block has a meaningful return; absent when it omits `->` entirely (`types.md` §Return Type Requirements / Issue-82, `language-surface.md` §3.3). When present, it is part of the public contract callers see; absence means "no meaningful return" — there is no `-> None` representation post-#82.
   effects:           [EffectKeyword]       // declared must be superset of inferred
   context:           [ContextNode]         // top-level declared context only
   constraints:       [Constraint]
   flow:              [FlowNode]
+  output_contract:   OutputContract?       // present when flow ends with `return <name>` or `return <"description">`
 }
 ```
 
 **Derived field on `ExportBlock` (post-Phase-6-Step-1, in-memory only).** After a library file's Phase 6 Step 1 runs, each `ExportBlock` node additionally carries a `resolved_word_count: Int` field — the word count of the export block's resolved expanded prose, computed once during the library's own compilation. When a downstream skill compiles, its Phase 6 Step 1 reads this derived field from the imported `ExportBlock` to make the per-call-site projection-tier decision (inline vs. same-file procedure vs. external file). The field propagates via the import-resolution mechanism only; it is **not** part of the JSON serialization defined in `ir-json-schema.md` and does not appear in `--emit-ir` output. It is an implementation detail of in-memory IR nodes during a single multi-file build, not part of the public IR contract. See `pipeline.md` §Multi-File Compilation Order and `compiled-output.md` §Three-Tier Block Projection.
+
+**Const declarations: erase-and-inline (no IR node).** `const`, `export const`, and `generated const` declarations from `language-surface.md` §3.4 / §3.6 are **not** a top-level `IrNode` kind. They have no entry in this section and no presence in the post-Lower IR as their own nodes. The `Const`-shaped row absent from the table above is deliberate, not an omission; the schema's "Completeness caveat" allows future extensions but const decls do not require one — they erase at the lowering boundary and surface only as inlined values at reference sites:
+
+- **As a parameter default** (`Param.default: Value?` — see §Parameters below) the const's literal is inlined into the `Value` union (`StringLit`, `IntLit`, `FloatLit`, `BoolLit`, `NoneLit` — see §Enums). The literal kind lives in the `Value` variant; the matching `TypeTag` lives on the sibling `Param.type` field when the parameter is annotated.
+- **As a bare-name reference in `flow:` / `constraints:` / `context:`** the const's resolved string content becomes the `resolved_text: String` of an `InstructionRef` (§Flow Nodes) or the `text: String` of a hoisted `Constraint` / `ContextNode`. No `TypeTag` accompanies these — const-as-instruction is always string-typed.
+
+Primitive `TypeTag` is **inferred at the lowering boundary** from the const's RHS literal (string / int / float / bool — see §Enums for the full primitive set). The inference is internal to Lower; the inferred tag flows out only via the `Value` variant chosen for inlining and via `Param.type` when the const is bound to a parameter. There is no "const-decl carries its inferred TypeTag" channel because there is no const decl in the IR to carry it.
+
+Cross-refs:
+- `pipeline.md` §Phase 6 (Expand Step 1) — bare-name inlining for `const` / `generated const` references.
+- `compiled-output.md` §Authoring Constructs Compile Away — the user-facing erasure contract; `const` declarations themselves emit nothing to compiled Markdown, only their inlined content surfaces at reference sites.
+- `ir-json-schema.md` §Node kinds in the JSON — the JSON schema also has no `const_decl` kind, by the same erase-and-inline contract.
 
 ## Parameters
 
@@ -101,7 +117,7 @@ InlineInstruction {
 ```
 InstructionRef {
   name:              String                // resolved name
-  resolved_text:     String                // content of the referenced text/generated text
+  resolved_text:     String                // content of the referenced const/generated const
   role:              Role
   constraint_attrs:  ConstraintAttrs?      // present only when role is Constraint
 }
@@ -129,9 +145,29 @@ ElifBranch {
 
 ```
 Return {
-  value:             Expr                  // call, binding ref, literal, dot access, or none
+  value:             Expr | OutputTargetForm // call, binding ref, literal, dot access, none, `<name>`, or `<"description">`
 }
 ```
+
+### OutputContract
+
+```
+OutputContract {
+  form:              OutputTargetForm      // identifier form (`<name>`) or descriptive form (`<"…">`)
+  ty:                TypeTag?              // enclosing declaration's `-> DomainType`, if any
+  source:            OutputSource          // currently SynthesizedByAgent
+}
+
+OutputTargetForm = Identifier(name: String) | Description(text: String)
+// Identifier(name) corresponds to `return <name>` — `name` is the bare identifier inside the angle
+// brackets, stored in canonical form per `values-and-names.md` §Case Normalization.
+// Description(text) corresponds to `return <"…">` — `text` is the verbatim string content inside the
+// brackets, with inline-string escapes resolved (`\"` and `\\` per `values-and-names.md` §Inline Strings).
+// Descriptive form is terminal-return-only in MVP; mid-flow output targets, if added later, must use the
+// identifier form. See `values-and-names.md` §No Value-Level Operators and `data-flow.md` §Return Semantics.
+```
+
+`OutputContract` is a sidecar contract for agent-synthesized output. It does not appear as an ordered `FlowNode`; it annotates the enclosing `Skill`, `Block`, or `ExportBlock` and folds into the final Step prose during Expand. The `form` discriminates which Expand folding rule applies (see `compiled-output.md` §Return Folding and `expand.md` §3.3).
 
 ## Constraint
 
@@ -199,9 +235,13 @@ EffectKeyword = none | reads_files | reads_env | writes_files
 
 ProjectionMode = inline | same_file_procedure | external_file
 
+OutputSource = SynthesizedByAgent
+
 TypeTag = String | Int | Float | Bool | None | Agent
         | DomainType(name: String)
-// DomainType covers author-defined opaque type names (RepoContext, Plan, etc.)
+// DomainType covers author-defined opaque type names (RepoContext, Plan, etc.).
+// The `name` is stored in canonical form per `values-and-names.md` §Case Normalization;
+// nominal matching at call boundaries is canonical-name string equality.
 
 Value = StringLit(content: String)
       | IntLit(value: Int)
@@ -236,7 +276,7 @@ Lower assigns IDs in **pre-order source traversal**: container nodes (`Skill`, `
 
 ### Scope
 
-IDs are **per-file**. Each file's counter starts at `n0`. No global uniqueness across a project. Cross-file node references do not arise in the MVP pipeline — importers interact with the dependency's validated declarative contract (parameters, types, effects), not with individual IR node IDs. `InstructionRef` nodes that reference a `text` declaration in another file use the declaration's **name**, not a remote node ID — the reference is resolved by name during Analyze, and the resolved content is inlined by Expand Step 1.
+IDs are **per-file**. Each file's counter starts at `n0`. No global uniqueness across a project. Cross-file node references do not arise in the MVP pipeline — importers interact with the dependency's validated declarative contract (parameters, types, effects), not with individual IR node IDs. `InstructionRef` nodes that reference a `const` declaration in another file use the declaration's **name**, not a remote node ID — the reference is resolved by name during Analyze, and the resolved content is inlined by Expand Step 1.
 
 If a future multi-file IR view requires cross-file addressing, the scheme is `(file_path, node_id)`.
 

@@ -70,7 +70,7 @@ Emitted when the skill declares one or more parameters. Omitted for parameterles
 A skill parameter is rendered in one of two forms:
 
 - **Optional parameter (has a default):** `(default: <value>)` trailer.
-- **Required parameter (no default):** `(required)` trailer. The consuming LLM must extract this value from the user's request context; there is no fallback. See [language-surface.md](language-surface.md) §3.10.
+- **Required parameter (no default):** `(required)` trailer. The consuming LLM must extract this value from the user's request context; there is no fallback. See [language-surface.md](language-surface.md) §3.8.
 
 ```md
 ## Parameters
@@ -310,6 +310,10 @@ Parameters are **not** resolved at compile time. Steps and Constraints may refer
 
 Example: `return summarize_changes()` as the last flow item becomes a Step like "Summarize what was changed and why, and return that as your result."
 
+For output target identifiers, `return <current_branch>` folds into natural output prose such as "Produce current branch as the final output." The literal `<current_branch>` token must never appear in compiled Markdown; Phase 6b rejects leaks with `G::expand::output-target-leak`.
+
+For descriptive output targets, `return <"root cause analysis including affected files and severity">` folds into natural output prose that paraphrases the description as the synthesis target — e.g., "Produce a root cause analysis including affected files and severity as the final output." Step 2 paraphrases the description into a Step-shaped sentence; it does not paste the verbatim string. The literal `<"…">` token, the surrounding angle brackets, and the bare quoted description must never appear in compiled Markdown; Phase 6b rejects leaks with the same `G::expand::output-target-leak` diagnostic that covers the identifier form (the diagnostic's textual scan is form-agnostic — it flags both `<name>` and `<"…">` literals).
+
 **Agent-typed returns.** When the return expression has type `Agent` (e.g., `return researcher`), the return-folded prose says the agent handle itself is the result — e.g., "Your result is the researcher agent spawned above — the caller may continue sending it instructions." The compiler does **not** interpret `return <agent>` as "return the agent's output." If the author wants the agent's findings, they should use an explicit inline string: `return "Report the researcher's findings as your result."` See `stdlib.md` §Agent Value Lifecycle for the full rule.
 
 There is no separate `## Output` section in MVP.
@@ -319,8 +323,8 @@ There is no separate `## Output` section in MVP.
 Most authoring machinery does not survive into compiled output:
 
 - **Imports** resolve and either inline (Tier 1/2) or become file-path references (Tier 3). No import paths, module references, or `@glyph/` namespaces appear — only procedure-file paths for Tier 3 projections.
-- **Text references** resolve and inline. A bare name like `preserve_existing_patterns` becomes its full text content.
-- **Generated text / generated block** declarations resolve and inline. The `generated` marker is stripped; only the expanded content appears.
+- **Const references** resolve and inline. A bare name like `preserve_existing_patterns` becomes its full string content.
+- **Generated const / generated block** declarations resolve and inline. The `generated` marker is stripped; only the expanded content appears.
 - **`with` modifiers** are consumed by the expand pass. Their prompt text shapes the Step wording but does not appear in the compiled file.
 - **Parameters** resolve to concrete values during expand. No variable names survive.
 - **No provenance markers.** No comments like `<!-- expanded from repo_tools.unrelated_edits -->`.
@@ -376,8 +380,8 @@ skill fix_bug(scope = ".")
         validate_before_success()
         return summarize_changes()
 
-generated text unrelated_edits = "Making changes outside the requested scope."
-generated text preserve_existing_patterns = "Follow the repository's existing patterns before introducing new abstractions."
+generated const unrelated_edits = "Making changes outside the requested scope."
+generated const preserve_existing_patterns = "Follow the repository's existing patterns before introducing new abstractions."
 
 generated block validate_before_success()
     "Validate that the fix works before reporting success."

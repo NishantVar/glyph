@@ -99,6 +99,9 @@ Representative diagnostics implied by the current design.
 | `G::parse::multiple-skills` | error | A `.glyph.md` file contains more than one `skill` declaration; MVP requires exactly one skill per file because compiled output is named after the skill (`language-surface.md` §File-Level Rules) |
 | `G::parse::applies-no-parens` | error | `BLOCKNAME.applies` appears without `()`; the trigger predicate form requires explicit parentheses (`ir-and-semantics.md` §Block Trigger Predicate) |
 | `G::parse::applies-with-args` | error | `BLOCKNAME.applies(...)` is called with arguments; the trigger predicate is zero-arity (`ir-and-semantics.md` §Block Trigger Predicate) |
+| `G::parse::none-as-return-type` | repairable | A declaration header uses `-> None` as a return-type annotation (e.g., `block foo() -> None`, `export block foo() -> None`). The `None` type annotation has been removed in MVP; declarations with no meaningful return omit `->` entirely (`types.md` §`none` Value, `language-surface.md` §3.3). Phase 3a (pre-Parse text-level rewrite, `glyph fmt` stratum 1) deterministically strips the trailing ` -> None` from `skill` / `block` / `export block` / `generated block` declaration headers. Match is case-insensitive on `none` with identifier-boundary semantics; the value keyword `none` (in `return none`, `effects: none`, value positions) is preserved. |
+| `G::parse::malformed-output-target` | error | A `return <...>` output-target candidate matches neither valid form. Identifier-form failures: empty `<>`, whitespace inside brackets, dot access, call syntax, or any non-identifier character (`values-and-names.md` §No Value-Level Operators). Descriptive-form failures: empty `<"">` (the description string must be non-empty). The same diagnostic ID covers both; the message names the offending shape. **Known gap (MVP):** an unterminated descriptive form such as `<"…<EOF>` currently emits no structured diagnostic — the tokenizer's `UnterminatedString` path falls through silently rather than surfacing as a parse-error. The intended behavior is for the tokenizer to raise a generic `UnterminatedString` parse-error before this rule is reached; promoting that path to emit a structured diagnostic is tracked as a follow-up. The `descriptive_form_unterminated_produces_no_structured_diagnostic` integration test pins the current silent behavior as a regression fence. |
+| `G::parse::output-target-outside-return` | error | An output-target literal — `<name>` (identifier form) or `<"…">` (descriptive form) — appears outside the single MVP-legal position: the terminal top-level `return …` expression. The same diagnostic ID covers both forms. |
 
 ### Analyze phase
 
@@ -118,19 +121,23 @@ Representative diagnostics implied by the current design.
 | `G::analyze::effects-over-declared` | warning | *(Gated — requires `--enable-effects`.)* Declared effects include keywords not inferred from the body; non-blocking, surfaced for author cleanup (`ir-and-semantics.md` §3) |
 | `G::analyze::missing-effects` | repairable | *(Gated — requires `--enable-effects`.)* A declaration (skill, block, or export block) omits `effects:` entirely and the inferred set is non-empty; Phase 3a auto-adds the inferred effects (`ir-and-semantics.md` §3) |
 | `G::analyze::nominal-mismatch` | error | Type name mismatch at a call boundary (`types.md`) |
+| `G::analyze::generic-type-name` | warning | An identifier in return-type position (`-> ReturnType` on `skill`, `export block`, or private `block` declaration headers) is one of the 13 banned generic type names: `String`, `Int`, `Float`, `Bool`, `None`, `List`, `Set`, `Map`, `Array`, `Dict`, `Tuple`, `Object`, `Any`. Match is case-insensitive (ASCII). Non-blocking; compilation continues. Suggestion: replace the generic name with a domain type that carries semantic meaning (e.g., `BranchName`, `FilePath`, `Summary`) (`types.md` §Primitive Kinds (IR-Only)). **Precedence:** `-> None` in return-type position is intercepted earlier by `G::parse::none-as-return-type` (repairable, Phase 3a auto-fix); this diagnostic surfaces end-to-end for the other 12 banned names. The validator retains `None` in its banned list for defense in depth at any future call sites where parse interception does not apply. |
 | `G::analyze::lossy-coercion` | error | Lossy numeric conversion, e.g. `3.7` where integer expected (`values-and-names.md`) |
 | `G::analyze::missing-return` | repairable | Export block lacks `return` on a code path (`language-surface.md` §3.3) |
+| `G::analyze::export-missing-return-type` | repairable | An `export block` body has at least one `return <expr>` with a meaningful return value but the header lacks a `-> DomainType` annotation. Export-block return types must be explicit when the block has a meaningful return and omitted otherwise (`language-surface.md` §3.3, `types.md` §`none` Value). Bare `return` and `return none` do not trigger this diagnostic — those are the no-meaningful-return form, and the header correctly omits `->`. Reparability is via Phase 3b (LLM-assisted inference of the `DomainType` name from the body); Phase 3a's deterministic strata cannot synthesize a domain-type name. |
+| `G::analyze::output-target-shadows-binding` | error | `return <name>` uses an output target name that already resolves to a visible binding (parameter, const, block, export, or import depending on scope). The target must be a fresh output name, not a reference. |
+| `G::analyze::placeholder-string-return` | repairable | A domain-typed declaration ends with a string literal whose entire content is an angle-bracketed placeholder such as `"<current_branch>"` or `"<root cause analysis including affected files and severity>"`. Phase 3a rewrites it to the appropriate output-target form, bifurcating on placeholder shape: identifier-shaped contents become identifier form (`return <current_branch>`), non-identifier-shaped contents (whitespace, punctuation, etc.) become descriptive form (`return <"root cause analysis including affected files and severity">`). Ordinary strings without `<…>` framing and untyped declarations are unaffected; empty `"<>"` is not repaired. See `repair.md` §7. |
 | `G::analyze::closure-violation` | error | Export block depends on hidden caller context (`data-flow.md`) |
 | `G::analyze::stdlib-missing-import` | repairable | `subagent()` used without importing `@glyph/std` (`stdlib.md`) |
 | `G::imports::unknown-stdlib-module` | error | An import path under the reserved `@glyph/` virtual namespace does not resolve to a known compiler-embedded stdlib module. The MVP recognises only `@glyph/std`; any other `@glyph/*` path fires this diagnostic (`stdlib.md`, `imports.md`). |
 | `G::analyze::unknown-param-slot` | error | A `{name}` slot in an instruction-bearing string does not resolve to a parameter or local binding in scope at the slot's source position (`values-and-names.md`) |
 | `G::analyze::nested-branch` | repairable | A `Branch` appears inside another `Branch`'s arm body; Repair will auto-extract it into a `generated block` (`repair.md` §4.9) |
-| `G::analyze::empty-skill-body` | error | A `skill` declaration has no `description:`, no `flow:`, no `constraints:` — there is nothing to project. A skill must have at least one of `flow:` (with statements) or `constraints:` (with markers); a constraint-only skill is legal (`compiled-output.md`). *(When `--enable-effects` is on, a lone `effects:` also counts.)* |
-| `G::analyze::no-exports-in-library` | error | A library file (zero `skill` declarations) has zero `export` declarations — it has no consumer-visible contribution. Add at least one `export block`, `export text`, `export int`, or `export float` (`language-surface.md` §File-Level Rules) |
-| `G::analyze::missing-param-default` | error | An `export block` parameter lacks a default value; export-block parameter defaults are mandatory in MVP because their slots are filled by callers at compile time, not by the consuming LLM at runtime (`language-surface.md` §3.10). Author must add an explicit default; the compiler does not synthesize defaults. **Does not apply to `skill` parameters** — those without defaults are runtime-required inputs and surface as such in the compiled `## Parameters` section. |
+| `G::analyze::empty-skill-body` | error | A `skill` declaration has no `description:`, no `flow:`, no `constraints:`, no `effects:` — there is nothing to project. A skill must have at least one of `flow:` (with statements) or `constraints:` (with markers); a constraint-only skill is legal (`compiled-output.md`) |
+| `G::analyze::no-exports-in-library` | error | A library file (zero `skill` declarations) has zero `export` declarations — it has no consumer-visible contribution. Add at least one `export block` or `export const` (`language-surface.md` §File-Level Rules) |
+| `G::analyze::missing-param-default` | error | An `export block` parameter lacks a default value; export-block parameter defaults are mandatory in MVP because their slots are filled by callers at compile time, not by the consuming LLM at runtime (`language-surface.md` §3.8). Author must add an explicit default; the compiler does not synthesize defaults. **Does not apply to `skill` parameters** — those without defaults are runtime-required inputs and surface as such in the compiled `## Parameters` section. |
 | `G::analyze::missing-description` | repairable | A `skill` declaration omits `description:`; Repair generates one from the skill name and body and adds it as a `description:` sub-section in the source (`ir-and-semantics.md` §4, `compiled-output.md` §Frontmatter) |
-| `G::analyze::text-in-flow` | repairable | A bare name (or undefined identifier) appears in `flow:` without a keyword prefix (`require`/`avoid`/`must`/`context`); `text` declarations are passive constants and are not legal as flow instruction steps. Repair adds parentheses and materializes a `generated block` (`language-surface.md` §3.4, `repair.md` §5) |
-| `G::analyze::applies-on-non-block` | error | `NAME.applies()` was called where `NAME` resolves to something other than a `block` or `export block` declaration (e.g., a `text`, an `import` alias, a parameter). The trigger predicate is defined only on blocks (`ir-and-semantics.md` §Block Trigger Predicate) |
+| `G::analyze::const-in-flow` | repairable | A bare name (or undefined identifier) appears in `flow:` without a keyword prefix (`require`/`avoid`/`must`/`context`); `const` declarations are passive constants and are not legal as flow instruction steps. Repair adds parentheses and materializes a `generated block` (`language-surface.md` §3.4, `repair.md` §5) |
+| `G::analyze::applies-on-non-block` | error | `NAME.applies()` was called where `NAME` resolves to something other than a `block` or `export block` declaration (e.g., a `const`, an `import` alias, a parameter). The trigger predicate is defined only on blocks (`ir-and-semantics.md` §Block Trigger Predicate) |
 | `G::analyze::applies-on-undescribed-block` | repairable / error | `BLOCKNAME.applies()` is called on a block that lacks a `description:` sub-section. **Repairable** when the block is defined in the same file under compilation; Repair adds a trigger-shaped `description:` to the block. **Error** when the block is imported from another file; the author must edit the source library directly because Repair is single-file (`ir-and-semantics.md` §Block Trigger Predicate, `repair.md` §9) |
 
 ### Validate phase
@@ -155,7 +162,7 @@ Build-phase diagnostics cover project-level orchestration concerns rather than a
 
 ### Validate-output phase (Phase 6b)
 
-Phase 6b structural validation, implemented in the `glyph validate-output` subcommand. These are **compiler-scope** diagnostics — deterministic checks that Step 2's Markdown output faithfully projects the input IR. All 26 are classification `error`. The canonical specification lives in `expand.md` §4.2; the workflow integration is in `agent-skill.md` §`glyph validate-output`.
+Phase 6b structural validation, implemented in the `glyph validate-output` subcommand. These are **compiler-scope** diagnostics — deterministic checks that Step 2's Markdown output faithfully projects the input IR. All 27 are classification `error`. The canonical specification lives in `expand.md` §4.2; the workflow integration is in `agent-skill.md` §`glyph validate-output`.
 
 | ID | Classification | Trigger |
 |---|---|---|
@@ -170,6 +177,7 @@ Phase 6b structural validation, implemented in the `glyph validate-output` subco
 | `G::expand::invented-param-ref` | error | `{...}` reference does not match any declared parameter |
 | `G::expand::dropped-param-ref` | error | A parameter reference from Step 1 output was silently removed by Step 2 |
 | `G::expand::unresolved-local-ref` | error | A `local_ref` slot survived as a literal `{name}` token — Step 2 failed to resolve it into prose |
+| `G::expand::output-target-leak` | error | A literal output-target token survived in compiled Markdown instead of being folded into natural prose. Covers both forms: `<name>` (when `OutputContract.form == Identifier`) and `<"…">` / its bare quoted description text (when `OutputContract.form == Description`). The diagnostic ID is shared across forms; the validator's textual scan checks both leak shapes for every contract. See `expand.md` §4.1 rule 6c. |
 | `G::expand::modifier-leaked` | error | `with` modifier string appears verbatim in output |
 | `G::expand::params-section-mismatch` | error | `## Parameters` item count does not match `InputContract` parameter count |
 | `G::expand::params-section-missing` | error | Skill has parameters but `## Parameters` section is absent |
@@ -190,7 +198,7 @@ Phase 6b structural validation, implemented in the `glyph validate-output` subco
 
 | ID | Classification | Trigger |
 |---|---|---|
-| `G::repair::generated-text` | warning | A `generated text` was materialized for an undefined bare name (`repair.md` §5) |
+| `G::repair::generated-const` | warning | A `generated const` was materialized for an undefined bare name (`repair.md` §5) |
 | `G::repair::generated-block` | warning | A `generated block` was materialized for an undefined parens-call (`repair.md` §5) |
 | `G::repair::branch-extracted` | warning | A nested `Branch` was auto-extracted into a `generated block` to keep compiled output at one level of sub-steps (`repair.md` §4.9) |
 | `G::repair::inferred-effects` | warning | *(Gated — requires `--enable-effects`.)* Phase 3a deterministically inferred and auto-added an `effects:` sub-section for a declaration that omitted it; informational — the author should review the added effects (`ir-and-semantics.md` §3, `pipeline.md` Phase 3a) |
@@ -208,7 +216,7 @@ Phase 6b structural validation, implemented in the `glyph validate-output` subco
 
 ### Expand execution failures (agent-scope)
 
-Step 2 execution-level failures that are the agent's responsibility, independent of structural validation. Phase 6b structural diagnostics (25 IDs) are compiler-scope — see the Validate-output section above.
+Step 2 execution-level failures that are the agent's responsibility, independent of structural validation. Phase 6b structural diagnostics (27 IDs) are compiler-scope — see the Validate-output section above.
 
 | ID | Classification | Trigger |
 |---|---|---|
@@ -220,7 +228,7 @@ The repair pass (Phase 3) receives the full `Diagnostic[]` array as a snapshot, 
 
 ## Interaction With Compiled Output
 
-Diagnostics are internal compiler artifacts. They do not appear in compiled `.md` files. Warning-level diagnostics (like `G::repair::generated-text`) are surfaced to the author through compiler CLI output or IDE integration, not through the compiled skill.
+Diagnostics are internal compiler artifacts. They do not appear in compiled `.md` files. Warning-level diagnostics (like `G::repair::generated-const`) are surfaced to the author through compiler CLI output or IDE integration, not through the compiled skill.
 
 ## Cross-References
 

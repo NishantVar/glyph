@@ -17,6 +17,11 @@ pub enum TokenKind {
     Ident(String),
     /// Quoted string literal — contents (without surrounding quotes), value already unescaped.
     StringLit(String),
+    /// Unsigned numeric literal — source-text slice (e.g. `"3"`, `"0.0"`, `"3.14"`).
+    /// Grammar: `[0-9]+(\.[0-9]+)?`. No leading `.`, no trailing `.`, no exponent,
+    /// no sign. Disambiguation between Int and Float is performed by
+    /// `kind_infer::infer_primitive` based on `'.'` presence.
+    NumericLit(String),
     Lparen,
     Rparen,
     Colon,
@@ -26,10 +31,25 @@ pub enum TokenKind {
     Dot,
     /// `==` — branch condition equality (not a value-level operator).
     DoubleEquals,
+    /// `->` — return-type arrow on `skill` / `block` / `export block` headers
+    /// per `design/language-surface.md` §3.1/§3.2/§3.3. The parser optionally
+    /// consumes `Arrow Ident` after the header `(...)`. Per `design/types.md`
+    /// §none Value lines 81–96, `-> None` is rejected at the parser layer
+    /// with `G::parse::none-as-return-type`.
+    Arrow,
     /// `{` — opening brace (selective imports).
     Lbrace,
     /// `}` — closing brace (selective imports).
     Rbrace,
+    /// `<` — open angle bracket. Only appears in the output-target form
+    /// `<IDENT>` (issue #85); MVP has no value-level `<` operator per
+    /// `design/values-and-names.md` §No Value-Level Operators (47–55), so
+    /// emission is context-free at the lex layer. Position is enforced by
+    /// the parser / mid-flow validator.
+    LAngle,
+    /// `>` — close angle bracket. Mirror of `LAngle`. Standalone only;
+    /// `->` is captured earlier as `Arrow`.
+    RAngle,
     /// End of file.
     Eof,
 }
@@ -47,6 +67,10 @@ pub enum TokenizeError {
     BadIndent { byte_offset: u32 },
     UnterminatedString { byte_offset: u32 },
     UnexpectedChar { byte_offset: u32, ch: char },
+    /// Multi-digit integer (or float integer part) starting with `0` —
+    /// rejected per `design/values-and-names.md` §Integers ("Leading zeros
+    /// are not allowed."). `0` alone and `0.X` floats remain valid.
+    LeadingZeroNumeric { byte_offset: u32 },
 }
 
 pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), TokenizeError> {
@@ -166,6 +190,31 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
                     span: Span::new(file_id, p as u32, (p + 1) as u32),
                 });
                 p += 1;
+            } else if b == b'-' && p + 1 < content_end && bytes[p + 1] == b'>' {
+                // `->` — return-type arrow. Consumed as a single 2-byte token;
+                // bare `-` continues to fall through to `UnexpectedChar` so the
+                // existing `G::parse::operator-in-expression` repairable
+                // diagnostic is preserved for `5 - 2`-style stray operators.
+                tokens.push(Token {
+                    kind: TokenKind::Arrow,
+                    span: Span::new(file_id, p as u32, (p + 2) as u32),
+                });
+                p += 2;
+            } else if b == b'<' {
+                tokens.push(Token {
+                    kind: TokenKind::LAngle,
+                    span: Span::new(file_id, p as u32, (p + 1) as u32),
+                });
+                p += 1;
+            } else if b == b'>' {
+                // Standalone `>`. The `->` form is captured earlier by the
+                // `b == b'-'` branch (which consumes both bytes), so reaching
+                // here means a `>` not preceded by `-`.
+                tokens.push(Token {
+                    kind: TokenKind::RAngle,
+                    span: Span::new(file_id, p as u32, (p + 1) as u32),
+                });
+                p += 1;
             } else if b == b'{' {
                 tokens.push(Token {
                     kind: TokenKind::Lbrace,
@@ -215,6 +264,40 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
                 }
                 tokens.push(Token {
                     kind: TokenKind::StringLit(value),
+                    span: Span::new(file_id, start as u32, p as u32),
+                });
+            } else if b.is_ascii_digit() {
+                // Unsigned numeric literal: [0-9]+(\.[0-9]+)?.
+                // Carved out for #81 const keyword: bare numeric RHS at parse time.
+                let start = p;
+                while p < content_end && bytes[p].is_ascii_digit() {
+                    p += 1;
+                }
+                // Reject leading zeros on the integer part per
+                // `design/values-and-names.md` §Integers ("Leading zeros are
+                // not allowed."). `0` alone and `0.X` floats remain valid;
+                // only multi-digit integer parts starting with `0` are
+                // rejected. Applies to both pure integers (`03`) and float
+                // integer parts (`01.5`); the fractional part of a float
+                // (`1.05`) is unaffected.
+                if p - start > 1 && bytes[start] == b'0' {
+                    return Err(TokenizeError::LeadingZeroNumeric { byte_offset: start as u32 });
+                }
+                if p < content_end
+                    && bytes[p] == b'.'
+                    && p + 1 < content_end
+                    && bytes[p + 1].is_ascii_digit()
+                {
+                    p += 1; // consume '.'
+                    while p < content_end && bytes[p].is_ascii_digit() {
+                        p += 1;
+                    }
+                }
+                let text = std::str::from_utf8(&bytes[start..p])
+                    .expect("ASCII numeric literal")
+                    .to_string();
+                tokens.push(Token {
+                    kind: TokenKind::NumericLit(text),
                     span: Span::new(file_id, start as u32, p as u32),
                 });
             } else if is_ident_start(b) {
@@ -318,6 +401,103 @@ mod tests {
     }
 
     #[test]
+    fn tokenize_int_numeric_lit() {
+        let src = "const x = 42\n";
+        let (toks, _) = tokenize(src, 0).unwrap();
+        // [LineStart, Ident("const"), Ident("x"), Equals, NumericLit("42"), Eof]
+        assert!(matches!(&toks[4].kind, TokenKind::NumericLit(s) if s == "42"));
+    }
+
+    #[test]
+    fn tokenize_float_numeric_lit() {
+        let src = "const pi = 3.14\n";
+        let (toks, _) = tokenize(src, 0).unwrap();
+        assert!(matches!(&toks[4].kind, TokenKind::NumericLit(s) if s == "3.14"));
+    }
+
+    #[test]
+    fn tokenize_rejects_leading_zero_integer() {
+        // Per `design/values-and-names.md` §Integers, multi-digit integers
+        // starting with `0` are forbidden. This is a regression-proof for
+        // chunk 2's NumericLit carve-out (the prior `text` decl path didn't
+        // accept numbers, so this is a NEW class of malformed source #81
+        // introduces — must reject at tokenize time).
+        let src = "const x = 03\n";
+        match tokenize(src, 0) {
+            Err(TokenizeError::LeadingZeroNumeric { byte_offset }) => {
+                assert_eq!(byte_offset, 10, "byte offset should point at the `0`");
+            }
+            Err(other) => panic!("expected LeadingZeroNumeric, got {:?}", other),
+            Ok(_) => panic!("`03` should fail to tokenize"),
+        }
+    }
+
+    #[test]
+    fn tokenize_rejects_leading_zero_float_integer_part() {
+        // Same rule applies to the integer part of a float: `01.5` rejects.
+        let src = "const x = 01.5\n";
+        match tokenize(src, 0) {
+            Err(TokenizeError::LeadingZeroNumeric { .. }) => {}
+            Err(other) => panic!("expected LeadingZeroNumeric, got {:?}", other),
+            Ok(_) => panic!("`01.5` should fail to tokenize"),
+        }
+    }
+
+    #[test]
+    fn tokenize_accepts_zero_alone() {
+        // `0` is the canonical integer-zero literal — must remain valid.
+        let src = "const x = 0\n";
+        let (toks, _) = tokenize(src, 0).expect("`0` should tokenize");
+        assert!(matches!(&toks[4].kind, TokenKind::NumericLit(s) if s == "0"));
+    }
+
+    #[test]
+    fn tokenize_accepts_zero_dot_float() {
+        // `0.001` is a leading-zero float (allowed — single `0` followed by
+        // `.` and digits). Mirrors the existing `const_float.glyph.md`
+        // fixture which uses `0.001`.
+        let src = "const x = 0.001\n";
+        let (toks, _) = tokenize(src, 0).expect("`0.001` should tokenize");
+        assert!(matches!(&toks[4].kind, TokenKind::NumericLit(s) if s == "0.001"));
+    }
+
+    #[test]
+    fn tokenize_accepts_leading_zero_in_fractional_part() {
+        // The leading-zero rule only applies to the INTEGER part. `1.05` is
+        // a valid float — the `0` is in the fractional digits, not the
+        // integer part.
+        let src = "const x = 1.05\n";
+        let (toks, _) = tokenize(src, 0).expect("`1.05` should tokenize");
+        assert!(matches!(&toks[4].kind, TokenKind::NumericLit(s) if s == "1.05"));
+    }
+
+    #[test]
+    fn tokenize_arrow_is_single_token() {
+        // `->` lexes as a single Arrow token, not as `-` + `>`. This is the
+        // tokenizer half of issue #82's return-type-annotation support.
+        let src = "skill foo() -> SomeType\n";
+        let (toks, _) = tokenize(src, 0).expect("`->` should tokenize cleanly");
+        // [LineStart, "skill", "foo", Lparen, Rparen, Arrow, "SomeType", Eof]
+        assert_eq!(toks[5].kind, TokenKind::Arrow);
+        assert!(matches!(&toks[6].kind, TokenKind::Ident(s) if s == "SomeType"));
+        // Span is 2 bytes covering `->`.
+        assert_eq!(toks[5].span.end - toks[5].span.start, 2);
+    }
+
+    #[test]
+    fn tokenize_stray_minus_still_unexpected() {
+        // A stray `-` not followed by `>` continues to fail tokenization so
+        // `G::parse::operator-in-expression` keeps firing for value-level
+        // operator misuse like `5 - 2`.
+        let src = "const x = 5 - 2\n";
+        match tokenize(src, 0) {
+            Err(TokenizeError::UnexpectedChar { ch: '-', .. }) => {}
+            Err(other) => panic!("expected UnexpectedChar('-'), got error {:?}", other),
+            Ok(_) => panic!("expected UnexpectedChar('-'), but tokenize succeeded"),
+        }
+    }
+
+    #[test]
     fn tokenize_skips_blank_lines() {
         let src = "skill x()\n\n    flow:\n";
         let (toks, _) = tokenize(src, 0).unwrap();
@@ -326,5 +506,35 @@ mod tests {
             .filter(|t| matches!(t.kind, TokenKind::LineStart { .. }))
             .collect();
         assert_eq!(line_starts.len(), 2);
+    }
+
+    #[test]
+    fn tokenize_langle() {
+        // Issue #85: `<` is a standalone token (output-target form).
+        let src = "<\n";
+        let (toks, _) = tokenize(src, 0).expect("`<` should tokenize");
+        assert_eq!(toks[1].kind, TokenKind::LAngle);
+        assert_eq!(toks[1].span.end - toks[1].span.start, 1);
+    }
+
+    #[test]
+    fn tokenize_rangle() {
+        let src = ">\n";
+        let (toks, _) = tokenize(src, 0).expect("`>` should tokenize");
+        assert_eq!(toks[1].kind, TokenKind::RAngle);
+        assert_eq!(toks[1].span.end - toks[1].span.start, 1);
+    }
+
+    #[test]
+    fn tokenize_output_target_form_yields_three_tokens() {
+        // `<foo>` lexes as three primitive tokens — the parser (chunk 3)
+        // assembles them and hands the source slice to `parse_output_target`.
+        let src = "        return <foo>\n";
+        let (toks, _) = tokenize(src, 0).expect("`<foo>` should tokenize");
+        // [LineStart, "return", LAngle, "foo", RAngle, Eof]
+        assert!(matches!(&toks[1].kind, TokenKind::Ident(s) if s == "return"));
+        assert_eq!(toks[2].kind, TokenKind::LAngle);
+        assert!(matches!(&toks[3].kind, TokenKind::Ident(s) if s == "foo"));
+        assert_eq!(toks[4].kind, TokenKind::RAngle);
     }
 }

@@ -19,7 +19,7 @@ MVP escape sequences are limited to `\"` for a literal double quote and `\\` for
 Block strings use triple double quotes for multiline instruction text.
 
 ```glyph
-text preserve_existing_patterns = """
+const preserve_existing_patterns = """
     Prefer the repository's existing patterns, helper APIs, naming,
     and file organization before introducing a new abstraction or style.
 """
@@ -38,15 +38,24 @@ This follows foundations: not a prompt template system and foundations: text reu
 - **Parameter references** (`{name}` resolves to a declared parameter) are preserved verbatim as runtime slots in the compiled Markdown for the consuming LLM to fill from user context at runtime (`compiled-output.md` §Parameter References In Steps). The compiler never substitutes the slot's value.
 - **Local binding references** (`{name}` resolves to a local binding from an assignment like `diagnosis = analyze_error(...)`) are resolved by the Expand pass (Step 2) into natural-language cross-references in the compiled prose. They do **not** survive as literal `{name}` slots — the consuming LLM already produced the referenced value in a prior step and does not need a placeholder for its own output. For example, `"Apply the fix based on {diagnosis}"` might compile to "Apply the fix based on the diagnosis from your earlier analysis."
 
-Slots are legal **only inside instruction-bearing string positions**: `text` / `generated text` bodies, `generated block` body strings, inline instruction strings inside `flow:`, constraint texts, and string arguments to stdlib calls whose body becomes a compiled instruction (`subagent`, `send`). A `{name}` token in any other string position (a parameter default value, a `description:` field, etc.) emits `G::parse::param-slot-in-non-instruction-string` (repairable: the braces are stripped and the content is treated as literal).
+Slots are legal **only inside instruction-bearing string positions**: `const` / `generated const` bodies, `generated block` body strings, inline instruction strings inside `flow:`, constraint texts, and string arguments to stdlib calls whose body becomes a compiled instruction (`subagent`, `send`). A `{name}` token in any other string position (a parameter default value, a `description:` field, etc.) emits `G::parse::param-slot-in-non-instruction-string` (repairable: the braces are stripped and the content is treated as literal).
 
 The slot grammar is strict: `{IDENTIFIER}` only. Anything else with braces — `{ "key": "value" }`, `{x, y}`, `if x { ... }`, or any other non-identifier content — is literal text and is parsed as such. There is no escape mechanism; an author who wants the literal text `{name}` where `name` happens to also be an in-scope parameter or binding must rephrase the instruction.
 
-A slot whose `name` does not resolve to a parameter or a local binding in scope at the slot's source position is a hard error (`G::analyze::unknown-param-slot`, not repairable). The resolution scope is the enclosing declaration's parameters plus the local bindings visible at that point; neither imports nor `text` declarations participate in slot resolution (those are reused via bare-name reference, a separate mechanism).
+A slot whose `name` does not resolve to a parameter or a local binding in scope at the slot's source position is a hard error (`G::analyze::unknown-param-slot`, not repairable). The resolution scope is the enclosing declaration's parameters plus the local bindings visible at that point; neither imports nor `const` declarations participate in slot resolution (those are reused via bare-name reference, a separate mechanism).
 
 ### No Value-Level Operators
 
 MVP expressions contain only four forms: bindings, literals, calls, and dot access (`data-flow.md` §IR Mapping). There are no value-level operators — no `+`, `-`, `*`, `/`, comparisons, or any other infix/prefix operator in expression position.
+
+Angle brackets are not comparison operators. In the MVP they are reserved for output-target expressions in terminal return position, in two forms — identifier and descriptive:
+
+```glyph
+return <current_branch>                                          // identifier form
+return <"root cause analysis including affected files">          // descriptive form
+```
+
+Outside that position, both `<name>` and `<"description">` emit `G::parse::output-target-outside-return`.
 
 String concatenation via `+` is explicitly forbidden. Authors who need to combine context with a call should use the `with` modifier (`data-flow.md`) to pass specialization context at the call site. The Expand LLM weaves parameter context into prose instructions — manual string assembly is redundant with the pipeline's job.
 
@@ -62,8 +71,10 @@ Standard decimal integers are supported. Leading zeros are not allowed.
 
 ```glyph
 max_attempts = 3
-offset = -1
+offset = 2
 ```
+
+Signed numeric literals (`-1`, `-0.5`) are deferred beyond MVP. The tokenizer rejects a leading `-` on a numeric literal today; a unary `-` prefix at parse time is planned in a future issue. See `language-surface.md` §3.4 for the matching deferral note on `const` RHS.
 
 ### Floats
 
@@ -117,6 +128,23 @@ Source is case-insensitive: `none`, `None`, and `NONE` are all accepted. The IR 
 
 Identifiers match `[a-zA-Z_][a-zA-Z0-9_]*`. They must start with a letter or underscore and may contain letters, digits, and underscores. Hyphens are not allowed in identifiers.
 
+The output-target identifier form uses the same identifier grammar inside angle brackets. `<current_branch>` is valid; `<a.b>`, `<foo()>`, `< name >`, and `<>` are malformed output targets (`G::parse::malformed-output-target`). Quoted placeholder strings such as `return "<current_branch>"` remain string literals, but when they appear as a terminal return on a `-> DomainType` declaration the analyzer emits `G::analyze::placeholder-string-return` so Repair can rewrite them to `return <current_branch>`.
+
+The output-target **descriptive form** is `<"…">` — a quoted string inside angle brackets, e.g. `<"whether the user confirmed">`. The string follows the same rules as inline strings (`§Inline Strings`): double quotes only, MVP escapes `\"` and `\\`, no interpolation, no `{name}` slots. Empty `<"">` is malformed (`G::parse::malformed-output-target`); an unterminated `<"…EOF` surfaces as the standard unterminated-string parse error rather than a dedicated output-target diagnostic. Quoted placeholder strings such as `return "<root cause analysis>"` whose inner content is not identifier-shaped also trigger `G::analyze::placeholder-string-return`; Repair rewrites them into descriptive form (`return <"root cause analysis">`) rather than the identifier form (`types.md` §Implicit Declaration).
+
+### Output-Target Forms vs Other Name Uses
+
+For quick disambiguation, Glyph distinguishes four name forms in source:
+
+| Form | Meaning |
+|---|---|
+| `name` | Ordinary identifier — resolves to a parameter, binding, const, import, or stdlib entry per `§Name Resolution` |
+| `{name}` | Name slot inside instruction text — preserved as a runtime parameter slot, or resolved into prose for a local binding (see `§No Interpolation`) |
+| `<name>` | Output target, identifier form — names a value the enclosing block's agent must synthesize as the return value |
+| `<"description">` | Output target, descriptive form — provides synthesis guidance for the return value as inline prose |
+
+The two output-target forms are interchangeable at the IR level — both lower to `OutputContract` (`ir-schema.md` §OutputContract). Use the identifier form when a short snake-case name conveys the synthesized value; use the descriptive form when the value benefits from a sentence of guidance.
+
 ### Dot Access
 
 Dots are reserved for module-qualified access (`repo_tools.inspect_repo`). Control-flow adds single-level property dot access for bound values (e.g. `ctx.has_tests`); see `data-flow.md` for full rules and disambiguation.
@@ -135,7 +163,7 @@ If two declarations in different files or scopes use different casings for the s
 
 The following are reserved keywords and cannot be used as identifiers:
 
-`skill`, `block`, `export`, `import`, `text`, `int`, `float`, `flow`, `call`, `if`, `elif`, `else`, `return`, `true`, `false`, `none`, `effects`, `constraints`, `inputs`, `outputs`, `when_to_use`, `description`, `as`, `generated`, `input`, `output`, `must`, `require`, `avoid`, `context`, `and`, `or`, `not`.
+`skill`, `block`, `export`, `import`, `const`, `flow`, `call`, `if`, `elif`, `else`, `return`, `true`, `false`, `none`, `effects`, `constraints`, `inputs`, `outputs`, `when_to_use`, `description`, `as`, `generated`, `input`, `output`, `must`, `require`, `avoid`, `context`, `and`, `or`, `not`.
 
 This list grows with the language. New keywords should be added conservatively.
 
@@ -145,18 +173,18 @@ This list grows with the language. New keywords should be added conservatively.
 
 A bare identifier such as `make_plan` may resolve to:
 
-- a value-binding declaration (`text`, `int`, or `float`) in the current file;
+- a value-binding declaration (`const`) in the current file;
 - a parameter of the enclosing skill or block;
 - a local binding;
 - an imported name;
 - a standard-library entry;
-- a repair-generated definition (MVP: `generated text` only).
+- a repair-generated definition (MVP: `generated const` only).
 
 A parenthesized form such as `make_plan()` or `make_plan(ctx)` is always a block call.
 
 | Form | Resolves to |
 |---|---|
-| `make_plan` (bare) | text, parameter, local binding, import, or generated definition |
+| `make_plan` (bare) | const, parameter, local binding, import, or generated definition |
 | `make_plan()` (with parens) | block call (zero arguments) |
 | `make_plan(ctx)` (with arguments) | block call |
 
@@ -168,7 +196,7 @@ If the same normalized name is visible from multiple sources in overlapping scop
 
 Examples of conflicts that produce hard errors:
 
-- A parameter shares a name with a `text` declaration in the same file.
+- A parameter shares a name with a `const` declaration in the same file.
 - A local binding shares a name with a parameter in the same block.
 - An import collides with a same-file declaration.
 

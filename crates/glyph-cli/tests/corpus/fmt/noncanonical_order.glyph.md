@@ -9,5 +9,5 @@ skill fix_bug()
         project_layout
     description: "Fix a bug in the codebase."
 
-text accuracy = "Be accurate."
-text project_layout = "Monorepo layout."
+const accuracy = "Be accurate."
+const project_layout = "Monorepo layout."
