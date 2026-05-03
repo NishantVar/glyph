@@ -3059,6 +3059,7 @@ skill current() -> BranchName
                 description: None,
                 effects: vec!["writes_files".to_string()],
                 return_type: None,
+                generated: false,
             },
             span: Span::new(0, 0, 10),
         };

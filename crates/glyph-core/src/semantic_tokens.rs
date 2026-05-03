@@ -268,7 +268,7 @@ fn classify_lex_tokens(
 /// Top-level declaration keywords that reset section state when seen at
 /// indent 0.
 fn is_top_level_decl_keyword(s: &str) -> bool {
-    matches!(s, "skill" | "block" | "export" | "generated" | "text" | "import")
+    matches!(s, "skill" | "block" | "export" | "generated" | "const" | "import")
 }
 
 /// Hard keywords + builtin types — always classified, regardless of
@@ -299,7 +299,7 @@ fn classify_keyword_text(s: &str) -> Option<SemTokenType> {
         | "with"
         | "none" => Some(SemTokenType::Keyword),
         // Builtin types.
-        "text" | "int" | "float" => Some(SemTokenType::Type),
+        "int" | "float" => Some(SemTokenType::Type),
         _ => None,
     }
 }
@@ -1106,14 +1106,6 @@ mod tests {
         let scope = find_token(&tokens, 0, "scope", src).expect("param `scope`");
         assert_eq!(scope.token_type, SemTokenType::Parameter as u32);
         assert!(scope.modifiers & SemTokenModifier::DECLARATION != 0);
-    }
-
-    #[test]
-    fn type_keyword_classified_as_type() {
-        let src = "text greeting = \"hi\"\n";
-        let tokens = collect_semantic_tokens(src, 0);
-        let text_kw = find_token(&tokens, 0, "text", src).expect("`text` keyword");
-        assert_eq!(text_kw.token_type, SemTokenType::Type as u32);
     }
 
     #[test]

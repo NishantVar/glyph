@@ -244,7 +244,10 @@ pub enum ContextEntry {
     InlineString(String),
 }
 
-/// A private `block` declaration.
+/// A private `block` declaration. Also carries `generated block`
+/// declarations (per `design/language-surface.md` §3.7) via the
+/// `generated` flag — repair-authored blocks share `BlockDecl` since
+/// lowering and analysis treat them identically; the flag is metadata.
 #[derive(Clone, Debug)]
 pub struct BlockDecl {
     pub name: String,
@@ -260,6 +263,10 @@ pub struct BlockDecl {
     /// later phases can read it; private-block enforcement is out of scope
     /// for issue #82.
     pub return_type: Option<Spanned<String>>,
+    /// Whether this block was declared with `generated` (repair-authored
+    /// per `design/language-surface.md` §3.7). Mutually exclusive with
+    /// `export block` at the grammar level.
+    pub generated: bool,
 }
 
 /// `const NAME = <literal>` declaration — unifies value bindings across the
