@@ -662,10 +662,43 @@ impl<'a> Parser<'a> {
                 }
                 "generated" => {
                     // TODO(#81 follow-up): enforce placement order per
-                    // language-surface.md §3.6 line 342 (all `generated const`
-                    // decls must appear after all non-generated top-level decls).
-                    let d = self.parse_generated_const()?;
-                    decls.push(Decl::Const(d));
+                    // language-surface.md §3.6 line 342 / §3.7 line 375 (all
+                    // `generated const` / `generated block` decls must appear
+                    // after all non-generated top-level decls).
+                    //
+                    // Peek the token after `generated` to dispatch:
+                    // `generated const` (§3.6) vs `generated block` (§3.7).
+                    let saved = self.pos;
+                    self.pos += 1; // skip `generated`
+                    let next_kw = match &self.peek().kind {
+                        TokenKind::Ident(s) => s.clone(),
+                        _ => {
+                            return Err(ParseError::Unexpected {
+                                span: self.peek().span,
+                                message: "expected `const` or `block` after `generated`".into(),
+                            });
+                        }
+                    };
+                    self.pos = saved; // restore
+                    match next_kw.as_str() {
+                        "const" => {
+                            let d = self.parse_generated_const()?;
+                            decls.push(Decl::Const(d));
+                        }
+                        "block" => {
+                            let d = self.parse_generated_block()?;
+                            decls.push(Decl::Block(d));
+                        }
+                        _ => {
+                            return Err(ParseError::Unexpected {
+                                span: self.peek().span,
+                                message: format!(
+                                    "expected `const` or `block` after `generated`, found `{}`",
+                                    next_kw
+                                ),
+                            });
+                        }
+                    }
                 }
                 "export" => {
                     // Peek at the word after `export` to decide:
@@ -900,7 +933,6 @@ impl<'a> Parser<'a> {
             "export",
             "block",
             "skill",
-            "text",
             "int",
             "float",
         ];
@@ -1201,6 +1233,7 @@ impl<'a> Parser<'a> {
                 effects,
                 flow,
                 return_type,
+                generated: false,
             },
             span,
         ))
@@ -2381,6 +2414,35 @@ impl<'a> Parser<'a> {
         ))
     }
 
+    /// Parse `generated block <name>(<params>) <body>` per
+    /// `design/language-surface.md` §3.7. Reuses `parse_block_decl` for the
+    /// header and body grammar (header shape is identical to private `block`)
+    /// and flips the `generated` flag on the resulting AST node. Span is
+    /// extended back to the `generated` keyword so go-to-def lands on the
+    /// declaration head.
+    ///
+    /// Per §3.7 a `generated block` admits no return type. Authors who need
+    /// one should promote to a hand-authored `block`. Body shape (single
+    /// inline/block string vs. multi-statement `flow:`) is not enforced
+    /// here — repair emits a single string body, and §3.7 placement-order
+    /// enforcement is deferred alongside §3.6.
+    fn parse_generated_block(&mut self) -> Result<Spanned<BlockDecl>, ParseError> {
+        let (_, gen_span) = self.expect_ident(Some("generated"))?;
+        let mut decl = self.parse_block_decl()?;
+        if let Some(rt) = &decl.node.return_type {
+            return Err(ParseError::Unexpected {
+                span: rt.span,
+                message: "`generated block` does not admit a return type \
+                          (see design/language-surface.md §3.7); \
+                          promote to a hand-authored `block` if one is needed"
+                    .to_string(),
+            });
+        }
+        decl.node.generated = true;
+        decl.span = Span::new(gen_span.file_id, gen_span.start, decl.span.end);
+        Ok(decl)
+    }
+
     /// Shared literal-RHS reader for `const` and `export const`. Accepts the
     /// four primitive literal kinds; rejects bare/qualified names and any
     /// other token kind.
@@ -2659,6 +2721,83 @@ mod const_decl_tests {
             parse("generated const x = true\n", 0),
             Err(ParseError::Unexpected { .. })
         ));
+    }
+
+    // -- `generated block` form (per language-surface.md §3.7) --
+
+    #[test]
+    fn generated_block_parses() {
+        // Single-string shorthand body, with a parameter — minimal repair
+        // shape per language-surface.md §3.7.
+        let src = "\
+generated block inspect_failure(area)
+    \"Inspect the failure area and report findings.\"
+";
+        let (file, _) = parse(src, 0).expect("generated block should parse");
+        assert_eq!(file.decls.len(), 1);
+        match &file.decls[0] {
+            Decl::Block(b) => {
+                assert_eq!(b.node.name, "inspect_failure");
+                assert!(b.node.generated, "generated flag must be set");
+                assert_eq!(b.node.params.len(), 1);
+                assert_eq!(b.node.params[0].name, "area");
+                assert_eq!(b.node.flow.len(), 1);
+            }
+            other => panic!("expected Decl::Block, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn generated_block_no_params() {
+        let src = "\
+generated block summarize_changes()
+    flow:
+        \"Summarize the changes.\"
+";
+        let (file, _) = parse(src, 0).expect("generated block (zero params) should parse");
+        match &file.decls[0] {
+            Decl::Block(b) => {
+                assert!(b.node.generated);
+                assert!(b.node.params.is_empty());
+            }
+            other => panic!("expected Decl::Block, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn generated_block_rejects_return_type() {
+        // §3.7: `generated block` does not admit a return-type slot.
+        let err = parse(
+            "generated block fix() -> Report\n    \"do thing\"\n",
+            0,
+        )
+        .err();
+        match err {
+            Some(ParseError::Unexpected { ref message, .. }) => {
+                assert!(
+                    message.contains("return type"),
+                    "expected return-type rejection, got: {}",
+                    message
+                );
+            }
+            other => panic!("expected ParseError::Unexpected, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn generated_rejects_unknown_keyword() {
+        // Anything other than `const` or `block` after `generated` is an error.
+        let err = parse("generated widget x = 1\n", 0).err();
+        match err {
+            Some(ParseError::Unexpected { ref message, .. }) => {
+                assert!(
+                    message.contains("`const` or `block`"),
+                    "expected dispatch-error message, got: {}",
+                    message
+                );
+            }
+            other => panic!("expected ParseError::Unexpected, got {:?}", other),
+        }
     }
 
     // -- `const NAME = name_ref` negative (bare-name RHS deferred) --

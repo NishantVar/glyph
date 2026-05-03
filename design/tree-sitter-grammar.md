@@ -17,11 +17,11 @@ Every construct below was observed in the test corpus (`crates/glyph-cli/tests/c
 | `block` with empty params | `block small_helper()` | `explicit_blocks` |
 | `block` with params | `block fast_mode()` | `branching` |
 | `export block` with params | `export block inspect_repo(scope = ".")` | `imports/repo_tools` |
-| `text` binding | `text name = "value"` | `with_context`, `constraint_only`, `update_docs` |
-| `export text` binding | `export text name = "value"` | `imports/prefs` |
-| `int` / `export int` binding | `int max_attempts = 3` | design docs only |
-| `float` / `export float` binding | `float threshold = 0.8` | design docs only |
-| `generated text` binding | `generated text name = "value"` | design docs only |
+| `const` binding | `const name = "value"` | `with_context`, `constraint_only`, `update_docs` |
+| `export const` binding | `export const name = "value"` | `imports/prefs` |
+| `const` numeric binding | `const max_attempts = 3` (int inferred from literal) | design docs only |
+| `const` numeric binding | `const threshold = 0.8` (float inferred from literal) | design docs only |
+| `generated const` binding | `generated const name = "value"` | design docs only |
 | `generated block` | `generated block name()` | design docs only |
 | `import` selective | `import "./path" { name1, name2 }` | `imports/fix_bug`, `imports/unused_import` |
 | `import` with alias | `import "./path" as alias` | design docs only |
@@ -98,10 +98,8 @@ Defaults can be string literals, integer literals, float literals, booleans (`tr
 | `skill_declaration` | `skill name(params)` + body | Branch |
 | `block_declaration` | `block name(params)` + body | Branch |
 | `export_block_declaration` | `export block name(params)` + body | Branch |
-| `text_declaration` | `text name = "value"` | Branch |
-| `int_declaration` | `int name = <int>` | Branch |
-| `float_declaration` | `float name = <float>` | Branch |
-| `generated_text_declaration` | `generated text name = "value"` | Branch |
+| `const_declaration` | `const name = <literal>` (kind inferred per `language-surface.md` §3.6) | Branch |
+| `generated_const_declaration` | `generated const name = "value"` | Branch |
 | `generated_block_declaration` | `generated block name(params)` + body | Branch |
 | `import_statement` | `import "path" { ... }` or `import "path" as alias` | Branch |
 | `import_path` | The quoted path string in an import | Leaf |
@@ -347,7 +345,7 @@ Each editor needs a `highlights.scm` file mapping tree-sitter nodes to captures.
 **Scope:** All remaining Glyph constructs — the grammar parses every file in the valid corpus.
 
 **Deliverables:**
-- Grammar rules for: `block_declaration`, `export_block_declaration`, `int_declaration`, `float_declaration`, `generated_text_declaration`, `generated_block_declaration`, `import_statement`, `import_list`, `import_specifier`, `constraints_section`, `require_marker`, `avoid_marker`, `must_marker`, `must_avoid_marker`, `context_marker`, `call_expression`, `argument_list`, `variable_binding`, `return_statement`, `if_statement`, `elif_clause`, `else_clause`, `condition`, `comparison`, `applies_expression`, `qualified_name`, `block_string`, `return_type`, `type_annotation`, `type_identifier`, `integer_literal`, `float_literal`, `boolean_literal`, `none_literal`
+- Grammar rules for: `block_declaration`, `export_block_declaration`, `const_declaration`, `generated_const_declaration`, `generated_block_declaration`, `import_statement`, `import_list`, `import_specifier`, `constraints_section`, `require_marker`, `avoid_marker`, `must_marker`, `must_avoid_marker`, `context_marker`, `call_expression`, `argument_list`, `variable_binding`, `return_statement`, `if_statement`, `elif_clause`, `else_clause`, `condition`, `comparison`, `applies_expression`, `qualified_name`, `block_string`, `return_type`, `type_annotation`, `type_identifier`, `integer_literal`, `float_literal`, `boolean_literal`, `none_literal`
 - Scanner update: bracket-depth tracking for `{}` (import lists, interpolation)
 - Extended `highlights.scm` with all capture names from §4
 - Test corpus covering every valid corpus file and key repairable patterns
@@ -355,8 +353,8 @@ Each editor needs a `highlights.scm` file mapping tree-sitter nodes to captures.
 **Constructs added:**
 - `block` and `export block` declarations
 - `import` (selective and whole-module)
-- `int`, `float`, `export int`, `export float` bindings
-- `generated text`, `generated block` declarations
+- `const` and `export const` bindings (kind inferred from literal)
+- `generated const`, `generated block` declarations
 - `require`, `avoid`, `must`, `must avoid` markers (body-level and in-flow)
 - `context` marker (body-level and in-flow)
 - `constraints:` section
