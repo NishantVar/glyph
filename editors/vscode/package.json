@@ -54,6 +54,202 @@
           "description": "Traces the JSON-RPC traffic between VS Code and the glyph language server."
         }
       }
+    },
+    "configurationDefaults": {
+      "[glyph]": {
+        "editor.semanticHighlighting.enabled": true,
+        "editor.semanticTokenColorCustomizations": {
+          "enabled": true,
+          "rules": {
+            "glyphFlowString": "#FFAB40",
+            "glyphFlowCall": {
+              "foreground": "#FFCC66",
+              "bold": true
+            },
+            "glyphBlockCall": {
+              "foreground": "#82AAFF",
+              "bold": true
+            },
+            "glyphContextString": {
+              "foreground": "#7B8896",
+              "italic": true
+            },
+            "glyphContextNameRef": "#FF8F73",
+            "glyphSectionDescription": "#A0B9A0",
+            "glyphSectionContext": "#D7BA7D",
+            "glyphSectionConstraints": "#E5938A",
+            "glyphSectionFlow": "#5CCFE6",
+            "glyphInterpolation": {
+              "foreground": "#FF6E9F",
+              "bold": true
+            },
+            "function.declaration": {
+              "foreground": "#82AAFF",
+              "bold": true
+            },
+            "method.declaration": {
+              "foreground": "#82AAFF",
+              "bold": true
+            },
+            "variable.declaration.readonly": {
+              "foreground": "#FF8F73",
+              "italic": true
+            }
+          },
+          "[Default Light+]": {
+            "rules": {
+              "glyphFlowString": "#B45F06",
+              "glyphFlowCall": {
+                "foreground": "#9C6500",
+                "bold": true
+              },
+              "glyphBlockCall": {
+                "foreground": "#0066B8",
+                "bold": true
+              },
+              "glyphContextString": {
+                "foreground": "#6B7B8C",
+                "italic": true
+              },
+              "glyphContextNameRef": "#C03A60",
+              "glyphSectionDescription": "#3D7E3D",
+              "glyphSectionContext": "#8A6D17",
+              "glyphSectionConstraints": "#A02C2C",
+              "glyphSectionFlow": "#0066B8",
+              "glyphInterpolation": {
+                "foreground": "#C7427A",
+                "bold": true
+              },
+              "function.declaration": {
+                "foreground": "#0066B8",
+                "bold": true
+              },
+              "method.declaration": {
+                "foreground": "#0066B8",
+                "bold": true
+              },
+              "variable.declaration.readonly": {
+                "foreground": "#C03A60",
+                "italic": true
+              }
+            }
+          },
+          "[Default Light Modern]": {
+            "rules": {
+              "glyphFlowString": "#B45F06",
+              "glyphFlowCall": {
+                "foreground": "#9C6500",
+                "bold": true
+              },
+              "glyphBlockCall": {
+                "foreground": "#0066B8",
+                "bold": true
+              },
+              "glyphContextString": {
+                "foreground": "#6B7B8C",
+                "italic": true
+              },
+              "glyphContextNameRef": "#C03A60",
+              "glyphSectionDescription": "#3D7E3D",
+              "glyphSectionContext": "#8A6D17",
+              "glyphSectionConstraints": "#A02C2C",
+              "glyphSectionFlow": "#0066B8",
+              "glyphInterpolation": {
+                "foreground": "#C7427A",
+                "bold": true
+              },
+              "function.declaration": {
+                "foreground": "#0066B8",
+                "bold": true
+              },
+              "method.declaration": {
+                "foreground": "#0066B8",
+                "bold": true
+              },
+              "variable.declaration.readonly": {
+                "foreground": "#C03A60",
+                "italic": true
+              }
+            }
+          },
+          "[Light+ (default light)]": {
+            "rules": {
+              "glyphFlowString": "#B45F06",
+              "glyphFlowCall": {
+                "foreground": "#9C6500",
+                "bold": true
+              },
+              "glyphBlockCall": {
+                "foreground": "#0066B8",
+                "bold": true
+              },
+              "glyphContextString": {
+                "foreground": "#6B7B8C",
+                "italic": true
+              },
+              "glyphContextNameRef": "#C03A60",
+              "glyphSectionDescription": "#3D7E3D",
+              "glyphSectionContext": "#8A6D17",
+              "glyphSectionConstraints": "#A02C2C",
+              "glyphSectionFlow": "#0066B8",
+              "glyphInterpolation": {
+                "foreground": "#C7427A",
+                "bold": true
+              },
+              "function.declaration": {
+                "foreground": "#0066B8",
+                "bold": true
+              },
+              "method.declaration": {
+                "foreground": "#0066B8",
+                "bold": true
+              },
+              "variable.declaration.readonly": {
+                "foreground": "#C03A60",
+                "italic": true
+              }
+            }
+          },
+          "[Light Modern]": {
+            "rules": {
+              "glyphFlowString": "#B45F06",
+              "glyphFlowCall": {
+                "foreground": "#9C6500",
+                "bold": true
+              },
+              "glyphBlockCall": {
+                "foreground": "#0066B8",
+                "bold": true
+              },
+              "glyphContextString": {
+                "foreground": "#6B7B8C",
+                "italic": true
+              },
+              "glyphContextNameRef": "#C03A60",
+              "glyphSectionDescription": "#3D7E3D",
+              "glyphSectionContext": "#8A6D17",
+              "glyphSectionConstraints": "#A02C2C",
+              "glyphSectionFlow": "#0066B8",
+              "glyphInterpolation": {
+                "foreground": "#C7427A",
+                "bold": true
+              },
+              "function.declaration": {
+                "foreground": "#0066B8",
+                "bold": true
+              },
+              "method.declaration": {
+                "foreground": "#0066B8",
+                "bold": true
+              },
+              "variable.declaration.readonly": {
+                "foreground": "#C03A60",
+                "italic": true
+              }
+            }
+          }
+        }
+      }
     }
   },
   "scripts": {
