@@ -1,0 +1,72 @@
+{
+  "name": "glyph-language",
+  "displayName": "Glyph",
+  "description": "Glyph language support: diagnostics, go-to-definition, semantic-token highlighting via the glyph LSP server.",
+  "version": "0.1.0",
+  "publisher": "glyph",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:glyph"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "glyph",
+        "aliases": [
+          "Glyph",
+          "glyph"
+        ],
+        "extensions": [
+          ".glyph",
+          ".glyph.md"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Glyph",
+      "properties": {
+        "glyph.serverPath": {
+          "type": "string",
+          "default": "glyph",
+          "description": "Path to the glyph CLI binary. The extension launches `<serverPath> lsp`."
+        },
+        "glyph.enableEffects": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable the gated `effects:` subsystem (mirrors `glyph --enable-effects`)."
+        },
+        "glyph.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the JSON-RPC traffic between VS Code and the glyph language server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.4.5"
+  }
+}

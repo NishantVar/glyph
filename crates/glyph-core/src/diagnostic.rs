@@ -163,6 +163,17 @@ impl DiagBag {
         self.entries.iter().map(|e| &e.diag)
     }
 
+    /// Drain `other` into `self`, preserving every entry's original byte_start
+    /// so subsequent `sorted()` calls produce the same ordering as if the
+    /// diagnostics had all been pushed into one bag from the start.
+    ///
+    /// Used by the multi-file LSP entry points (`check_source_with_imports`,
+    /// the legacy `check_file` back-compat shim) which collect per-file bags
+    /// during the import walk and may need to merge them.
+    pub fn merge(&mut self, mut other: DiagBag) {
+        self.entries.append(&mut other.entries);
+    }
+
     /// Returns true if any diagnostic has classification `Error`.
     pub fn has_error(&self) -> bool {
         self.entries

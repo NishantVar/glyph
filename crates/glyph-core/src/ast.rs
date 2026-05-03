@@ -47,8 +47,10 @@ pub enum ImportKind {
 /// A single name in a selective import, optionally aliased.
 #[derive(Clone, Debug)]
 pub struct ImportName {
-    /// The name as declared in the imported file.
-    pub name: String,
+    /// The name as declared in the imported file. The `Spanned` wrapper carries
+    /// the source span of the name token, used by the LSP go-to-def handler
+    /// (M2 onwards) to map cursor → import → declaration.
+    pub name: Spanned<String>,
     /// Optional local alias (`as <alias>`).
     pub alias: Option<String>,
 }
@@ -76,8 +78,9 @@ pub struct Skill {
     pub flow_present: bool,
     /// Bare names at body level (indent 1) that don't match any recognized
     /// keyword. Used by analyze to fire `G::analyze::ambiguous-role` when
-    /// the name resolves to a `text` declaration.
-    pub body_bare_names: Vec<String>,
+    /// the name resolves to a `text` declaration. The `Spanned` wrapper
+    /// carries the source span of each bare-name token for go-to-def.
+    pub body_bare_names: Vec<Spanned<String>>,
 }
 
 /// Minimal `export block` declaration — slice 4 captures the header shape only.
@@ -133,7 +136,9 @@ pub struct ConstraintMarker {
     /// Raw marker keyword: `require` | `avoid` | `must` | `must avoid`.
     pub marker: ConstraintMarkerKind,
     /// The bare-name reference (e.g., `accuracy`). Resolution happens later.
-    pub name: String,
+    /// The `Spanned` wrapper carries the source span of the name token so
+    /// the LSP can answer go-to-def (M2).
+    pub name: Spanned<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,11 +157,13 @@ pub enum FlowStmt {
     /// A `context` marker inside `flow:` (e.g., `context project_conventions`).
     ContextMarker(ContextEntry),
     /// A bare name in `flow:` that is not preceded by a keyword prefix.
-    /// Detected during analyze as `G::analyze::text-in-flow`.
-    BareName(String),
+    /// Detected during analyze as `G::analyze::text-in-flow`. The `Spanned`
+    /// wrapper carries the source span of the name token for go-to-def (M2).
+    BareName(Spanned<String>),
     /// A call expression: `name()` or `name(arg1, arg2)`, with optional
-    /// `with "modifier"` site modifier.
-    Call { target: String, args: Vec<String>, site_modifier: Option<String> },
+    /// `with "modifier"` site modifier. `target` carries the source span of
+    /// the callee token so the LSP can answer go-to-def (M2).
+    Call { target: Spanned<String>, args: Vec<String>, site_modifier: Option<String> },
     /// `return <expr>` — terminal-only at flow root.
     Return(ReturnExpr),
     /// `if`/`elif`/`else` branch chain.
@@ -180,10 +187,10 @@ pub struct ElifBranch {
 pub enum ReturnExpr {
     /// `return none` or bare `return` (no expression).
     None,
-    /// `return some_call()`.
-    Call { target: String, args: Vec<String> },
-    /// `return some_name` (binding reference).
-    Name(String),
+    /// `return some_call()`. `target` is `Spanned` for go-to-def (M2).
+    Call { target: Spanned<String>, args: Vec<String> },
+    /// `return some_name` (binding reference). `Spanned` for go-to-def (M2).
+    Name(Spanned<String>),
     /// `return "inline string"`.
     Inline(String),
 }
@@ -192,8 +199,9 @@ pub enum ReturnExpr {
 /// Can be a bare-name reference to a `text` declaration or an inline string.
 #[derive(Clone, Debug)]
 pub enum ContextEntry {
-    /// Bare name reference (e.g., `project_conventions`).
-    NameRef(String),
+    /// Bare name reference (e.g., `project_conventions`). The `Spanned`
+    /// wrapper carries the source span of the name token for go-to-def (M2).
+    NameRef(Spanned<String>),
     /// Inline string literal (e.g., `"The bug is reproducible locally."`).
     InlineString(String),
 }

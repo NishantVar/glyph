@@ -1,21 +1,23 @@
 [package]
-name = "glyph-cli"
+name = "glyph-lsp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "glyph_lsp"
+path = "src/lib.rs"
+
 [[bin]]
-name = "glyph"
+name = "glyph-lsp"
 path = "src/main.rs"
 
 [dependencies]
 glyph-core = { workspace = true }
-glyph-lsp = { workspace = true }
-clap = { workspace = true }
-codespan-reporting = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+tower-lsp = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
-insta = "1"
-serde_json = { workspace = true }
 tempfile = { workspace = true }

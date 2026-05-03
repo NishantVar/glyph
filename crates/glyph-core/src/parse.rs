@@ -424,7 +424,7 @@ impl<'a> Parser<'a> {
         let mut effects: Vec<String> = Vec::new();
         let mut flow: Vec<FlowStmt> = Vec::new();
         let mut flow_present = false;
-        let mut body_bare_names: Vec<String> = Vec::new();
+        let mut body_bare_names: Vec<Spanned<String>> = Vec::new();
 
         // Parse body lines at indent 1.
         loop {
@@ -494,7 +494,7 @@ impl<'a> Parser<'a> {
                 let mut names = Vec::new();
                 if !matches!(self.peek().kind, TokenKind::Rbrace) {
                     loop {
-                        let (name, _) = self.expect_ident(None)?;
+                        let (name, name_span) = self.expect_ident(None)?;
                         let alias = if let TokenKind::Ident(kw) = &self.peek().kind {
                             if kw == "as" {
                                 self.pos += 1;
@@ -506,7 +506,7 @@ impl<'a> Parser<'a> {
                         } else {
                             None
                         };
-                        names.push(ImportName { name, alias });
+                        names.push(ImportName { name: Spanned::new(name, name_span), alias });
                         match &self.peek().kind {
                             TokenKind::Comma => {
                                 self.pos += 1;
@@ -894,7 +894,7 @@ impl<'a> Parser<'a> {
         effects: &mut Vec<String>,
         flow: &mut Vec<FlowStmt>,
         flow_present: &mut bool,
-        body_bare_names: &mut Vec<String>,
+        body_bare_names: &mut Vec<Spanned<String>>,
     ) -> Result<(), ParseError> {
         // Already at LineStart with indent 1.
         self.expect_line_start()?;
@@ -1023,8 +1023,8 @@ impl<'a> Parser<'a> {
                     }
                     _ => unreachable!(),
                 };
-                let (name, _) = self.expect_ident(None)?;
-                body_constraints.push(ConstraintMarker { marker: kind, name });
+                let (name, name_span) = self.expect_ident(None)?;
+                body_constraints.push(ConstraintMarker { marker: kind, name: Spanned::new(name, name_span) });
             }
             "context" => {
                 self.pos += 1;
@@ -1096,8 +1096,9 @@ impl<'a> Parser<'a> {
                                     }
                                     TokenKind::Ident(name) => {
                                         let v = name.clone();
+                                        let name_span = self.peek().span;
                                         self.pos += 1;
-                                        context_section.push(ContextEntry::NameRef(v));
+                                        context_section.push(ContextEntry::NameRef(Spanned::new(v, name_span)));
                                     }
                                     _ => {
                                         return Err(ParseError::Unexpected {
@@ -1115,8 +1116,9 @@ impl<'a> Parser<'a> {
                     match &self.peek().kind {
                         TokenKind::Ident(name) => {
                             let v = name.clone();
+                            let name_span = self.peek().span;
                             self.pos += 1;
-                            body_context.push(ContextEntry::NameRef(v));
+                            body_context.push(ContextEntry::NameRef(Spanned::new(v, name_span)));
                         }
                         TokenKind::StringLit(s) => {
                             let lit_span = self.peek().span;
@@ -1187,8 +1189,8 @@ impl<'a> Parser<'a> {
                                             });
                                         }
                                     };
-                                    let (name, _) = self.expect_ident(None)?;
-                                    body_constraints.push(ConstraintMarker { marker: kind, name });
+                                    let (name, name_span) = self.expect_ident(None)?;
+                                    body_constraints.push(ConstraintMarker { marker: kind, name: Spanned::new(name, name_span) });
                                 }
                                 _ => {
                                     return Err(ParseError::Unexpected {
@@ -1221,8 +1223,9 @@ impl<'a> Parser<'a> {
             _other => {
                 // Bare name at body level — not a recognized keyword.
                 // Store it for analyze to check `G::analyze::ambiguous-role`.
+                // Capture the token span for go-to-def lookup (M2).
                 self.pos += 1;
-                body_bare_names.push(kw.clone());
+                body_bare_names.push(Spanned::new(kw.clone(), kw_span));
             }
         }
         Ok(())
@@ -1258,6 +1261,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Ident(kw) => {
                 let kw_val = kw.clone();
+                let kw_val_span = self.peek().span;
                 match kw_val.as_str() {
                     "require" | "avoid" | "must" => {
                         self.pos += 1;
@@ -1278,10 +1282,10 @@ impl<'a> Parser<'a> {
                             }
                             _ => unreachable!(),
                         };
-                        let (name, _) = self.expect_ident(None)?;
+                        let (name, name_span) = self.expect_ident(None)?;
                         Ok(FlowStmt::ConstraintMarker(ConstraintMarker {
                             marker: kind,
-                            name,
+                            name: Spanned::new(name, name_span),
                         }))
                     }
                     "return" => {
@@ -1298,6 +1302,7 @@ impl<'a> Parser<'a> {
                             }
                             TokenKind::Ident(name) => {
                                 let name = name.clone();
+                                let name_span = self.peek().span;
                                 self.pos += 1;
                                 // Check if it's a call: name(args).
                                 if matches!(self.peek().kind, TokenKind::Lparen) {
@@ -1328,9 +1333,9 @@ impl<'a> Parser<'a> {
                                         }
                                     }
                                     self.expect(&TokenKind::Rparen)?;
-                                    ReturnExpr::Call { target: name, args }
+                                    ReturnExpr::Call { target: Spanned::new(name, name_span), args }
                                 } else {
-                                    ReturnExpr::Name(name)
+                                    ReturnExpr::Name(Spanned::new(name, name_span))
                                 }
                             }
                             TokenKind::StringLit(s) => {
@@ -1352,8 +1357,9 @@ impl<'a> Parser<'a> {
                         match &self.peek().kind {
                             TokenKind::Ident(name) => {
                                 let v = name.clone();
+                                let name_span = self.peek().span;
                                 self.pos += 1;
-                                Ok(FlowStmt::ContextMarker(ContextEntry::NameRef(v)))
+                                Ok(FlowStmt::ContextMarker(ContextEntry::NameRef(Spanned::new(v, name_span))))
                             }
                             TokenKind::StringLit(s) => {
                                 let v = s.clone();
@@ -1402,7 +1408,7 @@ impl<'a> Parser<'a> {
                             ),
                             span,
                         );
-                        Ok(FlowStmt::BareName(kw_val))
+                        Ok(FlowStmt::BareName(Spanned::new(kw_val, kw_val_span)))
                     }
                     "if" => {
                         self.pos += 1;
@@ -1489,7 +1495,7 @@ impl<'a> Parser<'a> {
                             // Check for optional `with "modifier"`.
                             let site_modifier = self.try_parse_with_modifier()?;
                             Ok(FlowStmt::Call {
-                                target: kw_val,
+                                target: Spanned::new(kw_val, kw_val_span),
                                 args,
                                 site_modifier,
                             })
@@ -1520,7 +1526,7 @@ impl<'a> Parser<'a> {
                                         dot_span,
                                     );
                                     // Return a BareName so parsing can continue.
-                                    Ok(FlowStmt::BareName(kw_val))
+                                    Ok(FlowStmt::BareName(Spanned::new(kw_val, kw_val_span)))
                                 } else {
                                     Err(ParseError::Unexpected {
                                         span: dot_span,
@@ -1549,9 +1555,9 @@ impl<'a> Parser<'a> {
                             if matches!(self.peek().kind, TokenKind::StringLit(_)) {
                                 self.pos += 1;
                             }
-                            Ok(FlowStmt::BareName(kw_val))
+                            Ok(FlowStmt::BareName(Spanned::new(kw_val, kw_val_span)))
                         } else {
-                            Ok(FlowStmt::BareName(kw_val))
+                            Ok(FlowStmt::BareName(Spanned::new(kw_val, kw_val_span)))
                         }
                     }
                 }
