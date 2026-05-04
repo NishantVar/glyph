@@ -3060,6 +3060,7 @@ skill current() -> BranchName
                 effects: vec!["writes_files".to_string()],
                 return_type: None,
                 generated: false,
+                extra_subsections: Vec::new(),
             },
             span: Span::new(0, 0, 10),
         };
@@ -3079,7 +3080,9 @@ skill current() -> BranchName
                 body_bare_names: Vec::new(),
                 effects: Vec::new(),
                 context_section: Vec::new(),
+                constraints_section: Vec::new(),
                 return_type: None,
+                extra_subsections: Vec::new(),
             },
             span: Span::new(0, 0, 10),
         };

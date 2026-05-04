@@ -803,6 +803,7 @@ impl<'a> Parser<'a> {
                 flow_present,
                 body_bare_names,
                 return_type,
+                extra_subsections: Vec::new(),
             },
             span,
         ))
@@ -1089,6 +1090,7 @@ impl<'a> Parser<'a> {
                 flow_strings,
                 return_type,
                 terminal_return,
+                extra_subsections: Vec::new(),
             },
             span,
         ))
@@ -1235,6 +1237,7 @@ impl<'a> Parser<'a> {
                 flow,
                 return_type,
                 generated: false,
+                extra_subsections: Vec::new(),
             },
             span,
         ))
