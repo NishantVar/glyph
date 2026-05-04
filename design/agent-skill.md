@@ -144,6 +144,7 @@ Each repairable diagnostic has a specific fix pattern. The agent applies these t
 |---|---|
 | `G::parse::operator-in-expression` | Glyph has no value-level operators in MVP. Rewrite the expression as a plain call or inline string. E.g., `x + y` → `combine(x, y)` or an inline instruction string. |
 | `G::parse::param-slot-in-non-instruction-string` | `{name}` slots are only valid in instruction-bearing positions (flow statements, constraint text). Move the slot to an instruction string or remove it. |
+| `G::parse::duplicate-subsection` | Phase 3a handles this deterministically — no LLM action needed. The compiler's deterministic merge (`repair.md` §4.11) splices the duplicate body and its comment trivia into the first occurrence and removes the duplicate header. If this diagnostic appears in the 3b residual set, it is a compiler bug; Analyze should have surfaced `G::analyze::unmerged-duplicate-subsection` (error) instead. |
 
 #### Analyze-phase repairables
 

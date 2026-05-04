@@ -40,7 +40,7 @@ The pass receives:
 - the original Glyph source;
 - structured diagnostics from earlier deterministic passes;
 - known local declarations, imports, and standard-library entries;
-- the partial source AST when parsing succeeded far enough to produce one;
+- the partial source AST when parsing succeeded far enough to produce one — including any `extra_subsections` recovery slots populated by the duplicate-sub-section recovery shape (`language-surface.md` §2.5). Phase 3a's deterministic merge (§4.11) consumes these to satisfy `G::parse::duplicate-subsection`; if Phase 3a is disabled or the merge cannot proceed, Analyze surfaces `G::analyze::unmerged-duplicate-subsection` (error) before this pass runs;
 - compiler rules for valid syntax, role and constraint markers, type annotations, and declaration forms.
 
 The LLM should repair against diagnostics, not free-form guess from scratch.
@@ -257,6 +257,66 @@ It does **not** scan across scopes — a callee's scoped constraints (carried as
 **Idempotence.** Phase 3c does not modify source — it only emits diagnostics. So re-running Repair on the same source produces the same constraint set, the same prompt, and (modulo model non-determinism, the same caveat as 3b) the same verdict. The overall Repair idempotence claim from §4.5 is preserved.
 
 **Cost.** One LLM call per declaration with ≥2 constraints. Skills/blocks with 0 or 1 constraints incur no Phase 3c call. The prompt is small (constraint texts only, no IR graph or surrounding flow).
+
+### 4.11 Duplicate Sub-Section Merge (Phase 3a)
+
+When a `skill`, `block`, or `export block` body contains the same sub-section keyword (`description:`, `context:`, `constraints:`, `effects:`, `flow:`) more than once, the parser is permissive: the first occurrence populates the canonical singleton field and every later occurrence lands in `extra_subsections` (`language-surface.md` §2.5, `tree-sitter-grammar.md` §2.1). Phase 3a's deterministic post-Parse stratum (`cli.md` §`glyph fmt`) merges these duplicates back into a single sub-section in source. The pass is purely textual — it splices source spans; it does not re-emit from IR — so author formatting inside each body is preserved verbatim.
+
+**Trigger.** `G::parse::duplicate-subsection` (repairable). The merge runs whenever `extra_subsections` is non-empty for any declaration AST node.
+
+**Mechanism.**
+
+1. Order the duplicate occurrences by source position (first, second, …).
+2. The **first** occurrence is the *anchor*: its header line, indentation, and body span are kept in place.
+3. For each later occurrence (in source order), append its body content under the anchor's body, preserving the anchor's body indentation. The duplicate's header line is removed.
+4. Concatenation rules differ by sub-section kind:
+   - `description:` — concatenate body text with a single blank line between bodies.
+   - `context:`, `constraints:`, `effects:` — concatenate entries (one per line) in source order; do not deduplicate (deduplication is a separate concern owned by Lower).
+   - `flow:` — append later statements after the anchor's last statement, preserving statement order across the duplicates.
+
+**Comment placement.** Comments are first-class authored content and `repair.md` §4.1 forbids deleting, moving, or rewriting comment text. Three sub-rules govern how comment trivia attached to a duplicate occurrence are placed when its header line is removed:
+
+- **(a) Whole-line comments inside the second body are preserved verbatim.** Whole-line `//` comments that sit between body entries of a duplicate occurrence move with their entries into the merged body, retaining their relative position to the entries that follow them.
+- **(b) A trailing comment on the second header becomes a new whole-line comment at the merge boundary.** When a duplicate occurrence's header line carries a trailing `// …` comment, that comment cannot stay with a header that is being removed. The merge converts it into a whole-line comment placed at the boundary in the merged body — i.e., immediately before the first entry contributed by that duplicate, at the body's indentation. The comment text is unchanged.
+- **(c) Whole-line comments between the first body and the second header are preserved at the boundary.** Any whole-line `//` comments that sit *between* the end of the anchor's body and the start of the duplicate's header land at the merge boundary as whole-line comments at the merged body's indentation, in their original source order, immediately before the entries contributed by the duplicate.
+
+In all three cases the comment text is preserved verbatim; only relative position and the header-vs-whole-line shape may change, and only as the rules above prescribe.
+
+**Example.** Before merge:
+
+```glyph
+skill review_pr(pr_id: PullRequest)
+    description:
+        Reviews a pull request and returns a verdict.
+
+    flow:
+        ctx = inspect(pr_id)
+
+    // second description was added when the author iterated on routing language
+    description: // refined wording after the v2 routing pass
+        Use this skill when a teammate posts a PR for review and routing.
+```
+
+After merge (Phase 3a):
+
+```glyph
+skill review_pr(pr_id: PullRequest)
+    description:
+        Reviews a pull request and returns a verdict.
+
+        // second description was added when the author iterated on routing language
+        // refined wording after the v2 routing pass
+        Use this skill when a teammate posts a PR for review and routing.
+
+    flow:
+        ctx = inspect(pr_id)
+```
+
+The whole-line comment between the bodies (rule c) and the trailing comment on the duplicate header (rule b) both land at the merge boundary as whole-line comments at the body's indentation. The duplicate's body text follows verbatim.
+
+**Idempotence.** After a successful merge, `extra_subsections` is empty and the body contains a single occurrence of each sub-section kind. Re-running Phase 3a finds nothing to merge. The merge therefore composes cleanly with the canonical source-section reordering that `glyph fmt` applies in the same stratum (`cli.md` §`glyph fmt`).
+
+**Failure mode.** If Phase 3a is disabled (`--no-repair`, `glyph fmt --check`) or the merge cannot complete (e.g., the duplicate's body cannot be located in source), `extra_subsections` survives into Analyze and surfaces as `G::analyze::unmerged-duplicate-subsection` (error). The author then either re-runs with Phase 3a enabled or removes the duplicate manually.
 
 ## 5. Generated Definitions
 
