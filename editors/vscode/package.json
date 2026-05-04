@@ -57,10 +57,10 @@
     },
     "configurationDefaults": {
       "[glyph]": {
-        "editor.semanticHighlighting.enabled": true,
-        "editor.semanticTokenColorCustomizations": {
-          "enabled": true,
-          "rules": {
+        "editor.semanticHighlighting.enabled": true
+      },
+      "editor.semanticTokenColorCustomizations": {
+        "rules": {
             "glyphFlowString": "#FFAB40",
             "glyphFlowCall": {
               "foreground": "#FFCC66",
@@ -74,7 +74,10 @@
               "foreground": "#7B8896",
               "italic": true
             },
-            "glyphContextNameRef": "#FF8F73",
+            "glyphContextNameRef": {
+              "foreground": "#89DDFF",
+              "italic": true
+            },
             "glyphSectionDescription": "#A0B9A0",
             "glyphSectionContext": "#D7BA7D",
             "glyphSectionConstraints": "#E5938A",
@@ -84,7 +87,7 @@
               "bold": true
             },
             "function.declaration": {
-              "foreground": "#82AAFF",
+              "foreground": "#FFCB6B",
               "bold": true
             },
             "method.declaration": {
@@ -111,7 +114,10 @@
                 "foreground": "#6B7B8C",
                 "italic": true
               },
-              "glyphContextNameRef": "#C03A60",
+              "glyphContextNameRef": {
+                "foreground": "#0070AA",
+                "italic": true
+              },
               "glyphSectionDescription": "#3D7E3D",
               "glyphSectionContext": "#8A6D17",
               "glyphSectionConstraints": "#A02C2C",
@@ -121,7 +127,7 @@
                 "bold": true
               },
               "function.declaration": {
-                "foreground": "#0066B8",
+                "foreground": "#A06000",
                 "bold": true
               },
               "method.declaration": {
@@ -149,7 +155,10 @@
                 "foreground": "#6B7B8C",
                 "italic": true
               },
-              "glyphContextNameRef": "#C03A60",
+              "glyphContextNameRef": {
+                "foreground": "#0070AA",
+                "italic": true
+              },
               "glyphSectionDescription": "#3D7E3D",
               "glyphSectionContext": "#8A6D17",
               "glyphSectionConstraints": "#A02C2C",
@@ -159,7 +168,7 @@
                 "bold": true
               },
               "function.declaration": {
-                "foreground": "#0066B8",
+                "foreground": "#A06000",
                 "bold": true
               },
               "method.declaration": {
@@ -187,7 +196,10 @@
                 "foreground": "#6B7B8C",
                 "italic": true
               },
-              "glyphContextNameRef": "#C03A60",
+              "glyphContextNameRef": {
+                "foreground": "#0070AA",
+                "italic": true
+              },
               "glyphSectionDescription": "#3D7E3D",
               "glyphSectionContext": "#8A6D17",
               "glyphSectionConstraints": "#A02C2C",
@@ -197,7 +209,7 @@
                 "bold": true
               },
               "function.declaration": {
-                "foreground": "#0066B8",
+                "foreground": "#A06000",
                 "bold": true
               },
               "method.declaration": {
@@ -225,7 +237,10 @@
                 "foreground": "#6B7B8C",
                 "italic": true
               },
-              "glyphContextNameRef": "#C03A60",
+              "glyphContextNameRef": {
+                "foreground": "#0070AA",
+                "italic": true
+              },
               "glyphSectionDescription": "#3D7E3D",
               "glyphSectionContext": "#8A6D17",
               "glyphSectionConstraints": "#A02C2C",
@@ -235,7 +250,7 @@
                 "bold": true
               },
               "function.declaration": {
-                "foreground": "#0066B8",
+                "foreground": "#A06000",
                 "bold": true
               },
               "method.declaration": {
@@ -250,7 +265,6 @@
           }
         }
       }
-    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

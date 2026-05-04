@@ -1,12 +1,12 @@
-# Graph Report - glyph  (2026-05-03)
+# Graph Report - glyph  (2026-05-04)
 
 ## Corpus Check
-- 52 files · ~721,768 words
+- 52 files · ~720,366 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1525 nodes · 4144 edges · 44 communities detected
-- Extraction: 67% EXTRACTED · 33% INFERRED · 0% AMBIGUOUS · INFERRED: 1379 edges (avg confidence: 0.8)
+- 1525 nodes · 4148 edges · 44 communities detected
+- Extraction: 67% EXTRACTED · 33% INFERRED · 0% AMBIGUOUS · INFERRED: 1383 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
@@ -59,8 +59,8 @@
 1. `parse()` - 76 edges
 2. `validate_output()` - 56 edges
 3. `check_source()` - 53 edges
-4. `analyze_with_diagnostics()` - 52 edges
-5. `analyze_with_imports()` - 28 edges
+4. `analyze_with_diagnostics()` - 53 edges
+5. `analyze_with_imports()` - 29 edges
 6. `Parser<'a>` - 28 edges
 7. `compile_directory()` - 28 edges
 8. `parse_output_target()` - 27 edges
@@ -99,7 +99,7 @@ Nodes (90): Skill, arena_with_effects(), avoid_phrasing(), avoid_phrasing_walkin
 
 ### Community 4 - "Community 4"
 Cohesion: 0.05
-Nodes (98): activate(), check_applies_descriptions(), check_applies_descriptions_in_flow(), check_branch_substeps(), check_constraint_count(), check_content_shape(), check_context_count(), check_frontmatter() (+90 more)
+Nodes (97): check_applies_descriptions(), check_applies_descriptions_in_flow(), check_branch_substeps(), check_constraint_count(), check_content_shape(), check_context_count(), check_frontmatter(), check_malformed_markdown() (+89 more)
 
 ### Community 5 - "Community 5"
 Cohesion: 0.05
@@ -110,12 +110,12 @@ Cohesion: 0.05
 Nodes (79): applies_no_parens_corpus_fires_diagnostic(), applies_on_non_block_corpus_fires_diagnostic(), applies_with_args_corpus_fires_diagnostic(), branching_corpus_compiles_with_lettered_substeps(), corpus_path(), glyph_bin(), run_check_json(), run_compile() (+71 more)
 
 ### Community 7 - "Community 7"
-Cohesion: 0.04
-Nodes (71): brainstorming: anti_patterns block, Awkward: 'offer MUST be its own message' has no primitive, Awkward: conversational style constraints vs control-flow, Example: brainstorming skill Glyph rewrite, Open Question: are skill-to-skill handoffs first-class?, brainstorming: 7 phases (orient, visual companion, intent, approaches, design, write/review, handoff), brainstorming: terminal_skill = writing-plans, brainstorming: trigger block (must_invoke_before creative_work) (+63 more)
+Cohesion: 0.09
+Nodes (33): check_branch_body_names(), check_context_entry_name(), check_output_target_shadows_binding(), check_return_call_undefined(), emit_lossy_coercion(), emit_name_collision(), emit_nominal_mismatch(), emit_nominal_mismatch_at_return() (+25 more)
 
 ### Community 8 - "Community 8"
-Cohesion: 0.09
-Nodes (32): check_branch_body_names(), check_context_entry_name(), check_output_target_shadows_binding(), check_return_call_undefined(), emit_lossy_coercion(), emit_name_collision(), emit_nominal_mismatch(), emit_nominal_mismatch_at_return() (+24 more)
+Cohesion: 0.04
+Nodes (71): brainstorming: anti_patterns block, Awkward: 'offer MUST be its own message' has no primitive, Awkward: conversational style constraints vs control-flow, Example: brainstorming skill Glyph rewrite, Open Question: are skill-to-skill handoffs first-class?, brainstorming: 7 phases (orient, visual companion, intent, approaches, design, write/review, handoff), brainstorming: terminal_skill = writing-plans, brainstorming: trigger block (must_invoke_before creative_work) (+63 more)
 
 ### Community 9 - "Community 9"
 Cohesion: 0.06
@@ -288,9 +288,9 @@ _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `parse()` connect `Community 1` to `Community 0`, `Community 3`, `Community 4`, `Community 5`, `Community 6`, `Community 12`, `Community 18`?**
   _High betweenness centrality (0.022) - this node is a cross-community bridge._
-- **Why does `lower_with_imports()` connect `Community 3` to `Community 0`, `Community 1`, `Community 4`, `Community 5`, `Community 8`, `Community 12`?**
+- **Why does `lower_with_imports()` connect `Community 3` to `Community 0`, `Community 1`, `Community 4`, `Community 5`, `Community 7`, `Community 12`?**
   _High betweenness centrality (0.021) - this node is a cross-community bridge._
-- **Why does `scan_slots()` connect `Community 13` to `Community 8`, `Community 1`, `Community 12`?**
+- **Why does `scan_slots()` connect `Community 13` to `Community 1`, `Community 12`, `Community 7`?**
   _High betweenness centrality (0.020) - this node is a cross-community bridge._
 - **Are the 72 inferred relationships involving `parse()` (e.g. with `compile_source_with_effects()` and `emit_library_procedures()`) actually correct?**
   _`parse()` has 72 INFERRED edges - model-reasoned connections that need verification._
@@ -298,5 +298,5 @@ _Questions this graph is uniquely positioned to answer:_
   _`validate_output()` has 3 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 3 inferred relationships involving `check_source()` (e.g. with `check_ids()` and `placeholder_string_return_is_repairable_on_domain_typed_skill()`) actually correct?**
   _`check_source()` has 3 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 8 inferred relationships involving `analyze_with_diagnostics()` (e.g. with `compile_source_with_effects()` and `check_source_with_effects()`) actually correct?**
-  _`analyze_with_diagnostics()` has 8 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 9 inferred relationships involving `analyze_with_diagnostics()` (e.g. with `compile_source_with_effects()` and `check_source_with_effects()`) actually correct?**
+  _`analyze_with_diagnostics()` has 9 INFERRED edges - model-reasoned connections that need verification._

@@ -50,6 +50,7 @@ MVP compiled output contains YAML frontmatter (`name`, `description`, and `effec
 - **Deeper qualified callee nesting (`a.b.c`).** MVP allows only single-level qualified callees (`Alias.name`). Revisit for multi-level namespace access once the import model is richer.
 - **Spread / splat arguments.** Post-MVP. Allow passing a collection as positional args (e.g. `foo(*items)`). Blocked on introducing a collection type.
 - **Variadic parameters.** Post-MVP. Declaration-side form for blocks that accept a variable number of arguments (e.g. `block foo(*items)`). Not allowed in MVP. Blocked on collection types and on a parameter-grammar extension (optional / rest / keyword-only).
+- **Author-supplied parameter descriptions.** MVP: the IR carries no description on `Param`, and Expand Step 2 (LLM) generates each parameter's `## Parameters` description from name/type/default/usage. Post-MVP: add an optional description slot to the parameter syntax (leading candidate: Rust-style `///` doc-comment above the param line) plus an optional `description: String?` field on `Param` in the IR, so the description becomes deterministic when the author supplies one and falls back to the LLM-generated form otherwise. Moving this off the LLM removes one more responsibility from Expand Step 2 and lets the consuming LLM see authored intent rather than a guess.
 
 ## Preferences
 
