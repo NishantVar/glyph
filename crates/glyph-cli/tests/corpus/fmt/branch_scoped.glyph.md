@@ -9,5 +9,5 @@ skill deploy()
         else
             "Deploy to staging."
 
-const safety_checks = "Run all safety checks."
-const production_config = "Production uses strict settings."
+const safety_checks = "run all safety checks"
+const production_config = "production uses strict settings"

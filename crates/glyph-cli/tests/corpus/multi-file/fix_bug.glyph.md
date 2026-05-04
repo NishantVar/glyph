@@ -25,7 +25,7 @@ skill fix_bug(scope = ".")
         validate_fix()
         return summarize_changes()
 
-const unrelated_edits = "Making changes outside the requested scope or fixing unrelated issues."
+const unrelated_edits = "making changes outside the requested scope or fixing unrelated issues"
 
 const codebase_assumptions = "This codebase follows standard project conventions and has a test suite."
 

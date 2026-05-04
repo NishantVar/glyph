@@ -81,8 +81,8 @@ fn const_float_inlines_into_compiled_md() {
 fn const_bool_inlines_into_compiled_md() {
     let (_d, md) = compile_fixture("const_bool.glyph.md");
     assert!(
-        md.contains("- true"),
-        "expected bool const value `true` in ### Constraints, got:\n{}",
+        md.contains("- True."),
+        "expected bool const value `True.` in ### Constraints, got:\n{}",
         md
     );
 }
@@ -94,10 +94,11 @@ fn const_bool_uppercase_normalizes_to_lowercase() {
     // applies the normalization at the lowering boundary
     // (`lower::collect_consts`), so the rendered value reaching emit is
     // always lowercase regardless of source-text casing.
+    // The four-form renderer (Soft/Require) capitalizes and appends a period.
     let (_d, md) = compile_fixture("const_bool_uppercase.glyph.md");
     assert!(
-        md.contains("- true"),
-        "expected bool const value normalized to `true` in ### Constraints, got:\n{}",
+        md.contains("- True."),
+        "expected bool const value normalized to `True.` in ### Constraints, got:\n{}",
         md
     );
 }

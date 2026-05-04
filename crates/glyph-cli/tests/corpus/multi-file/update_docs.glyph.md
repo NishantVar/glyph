@@ -9,5 +9,5 @@ skill update_docs()
         "Update any sections that are outdated or incorrect."
         "Verify all cross-references and links are still valid."
 
-const accuracy = "Ensure all documentation accurately reflects the current code."
-const stale_references = "Leaving references to removed or renamed symbols."
+const accuracy = "ensure all documentation accurately reflects the current code"
+const stale_references = "leaving references to removed or renamed symbols"

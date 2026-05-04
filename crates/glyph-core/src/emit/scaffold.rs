@@ -185,7 +185,7 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                 IrNode::Constraint(c) => c,
                 _ => panic!("Constraint node was not a Constraint"),
             };
-            let line = super::render_constraint(&c.text, c.polarity);
+            let line = crate::emit::constraint::render(c.strength, c.polarity, &c.text);
             s.push_literal(format!("- {}\n", line));
         }
         s.push_literal("\n");
