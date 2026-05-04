@@ -489,7 +489,7 @@ fn ast_rewrite(
 fn ast_rewrite_inner(
     source: &str,
     file: &crate::ast::SourceFile,
-    _signals: &crate::analyze::FmtSignals,
+    signals: &crate::analyze::FmtSignals,
     _enable_effects: bool,
 ) -> String {
     let lines: Vec<&str> = source.lines().collect();
@@ -568,7 +568,7 @@ fn ast_rewrite_inner(
 
         // Parse body lines into sections.
         let body_lines: Vec<&str> = (start + 1..end).map(|i| lines[i]).collect();
-        let rewritten = rewrite_decl_body(&body_lines, ast_decl);
+        let rewritten = rewrite_decl_body(&body_lines, ast_decl, signals);
         out.push_str(&rewritten);
     }
 
@@ -610,7 +610,11 @@ struct Section {
 }
 
 /// Rewrite a declaration body (lines at indent >= 1) in canonical order.
-fn rewrite_decl_body(body_lines: &[&str], ast_decl: Option<&crate::ast::Decl>) -> String {
+fn rewrite_decl_body(
+    body_lines: &[&str],
+    ast_decl: Option<&crate::ast::Decl>,
+    signals: &crate::analyze::FmtSignals,
+) -> String {
     let placeholder_target = placeholder_string_return_target(ast_decl);
 
     // Parse lines into sections.
@@ -711,8 +715,13 @@ fn rewrite_decl_body(body_lines: &[&str], ast_decl: Option<&crate::ast::Decl>) -
         if current_kind.is_some() {
             if matches!(current_kind, Some(SectionKind::Flow)) {
                 in_flow_block = true;
+                // Rewrite bare unresolved names in flow to `name()`.
+                let rewritten_line = rewrite_bare_name_in_flow_line(line, signals)
+                    .unwrap_or_else(|| line.to_string());
+                current_lines.push(rewritten_line);
+            } else {
+                current_lines.push(line.to_string());
             }
-            current_lines.push(line.to_string());
         } else {
             // Line at body level that's not a recognized section header.
             // Could be a bare name or something else — pass through.
@@ -820,6 +829,30 @@ fn rewrite_decl_body(body_lines: &[&str], ast_decl: Option<&crate::ast::Decl>) -
     }
 
     out
+}
+
+/// If `line` is a bare identifier in a flow section that is unresolved, return
+/// the rewritten form `indent + name + "()"`. Returns `None` if the line is
+/// not a bare identifier or the name is locally bound (not in `unresolved_names`).
+fn rewrite_bare_name_in_flow_line(line: &str, signals: &crate::analyze::FmtSignals) -> Option<String> {
+    let indent_len = line.len() - line.trim_start().len();
+    let indent = &line[..indent_len];
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Must be a pure bare identifier — letters/digits/underscore only.
+    if !trimmed.chars().all(|c| c == '_' || c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let first = trimmed.chars().next()?;
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return None;
+    }
+    if signals.unresolved_names.contains(trimmed) {
+        return Some(format!("{}{}()", indent, trimmed));
+    }
+    None
 }
 
 fn is_constraint_marker(trimmed: &str) -> bool {
@@ -1647,5 +1680,64 @@ skill main()
         assert!(result.output.contains(r#"import "@glyph/std" { load }"#),
             "expected `load` auto-imported, got: {}", result.output);
         assert!(result.changed);
+    }
+
+    // --- Task 4: #111 Const-in-flow parens-add ---
+
+    #[test]
+    fn fmt_const_in_flow_adds_parens_to_unresolved_bare_name() {
+        let src = r#"skill main()
+    description: "Main."
+    flow:
+        helper
+"#;
+        let result = fmt_source(src, true);
+        assert!(result.output.contains("helper()"),
+            "expected `helper` rewritten to `helper()`, got: {}", result.output);
+        assert!(result.changed);
+    }
+
+    #[test]
+    fn fmt_const_in_flow_no_op_when_resolves_to_local_const() {
+        let src = r#"const helper = "x"
+
+skill main()
+    description: "Main."
+    flow:
+        helper
+"#;
+        let result = fmt_source(src, true);
+        assert!(!result.output.contains("helper()"));
+    }
+
+    #[test]
+    fn fmt_const_in_flow_no_op_when_resolves_to_local_block() {
+        let src = r#"block helper() -> Report
+    description: "Helper."
+    flow:
+        return "<x>"
+
+skill main()
+    description: "Main."
+    flow:
+        helper
+"#;
+        let result = fmt_source(src, true);
+        // The block declaration's HEADER `block helper() -> Report` contains `helper()` but not `helper()\n` directly
+        // (it ends with `Report\n`). The flow-body line `        helper` is what we're checking is NOT rewritten.
+        assert!(!result.output.contains("helper()\n"),
+            "should not auto-paren when name resolves locally");
+    }
+
+    #[test]
+    fn fmt_const_in_flow_idempotent() {
+        let src = r#"skill main()
+    description: "Main."
+    flow:
+        helper
+"#;
+        let once = fmt_source(src, true).output;
+        let twice = fmt_source(&once, true).output;
+        assert_eq!(once, twice);
     }
 }
