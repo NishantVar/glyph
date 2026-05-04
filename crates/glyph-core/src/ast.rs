@@ -118,8 +118,14 @@ pub enum DuplicateSubsection {
     Flow(Vec<FlowStmt>),
     /// Body of a duplicate `effects:` keyword list.
     Effects(Vec<String>),
-    /// Body of a duplicate `constraints:` sub-section.
-    Constraints(Vec<ContextEntry>),
+    /// Body of a duplicate `constraints:` sub-section. Carries
+    /// `Vec<ConstraintMarker>` to mirror what the singleton path actually
+    /// populates today (the parser routes a `constraints:` sub-section's
+    /// `require`/`avoid`/`must`/`must avoid` markers into `body_constraints`,
+    /// not into the dormant `constraints_section: Vec<ContextEntry>` field —
+    /// see decisions.md for the rationale). A future merge can splice these
+    /// markers back into `body_constraints` without conversion.
+    Constraints(Vec<ConstraintMarker>),
 }
 
 /// Minimal `export block` declaration — slice 4 captures the header shape only.
