@@ -92,6 +92,40 @@ pub struct Skill {
     /// is out of scope for issue #82 (export-block-only — see
     /// `analyze::analyze_export_block`).
     pub return_type: Option<Spanned<String>>,
+    /// Recovered duplicate sub-sections (issue #109). The first occurrence of
+    /// each sub-section kind populates the corresponding singleton field above
+    /// (e.g., `description`, `context_section`); any subsequent occurrence
+    /// lands here instead of being silently dropped, so a `glyph fmt` merge
+    /// pass can splice them into the singleton without conversion. Per
+    /// `design/language-surface.md` §2.5 line 88 and
+    /// `design/tree-sitter-grammar.md` §2.1 line 147.
+    pub extra_subsections: Vec<DuplicateSubsection>,
+}
+
+/// A sub-section that appeared more than once in a `Skill`, `BlockDecl`, or
+/// `ExportBlockDecl`. Each variant carries the body content in the same shape
+/// the corresponding singleton field uses, so `glyph fmt` can merge a duplicate
+/// into the first occurrence without re-parsing or shape conversion (issue
+/// #109; `design/language-surface.md` §2.5 line 88;
+/// `design/tree-sitter-grammar.md` §2.1 line 147).
+#[derive(Clone, Debug)]
+pub enum DuplicateSubsection {
+    /// Body of a duplicate `description:` sub-section (a single inline string).
+    Description(String),
+    /// Body of a duplicate `context:` sub-section.
+    Context(Vec<ContextEntry>),
+    /// Body of a duplicate `flow:` sub-section.
+    Flow(Vec<FlowStmt>),
+    /// Body of a duplicate `effects:` keyword list.
+    Effects(Vec<String>),
+    /// Body of a duplicate `constraints:` sub-section. Carries
+    /// `Vec<ConstraintMarker>` to mirror what the singleton path actually
+    /// populates today (the parser routes a `constraints:` sub-section's
+    /// `require`/`avoid`/`must`/`must avoid` markers into `body_constraints`,
+    /// not into the dormant `constraints_section: Vec<ContextEntry>` field —
+    /// see decisions.md for the rationale). A future merge can splice these
+    /// markers back into `body_constraints` without conversion.
+    Constraints(Vec<ConstraintMarker>),
 }
 
 /// Minimal `export block` declaration — slice 4 captures the header shape only.
@@ -147,6 +181,9 @@ pub struct ExportBlockDecl {
     /// follow-up `IrExportBlock` work lands; it is dormant downstream until
     /// that issue ships.
     pub terminal_return: Option<ReturnExpr>,
+    /// Recovered duplicate sub-sections (issue #109). See
+    /// [`Skill::extra_subsections`] for semantics.
+    pub extra_subsections: Vec<DuplicateSubsection>,
 }
 
 /// A header parameter on `skill`, `block`, or `export block`.
@@ -269,6 +306,9 @@ pub struct BlockDecl {
     /// per `design/language-surface.md` §3.7). Mutually exclusive with
     /// `export block` at the grammar level.
     pub generated: bool,
+    /// Recovered duplicate sub-sections (issue #109). See
+    /// [`Skill::extra_subsections`] for semantics.
+    pub extra_subsections: Vec<DuplicateSubsection>,
 }
 
 /// `const NAME = <literal>` declaration — unifies value bindings across the
