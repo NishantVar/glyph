@@ -315,10 +315,6 @@ fn remove_unused_imports(
     out
 }
 
-fn is_stdlib_name(name: &str) -> bool {
-    matches!(name, "subagent" | "send" | "load")
-}
-
 /// Append any unresolved stdlib names to the existing `@glyph/std` selective
 /// import, or insert a new one if none is present.
 fn auto_import_stdlib(
@@ -331,7 +327,7 @@ fn auto_import_stdlib(
     let mut to_import: Vec<String> = signals
         .unresolved_names
         .iter()
-        .filter(|n| is_stdlib_name(n))
+        .filter(|n| crate::analyze::is_stdlib_block_name(n))
         .cloned()
         .collect();
     to_import.sort();
@@ -1637,6 +1633,19 @@ skill main()
             "expected appended order, got: {}", result.output);
         assert!(!result.output.contains(r#"{ send, subagent }"#),
             "must not reorder existing names alphabetically");
+        assert!(result.changed);
+    }
+
+    #[test]
+    fn fmt_auto_import_load_stdlib_name() {
+        let src = r#"skill main()
+    description: "Main."
+    flow:
+        load("config.txt")
+"#;
+        let result = fmt_source(src, true);
+        assert!(result.output.contains(r#"import "@glyph/std" { load }"#),
+            "expected `load` auto-imported, got: {}", result.output);
         assert!(result.changed);
     }
 }

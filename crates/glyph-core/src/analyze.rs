@@ -2646,8 +2646,8 @@ fn check_branch_body_names(
 }
 
 /// Check if a name is a stdlib block (author-importable from `@glyph/std`).
-fn is_stdlib_block_name(name: &str) -> bool {
-    name == "subagent" || name == "send"
+pub(crate) fn is_stdlib_block_name(name: &str) -> bool {
+    matches!(name, "subagent" | "send" | "load")
 }
 
 /// Return the effect signature for a stdlib block, if it is one.
@@ -2655,6 +2655,7 @@ pub fn stdlib_block_effects(name: &str) -> Option<&'static [&'static str]> {
     match name {
         "subagent" => Some(&["spawns_agent"]),
         "send" => Some(&["spawns_agent"]),
+        "load" => Some(&[]),
         _ => None,
     }
 }
