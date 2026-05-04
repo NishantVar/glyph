@@ -1786,6 +1786,19 @@ skill main()
         assert_eq!(once, twice);
     }
 
+    #[test]
+    fn fmt_placeholder_return_no_rewrite_when_inner_contains_quote() {
+        // Conservative behavior per design spec: descriptive form refuses
+        // to rewrite when inner contains `"`, `\`, `\n`, `\t`, `\r`.
+        let src = r#"export block report() -> Report
+    description: "Report."
+    return "<has \"quote\" inside>"
+"#;
+        let result = fmt_source(src, true);
+        // Should leave the line alone — the diagnostic remains, no malformed output.
+        assert!(result.output.contains(r#"return "<has \"quote\" inside>""#));
+    }
+
     // --- Task 5: #112 Effects auto-insert ---
 
     #[test]
