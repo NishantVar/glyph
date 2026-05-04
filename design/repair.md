@@ -40,7 +40,7 @@ The pass receives:
 - the original Glyph source;
 - structured diagnostics from earlier deterministic passes;
 - known local declarations, imports, and standard-library entries;
-- the partial source AST when parsing succeeded far enough to produce one;
+- the partial source AST when parsing succeeded far enough to produce one — including any `extra_subsections` recovery slots populated by the duplicate-sub-section recovery shape (`language-surface.md` §2.5). Phase 3a's deterministic merge (§4.11) consumes these to satisfy `G::parse::duplicate-subsection`; if Phase 3a is disabled or the merge cannot proceed, Analyze surfaces `G::analyze::unmerged-duplicate-subsection` (error) before this pass runs;
 - compiler rules for valid syntax, role and constraint markers, type annotations, and declaration forms.
 
 The LLM should repair against diagnostics, not free-form guess from scratch.
@@ -215,7 +215,7 @@ The author resolves manually: rename one of the conflicting declarations, or exp
 
 Phase 3 has three sub-steps:
 
-- **3a — deterministic auto-fixes.** Tab→spaces, unused import removal, etc. No LLM. 3a operates in two strata mirroring `glyph fmt` (`cli.md` §`glyph fmt`): pre-Parse text-level rewrites (tab → 4 spaces, mixed-indent normalization, legacy `-> None` strip on declaration headers — see §7) run first on raw source and may turn a previously-rejecting source into one Phase 1 can accept; post-Parse AST-level rewrites (unconditional constraint hoisting, duplicate import merging, unused import removal, source section reordering) require a successful Phase 1. If Phase 1 fails after the pre-Parse pass, only the pre-Parse fixes are written and the parse diagnostic is surfaced to subsequent phases; AST-level rewrites are skipped.
+- **3a — deterministic auto-fixes.** Tab→spaces, mixed-indent normalization, legacy `-> None` strip, constraint/context hoisting, canonical sub-section reorder, duplicate sub-section merge (#109), duplicate import collapse (#107), unused import removal (#108), stdlib auto-import (#110), const-in-flow parens-add (#111), effects auto-insert (#112, gated on `--enable-effects`), placeholder return rewrite (#113). No LLM. 3a operates in two strata mirroring `glyph fmt` (`cli.md` §`glyph fmt`): pre-Parse text-level rewrites (tab → 4 spaces, mixed-indent normalization, legacy `-> None` strip on declaration headers — see §7) run first on raw source and may turn a previously-rejecting source into one Phase 1 can accept; post-Parse AST-level rewrites (unconditional constraint hoisting, duplicate import merging, unused import removal, source section reordering) require a successful Phase 1. If Phase 1 fails after the pre-Parse pass, only the pre-Parse fixes are written and the parse diagnostic is surfaced to subsequent phases; AST-level rewrites are skipped.
 - **3b — LLM-assisted repairs.** Driven by `repairable` diagnostics from Phase 2 (undefined names, ambiguous roles, missing returns, etc.).
 - **3c — constraint conflict scan.** Always runs (when triggered by constraint count). Independent of Phase 2 diagnostics.
 
@@ -257,6 +257,66 @@ It does **not** scan across scopes — a callee's scoped constraints (carried as
 **Idempotence.** Phase 3c does not modify source — it only emits diagnostics. So re-running Repair on the same source produces the same constraint set, the same prompt, and (modulo model non-determinism, the same caveat as 3b) the same verdict. The overall Repair idempotence claim from §4.5 is preserved.
 
 **Cost.** One LLM call per declaration with ≥2 constraints. Skills/blocks with 0 or 1 constraints incur no Phase 3c call. The prompt is small (constraint texts only, no IR graph or surrounding flow).
+
+### 4.11 Duplicate Sub-Section Merge (Phase 3a)
+
+When a `skill`, `block`, or `export block` body contains the same sub-section keyword (`description:`, `context:`, `constraints:`, `effects:`, `flow:`) more than once, the parser is permissive: the first occurrence populates the canonical singleton field and every later occurrence lands in `extra_subsections` (`language-surface.md` §2.5, `tree-sitter-grammar.md` §2.1). Phase 3a's deterministic post-Parse stratum (`cli.md` §`glyph fmt`) merges these duplicates back into a single sub-section in source. The pass is purely textual — it splices source spans; it does not re-emit from IR — so author formatting inside each body is preserved verbatim.
+
+**Trigger.** `G::parse::duplicate-subsection` (repairable). The merge runs whenever `extra_subsections` is non-empty for any declaration AST node.
+
+**Mechanism.**
+
+1. Order the duplicate occurrences by source position (first, second, …).
+2. The **first** occurrence is the *anchor*: its header line, indentation, and body span are kept in place.
+3. For each later occurrence (in source order), append its body content under the anchor's body, preserving the anchor's body indentation. The duplicate's header line is removed.
+4. Concatenation rules differ by sub-section kind:
+   - `description:` — concatenate body text with a single blank line between bodies.
+   - `context:`, `constraints:`, `effects:` — concatenate entries (one per line) in source order; do not deduplicate (deduplication is a separate concern owned by Lower).
+   - `flow:` — append later statements after the anchor's last statement, preserving statement order across the duplicates.
+
+**Comment placement.** Comments are first-class authored content and `repair.md` §4.1 forbids deleting, moving, or rewriting comment text. Three sub-rules govern how comment trivia attached to a duplicate occurrence are placed when its header line is removed:
+
+- **(a) Whole-line comments inside the second body are preserved verbatim.** Whole-line `//` comments that sit between body entries of a duplicate occurrence move with their entries into the merged body, retaining their relative position to the entries that follow them.
+- **(b) A trailing comment on the second header becomes a new whole-line comment at the merge boundary.** When a duplicate occurrence's header line carries a trailing `// …` comment, that comment cannot stay with a header that is being removed. The merge converts it into a whole-line comment placed at the boundary in the merged body — i.e., immediately before the first entry contributed by that duplicate, at the body's indentation. The comment text is unchanged.
+- **(c) Whole-line comments between the first body and the second header are preserved at the boundary.** Any whole-line `//` comments that sit *between* the end of the anchor's body and the start of the duplicate's header land at the merge boundary as whole-line comments at the merged body's indentation, in their original source order, immediately before the entries contributed by the duplicate.
+
+In all three cases the comment text is preserved verbatim; only relative position and the header-vs-whole-line shape may change, and only as the rules above prescribe.
+
+**Example.** Before merge:
+
+```glyph
+skill review_pr(pr_id: PullRequest)
+    description:
+        Reviews a pull request and returns a verdict.
+
+    flow:
+        ctx = inspect(pr_id)
+
+    // second description was added when the author iterated on routing language
+    description: // refined wording after the v2 routing pass
+        Use this skill when a teammate posts a PR for review and routing.
+```
+
+After merge (Phase 3a):
+
+```glyph
+skill review_pr(pr_id: PullRequest)
+    description:
+        Reviews a pull request and returns a verdict.
+
+        // second description was added when the author iterated on routing language
+        // refined wording after the v2 routing pass
+        Use this skill when a teammate posts a PR for review and routing.
+
+    flow:
+        ctx = inspect(pr_id)
+```
+
+The whole-line comment between the bodies (rule c) and the trailing comment on the duplicate header (rule b) both land at the merge boundary as whole-line comments at the body's indentation. The duplicate's body text follows verbatim.
+
+**Idempotence.** After a successful merge, `extra_subsections` is empty and the body contains a single occurrence of each sub-section kind. Re-running Phase 3a finds nothing to merge. The merge therefore composes cleanly with the canonical source-section reordering that `glyph fmt` applies in the same stratum (`cli.md` §`glyph fmt`).
+
+**Failure mode.** If Phase 3a is disabled (`--no-repair`, `glyph fmt --check`) or the merge cannot complete (e.g., the duplicate's body cannot be located in source), `extra_subsections` survives into Analyze and surfaces as `G::analyze::unmerged-duplicate-subsection` (error). The author then either re-runs with Phase 3a enabled or removes the duplicate manually.
 
 ## 5. Generated Definitions
 
@@ -409,7 +469,7 @@ The repair pass may add:
 - local declarations for author-defined shorthand;
 - stable `generated const` definitions for undefined bare names used with keyword prefixes (`require`/`avoid`/`must`/`context`);
 - stable `generated block` definitions for undefined parens-calls and undefined bare names in `flow:` (single-string bodies);
-- missing imports when the referenced library is obvious from available context (deferred from MVP — see `todo.md`);
+- missing imports when the referenced library is obvious from available context — for the standard library (`@glyph/std`), Phase 3a handles this deterministically (#110, `G::analyze::stdlib-missing-import`); for non-stdlib imports this remains deferred (see `todo.md`);
 - missing `effects:` on any declaration (skill, block, or export block) whose inferred set is non-empty — Phase 3a deterministically inserts an `effects:` sub-section with the inferred set into the source, triggered by `G::analyze::missing-effects`, and emits `G::repair::inferred-effects` (warning, informational) so the author knows what was added (see `ir-and-semantics.md` §3 and `diagnostics.md`);
 - missing `description:` on a `skill` — Phase 3b generates a single-string description from the skill name, parameters, and body, and adds it as a `description:` sub-section, triggered by `G::analyze::missing-description` (see `ir-and-semantics.md` §4 and `diagnostics.md`);
 - placeholder string returns on domain-typed declarations — Phase 3a rewrites a terminal `return "<…>"` whose enclosing declaration has `-> DomainType` into the appropriate output-target form, triggered by `G::analyze::placeholder-string-return`. The repair bifurcates on placeholder shape (both branches are deterministic, no LLM):
@@ -423,7 +483,7 @@ The repair pass may add:
 
 The repair pass may remove:
 
-- duplicate declarations that make resolution impossible;
+- duplicate declarations that make resolution impossible — note that Phase 3a (`glyph fmt`) already removes duplicate import lines (#107, `G::analyze::duplicate-import`), unused imports (#108, `G::analyze::unused-import`), and merges duplicate sub-sections (#109, `G::parse::duplicate-subsection`); the LLM repair pass (Phase 3b) handles the remaining semantic duplicates;
 - syntax that is invalid and has a clear local correction;
 - legacy `-> None` return-type annotations on `skill` / `block` / `export block` / `generated block` declaration headers — the `None` type annotation has been removed in MVP, and a declaration with no meaningful return omits `->` entirely (`types.md` §`none` Value, `language-surface.md` §3.3). Implemented as a Phase 3a pre-Parse text-level rewrite (`glyph fmt` stratum 1): the trailing ` -> None` is stripped from indent-0 declaration headers, case-insensitive on `none`, with identifier-boundary semantics. The value keyword `none` (in `return none`, `effects: none`, and other value positions per `values-and-names.md` §None) is preserved untouched. Triggered by `G::parse::none-as-return-type` (`diagnostics.md`).
 

@@ -35,3 +35,26 @@ the symptom, the impact, and the proposed fix.
   - **Workaround until fixed:** verification of cross-file LSP behavior uses
     `crates/glyph-cli/tests/corpus/multi-file/fix_bug.glyph.md` instead, which
     is structurally identical but doesn't include the binding.
+
+## Formatter (issue #109 follow-ups, codex pass-4 P2)
+
+- **Inline-form `description:` merge separator may not match design intent.**
+  `crates/glyph-core/src/fmt.rs` `emit_merged_descriptions` joins the bodies of
+  duplicate inline `description: "..."` sub-sections with a single `\n`. The
+  multi-line bare form's merge rule in `design/repair.md` §4.11.4 specifies
+  "concatenate body text with a single blank line between bodies" (i.e. `\n\n`).
+  The design is silent on the inline-string form, so #109 chose `\n` as a
+  default. If §4.11.4's blank-line rule is meant to apply uniformly to all
+  description merges (including inline string-form), change `bodies.join("\n")`
+  to `bodies.join("\n\n")`. Needs a designer call to confirm the intent.
+
+- **Trailing comment scanner mishandles strings ending in even backslashes.**
+  `crates/glyph-core/src/fmt.rs` `strip_trailing_comment` /
+  `trailing_comment_after_keyword` (~lines 741–748) treat any quote preceded by
+  `\` as escaped, which is wrong when the string ends with an even number of
+  backslashes (e.g. `description: "C:\\" // note`). The closing quote is real,
+  but the scanner stays `in_string`, so `glyph fmt` can fail to strip the
+  trailing comment, drop the duplicate body from the merge, or lose the moved
+  comment entirely. Narrow edge case (rare in agent-skill descriptions) but a
+  real correctness bug. Fix: track backslash run length and treat the quote as
+  closing when the run length is even.

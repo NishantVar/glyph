@@ -813,6 +813,64 @@ fn walk_return_calls_nominal_check(
     }
 }
 
+/// Issue #109 chunk 3 — Analyze invariant.
+///
+/// Walks every `Skill` / `BlockDecl` / `ExportBlockDecl` in `file.decls` and,
+/// for each declaration whose `extra_subsections` is non-empty, emits a
+/// single `G::analyze::unmerged-duplicate-subsection` diagnostic at error
+/// tier (one per declaration; the natural fix unit is "rerun glyph fmt on
+/// this file" — not a per-extras-entry edit).
+///
+/// Span attribution: the declaration node's own span. Naturally available,
+/// matches the per-decl emission cardinality.
+///
+/// Called from both `analyze_with_diagnostics` and `analyze_with_imports`
+/// (the two callers that walk the AST through the rest of Analyze) so the
+/// invariant is uniformly enforced regardless of compile path.
+fn check_unmerged_duplicate_subsections(
+    file: &SourceFile,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    for decl in &file.decls {
+        let (kind_label, name, span, extras_len) = match decl {
+            Decl::Skill(s) if !s.node.extra_subsections.is_empty() => (
+                "skill",
+                s.node.name.as_str(),
+                s.span,
+                s.node.extra_subsections.len(),
+            ),
+            Decl::Block(b) if !b.node.extra_subsections.is_empty() => (
+                "block",
+                b.node.name.as_str(),
+                b.span,
+                b.node.extra_subsections.len(),
+            ),
+            Decl::ExportBlock(b) if !b.node.extra_subsections.is_empty() => (
+                "export block",
+                b.node.name.as_str(),
+                b.span,
+                b.node.extra_subsections.len(),
+            ),
+            _ => continue,
+        };
+        let plural = if extras_len == 1 { "" } else { "s" };
+        bag.push(
+            Diagnostic::error(
+                "G::analyze::unmerged-duplicate-subsection",
+                format!(
+                    "{} `{}` carries {} unmerged duplicate sub-section{} — \
+                     run `glyph fmt` to merge them",
+                    kind_label, name, extras_len, plural
+                ),
+                SourceSpan::from_byte_span(file_label, span, line_index),
+            ),
+            span,
+        );
+    }
+}
+
 /// Run Phase 2 with diagnostic emission.
 ///
 /// Pushes any structured diagnostics onto `bag` and returns the AST unchanged.
@@ -826,6 +884,14 @@ pub fn analyze_with_diagnostics(
     bag: &mut DiagBag,
     registry: &mut crate::domain_registry::Registry,
 ) -> SourceFile {
+    // Issue #109 chunk 3 — Analyze invariant: every declaration's
+    // `extra_subsections` must be empty by the time Analyze runs. The parser
+    // captures duplicate sub-sections into `extra_subsections` and emits
+    // `G::parse::duplicate-subsection` (repairable). `glyph fmt` is then
+    // contracted to merge extras back into the singleton field. If fmt is
+    // skipped, Analyze must reject the AST so it never reaches Lower in a
+    // state where extras matter.
+    check_unmerged_duplicate_subsections(&file, file_label, line_index, bag);
     // Collect value-binding names for bare-name detection in flow. Post-#81,
     // `const` is the sole value-binding form; the variable name `text_names`
     // is retained to keep diagnostic IDs (`G::analyze::text-in-flow`) and
@@ -1470,6 +1536,11 @@ pub fn analyze_with_imports(
     registry: &mut crate::domain_registry::Registry,
     imported_block_return_types: &HashMap<String, Spanned<String>>,
 ) -> SourceFile {
+    // Issue #109 chunk 3 — Analyze invariant. Enforced on the import-aware
+    // path too so multi-file compiles get identical guarantees. See
+    // `check_unmerged_duplicate_subsections` doc-comment for rationale.
+    check_unmerged_duplicate_subsections(file, file_label, line_index, bag);
+
     // Collect local value-binding names (post-#81: `const` is the sole form;
     // the `local_text_names` variable name is kept for parity with the legacy
     // diagnostic vocabulary — see `analyze_with_diagnostics` notes).
@@ -2646,8 +2717,8 @@ fn check_branch_body_names(
 }
 
 /// Check if a name is a stdlib block (author-importable from `@glyph/std`).
-fn is_stdlib_block_name(name: &str) -> bool {
-    name == "subagent" || name == "send"
+pub(crate) fn is_stdlib_block_name(name: &str) -> bool {
+    matches!(name, "subagent" | "send" | "load")
 }
 
 /// Return the effect signature for a stdlib block, if it is one.
@@ -2655,6 +2726,7 @@ pub fn stdlib_block_effects(name: &str) -> Option<&'static [&'static str]> {
     match name {
         "subagent" => Some(&["spawns_agent"]),
         "send" => Some(&["spawns_agent"]),
+        "load" => Some(&[]),
         _ => None,
     }
 }
@@ -2832,6 +2904,150 @@ fn analyze_export_block(
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// FmtSignals — structured signals for `glyph fmt` auto-fix pass
+// ---------------------------------------------------------------------------
+
+/// Structured signals extracted from a parsed `SourceFile` for `glyph fmt`'s
+/// auto-fix pass to consume. Single-file scope — no cross-file resolution.
+#[derive(Debug, Default)]
+pub struct FmtSignals {
+    pub referenced_names: HashSet<String>,
+    pub unresolved_names: HashSet<String>,
+    pub inferred_effects: HashMap<String, Vec<String>>,
+}
+
+pub fn fmt_signals(file: &SourceFile) -> FmtSignals {
+    let mut signals = FmtSignals::default();
+    let mut bound: HashSet<String> = HashSet::new();
+
+    for decl in &file.decls {
+        match decl {
+            Decl::Const(c) => { bound.insert(c.node.name.clone()); }
+            Decl::Block(b) => { bound.insert(b.node.name.clone()); }
+            Decl::ExportBlock(b) => { bound.insert(b.node.name.clone()); }
+            Decl::Skill(s) => { bound.insert(s.node.name.clone()); }
+            Decl::Import(imp) => match &imp.node.kind {
+                ast::ImportKind::Selective(names) => {
+                    for n in names {
+                        let local = n.alias.clone().unwrap_or_else(|| n.name.node.clone());
+                        bound.insert(local);
+                    }
+                }
+                ast::ImportKind::WholeModule { alias } => {
+                    bound.insert(alias.clone());
+                }
+            },
+        }
+    }
+
+    for decl in &file.decls {
+        collect_refs_from_decl(decl, &mut signals.referenced_names);
+        if let Some((name, effects)) = infer_decl_effects(decl) {
+            if !effects.is_empty() {
+                signals.inferred_effects.insert(name, effects);
+            }
+        }
+    }
+
+    for name in &signals.referenced_names {
+        if !bound.contains(name) {
+            signals.unresolved_names.insert(name.clone());
+        }
+    }
+    signals
+}
+
+fn collect_refs_from_decl(decl: &Decl, out: &mut HashSet<String>) {
+    match decl {
+        Decl::Skill(s) => {
+            for stmt in &s.node.flow { collect_refs_from_flow_stmt(stmt, out); }
+            for n in &s.node.body_bare_names { out.insert(n.clone()); }
+        }
+        Decl::Block(b) => {
+            for stmt in &b.node.flow { collect_refs_from_flow_stmt(stmt, out); }
+        }
+        Decl::ExportBlock(b) => {
+            if let Some(expr) = &b.node.terminal_return {
+                collect_refs_from_return_expr(expr, out);
+            }
+        }
+        Decl::Const(_) | Decl::Import(_) => {}
+    }
+}
+
+fn collect_refs_from_flow_stmt(stmt: &FlowStmt, out: &mut HashSet<String>) {
+    match stmt {
+        FlowStmt::Call { target, .. } => { out.insert(target.node.clone()); }
+        FlowStmt::Return(expr) => collect_refs_from_return_expr(expr, out),
+        FlowStmt::Branch { then_body, elif_branches, else_body, .. } => {
+            for s in then_body { collect_refs_from_flow_stmt(s, out); }
+            for eb in elif_branches {
+                for s in &eb.body { collect_refs_from_flow_stmt(s, out); }
+            }
+            if let Some(eb) = else_body {
+                for s in eb { collect_refs_from_flow_stmt(s, out); }
+            }
+        }
+        FlowStmt::BareName(n) => { out.insert(n.node.clone()); }
+        FlowStmt::InlineString(_)
+        | FlowStmt::ConstraintMarker(_)
+        | FlowStmt::ContextMarker(_) => {}
+    }
+}
+
+fn collect_refs_from_return_expr(expr: &ReturnExpr, out: &mut HashSet<String>) {
+    match expr {
+        ReturnExpr::Call { target, .. } => { out.insert(target.node.clone()); }
+        ReturnExpr::Name(n) => { out.insert(n.node.clone()); }
+        ReturnExpr::None | ReturnExpr::Inline(_) | ReturnExpr::OutputTarget(_) => {}
+    }
+}
+
+fn infer_decl_effects(decl: &Decl) -> Option<(String, Vec<String>)> {
+    match decl {
+        Decl::Skill(s) => {
+            if !s.node.effects.is_empty() {
+                return Some((s.node.name.clone(), Vec::new()));
+            }
+            Some((s.node.name.clone(), infer_effects_for_flow(&s.node.flow)))
+        }
+        Decl::Block(b) => {
+            if !b.node.effects.is_empty() {
+                return Some((b.node.name.clone(), Vec::new()));
+            }
+            Some((b.node.name.clone(), infer_effects_for_flow(&b.node.flow)))
+        }
+        _ => None,
+    }
+}
+
+fn infer_effects_for_flow(flow: &[FlowStmt]) -> Vec<String> {
+    let mut effects: BTreeSet<String> = BTreeSet::new();
+    fn walk(stmt: &FlowStmt, effects: &mut BTreeSet<String>) {
+        match stmt {
+            FlowStmt::Call { target, .. } => {
+                if let Some(eff) = stdlib_block_effects(target.node.as_str()) {
+                    for e in eff { effects.insert((*e).to_string()); }
+                }
+            }
+            FlowStmt::Return(ReturnExpr::Call { target, .. }) => {
+                if let Some(eff) = stdlib_block_effects(target.node.as_str()) {
+                    for e in eff { effects.insert((*e).to_string()); }
+                }
+            }
+            FlowStmt::Branch { then_body, elif_branches, else_body, .. } => {
+                for s in then_body { walk(s, effects); }
+                for eb in elif_branches { for s in &eb.body { walk(s, effects); } }
+                if let Some(eb) = else_body { for s in eb { walk(s, effects); } }
+            }
+            _ => {}
+        }
+    }
+    for stmt in flow { walk(stmt, &mut effects); }
+    effects.into_iter().collect()
 }
 
 #[cfg(test)]
@@ -3060,6 +3276,7 @@ skill current() -> BranchName
                 effects: vec!["writes_files".to_string()],
                 return_type: None,
                 generated: false,
+                extra_subsections: Vec::new(),
             },
             span: Span::new(0, 0, 10),
         };
@@ -3079,7 +3296,9 @@ skill current() -> BranchName
                 body_bare_names: Vec::new(),
                 effects: Vec::new(),
                 context_section: Vec::new(),
+                constraints_section: Vec::new(),
                 return_type: None,
+                extra_subsections: Vec::new(),
             },
             span: Span::new(0, 0, 10),
         };
@@ -4995,5 +5214,332 @@ skill main()
             .count();
         assert_eq!(import_kind_count, 1, "expected 1 Import-kind resolution");
         assert_eq!(block_kind_count, 1, "expected 1 Block/ExportBlock-kind resolution");
+    }
+
+    #[test]
+    fn fmt_signals_extracts_referenced_unresolved_and_effects() {
+        let src = r#"import "@glyph/std" { send }
+
+skill main()
+    description: "Main."
+    flow:
+        send("hi")
+        subagent("nested")
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+
+        let signals = crate::analyze::fmt_signals(&file);
+
+        assert!(signals.referenced_names.contains("send"));
+        assert!(signals.referenced_names.contains("subagent"));
+        assert!(signals.unresolved_names.contains("subagent"),
+            "subagent is not imported and not local — should be unresolved");
+        assert!(!signals.unresolved_names.contains("send"),
+            "send is imported, should not be unresolved");
+    }
+
+    #[test]
+    fn fmt_signals_infers_effects_from_stdlib_call() {
+        // No `effects:` declared; `send("hi")` should cause `spawns_agent` to
+        // be inferred for the skill named "main".
+        let src = r#"skill main()
+    description: "Test."
+    flow:
+        send("hi")
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+
+        let effects = signals.inferred_effects.get("main")
+            .expect("main should have inferred effects");
+        assert!(
+            effects.iter().any(|e| e == "spawns_agent"),
+            "expected spawns_agent in inferred effects, got {:?}", effects
+        );
+    }
+
+    #[test]
+    fn fmt_signals_does_not_infer_when_author_declared_effects() {
+        // When `effects:` is explicitly declared, infer_decl_effects returns an
+        // empty Vec (which the insertion site drops), so the key is absent.
+        // Must parse with enable_effects=true so the effects: field is populated.
+        let src = r#"skill main()
+    description: "Test."
+    effects: spawns_agent
+    flow:
+        send("hi")
+"#;
+        let line_index = crate::span::LineIndex::new(src);
+        let mut bag = crate::diagnostic::DiagBag::new();
+        let file = crate::parse::parse_with_diagnostics_opts(
+            src, 0, "test.glyph.md", &line_index, &mut bag, true,
+        )
+        .expect("parse with effects enabled");
+        let signals = crate::analyze::fmt_signals(&file);
+
+        // Either the key is absent or its value is empty — either way the
+        // inferred_effects map must not contain a non-empty entry for "main".
+        let is_empty_or_absent = signals.inferred_effects.get("main")
+            .map_or(true, |v| v.is_empty());
+        assert!(
+            is_empty_or_absent,
+            "expected no inferred effects when author declared effects, got {:?}",
+            signals.inferred_effects.get("main")
+        );
+    }
+
+    #[test]
+    fn fmt_signals_recurses_into_branch_bodies() {
+        // Calls appear only inside `if`/`else` bodies; the walker must recurse
+        // into branch arms and surface those call targets in referenced_names.
+        let src = r#"skill main()
+    description: "Test."
+    flow:
+        if check == "yes"
+            inner_a("x")
+        else
+            inner_b("y")
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+
+        assert!(
+            signals.referenced_names.contains("inner_a"),
+            "inner_a (in then_body) should be in referenced_names, got {:?}",
+            signals.referenced_names
+        );
+        assert!(
+            signals.referenced_names.contains("inner_b"),
+            "inner_b (in else_body) should be in referenced_names, got {:?}",
+            signals.referenced_names
+        );
+    }
+}
+
+#[cfg(test)]
+mod unmerged_duplicate_subsection_tests {
+    //! Issue #109 chunk 3 — Analyze invariant.
+    //!
+    //! After Chunk 2, the parser recovers a duplicate sub-section into the
+    //! declaration's `extra_subsections` and emits the *parse-tier* repairable
+    //! `G::parse::duplicate-subsection`. `glyph fmt` is then expected to merge
+    //! the extras back into the singleton field. If `fmt` is skipped (or fed
+    //! an unrepaired AST programmatically), Lower would receive a node whose
+    //! "extras" channel still carries semantic content — a silent contract
+    //! violation.
+    //!
+    //! Analyze closes that hole: it walks every `Skill` / `BlockDecl` /
+    //! `ExportBlockDecl` and, if any has a non-empty `extra_subsections`,
+    //! emits `G::analyze::unmerged-duplicate-subsection` at error tier. The
+    //! pipeline-level `bag.has_error()` gate (lib.rs:110) then prevents Lower
+    //! from being called.
+    use super::*;
+    use crate::ast::{Decl, DuplicateSubsection, FlowStmt, Skill, SourceFile};
+    use crate::diagnostic::{Classification, DiagBag};
+    use crate::span::{LineIndex, Span, Spanned};
+
+    /// Build a minimal `Skill` AST node with a configurable `extra_subsections`
+    /// field. All other fields are filled with empty/default values matching
+    /// what `parse_skill` would produce for an empty body.
+    fn skill_with_extras(extras: Vec<DuplicateSubsection>) -> Spanned<Skill> {
+        Spanned {
+            node: Skill {
+                name: "the_skill".to_string(),
+                params: Vec::new(),
+                description: Some("present".to_string()),
+                flow: vec![FlowStmt::InlineString("do work".to_string())],
+                flow_present: true,
+                body_constraints: Vec::new(),
+                body_context: Vec::new(),
+                body_bare_names: Vec::new(),
+                effects: Vec::new(),
+                context_section: Vec::new(),
+                constraints_section: Vec::new(),
+                return_type: None,
+                extra_subsections: extras,
+            },
+            span: Span::new(0, 0, 10),
+        }
+    }
+
+    fn run_analyze(file: SourceFile) -> DiagBag {
+        let source = "dummy";
+        let li = LineIndex::new(source);
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        analyze_with_diagnostics(file, 0, "test.glyph.md", &li, &mut bag, &mut registry);
+        bag
+    }
+
+    /// Test (a): an AST whose `Skill` carries a non-empty `extra_subsections`
+    /// must fail Analyze with `G::analyze::unmerged-duplicate-subsection` at
+    /// `Classification::Error`.
+    #[test]
+    fn skill_with_unmerged_extras_emits_error_diagnostic() {
+        let skill = skill_with_extras(vec![DuplicateSubsection::Description(
+            "second body never merged by fmt".to_string(),
+        )]);
+        let file = SourceFile {
+            decls: vec![Decl::Skill(skill)],
+        };
+
+        let bag = run_analyze(file);
+
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::unmerged-duplicate-subsection")
+            .unwrap_or_else(|| {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!(
+                    "expected `G::analyze::unmerged-duplicate-subsection`, got: {:?}",
+                    ids
+                )
+            });
+        assert_eq!(
+            diag.classification,
+            Classification::Error,
+            "unmerged-duplicate-subsection must be Error tier"
+        );
+    }
+
+    /// Test (c): end-to-end through the real parse→analyze pipeline. A
+    /// source containing two `constraints:` sub-sections under one skill
+    /// must produce BOTH the parse-tier repairable
+    /// `G::parse::duplicate-subsection` AND the analyze-tier error
+    /// `G::analyze::unmerged-duplicate-subsection` in the same diagnostic
+    /// bag. This pins the contract that the two diagnostics co-exist (they
+    /// fire from different phases targeting different consumers — agent
+    /// repair loop vs. lower-side invariant).
+    #[test]
+    fn pipeline_two_constraints_emits_both_parse_and_analyze_diagnostics() {
+        let src = "\
+skill the_skill()
+    constraints:
+        require accuracy
+    constraints:
+        avoid stale_references
+    flow:
+        \"do work\"
+";
+        let bag = crate::check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+
+        assert!(
+            ids.contains(&"G::parse::duplicate-subsection"),
+            "expected parse-tier `G::parse::duplicate-subsection`, got {:?}",
+            ids
+        );
+        assert!(
+            ids.contains(&"G::analyze::unmerged-duplicate-subsection"),
+            "expected analyze-tier `G::analyze::unmerged-duplicate-subsection`, \
+             got {:?}",
+            ids
+        );
+
+        let analyze_diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::unmerged-duplicate-subsection")
+            .unwrap();
+        assert_eq!(
+            analyze_diag.classification,
+            Classification::Error,
+            "analyze-tier diagnostic must be Error (the only fix path is fmt; \
+             only parse-tier carries Repairable)"
+        );
+    }
+
+    /// Issue #109 codex pass-2 finding 5 — end-to-end through parse→analyze
+    /// for a `block` declaration. A source containing two `description:`
+    /// sub-sections under one `block` must produce BOTH the parse-tier
+    /// repairable `G::parse::duplicate-subsection` AND the analyze-tier
+    /// error `G::analyze::unmerged-duplicate-subsection` in the same bag,
+    /// proving the parser→analyze hand-off works for block declarations
+    /// (not just skills).
+    #[test]
+    fn pipeline_block_two_descriptions_emits_both_parse_and_analyze_diagnostics() {
+        let src = "\
+block foo()
+    description: \"First.\"
+    description: \"Second.\"
+    flow:
+        \"Do something.\"
+";
+        let bag = crate::check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+
+        assert!(
+            ids.contains(&"G::parse::duplicate-subsection"),
+            "expected parse-tier `G::parse::duplicate-subsection`, got {:?}",
+            ids
+        );
+        assert!(
+            ids.contains(&"G::analyze::unmerged-duplicate-subsection"),
+            "expected analyze-tier `G::analyze::unmerged-duplicate-subsection`, \
+             got {:?}",
+            ids
+        );
+        let analyze_diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::unmerged-duplicate-subsection")
+            .unwrap();
+        assert_eq!(analyze_diag.classification, Classification::Error);
+    }
+
+    /// Issue #109 codex pass-2 finding 4 — end-to-end through parse→analyze
+    /// for an `export block` declaration.
+    #[test]
+    fn pipeline_export_block_two_descriptions_emits_both_parse_and_analyze_diagnostics() {
+        let src = "\
+export block foo() -> Report
+    description: \"First.\"
+    description: \"Second.\"
+    flow:
+        \"Do something.\"
+        return <result>
+";
+        let bag = crate::check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+
+        assert!(
+            ids.contains(&"G::parse::duplicate-subsection"),
+            "expected parse-tier `G::parse::duplicate-subsection`, got {:?}",
+            ids
+        );
+        assert!(
+            ids.contains(&"G::analyze::unmerged-duplicate-subsection"),
+            "expected analyze-tier `G::analyze::unmerged-duplicate-subsection`, \
+             got {:?}",
+            ids
+        );
+        let analyze_diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::unmerged-duplicate-subsection")
+            .unwrap();
+        assert_eq!(analyze_diag.classification, Classification::Error);
+    }
+
+    /// Test (b): a clean AST (every declaration's `extra_subsections` is
+    /// empty) must NOT emit the invariant diagnostic. Other unrelated
+    /// diagnostics may still fire — we only assert that
+    /// `G::analyze::unmerged-duplicate-subsection` is absent.
+    #[test]
+    fn clean_ast_emits_no_unmerged_diagnostic() {
+        let skill = skill_with_extras(Vec::new());
+        let file = SourceFile {
+            decls: vec![Decl::Skill(skill)],
+        };
+
+        let bag = run_analyze(file);
+
+        let dups: Vec<&str> = bag
+            .iter()
+            .map(|d| d.id.as_str())
+            .filter(|id| *id == "G::analyze::unmerged-duplicate-subsection")
+            .collect();
+        assert!(
+            dups.is_empty(),
+            "clean AST must not emit unmerged-duplicate-subsection; got {:?}",
+            dups
+        );
     }
 }

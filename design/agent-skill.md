@@ -23,6 +23,23 @@ The skill encodes this state machine. The agent follows it top-to-bottom.
 
 **`glyph fmt` runs exactly once, at the top of the workflow, before the first `glyph compile`.** It does **not** re-run between LLM repair iterations. The Phase 3b repair prompt is responsible for producing already-formatted source — correct 4-space indentation, generated declarations appended after all non-generated top-level declarations, no tab characters. Re-running fmt mid-loop is wasted work.
 
+## Phase 3a — Deterministic auto-fixes (`glyph fmt`)
+
+`glyph fmt` runs exactly once at the top of the workflow, before the first `glyph compile`. It performs these deterministic source rewrites without any LLM call:
+
+- Tab → 4-space, mixed-indentation fix (`G::parse::tab-indent`, `G::parse::mixed-indent`)
+- Legacy `-> None` strip (`G::parse::none-as-return-type`)
+- Constraint hoisting, context hoisting, canonical sub-section reorder
+- Duplicate sub-section merge (#109, `G::parse::duplicate-subsection`)
+- Duplicate import collapse (#107, `G::analyze::duplicate-import`)
+- Unused import removal (#108, `G::analyze::unused-import`)
+- Stdlib auto-import (#110, `G::analyze::stdlib-missing-import`)
+- Const-in-flow parens-add (#111, `G::analyze::const-in-flow`)
+- Effects auto-insert (#112, `G::analyze::missing-effects`, gated on `--enable-effects`)
+- Placeholder return rewrite (#113, `G::analyze::placeholder-string-return`)
+
+All fixes are idempotent and comment-preserving. After fmt, the agent runs `glyph compile`. If exit 2 still, the agent enters Phase 3b (LLM repair pass) — which now handles only the remaining semantic repairs that require generation (undefined names, undefined calls, ambiguous roles, missing-return, missing-description, applies-on-undescribed-block, nested-branch).
+
 ```
                     ┌──────────────────────────────┐
                     │  glyph fmt <path>             │
@@ -125,11 +142,9 @@ Each repairable diagnostic has a specific fix pattern. The agent applies these t
 
 | Diagnostic ID | Fix |
 |---|---|
-| `G::parse::tab-indent` | Replace all leading tabs with 4 spaces on the flagged lines. |
-| `G::parse::mixed-indent` | Normalize the flagged lines to 4-space indentation. |
 | `G::parse::operator-in-expression` | Glyph has no value-level operators in MVP. Rewrite the expression as a plain call or inline string. E.g., `x + y` → `combine(x, y)` or an inline instruction string. |
 | `G::parse::param-slot-in-non-instruction-string` | `{name}` slots are only valid in instruction-bearing positions (flow statements, constraint text). Move the slot to an instruction string or remove it. |
-| `G::parse::duplicate-subsection` | Remove the duplicate sub-section header, merging content into the first occurrence. |
+| `G::parse::duplicate-subsection` | Phase 3a handles this deterministically — no LLM action needed. The compiler's deterministic merge (`repair.md` §4.11) splices the duplicate body and its comment trivia into the first occurrence and removes the duplicate header. If this diagnostic appears in the 3b residual set, it is a compiler bug; Analyze should have surfaced `G::analyze::unmerged-duplicate-subsection` (error) instead. |
 
 #### Analyze-phase repairables
 
@@ -137,12 +152,8 @@ Each repairable diagnostic has a specific fix pattern. The agent applies these t
 |---|---|
 | `G::analyze::undefined-name` | Add a `generated const <name> = "<single-string content>"` declaration at the bottom of the file (after all non-generated declarations). Infer the content from the name and its usage context in the flow. |
 | `G::analyze::undefined-call` | Add a `generated block <name>(<inferred-params>)` with a single-string body (the `flow:`-omitted shorthand per `language-surface.md` §3.2). Infer parameter names from the call arguments. The body should be a single instruction string describing what the block does. Place after all non-generated declarations. |
-| `G::analyze::duplicate-import` | Remove the duplicate `import` line, keeping the first occurrence. |
-| `G::analyze::unused-import` | Remove the `import` line for the unused name. |
 | `G::analyze::ambiguous-role` | Add an explicit role marker. If the statement is meant as a constraint, prefix with `require` or `avoid`. If it's meant as a step, ensure it's an instruction string or call. |
-| `G::analyze::missing-effects` | Phase 3a handles this deterministically — no LLM action needed. The compiler auto-adds an `effects:` sub-section with the inferred effects and emits `G::repair::inferred-effects`. If this diagnostic appears in the 3b residual set, it is a compiler bug. |
 | `G::analyze::missing-return` | Add a `return` statement as the last line of the `flow:` body. Infer the return expression from the block's purpose. |
-| `G::analyze::stdlib-missing-import` | Add `import "@glyph/std" (subagent)` (or whichever stdlib name is used) at the top of the file, after any existing imports. |
 | `G::analyze::nested-branch` | Extract the inner branch into a `generated block` declaration. Replace the inner branch with a call to the new block. The generated block's body should be a single instruction string summarizing the extracted branch logic. |
 | `G::analyze::missing-description` | Add a `description:` sub-section to the `skill` declaration with a single-string summary of when and why to use this skill. Infer the description from the skill name, parameters, effects, constraints, and flow body. The description should focus on the skill's trigger condition (when an agent should select it), not its implementation steps. |
 | `G::analyze::applies-on-undescribed-block` | Add a `description:` sub-section to the **block** named in the diagnostic, with a single-string summary of **when this block applies** — i.e. the user-intent or runtime condition under which the calling `if`/`elif` arm should fire. Infer the trigger from the block name, the body of the arm that uses `BLOCKNAME.applies()`, and any sibling arms. Phrase as a condition (e.g. "When the user asks to fork a terminal pre-loaded with a plan."), not as an implementation summary. Repairable only when the block is defined in the same file under compilation; if the block is imported, this diagnostic is an error and the author must edit the source library directly. |
