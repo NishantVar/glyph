@@ -92,8 +92,8 @@ skill current() -> BranchName
 
     let md = std::fs::read_to_string(md_path(&path)).unwrap();
     assert!(
-        md.contains("Produce current branch as the final output."),
-        "compiled Markdown should contain natural output-target prose:\n{md}"
+        md.contains(", and return that as your result."),
+        "compiled Markdown should contain the locked Identifier return suffix:\n{md}"
     );
     assert!(
         !md.contains("<current_branch>"),

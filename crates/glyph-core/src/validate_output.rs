@@ -1694,7 +1694,7 @@ mod tests {
                     {
                         "node_id": "n1",
                         "kind": "inline_instruction",
-                        "text": "Produce current branch as the final output.",
+                        "text": ", and return that as your result.",
                         "role": "step"
                     }
                 ],
@@ -1709,7 +1709,7 @@ mod tests {
             }
         })
         .to_string();
-        let md = "## Instructions\n\n### Steps\n\n1. Produce current branch as the final output.\n";
+        let md = "## Instructions\n\n### Steps\n\n1. , and return that as your result.\n";
         let violations = validate_output(&ir, md);
         assert!(
             !violations

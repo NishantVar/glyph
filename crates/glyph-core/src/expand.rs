@@ -5,7 +5,7 @@
 //! - Assigns projection tiers to call sites.
 //! - Tier 1 (inline): callee body < 150 words → call keeps inline projection metadata.
 
-use crate::ir::{IrArena, IrInlineInstruction, IrNode, NodeId, OutputTargetForm, Role};
+use crate::ir::{IrArena, IrNode};
 use std::collections::{BTreeMap, HashMap};
 
 /// Count words in resolved prose per `compiled-output.md` §Word Counting Rule.
@@ -53,7 +53,6 @@ pub fn expand_step1_with_imported_descriptions(
     mut arena: IrArena,
     imported_block_descriptions: &HashMap<String, String>,
 ) -> IrArena {
-    fold_block_output_contracts(&mut arena);
 
     // Phase 1: Compute resolved_word_count for each Block node.
     let mut block_word_counts: HashMap<String, u32> = HashMap::new();
@@ -225,135 +224,9 @@ pub fn expand_step1_with_imported_descriptions(
         }
     }
 
-    fold_skill_output_contract(&mut arena);
-
     arena
 }
 
-fn output_contract_target(arena: &IrArena, slot: Option<NodeId>) -> Option<OutputTargetForm> {
-    slot.and_then(|id| match arena.get(id) {
-        IrNode::OutputContract(oc) => Some(oc.form.clone()),
-        _ => None,
-    })
-}
-
-fn output_target_sentence(form: &OutputTargetForm) -> String {
-    match form {
-        OutputTargetForm::Identifier(name) => {
-            let display = name.replace('_', " ");
-            format!("Produce {display} as the final output.")
-        }
-        OutputTargetForm::Description(desc) => {
-            let display = collapse_whitespace_for_prose(desc);
-            format!("Produce {display} as the final output.")
-        }
-    }
-}
-
-/// Normalize whitespace in a descriptive output-target's content for prose
-/// emission. The tokenizer decodes string escapes (`\n`, `\t`, `\r`) into
-/// literal control characters; emitting them verbatim into compiled Markdown
-/// breaks the single-sentence shape ("Produce X as the final output.").
-/// Collapse any run of ASCII whitespace to a single space and trim the ends.
-fn collapse_whitespace_for_prose(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn append_sentence(existing: &str, sentence: &str) -> String {
-    let trimmed = existing.trim();
-    if trimmed.is_empty() {
-        sentence.to_string()
-    } else {
-        format!("{}. {}", trimmed.trim_end_matches('.'), sentence)
-    }
-}
-
-fn fold_block_output_contracts(arena: &mut IrArena) {
-    let mut block_targets: HashMap<String, OutputTargetForm> = HashMap::new();
-    for node in arena.nodes() {
-        if let IrNode::Block(block) = node {
-            if let Some(form) = output_contract_target(arena, block.output_contract) {
-                block_targets.insert(block.name.clone(), form);
-            }
-        }
-    }
-
-    if block_targets.is_empty() {
-        return;
-    }
-
-    let mut updated_block_bodies: HashMap<String, String> = HashMap::new();
-    for node in arena.nodes_mut() {
-        if let IrNode::Block(block) = node {
-            let Some(target) = block_targets.get(&block.name) else {
-                continue;
-            };
-            let sentence = output_target_sentence(target);
-            block.body_text = append_sentence(&block.body_text, &sentence);
-            if let Some(pos) = block.flow_statements.iter().rposition(|s| s == "return") {
-                block.flow_statements[pos] = sentence;
-            } else {
-                block.flow_statements.push(sentence);
-            }
-            updated_block_bodies.insert(block.name.clone(), block.body_text.clone());
-        }
-    }
-
-    for node in arena.nodes_mut() {
-        if let IrNode::Call(call) = node {
-            if call.resolved_body.is_some() {
-                if let Some(body) = updated_block_bodies.get(&call.target) {
-                    call.resolved_body = Some(body.clone());
-                }
-            }
-        }
-    }
-}
-
-fn fold_skill_output_contract(arena: &mut IrArena) {
-    let Some(root_id) = arena.root_skill() else {
-        return;
-    };
-    let (target, last_step_id) = match arena.get(root_id) {
-        IrNode::Skill(skill) => (
-            output_contract_target(arena, skill.output_contract),
-            skill.steps.last().copied(),
-        ),
-        _ => (None, None),
-    };
-    let Some(target) = target else {
-        return;
-    };
-    let sentence = output_target_sentence(&target);
-
-    if let Some(step_id) = last_step_id {
-        let nodes = arena.nodes_mut();
-        match &mut nodes[step_id.0 as usize] {
-            IrNode::InlineInstruction(inst) => {
-                inst.text = append_sentence(&inst.text, &sentence);
-                return;
-            }
-            IrNode::Call(call) if call.projection_tier == Some(1) => {
-                if let Some(body) = &mut call.resolved_body {
-                    *body = append_sentence(body, &sentence);
-                    return;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let next = NodeId(arena.len() as u32);
-    let step_id = arena.push(IrNode::InlineInstruction(IrInlineInstruction {
-        node_id: next,
-        text: sentence,
-        role: Role::Step,
-    }));
-    let nodes = arena.nodes_mut();
-    if let IrNode::Skill(skill) = &mut nodes[root_id.0 as usize] {
-        skill.steps.push(step_id);
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -403,8 +276,8 @@ skill current() -> BranchName
 ",
         );
         assert!(
-            md.contains("Produce current branch as the final output."),
-            "compiled Markdown should name the synthesized target naturally:\n{md}"
+            md.contains(", and return that as your result."),
+            "compiled Markdown should use the locked Identifier return suffix:\n{md}"
         );
         assert!(
             !md.contains("<current_branch>"),
@@ -427,8 +300,8 @@ skill current()
 ",
         );
         assert!(
-            md.contains("Produce current branch as the final output."),
-            "inlined block output contract should survive as natural prose:\n{md}"
+            md.contains(", and return that as your result."),
+            "inlined block output contract should use the locked Identifier return suffix:\n{md}"
         );
         assert!(
             !md.contains("<current_branch>"),
@@ -451,10 +324,10 @@ skill diagnose_issue() -> Diagnosis
             !md.contains("<\"root cause and affected files\">"),
             "compiled Markdown leaked the descriptive token:\n{md}"
         );
-        // Constraint (b): description text appears in prose.
+        // Constraint (b): description text appears in the return suffix.
         assert!(
-            md.contains("root cause and affected files"),
-            "compiled Markdown must incorporate the description text:\n{md}"
+            md.contains(", and return root cause and affected files as your result."),
+            "compiled Markdown must incorporate the description text in the return suffix:\n{md}"
         );
     }
 
@@ -473,16 +346,19 @@ skill main()
 ",
         );
         assert!(!md.contains("<\"branch name as currently checked out\">"));
-        assert!(md.contains("branch name as currently checked out"));
+        assert!(
+            md.contains(", and return branch name as currently checked out as your result."),
+            "block description return suffix should appear in compiled markdown:\n{md}"
+        );
     }
 
     #[test]
     fn descriptive_output_contract_with_embedded_control_chars_normalizes_to_single_line() {
         // The tokenizer decodes `\n`/`\t` inside `<"…">` to literal control
-        // characters before reaching expand. Inserting them verbatim breaks the
-        // single-sentence "Produce X as the final output." contract — a newline
-        // in `desc` splits the prose across two Markdown lines. Expand must
-        // collapse runs of whitespace (incl. LF/CR/TAB) to a single space.
+        // characters before reaching the scaffold builder. Inserting them verbatim
+        // breaks the single-sentence ", and return X as your result." contract — a
+        // newline in `desc` splits the prose across two Markdown lines. The scaffold
+        // builder collapses runs of whitespace (incl. LF/CR/TAB) to a single space.
         let md = compile_markdown(
             "\
 skill diagnose_issue() -> Diagnosis
@@ -505,10 +381,10 @@ skill diagnose_issue() -> Diagnosis
             md.contains("root cause severity and affected files"),
             "expected whitespace-collapsed description in prose:\n{md}"
         );
-        // Single-sentence shape preserved: "Produce X as the final output."
+        // Return suffix uses the new locked form.
         assert!(
-            md.contains("Produce root cause severity and affected files as the final output."),
-            "expected single-line Produce sentence:\n{md}"
+            md.contains(", and return root cause severity and affected files as your result."),
+            "expected single-line return suffix with whitespace-collapsed description:\n{md}"
         );
     }
 }

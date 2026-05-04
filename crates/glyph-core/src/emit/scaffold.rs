@@ -2,9 +2,40 @@
 //! `build()` walker that turns a resolved `IrArena` into a `Scaffold`.
 //! See `obsidian/plans/expand-emitter-design-2026-05-04.md`.
 
-use crate::ir::{IrArena, IrNode, NodeId};
+use crate::ir::{IrArena, IrNode, NodeId, OutputTargetForm};
+use super::templates;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
+
+/// Look up the `OutputTargetForm` for a block by name, returning an owned clone.
+fn block_output_form_owned(arena: &IrArena, block_name: &str) -> Option<OutputTargetForm> {
+    for node in arena.nodes() {
+        if let IrNode::Block(b) = node {
+            if b.name == block_name {
+                if let Some(oc_id) = b.output_contract {
+                    if let IrNode::OutputContract(oc) = arena.get(oc_id) {
+                        return Some(oc.form.clone());
+                    }
+                }
+                return None;
+            }
+        }
+    }
+    None
+}
+
+/// Look up the `OutputTargetForm` for the skill's output_contract, returning an owned clone.
+fn skill_output_form_owned(arena: &IrArena) -> Option<OutputTargetForm> {
+    let root_id = arena.root_skill()?;
+    if let IrNode::Skill(s) = arena.get(root_id) {
+        if let Some(oc_id) = s.output_contract {
+            if let IrNode::OutputContract(oc) = arena.get(oc_id) {
+                return Some(oc.form.clone());
+            }
+        }
+    }
+    None
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SpanId(pub u32);
@@ -126,53 +157,136 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
     let mut procedure_order: Vec<String> = Vec::new();
     let mut procedure_seen: HashSet<String> = HashSet::new();
 
-    if !skill.steps.is_empty() {
+    // Pre-compute skill output_contract form once (owned), for use in the
+    // last-step suffix logic below.
+    let skill_oc_form = skill_output_form_owned(arena);
+    let skill_step_count = skill.steps.len();
+
+    if skill_step_count > 0 || skill_oc_form.is_some() {
         s.push_literal("### Steps\n\n");
-        for (idx, step_id) in skill.steps.iter().enumerate() {
-            match arena.get(*step_id) {
-                IrNode::InlineInstruction(i) => {
-                    s.push_literal(format!("{}. {}\n", idx + 1, i.text));
+
+        if skill_step_count == 0 {
+            // Return-only skill: no flow steps but has an output_contract.
+            // Emit a standalone "Return ... as your result." step.
+            let body = match skill_oc_form.as_ref().unwrap() {
+                OutputTargetForm::Identifier(_) => {
+                    // Use append_identifier_suffix("") to produce ", and return that as your result."
+                    templates::append_identifier_suffix("")
                 }
-                IrNode::Branch(br) => {
-                    // Use a temporary String buffer with the existing emit_branch helper.
-                    let mut buf = String::new();
-                    super::emit_branch(&mut buf, arena, br, idx + 1);
-                    s.push_literal(buf);
+                OutputTargetForm::Description(desc) => {
+                    let normalized = desc.split_whitespace().collect::<Vec<_>>().join(" ");
+                    // Use append_description_suffix("") to produce ", and return <desc> as your result."
+                    templates::append_description_suffix("", &normalized)
                 }
-                IrNode::Call(c) if c.projection_tier == Some(1) => {
-                    s.push_literal(format!(
-                        "{}. {}\n",
-                        idx + 1,
-                        c.resolved_body.as_deref().unwrap_or_default()
-                    ));
-                }
-                IrNode::Call(c) if c.projection_tier == Some(2) => {
-                    let kebab_name = c.target.replace('_', "-");
-                    s.push_literal(format!(
-                        "{}. Follow the {} procedure below.\n",
-                        idx + 1,
-                        kebab_name
-                    ));
-                    if procedure_seen.insert(c.target.clone()) {
-                        procedure_order.push(c.target.clone());
-                    }
-                }
-                IrNode::Call(c) if c.projection_tier == Some(3) => {
-                    let proc_path = c.procedure_path.as_deref().unwrap_or("unknown");
-                    s.push_literal(format!(
-                        "{}. Load and follow the procedure in `{}`.\n",
-                        idx + 1,
-                        proc_path
-                    ));
-                }
-                IrNode::Call(c) => {
-                    panic!(
-                        "IrNode::Call to `{}` survived past expand without tier assignment",
-                        c.target
-                    );
-                }
-                _ => panic!("Step node was not an InlineInstruction, Branch, or Call"),
             };
+            s.push_literal(format!("1. {}\n", body));
+        } else {
+            for (idx, step_id) in skill.steps.iter().enumerate() {
+                let is_last = idx + 1 == skill_step_count;
+                match arena.get(*step_id) {
+                    IrNode::InlineInstruction(i) => {
+                        if is_last {
+                            match skill_oc_form.as_ref() {
+                                Some(OutputTargetForm::Identifier(_)) => {
+                                    let body = templates::append_identifier_suffix(&i.text);
+                                    s.push_literal(format!("{}. {}\n", idx + 1, body));
+                                }
+                                Some(OutputTargetForm::Description(desc)) => {
+                                    let normalized = desc.split_whitespace().collect::<Vec<_>>().join(" ");
+                                    let body_trimmed = i.text.trim_end().trim_end_matches('.');
+                                    s.push_literal(format!("{}. {}", idx + 1, body_trimmed));
+                                    let id = SpanId(next_span_id);
+                                    next_span_id += 1;
+                                    s.push_span(SpanRef {
+                                        id,
+                                        kind: SpanKind::DescriptionReturnFold,
+                                        ir_node: *step_id,
+                                        payload: SpanPayload {
+                                            description_text: Some(normalized),
+                                            resolved_body: Some(i.text.clone()),
+                                            ..SpanPayload::default()
+                                        },
+                                    });
+                                }
+                                None => {
+                                    s.push_literal(format!("{}. {}\n", idx + 1, i.text));
+                                }
+                            }
+                        } else {
+                            s.push_literal(format!("{}. {}\n", idx + 1, i.text));
+                        }
+                    }
+                    IrNode::Branch(br) => {
+                        // Use a temporary String buffer with the existing emit_branch helper.
+                        let mut buf = String::new();
+                        super::emit_branch(&mut buf, arena, br, idx + 1);
+                        s.push_literal(buf);
+                    }
+                    IrNode::Call(c) if c.projection_tier == Some(1) => {
+                        let body = c.resolved_body.as_deref().unwrap_or_default();
+                        if is_last {
+                            // For tier-1 calls, apply the callee's output_contract suffix
+                            // (if any), falling back to the skill's own output_contract.
+                            let callee_oc = block_output_form_owned(arena, &c.target);
+                            let effective_oc = callee_oc.as_ref().or(skill_oc_form.as_ref());
+                            match effective_oc {
+                                Some(OutputTargetForm::Identifier(_)) => {
+                                    let suffixed = templates::append_identifier_suffix(body);
+                                    s.push_literal(format!("{}. {}\n", idx + 1, suffixed));
+                                }
+                                Some(OutputTargetForm::Description(desc)) => {
+                                    let normalized = desc.split_whitespace().collect::<Vec<_>>().join(" ");
+                                    let body_trimmed = body.trim_end().trim_end_matches('.');
+                                    s.push_literal(format!("{}. {}", idx + 1, body_trimmed));
+                                    let id = SpanId(next_span_id);
+                                    next_span_id += 1;
+                                    s.push_span(SpanRef {
+                                        id,
+                                        kind: SpanKind::DescriptionReturnFold,
+                                        ir_node: *step_id,
+                                        payload: SpanPayload {
+                                            description_text: Some(normalized),
+                                            resolved_body: Some(body.to_owned()),
+                                            ..SpanPayload::default()
+                                        },
+                                    });
+                                }
+                                None => {
+                                    s.push_literal(format!("{}. {}\n", idx + 1, body));
+                                }
+                            }
+                        } else {
+                            s.push_literal(format!("{}. {}\n", idx + 1, body));
+                        }
+                    }
+                    IrNode::Call(c) if c.projection_tier == Some(2) => {
+                        let kebab_name = c.target.replace('_', "-");
+                        s.push_literal(format!(
+                            "{}. Follow the {} procedure below.\n",
+                            idx + 1,
+                            kebab_name
+                        ));
+                        if procedure_seen.insert(c.target.clone()) {
+                            procedure_order.push(c.target.clone());
+                        }
+                    }
+                    IrNode::Call(c) if c.projection_tier == Some(3) => {
+                        let proc_path = c.procedure_path.as_deref().unwrap_or("unknown");
+                        s.push_literal(format!(
+                            "{}. Load and follow the procedure in `{}`.\n",
+                            idx + 1,
+                            proc_path
+                        ));
+                    }
+                    IrNode::Call(c) => {
+                        panic!(
+                            "IrNode::Call to `{}` survived past expand without tier assignment",
+                            c.target
+                        );
+                    }
+                    _ => panic!("Step node was not an InlineInstruction, Branch, or Call"),
+                };
+            }
         }
         s.push_literal("\n");
     }
@@ -194,18 +308,72 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
     // ### Procedure: <name> sections
     for target_name in &procedure_order {
         let kebab_name = target_name.replace('_', "-");
-        let block = arena.nodes().iter().find_map(|n| {
-            if let IrNode::Block(b) = n {
-                if b.name == *target_name {
-                    return Some(b);
+        // Collect the block's flow_statements and output_contract before emitting.
+        let (flow_stmts, proc_oc_form) = {
+            let mut stmts: Option<Vec<String>> = None;
+            let mut oc: Option<OutputTargetForm> = None;
+            for node in arena.nodes() {
+                if let IrNode::Block(b) = node {
+                    if b.name == *target_name {
+                        stmts = Some(b.flow_statements.clone());
+                        oc = block_output_form_owned(arena, target_name);
+                        break;
+                    }
                 }
             }
-            None
-        });
-        if let Some(block) = block {
+            (stmts, oc)
+        };
+        if let Some(stmts) = flow_stmts {
             s.push_literal(format!("### Procedure: {}\n\n", kebab_name));
-            for (i, stmt) in block.flow_statements.iter().enumerate() {
-                s.push_literal(format!("{}. {}\n", i + 1, stmt));
+            // Filter out raw "return" markers; they are replaced by the output_contract suffix.
+            let visible_stmts: Vec<&String> = stmts.iter().filter(|st| st.as_str() != "return").collect();
+            let visible_count = visible_stmts.len();
+
+            if visible_count == 0 && proc_oc_form.is_some() {
+                // Return-only block: emit standalone step.
+                let body = match proc_oc_form.as_ref().unwrap() {
+                    OutputTargetForm::Identifier(_) => templates::append_identifier_suffix(""),
+                    OutputTargetForm::Description(desc) => {
+                        let normalized = desc.split_whitespace().collect::<Vec<_>>().join(" ");
+                        templates::append_description_suffix("", &normalized)
+                    }
+                };
+                s.push_literal(format!("1. {}\n", body));
+            } else {
+                for (i, stmt) in visible_stmts.iter().enumerate() {
+                    let is_last = i + 1 == visible_count;
+                    if is_last {
+                        match proc_oc_form.as_ref() {
+                            Some(OutputTargetForm::Identifier(_)) => {
+                                let suffixed = templates::append_identifier_suffix(stmt);
+                                s.push_literal(format!("{}. {}\n", i + 1, suffixed));
+                            }
+                            Some(OutputTargetForm::Description(desc)) => {
+                                let normalized = desc.split_whitespace().collect::<Vec<_>>().join(" ");
+                                let body_trimmed = stmt.trim_end().trim_end_matches('.');
+                                s.push_literal(format!("{}. {}", i + 1, body_trimmed));
+                                let id = SpanId(next_span_id);
+                                next_span_id += 1;
+                                // We don't have a single NodeId for a block flow stmt; use root.
+                                s.push_span(SpanRef {
+                                    id,
+                                    kind: SpanKind::DescriptionReturnFold,
+                                    ir_node: root_id,
+                                    payload: SpanPayload {
+                                        description_text: Some(normalized),
+                                        resolved_body: Some(stmt.to_string()),
+                                        ..SpanPayload::default()
+                                    },
+                                });
+                            }
+                            None => {
+                                s.push_literal(format!("{}. {}\n", i + 1, stmt));
+                            }
+                        }
+                    } else {
+                        s.push_literal(format!("{}. {}\n", i + 1, stmt));
+                    }
+                }
             }
             s.push_literal("\n");
         }

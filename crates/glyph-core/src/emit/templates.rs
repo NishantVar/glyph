@@ -27,6 +27,17 @@ pub fn append_description_suffix(body: &str, description: &str) -> String {
     format!("{trimmed}{DESCRIPTION_RETURN_SUFFIX_PREFIX}{description}{DESCRIPTION_RETURN_SUFFIX_TAIL}")
 }
 
+/// When there is no prior step body to suffix-onto (e.g., a return-only
+/// skill), emit a standalone "Return ... as your result." sentence.
+pub fn standalone_return_identifier(name: &str) -> String {
+    let humanized = name.replace('_', " ");
+    format!("Return {humanized} as your result.")
+}
+
+pub fn standalone_return_description(description: &str) -> String {
+    format!("Return {description} as your result.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,6 +74,26 @@ mod tests {
         assert_eq!(
             append_description_suffix("Run cargo test.", "the test summary"),
             "Run cargo test, and return the test summary as your result."
+        );
+    }
+
+    #[test]
+    fn standalone_return_identifier_humanizes_name() {
+        assert_eq!(
+            standalone_return_identifier("current_branch"),
+            "Return current branch as your result."
+        );
+        assert_eq!(
+            standalone_return_identifier("result"),
+            "Return result as your result."
+        );
+    }
+
+    #[test]
+    fn standalone_return_description_uses_text() {
+        assert_eq!(
+            standalone_return_description("root cause and affected files"),
+            "Return root cause and affected files as your result."
         );
     }
 }
