@@ -8,6 +8,7 @@ pub(crate) mod constraint;
 pub(crate) mod merger;
 pub(crate) mod scaffold;
 pub(crate) mod stub_fill;
+pub(crate) mod templates;
 
 use crate::ir::{IrArena, IrBranch, IrNode, NodeId};
 
