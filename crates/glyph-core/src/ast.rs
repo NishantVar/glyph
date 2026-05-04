@@ -72,6 +72,8 @@ pub struct Skill {
     pub body_context: Vec<ContextEntry>,
     /// Entries from the `context:` sub-section.
     pub context_section: Vec<ContextEntry>,
+    /// Skill-ref entries from the `constraints:` sub-section.
+    pub constraints_section: Vec<ContextEntry>,
     /// Inline `effects:` keyword list.
     pub effects: Vec<String>,
     /// Flow statements — inline strings only in the skeleton.

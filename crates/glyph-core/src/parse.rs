@@ -797,6 +797,7 @@ impl<'a> Parser<'a> {
                 body_constraints,
                 body_context,
                 context_section,
+                constraints_section: Vec::new(),
                 effects,
                 flow,
                 flow_present,
