@@ -315,11 +315,132 @@ fn remove_unused_imports(
     out
 }
 
+fn is_stdlib_name(name: &str) -> bool {
+    matches!(name, "subagent" | "send" | "load")
+}
+
+/// Append any unresolved stdlib names to the existing `@glyph/std` selective
+/// import, or insert a new one if none is present.
+fn auto_import_stdlib(
+    source: &str,
+    file: &crate::ast::SourceFile,
+    signals: &crate::analyze::FmtSignals,
+) -> String {
+    use crate::ast::{Decl, ImportKind};
+
+    let mut to_import: Vec<String> = signals
+        .unresolved_names
+        .iter()
+        .filter(|n| is_stdlib_name(n))
+        .cloned()
+        .collect();
+    to_import.sort();
+    if to_import.is_empty() {
+        return source.to_string();
+    }
+
+    let lines: Vec<&str> = source.lines().collect();
+    let line_index = crate::span::LineIndex::new(source);
+
+    // Find existing @glyph/std selective import + collect ALL import line
+    // indices for "insert after last".
+    let mut existing_idx: Option<usize> = None;
+    let mut existing_names: Vec<String> = Vec::new();
+    let mut all_import_line_indices: Vec<usize> = Vec::new();
+
+    for decl in &file.decls {
+        if let Decl::Import(imp) = decl {
+            let (line_1based, _col) = line_index.line_col(imp.span.start);
+            let line_idx = (line_1based - 1) as usize;
+            all_import_line_indices.push(line_idx);
+            if existing_idx.is_none() && imp.node.path == "@glyph/std" {
+                if let ImportKind::Selective(names) = &imp.node.kind {
+                    existing_idx = Some(line_idx);
+                    for n in names {
+                        existing_names.push(match &n.alias {
+                            Some(a) => format!("{} as {}", n.name.node, a),
+                            None => n.name.node.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    let mut out = String::with_capacity(source.len() + 64);
+
+    if let Some(idx) = existing_idx {
+        let mut all = existing_names.clone();
+        for n in &to_import {
+            if !all.contains(n) {
+                all.push(n.clone());
+            }
+        }
+        all.sort();
+        let new_line = format!(r#"import "@glyph/std" {{ {} }}"#, all.join(", "));
+        for (i, line) in lines.iter().enumerate() {
+            if i == idx {
+                out.push_str(&new_line);
+            } else {
+                out.push_str(line);
+            }
+            out.push('\n');
+        }
+    } else {
+        let new_line = format!(r#"import "@glyph/std" {{ {} }}"#, to_import.join(", "));
+        if let Some(&last_import) = all_import_line_indices.last() {
+            // Insert after the last existing import.
+            for (i, line) in lines.iter().enumerate() {
+                out.push_str(line);
+                out.push('\n');
+                if i == last_import {
+                    out.push_str(&new_line);
+                    out.push('\n');
+                }
+            }
+        } else {
+            // No imports at all: prepend with a blank-line separator.
+            out.push_str(&new_line);
+            out.push('\n');
+            out.push('\n');
+            for line in &lines {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+
+    if !source.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+/// Re-parse `source` and run `f` on the fresh AST/signals. If parsing fails,
+/// returns `source` unchanged.
+fn reparse_and_run<F>(source: String, enable_effects: bool, f: F) -> String
+where
+    F: FnOnce(&str, &crate::ast::SourceFile, &crate::analyze::FmtSignals) -> String,
+{
+    let line_index = crate::span::LineIndex::new(&source);
+    let mut bag = crate::diagnostic::DiagBag::new();
+    match crate::parse::parse_with_diagnostics_opts(
+        &source, 0, "<fmt>", &line_index, &mut bag, enable_effects,
+    ) {
+        Some(file) => {
+            let signals = crate::analyze::fmt_signals(&file);
+            f(&source, &file, &signals)
+        }
+        None => source,
+    }
+}
+
 /// Stratum 2: AST-level rewrites (dispatcher).
 ///
 /// Runs file-level passes in sequence:
 /// 1. `collapse_duplicate_imports` — merge duplicate import lines.
 /// 2. `remove_unused_imports` — drop names/lines that are never referenced.
+/// 3. `auto_import_stdlib` — insert/extend `@glyph/std` for unresolved stdlib names.
 ///
 /// After each pass that changes the source, the file is re-parsed and signals
 /// are recomputed before the next pass uses the AST. After all file-level
@@ -332,51 +453,37 @@ fn ast_rewrite(
     signals: &crate::analyze::FmtSignals,
     enable_effects: bool,
 ) -> String {
-    // Pass 1: collapse duplicate imports.
+    // Pass 1: collapse duplicate imports — uses original AST/signals.
     let after_collapse = collapse_duplicate_imports(source, file);
-    // If the source changed, re-parse so Pass 2 has a fresh AST/signals.
-    let (current, current_file_owned, current_signals_owned) = if after_collapse != source {
-        let line_index = crate::span::LineIndex::new(&after_collapse);
-        let mut bag = crate::diagnostic::DiagBag::new();
-        match crate::parse::parse_with_diagnostics_opts(
-            &after_collapse, 0, "<fmt>", &line_index, &mut bag, enable_effects,
-        ) {
-            Some(reparsed) => {
-                let new_signals = crate::analyze::fmt_signals(&reparsed);
-                (after_collapse, Some(reparsed), Some(new_signals))
-            }
-            None => {
-                // Re-parse failed after collapse — return the collapsed source.
-                return after_collapse;
-            }
-        }
+
+    // Pass 2: remove unused imports — needs fresh AST/signals if Pass 1 changed source.
+    let after_unused = if after_collapse != source {
+        reparse_and_run(after_collapse, enable_effects, remove_unused_imports)
     } else {
-        (source.to_string(), None, None)
+        remove_unused_imports(source, file, signals)
     };
 
-    // Borrow either the freshly-parsed AST/signals or the originals.
-    let current_file: &crate::ast::SourceFile =
-        current_file_owned.as_ref().unwrap_or(file);
-    let current_signals: &crate::analyze::FmtSignals =
-        current_signals_owned.as_ref().unwrap_or(signals);
+    // Pass 3: auto-import stdlib — needs fresh AST/signals if Pass 2 changed source.
+    let after_stdlib = if after_unused != source {
+        reparse_and_run(after_unused, enable_effects, auto_import_stdlib)
+    } else {
+        auto_import_stdlib(source, file, signals)
+    };
 
-    // Pass 2: remove unused imports.
-    let after_unused = remove_unused_imports(&current, current_file, current_signals);
-    if after_unused != current {
-        let line_index = crate::span::LineIndex::new(&after_unused);
+    // Final: re-parse and run inner per-decl rewrites.
+    if after_stdlib != source {
+        let line_index = crate::span::LineIndex::new(&after_stdlib);
         let mut bag = crate::diagnostic::DiagBag::new();
-        if let Some(reparsed) = crate::parse::parse_with_diagnostics_opts(
-            &after_unused, 0, "<fmt>", &line_index, &mut bag, enable_effects,
+        if let Some(re) = crate::parse::parse_with_diagnostics_opts(
+            &after_stdlib, 0, "<fmt>", &line_index, &mut bag, enable_effects,
         ) {
-            let new_signals = crate::analyze::fmt_signals(&reparsed);
-            return ast_rewrite_inner(&after_unused, &reparsed, &new_signals, enable_effects);
+            let new_signals = crate::analyze::fmt_signals(&re);
+            return ast_rewrite_inner(&after_stdlib, &re, &new_signals, enable_effects);
         }
-        // Re-parse failed after unused removal — return the rewritten source
-        // without running ast_rewrite_inner (no fresh AST available).
-        return after_unused;
+        return after_stdlib;
     }
 
-    ast_rewrite_inner(&current, current_file, current_signals, enable_effects)
+    ast_rewrite_inner(source, file, signals, enable_effects)
 }
 
 /// Stratum 2: AST-level rewrites (inner).
@@ -1443,5 +1550,74 @@ skill main()
         assert!(!result.output.contains("Sub"));
         assert!(!result.output.contains("subagent"));
         assert!(result.changed);
+    }
+
+    // --- Task 3: stdlib auto-import ---
+
+    #[test]
+    fn fmt_auto_import_stdlib_inserts_new_import_when_absent() {
+        let src = r#"skill main()
+    description: "Main."
+    flow:
+        send("hi")
+"#;
+        let result = fmt_source(src, true);
+        assert!(result.output.starts_with(r#"import "@glyph/std" { send }"#),
+            "expected stdlib import inserted at top, got: {}", result.output);
+        assert!(result.changed);
+    }
+
+    #[test]
+    fn fmt_auto_import_stdlib_appends_to_existing() {
+        let src = r#"import "@glyph/std" { send }
+
+skill main()
+    description: "Main."
+    flow:
+        send("x")
+        subagent("y")
+"#;
+        let result = fmt_source(src, true);
+        assert!(result.output.contains(r#"import "@glyph/std" { send, subagent }"#),
+            "expected subagent appended, got: {}", result.output);
+        assert!(result.changed);
+    }
+
+    #[test]
+    fn fmt_auto_import_no_op_when_user_shadowed() {
+        let src = r#"const subagent = "user-defined"
+
+skill main()
+    description: "Main."
+    flow:
+        send_value(subagent)
+"#;
+        let result = fmt_source(src, true);
+        assert!(!result.output.contains("@glyph/std"),
+            "should not auto-import when name is locally bound");
+    }
+
+    #[test]
+    fn fmt_auto_import_no_op_when_name_not_in_registry() {
+        let src = r#"skill main()
+    description: "Main."
+    flow:
+        zorp("bogus")
+"#;
+        let result = fmt_source(src, true);
+        assert!(!result.output.contains("@glyph/std"));
+        assert!(!result.changed);
+    }
+
+    #[test]
+    fn fmt_auto_import_idempotent() {
+        let src = r#"skill main()
+    description: "Main."
+    flow:
+        send("x")
+"#;
+        let once = fmt_source(src, true).output;
+        let twice = fmt_source(&once, true).output;
+        assert_eq!(once, twice);
     }
 }
