@@ -58,7 +58,7 @@ A skill body must contain at least one of `flow:` (with statements) or `constrai
 Rules that catch authors out:
 
 - **No trailing colon on declarations.** `skill foo()` is correct; `skill foo():` is a parse error. Sub-section headers (one level in) *do* take a trailing colon.
-- **`export block` parameters must have defaults.** A parameter without a default emits `G::analyze::missing-param-default`. (Skill parameters without defaults are fine — they signal "the LLM must extract this from the user request".)
+- **`block` / `export block` parameters without a default are required at every call site.** Omitting the corresponding positional argument in `call <name>(...)` emits `G::analyze::missing-required-arg` at the call (uniform across private, same-file export, and cross-file imported export blocks). Skill parameters are different — defaults are optional and a no-default skill parameter signals "the LLM must extract this from the user request".
 - **`export block` requires explicit `return`** — even `return none` for instruction-only exports (which omit `->` on the header).
 - **No primitive type names in annotations.** Do **not** write `-> String`, `-> Int`, `-> Float`, `-> Bool`, `-> None`. Only domain types (`Plan`, `RepoContext`, `BranchName`, `Confirmation`, ...) are valid in `-> Type` and `name: Type` positions. Domain types are implicitly declared the first time you use one in `-> Type` position — no `type Foo` declaration needed. For "no meaningful return", omit `->` entirely.
 - **`const` is a value, not a step.** A bare `const` name in `flow:` is `G::analyze::const-in-flow`. Reference it inside `constraints:` (`avoid unrelated_edits`) or `context:`, or use a `block` for instructions.

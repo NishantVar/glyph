@@ -166,7 +166,7 @@ When a file contains both `error` and `repairable` diagnostics, exit code is `1`
 | `missing_file.glyph.md` | `G::analyze::missing-file` |
 | `effects_under.glyph.md` | `G::analyze::effects-under-declared` |
 | `empty_skill.glyph.md` | `G::analyze::empty-skill-body` |
-| `no_param_default.glyph.md` | `G::analyze::missing-param-default` (fixture must declare an `export block` whose parameter lacks a default; skill parameters without defaults are legal) |
+| `missing_required_arg.glyph.md` / `export_block_missing_required_arg.glyph.md` / `imports/missing_required_arg_imported.glyph.md` | `G::analyze::missing-required-arg` (call sites that omit a positional argument for a parameter without a default — fires for private `block`, same-file `export block`, and imported `export block` callees; PRD #103 / Issues #104, #105) |
 | `bad_param_slot.glyph.md` | `G::analyze::unknown-param-slot` |
 | `closure_leak.glyph.md` | `G::analyze::closure-violation` |
 | `library_no_exports.glyph.md` | `G::analyze::no-exports-in-library` |
@@ -368,7 +368,7 @@ Every diagnostic below is emitted by the deterministic compiler (Phases 1, 2, 4,
 | `G::analyze::nested-branch` | repairable |
 | `G::analyze::empty-skill-body` | error |
 | `G::analyze::no-exports-in-library` | error |
-| `G::analyze::missing-param-default` | error |
+| `G::analyze::missing-required-arg` | error |
 | `G::analyze::missing-description` | repairable |
 | `G::analyze::const-in-flow` | repairable |
 | `G::analyze::applies-on-non-block` | error |

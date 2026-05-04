@@ -137,7 +137,7 @@ pub fn check_source_with_effects(source: &str, file_id: u32, file_label: &str, e
     let parsed = parse::parse_with_diagnostics_opts(source, file_id, file_label, &line_index, &mut bag, enable_effects);
 
     // Phase 2 (Analyze) — slice 4 adds the parameter-related diagnostics
-    // (`G::analyze::unknown-param-slot`, `G::analyze::missing-param-default`).
+    // (`G::analyze::unknown-param-slot`, `G::analyze::missing-required-arg`).
     if let Some(file) = parsed {
         let mut registry = domain_registry::Registry::new();
         let _ = analyze::analyze_with_diagnostics(file, file_id, file_label, &line_index, &mut bag, &mut registry);
@@ -430,6 +430,12 @@ pub struct ExportedNames {
     /// per D15 — the consumer only renders the *caller's* `-> Type` span).
     /// Absent when an exported block omits the annotation.
     pub block_return_types: HashMap<String, crate::span::Spanned<String>>,
+    /// PRD #103 / Slice 2 (#105): per-exported-block parameter list, keyed by
+    /// the block's name. The consumer's call-site validator
+    /// (`validate_call_args`) consults this map to fire
+    /// `G::analyze::missing-required-arg` when a positional argument for a
+    /// required parameter is omitted in a cross-file call.
+    pub block_params: HashMap<String, Vec<ast::Param>>,
 }
 
 /// Extract the exported names from a parsed source file.
@@ -440,6 +446,7 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
         skills: HashSet::new(),
         privates: HashSet::new(),
         block_return_types: HashMap::new(),
+        block_params: HashMap::new(),
     };
     for decl in &file.decls {
         match decl {
@@ -460,6 +467,9 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
                         .block_return_types
                         .insert(b.node.name.clone(), rt.clone());
                 }
+                exports
+                    .block_params
+                    .insert(b.node.name.clone(), b.node.params.clone());
             }
             Decl::Block(b) => {
                 exports.privates.insert(b.node.name.clone());
@@ -693,6 +703,11 @@ fn check_one_file(
     // return-type map (consumer-local name → producer `Spanned<-> Type>`).
     let mut imported_block_return_types: HashMap<String, crate::span::Spanned<String>> =
         HashMap::new();
+    // PRD #103 / Slice 2 (#105): per-import-statement aliased parameter list
+    // (consumer-local name → producer `Vec<Param>`). Mirrors the structure
+    // used for return types above; consumed by `analyze_with_imports` to
+    // validate cross-file call-arg counts.
+    let mut imported_block_params: HashMap<String, Vec<ast::Param>> = HashMap::new();
 
     for decl in &file.decls {
         if let Decl::Import(import_spanned) = decl {
@@ -818,6 +833,12 @@ fn check_one_file(
                                 imported_block_return_types
                                     .insert(local.to_string(), rt.clone());
                             }
+                            // PRD #103 / Slice 2 (#105): same re-keying for
+                            // the producer-side parameter list.
+                            if let Some(params) = dep_exports.block_params.get(&imp_name.name.node) {
+                                imported_block_params
+                                    .insert(local.to_string(), params.clone());
+                            }
                         } else {
                             bags.entry(key.clone()).or_default().push(
                                 Diagnostic::error(
@@ -846,7 +867,12 @@ fn check_one_file(
                         // types under `alias.name` to match the consumer's
                         // call-site spelling.
                         if let Some(rt) = dep_exports.block_return_types.get(b) {
-                            imported_block_return_types.insert(qualified, rt.clone());
+                            imported_block_return_types.insert(qualified.clone(), rt.clone());
+                        }
+                        // PRD #103 / Slice 2 (#105): mirror the alias prefix
+                        // on parameter lists.
+                        if let Some(params) = dep_exports.block_params.get(b) {
+                            imported_block_params.insert(qualified, params.clone());
                         }
                     }
                 }
@@ -870,6 +896,7 @@ fn check_one_file(
         &HashMap::new(),
         &mut registry,
         &imported_block_return_types,
+        &imported_block_params,
     );
 
     // Unused import detection.
@@ -1277,6 +1304,11 @@ struct ResolvedImports {
     /// types. Keyed by the *consumer-side* local name (post-alias /
     /// post-prefix), valued by the producer-file `Spanned<-> Type>`.
     block_return_types: HashMap<String, crate::span::Spanned<String>>,
+    /// PRD #103 / Slice 2 (#105): aliased imported-block parameter lists,
+    /// keyed by the *consumer-side* local name. Powers
+    /// `G::analyze::missing-required-arg` enforcement at cross-file call
+    /// sites — see `analyze_with_imports`.
+    block_params: HashMap<String, Vec<ast::Param>>,
 }
 
 /// Build the full resolved import data for a consumer file.
@@ -1294,6 +1326,7 @@ fn build_resolved_imports(
         block_bodies: HashMap::new(),
         block_descriptions: HashMap::new(),
         block_return_types: HashMap::new(),
+        block_params: HashMap::new(),
     };
 
     let source = match std::fs::read_to_string(consumer) {
@@ -1346,6 +1379,14 @@ fn build_resolved_imports(
                             if let Some(rt) = exports.block_return_types.get(&imp_name.name.node) {
                                 result.block_return_types.insert(local.to_string(), rt.clone());
                             }
+                            // PRD #103 / Slice 2 (#105): re-key the
+                            // exporter-side parameter list under the
+                            // consumer-side local name so cross-file call-arg
+                            // validation resolves by the spelling the
+                            // consumer actually wrote.
+                            if let Some(params) = exports.block_params.get(&imp_name.name.node) {
+                                result.block_params.insert(local.to_string(), params.clone());
+                            }
                         }
                     }
                 }
@@ -1370,7 +1411,12 @@ fn build_resolved_imports(
                         // imports prefix every block name with `alias.` —
                         // mirror the same prefix on return types.
                         if let Some(rt) = exports.block_return_types.get(name) {
-                            result.block_return_types.insert(qualified, rt.clone());
+                            result.block_return_types.insert(qualified.clone(), rt.clone());
+                        }
+                        // PRD #103 / Slice 2 (#105): mirror the alias prefix
+                        // on parameter lists.
+                        if let Some(params) = exports.block_params.get(name) {
+                            result.block_params.insert(qualified, params.clone());
                         }
                     }
                 }
@@ -1507,6 +1553,7 @@ fn compile_source_with_resolved_imports(
         &resolved_imports.block_descriptions,
         &mut registry,
         &resolved_imports.block_return_types,
+        &resolved_imports.block_params,
     );
     if bag.has_error() || bag.has_repairable() {
         return Ok(CompileOutcome::Diagnostics(bag));

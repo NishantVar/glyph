@@ -270,23 +270,26 @@ mod tests {
         assert!(lsp.related_information.is_none());
     }
 
-    /// Roundtrip test #2: an analyze error.
+    /// Roundtrip test #2: an analyze error. Uses
+    /// `G::analyze::undefined-name` as a representative live error ID so the
+    /// test exercises the generic Error → LSP path without depending on any
+    /// retired diagnostic.
     #[test]
     fn analyze_error_roundtrip() {
         let d = Diagnostic::error(
-            "G::analyze::missing-param-default",
-            "export block parameter `x` lacks a default value",
+            "G::analyze::undefined-name",
+            "`x` is not a declared `text` in this file",
             span("f.glyph.md", 10, 5, 10, 5),
         );
         let lsp = diagnostic_to_lsp(&d);
         assert_eq!(
             lsp.code,
             Some(NumberOrString::String(
-                "G::analyze::missing-param-default".into()
+                "G::analyze::undefined-name".into()
             ))
         );
         assert_eq!(lsp.severity, Some(DiagnosticSeverity::ERROR));
-        assert!(lsp.message.starts_with("export block parameter"));
+        assert!(lsp.message.starts_with("`x` is not a declared"));
         // Inclusive single-char span: end.character == 5 (not 4, not 6).
         assert_eq!(lsp.range.end.character, 5);
     }

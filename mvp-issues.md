@@ -104,13 +104,13 @@ Full `Diagnostic` shape per `diagnostics.md` (id, classification, message, span,
 
 ### What to build
 
-Skill parameters with defaults per `language-surface.md`. `{param}` slot recognition inside instruction-bearing strings (tokenizer emits `ParamSlot` token per `build-foundation.md` §A2). Parameter metadata assembly in Phase 6 Step 1. `## Parameters` emission in Phase 7. Step 1 preserves `{param}` references — no substitution. Wires diagnostics: `G::analyze::missing-param-default` (only `export block` params; skill params without defaults are runtime-required inputs and surface in `## Parameters` without firing the diagnostic — see `language-surface.md` §3.10 and `diagnostics.md`), `G::analyze::unknown-param-slot`, `G::parse::param-slot-in-non-instruction-string`.
+Skill parameters with defaults per `language-surface.md`. `{param}` slot recognition inside instruction-bearing strings (tokenizer emits `ParamSlot` token per `build-foundation.md` §A2). Parameter metadata assembly in Phase 6 Step 1. `## Parameters` emission in Phase 7. Step 1 preserves `{param}` references — no substitution. Wires diagnostics: `G::analyze::missing-required-arg` (PRD #103 / Issues #104, #105 — fires at the call site when a `call <name>(...)` omits a positional argument for any callee parameter without a default; applies uniformly to private `block`, same-file `export block`, and imported `export block`. Skill parameters without defaults are runtime-required inputs and surface in `## Parameters` without firing any diagnostic — see `language-surface.md` §3.10 and `diagnostics.md`), `G::analyze::unknown-param-slot`, `G::parse::param-slot-in-non-instruction-string`.
 
 ### Acceptance criteria
 
 - [ ] A skill `foo(scope = ".")` emits a `## Parameters` section with `scope` and its default
-- [ ] A skill `foo(scope)` (no default) compiles and surfaces `scope` as runtime-required in `## Parameters` — does NOT fire `missing-param-default`
-- [ ] An `export block bar(x)` (no default) DOES fire `missing-param-default` (export-block-only rule)
+- [ ] A skill `foo(scope)` (no default) compiles and surfaces `scope` as runtime-required in `## Parameters` — no diagnostic fires
+- [ ] An `export block bar(x)` (no default) compiles cleanly when no caller invokes it; a caller `call bar()` (omitting `x`) fires `G::analyze::missing-required-arg` at the call site (PRD #103 / Issues #104, #105)
 - [ ] `{scope}` inside Step text passes through verbatim (not substituted)
 - [ ] Parameterless skill omits the `## Parameters` section
 - [ ] All three parameter-related diagnostics have triggering corpus files and fire correctly
