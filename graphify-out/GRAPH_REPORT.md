@@ -1,11 +1,11 @@
-# Graph Report - glyph  (2026-05-04)
+# Graph Report - worktree-114  (2026-05-04)
 
 ## Corpus Check
-- 52 files · ~741,489 words
+- 51 files · ~277,437 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1660 nodes · 4621 edges · 42 communities detected
+- 1659 nodes · 4621 edges · 42 communities detected
 - Extraction: 67% EXTRACTED · 33% INFERRED · 0% AMBIGUOUS · INFERRED: 1545 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
@@ -48,10 +48,10 @@
 - [[_COMMUNITY_Community 36|Community 36]]
 - [[_COMMUNITY_Community 37|Community 37]]
 - [[_COMMUNITY_Community 38|Community 38]]
+- [[_COMMUNITY_Community 40|Community 40]]
 - [[_COMMUNITY_Community 41|Community 41]]
 - [[_COMMUNITY_Community 42|Community 42]]
 - [[_COMMUNITY_Community 43|Community 43]]
-- [[_COMMUNITY_Community 44|Community 44]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `parse()` - 79 edges
@@ -68,14 +68,14 @@
 ## Surprising Connections (you probably didn't know these)
 - `5-pass hybrid compiler (Parse, Analyze, Transform, Expand[LLM], Validate)` --semantically_similar_to--> `Source-to-IR 9-step pipeline (Parse, Diagnose, Repair, Re-parse, Resolve, Infer, Normalize, Type, Validate)`  [INFERRED] [semantically similar]
   README.md → design/language-surface.md
-- `cross_file_import_resolves_to_dep_file()` --calls--> `check_source_with_resolutions_at_path()`  [INFERRED]
-  crates/glyph-lsp/src/lib.rs → .worktrees/lsp/crates/glyph-core/src/lib.rs
-- `cross_file_diagnostic_attributable_to_dep_uri()` --calls--> `check_source_with_imports()`  [INFERRED]
-  crates/glyph-lsp/src/lib.rs → .worktrees/lsp/crates/glyph-core/src/lib.rs
-- `main()` --calls--> `parse()`  [INFERRED]
-  crates/glyph-cli/src/main.rs → skills/issue-list-orchestrator/scripts/parse_issues.py
-- `compile_source_with_effects()` --calls--> `parse_with_diagnostics_opts()`  [INFERRED]
-  .worktrees/lsp/crates/glyph-core/src/lib.rs → /Users/nishantvarshney/genesis/glyph-worktrees/phase-3a-integration/crates/glyph-core/src/parse.rs
+- `Glyph Language Surface (syntax)` --implements--> `tmp/fix_bug.glyph.md source example`  [INFERRED]
+  design/language-surface.md → tmp/fix_bug.glyph.md
+- `Compiled output Markdown shape` --implements--> `tmp/fix_bug.md compiled output example`  [INFERRED]
+  design/compiled-output.md → tmp/fix_bug.md
+- `Glyph Project Index` --references--> `Research Question: human-readable visualizable DSL`  [EXTRACTED]
+  AGENTS.md → research/agent-skill-dsl/AGENTS.md
+- `Glyph Project Index` --references--> `Tier: unconfirmed`  [EXTRACTED]
+  AGENTS.md → research/agent-skill-dsl/AGENTS.md
 
 ## Communities
 
@@ -231,19 +231,19 @@ Nodes (2): Dagster Pydantic config with defaults, Implicit system-provided conte
 Cohesion: 1.0
 Nodes (2): PDL (IBM YAML prompt declaration), Plang (string-first NL affinity)
 
-### Community 41 - "Community 41"
+### Community 40 - "Community 40"
 Cohesion: 1.0
 Nodes (1): Log 2026-04-20: existing agent/LLM systems survey
 
-### Community 42 - "Community 42"
+### Community 41 - "Community 41"
 Cohesion: 1.0
 Nodes (1): Log 2026-04-20: lessons-from-existing-languages + IR design proposal
 
-### Community 43 - "Community 43"
+### Community 42 - "Community 42"
 Cohesion: 1.0
 Nodes (1): Log 2026-04-21: reorganised under Athena layout
 
-### Community 44 - "Community 44"
+### Community 43 - "Community 43"
 Cohesion: 1.0
 Nodes (1): Consolidated tier registry (currently empty)
 
@@ -264,13 +264,13 @@ Nodes (1): Consolidated tier registry (currently empty)
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 38`** (2 nodes): `PDL (IBM YAML prompt declaration)`, `Plang (string-first NL affinity)`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 41`** (1 nodes): `Log 2026-04-20: existing agent/LLM systems survey`
+- **Thin community `Community 40`** (1 nodes): `Log 2026-04-20: existing agent/LLM systems survey`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 42`** (1 nodes): `Log 2026-04-20: lessons-from-existing-languages + IR design proposal`
+- **Thin community `Community 41`** (1 nodes): `Log 2026-04-20: lessons-from-existing-languages + IR design proposal`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 43`** (1 nodes): `Log 2026-04-21: reorganised under Athena layout`
+- **Thin community `Community 42`** (1 nodes): `Log 2026-04-21: reorganised under Athena layout`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 44`** (1 nodes): `Consolidated tier registry (currently empty)`
+- **Thin community `Community 43`** (1 nodes): `Consolidated tier registry (currently empty)`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 
 ## Suggested Questions

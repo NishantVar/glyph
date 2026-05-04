@@ -16,7 +16,10 @@ export block sort_declarations()
 
 export block compile_and_iterate(target = ".")
     flow:
-        "Run the Glyph compiler on {target} and read the diagnostics. Treat errors as required fixes; treat repairable diagnostics as informational — repair will rewrite the source. Treat warnings as advisory."
-        "Review the source diff after compilation. If repair inserted `generated text` or `generated block` definitions, decide whether each is acceptable as-is or should be promoted to hand-authored by renaming `generated text` to `text` and `generated block` to `block`."
+        "Run the Glyph compiler on {target} and read the diagnostics."
+        "If the compiler exits with repairable diagnostics (exit 2), run `glyph fmt` on {target}."
+        "If `glyph fmt` changes the file, re-invoke the compiler and re-evaluate the diagnostics."
+        "Treat errors as required fixes. If repairable diagnostics remain after `glyph fmt`, treat them as informational — the LLM repair pass will rewrite the source. Treat warnings as advisory."
+        "Review the source diff after the LLM repair pass. If repair inserted `generated text` or `generated block` definitions, decide whether each is acceptable as-is or should be promoted to hand-authored by renaming `generated text` to `text` and `generated block` to `block`."
         "Iterate on remaining diagnostics until the file compiles cleanly with the intended structure."
         return none
