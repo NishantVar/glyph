@@ -12,6 +12,12 @@ use crate::ir::{IrArena, IrBranch, IrNode, NodeId, Polarity};
 use std::collections::HashSet;
 
 pub fn emit(arena: &IrArena, enable_effects: bool) -> String {
+    let scaffold = scaffold::build(arena, enable_effects);
+    let fills = stub_fill::fill(&scaffold);
+    merger::merge(scaffold, fills).expect("scaffold/fill mismatch is a bug")
+}
+
+pub(crate) fn emit_legacy(arena: &IrArena, enable_effects: bool) -> String {
     let root_id = arena
         .root_skill()
         .expect("validate guarantees a root skill before emit");

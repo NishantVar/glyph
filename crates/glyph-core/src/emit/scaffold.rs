@@ -2,7 +2,7 @@
 //! `build()` walker that turns a resolved `IrArena` into a `Scaffold`.
 //! See `obsidian/plans/expand-emitter-design-2026-05-04.md`.
 
-use crate::ir::NodeId;
+use crate::ir::{IrArena, NodeId};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -54,4 +54,11 @@ impl Scaffold {
     pub fn push_span(&mut self, span: SpanRef) {
         self.chunks.push(Chunk::Span(span));
     }
+}
+
+pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
+    let md = crate::emit::emit_legacy(arena, enable_effects);
+    let mut s = Scaffold::default();
+    s.push_literal(md);
+    s
 }
