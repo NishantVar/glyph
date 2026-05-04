@@ -2842,14 +2842,14 @@ fn analyze_export_block(
 /// auto-fix pass to consume. Single-file scope — no cross-file resolution.
 #[derive(Debug, Default)]
 pub struct FmtSignals {
-    pub referenced_names: std::collections::HashSet<String>,
-    pub unresolved_names: std::collections::HashSet<String>,
-    pub inferred_effects: std::collections::HashMap<String, Vec<String>>,
+    pub referenced_names: HashSet<String>,
+    pub unresolved_names: HashSet<String>,
+    pub inferred_effects: HashMap<String, Vec<String>>,
 }
 
 pub fn fmt_signals(file: &SourceFile) -> FmtSignals {
     let mut signals = FmtSignals::default();
-    let mut bound: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut bound: HashSet<String> = HashSet::new();
 
     for decl in &file.decls {
         match decl {
@@ -2888,7 +2888,7 @@ pub fn fmt_signals(file: &SourceFile) -> FmtSignals {
     signals
 }
 
-fn collect_refs_from_decl(decl: &Decl, out: &mut std::collections::HashSet<String>) {
+fn collect_refs_from_decl(decl: &Decl, out: &mut HashSet<String>) {
     match decl {
         Decl::Skill(s) => {
             for stmt in &s.node.flow { collect_refs_from_flow_stmt(stmt, out); }
@@ -2906,7 +2906,7 @@ fn collect_refs_from_decl(decl: &Decl, out: &mut std::collections::HashSet<Strin
     }
 }
 
-fn collect_refs_from_flow_stmt(stmt: &FlowStmt, out: &mut std::collections::HashSet<String>) {
+fn collect_refs_from_flow_stmt(stmt: &FlowStmt, out: &mut HashSet<String>) {
     match stmt {
         FlowStmt::Call { target, .. } => { out.insert(target.node.clone()); }
         FlowStmt::Return(expr) => collect_refs_from_return_expr(expr, out),
@@ -2926,7 +2926,7 @@ fn collect_refs_from_flow_stmt(stmt: &FlowStmt, out: &mut std::collections::Hash
     }
 }
 
-fn collect_refs_from_return_expr(expr: &ReturnExpr, out: &mut std::collections::HashSet<String>) {
+fn collect_refs_from_return_expr(expr: &ReturnExpr, out: &mut HashSet<String>) {
     match expr {
         ReturnExpr::Call { target, .. } => { out.insert(target.node.clone()); }
         ReturnExpr::Name(n) => { out.insert(n.node.clone()); }
@@ -2953,8 +2953,8 @@ fn infer_decl_effects(decl: &Decl) -> Option<(String, Vec<String>)> {
 }
 
 fn infer_effects_for_flow(flow: &[FlowStmt]) -> Vec<String> {
-    let mut effects: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    fn walk(stmt: &FlowStmt, effects: &mut std::collections::BTreeSet<String>) {
+    let mut effects: BTreeSet<String> = BTreeSet::new();
+    fn walk(stmt: &FlowStmt, effects: &mut BTreeSet<String>) {
         match stmt {
             FlowStmt::Call { target, .. } => {
                 if let Some(eff) = stdlib_block_effects(target.node.as_str()) {
@@ -5162,5 +5162,82 @@ skill main()
             "subagent is not imported and not local — should be unresolved");
         assert!(!signals.unresolved_names.contains("send"),
             "send is imported, should not be unresolved");
+    }
+
+    #[test]
+    fn fmt_signals_infers_effects_from_stdlib_call() {
+        // No `effects:` declared; `send("hi")` should cause `spawns_agent` to
+        // be inferred for the skill named "main".
+        let src = r#"skill main()
+    description: "Test."
+    flow:
+        send("hi")
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+
+        let effects = signals.inferred_effects.get("main")
+            .expect("main should have inferred effects");
+        assert!(
+            effects.iter().any(|e| e == "spawns_agent"),
+            "expected spawns_agent in inferred effects, got {:?}", effects
+        );
+    }
+
+    #[test]
+    fn fmt_signals_does_not_infer_when_author_declared_effects() {
+        // When `effects:` is explicitly declared, infer_decl_effects returns an
+        // empty Vec (which the insertion site drops), so the key is absent.
+        // Must parse with enable_effects=true so the effects: field is populated.
+        let src = r#"skill main()
+    description: "Test."
+    effects: spawns_agent
+    flow:
+        send("hi")
+"#;
+        let line_index = crate::span::LineIndex::new(src);
+        let mut bag = crate::diagnostic::DiagBag::new();
+        let file = crate::parse::parse_with_diagnostics_opts(
+            src, 0, "test.glyph.md", &line_index, &mut bag, true,
+        )
+        .expect("parse with effects enabled");
+        let signals = crate::analyze::fmt_signals(&file);
+
+        // Either the key is absent or its value is empty — either way the
+        // inferred_effects map must not contain a non-empty entry for "main".
+        let is_empty_or_absent = signals.inferred_effects.get("main")
+            .map_or(true, |v| v.is_empty());
+        assert!(
+            is_empty_or_absent,
+            "expected no inferred effects when author declared effects, got {:?}",
+            signals.inferred_effects.get("main")
+        );
+    }
+
+    #[test]
+    fn fmt_signals_recurses_into_branch_bodies() {
+        // Calls appear only inside `if`/`else` bodies; the walker must recurse
+        // into branch arms and surface those call targets in referenced_names.
+        let src = r#"skill main()
+    description: "Test."
+    flow:
+        if check == "yes"
+            inner_a("x")
+        else
+            inner_b("y")
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+
+        assert!(
+            signals.referenced_names.contains("inner_a"),
+            "inner_a (in then_body) should be in referenced_names, got {:?}",
+            signals.referenced_names
+        );
+        assert!(
+            signals.referenced_names.contains("inner_b"),
+            "inner_b (in else_body) should be in referenced_names, got {:?}",
+            signals.referenced_names
+        );
     }
 }
