@@ -115,12 +115,165 @@ fn preparse_rewrite(source: &str) -> String {
     out
 }
 
-/// Stratum 2: AST-level rewrites.
+/// Collapse duplicate `import` declarations that share the same path.
+///
+/// - Two selective imports for the same path → merged into one (union of names,
+///   first-occurrence-wins order, deduped).
+/// - A whole-module import supersedes any selective imports for the same path.
+/// - Returns the source unchanged (same `String` value) when nothing to collapse.
+fn collapse_duplicate_imports(source: &str, file: &crate::ast::SourceFile) -> String {
+    use std::collections::{HashMap, HashSet};
+    use crate::ast::{Decl, ImportKind};
+
+    struct Group {
+        first_line_idx: usize,
+        is_whole_module: bool,
+        whole_module_alias: Option<String>,
+        /// (name, alias) pairs, deduped in first-occurrence order.
+        selective_names: Vec<(String, Option<String>)>,
+        line_indices: Vec<usize>,
+    }
+
+    let lines: Vec<&str> = source.lines().collect();
+
+    // Collect the 0-based line indices of top-level import lines (indent 0).
+    let mut import_line_idx: Vec<usize> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if !line.starts_with(' ') && !line.starts_with('\t') && line.trim().starts_with("import ") {
+            import_line_idx.push(i);
+        }
+    }
+
+    // Build groups keyed by import path, preserving first-seen order.
+    let mut groups: HashMap<String, Group> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+
+    let mut import_seq = 0usize;
+    for decl in &file.decls {
+        if let Decl::Import(imp) = decl {
+            if import_seq >= import_line_idx.len() {
+                break;
+            }
+            let line_idx = import_line_idx[import_seq];
+            import_seq += 1;
+
+            let entry = groups.entry(imp.node.path.clone()).or_insert_with(|| {
+                order.push(imp.node.path.clone());
+                Group {
+                    first_line_idx: line_idx,
+                    is_whole_module: false,
+                    whole_module_alias: None,
+                    selective_names: Vec::new(),
+                    line_indices: Vec::new(),
+                }
+            });
+            entry.line_indices.push(line_idx);
+
+            match &imp.node.kind {
+                ImportKind::Selective(names) => {
+                    for n in names {
+                        let key = (n.name.node.clone(), n.alias.clone());
+                        if !entry.selective_names.iter().any(|e| e == &key) {
+                            entry.selective_names.push(key);
+                        }
+                    }
+                }
+                ImportKind::WholeModule { alias } => {
+                    entry.is_whole_module = true;
+                    entry.whole_module_alias = Some(alias.clone());
+                }
+            }
+        }
+    }
+
+    // Nothing to do if every path appears exactly once.
+    if !groups.values().any(|g| g.line_indices.len() > 1) {
+        return source.to_string();
+    }
+
+    // Compute which lines to drop and which to replace.
+    let mut to_drop: HashSet<usize> = HashSet::new();
+    let mut replacements: HashMap<usize, String> = HashMap::new();
+
+    for path in &order {
+        let g = &groups[path];
+        if g.line_indices.len() <= 1 {
+            continue;
+        }
+        // All occurrences after the first are dropped.
+        for &idx in g.line_indices.iter().skip(1) {
+            to_drop.insert(idx);
+        }
+        // Build the merged import line.
+        let merged = if g.is_whole_module {
+            format!(r#"import "{}" as {}"#, path, g.whole_module_alias.as_deref().unwrap_or(""))
+        } else {
+            let names = g
+                .selective_names
+                .iter()
+                .map(|(n, a)| match a {
+                    Some(alias) => format!("{} as {}", n, alias),
+                    None => n.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(r#"import "{}" {{ {} }}"#, path, names)
+        };
+        replacements.insert(g.first_line_idx, merged);
+    }
+
+    // Reconstruct the source, skipping dropped lines and substituting replacements.
+    let mut out = String::with_capacity(source.len());
+    for (i, line) in lines.iter().enumerate() {
+        if to_drop.contains(&i) {
+            continue;
+        }
+        if let Some(repl) = replacements.get(&i) {
+            out.push_str(repl);
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    // Preserve original trailing-newline behaviour.
+    if !source.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+/// Stratum 2: AST-level rewrites (dispatcher).
+///
+/// First runs `collapse_duplicate_imports`. If any imports were collapsed the
+/// source is re-parsed and signals are recomputed before forwarding to
+/// `ast_rewrite_inner`, because the earlier AST is now stale.
+fn ast_rewrite(
+    source: &str,
+    file: &crate::ast::SourceFile,
+    signals: &crate::analyze::FmtSignals,
+    enable_effects: bool,
+) -> String {
+    let collapsed = collapse_duplicate_imports(source, file);
+    if collapsed != source {
+        let line_index = crate::span::LineIndex::new(&collapsed);
+        let mut bag = crate::diagnostic::DiagBag::new();
+        if let Some(reparsed) = crate::parse::parse_with_diagnostics_opts(
+            &collapsed, 0, "<fmt>", &line_index, &mut bag, enable_effects,
+        ) {
+            let new_signals = crate::analyze::fmt_signals(&reparsed);
+            return ast_rewrite_inner(&collapsed, &reparsed, &new_signals, enable_effects);
+        }
+        return collapsed;
+    }
+    ast_rewrite_inner(source, file, signals, enable_effects)
+}
+
+/// Stratum 2: AST-level rewrites (inner).
 ///
 /// Operates by identifying declaration boundaries in the source text, then
 /// reconstructing each declaration body in canonical sub-section order with
 /// hoisted constraints and context.
-fn ast_rewrite(
+fn ast_rewrite_inner(
     source: &str,
     file: &crate::ast::SourceFile,
     _signals: &crate::analyze::FmtSignals,
@@ -992,5 +1145,75 @@ skill current()
             "trailing `-> None` must be stripped while `(p = \"ignore\")` is preserved, got:\n{}",
             out
         );
+    }
+
+    #[test]
+    fn fmt_collapse_two_whole_module_imports_same_path() {
+        let src = r#"import "@glyph/std" { send }
+import "@glyph/std" { send }
+
+skill main()
+    description: "Main."
+    flow:
+        send("hi")
+"#;
+        let result = fmt_source(src, true);
+        let expected = r#"import "@glyph/std" { send }
+
+skill main()
+    description: "Main."
+    flow:
+        send("hi")
+"#;
+        assert_eq!(result.output, expected);
+        assert!(result.changed);
+    }
+
+    #[test]
+    fn fmt_collapse_two_selective_imports_unions_selectors() {
+        let src = r#"import "@glyph/std" { send }
+import "@glyph/std" { subagent }
+
+skill main()
+    description: "Main."
+    flow:
+        send("hi")
+        subagent("x")
+"#;
+        let result = fmt_source(src, true);
+        assert!(result.output.contains(r#"import "@glyph/std" { send, subagent }"#));
+        assert_eq!(result.output.matches(r#"import "@glyph/std""#).count(), 1);
+        assert!(result.changed);
+    }
+
+    #[test]
+    fn fmt_collapse_imports_no_op_when_paths_differ() {
+        let src = r#"import "./a.glyph.md" { foo }
+import "./b.glyph.md" { bar }
+
+skill main()
+    description: "Main."
+    flow:
+        foo()
+"#;
+        let result = fmt_source(src, true);
+        assert_eq!(result.output, src);
+        assert!(!result.changed);
+    }
+
+    #[test]
+    fn fmt_collapse_imports_idempotent() {
+        let src = r#"import "@glyph/std" { send }
+import "@glyph/std" { subagent }
+
+skill main()
+    description: "Main."
+    flow:
+        send("x")
+        subagent("y")
+"#;
+        let once = fmt_source(src, true).output;
+        let twice = fmt_source(&once, true).output;
+        assert_eq!(once, twice, "fmt should be idempotent");
     }
 }
