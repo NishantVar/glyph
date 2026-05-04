@@ -1721,6 +1721,86 @@ skill the_skill()
         }
     }
 
+    // --- Issue #109 chunk 5: integration smoke ---
+    //
+    // The unit-level `fmt_output_reparses_without_duplicate_subsection_diagnostic`
+    // test (chunk 4) verified the parse-tier contract. These two tests close
+    // the loop end-to-end: the same source must surface BOTH the parse-tier
+    // (`G::parse::duplicate-subsection`) and the analyze-tier
+    // (`G::analyze::unmerged-duplicate-subsection`) diagnostics through the
+    // public `check_source` API; after `fmt_source`, the same `check_source`
+    // call must surface NEITHER.
+    //
+    // Together these tests pin the agent-repair-loop contract: a duplicate
+    // sub-section is recoverable (parse keeps the AST), the analyzer flags it
+    // as a hard error so the user sees something is wrong, and `glyph fmt`
+    // is the canonical fixer that drives both diagnostics to zero.
+
+    /// Test A — pre-fmt: a source with a duplicate `constraints:` sub-section
+    /// surfaces both the parse-tier and the analyze-tier diagnostics through
+    /// the public `check_source` API.
+    #[test]
+    fn duplicate_subsection_pre_fmt_surfaces_both_tiers() {
+        let src = "\
+skill the_skill()
+    constraints:
+        require accuracy
+    constraints:
+        avoid stale_references
+    flow:
+        \"do work\"
+";
+        let bag = crate::check_source(src, 0, "<test>");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::parse::duplicate-subsection"),
+            "expected `G::parse::duplicate-subsection` in pre-fmt bag, got: {:?}",
+            ids
+        );
+        assert!(
+            ids.contains(&"G::analyze::unmerged-duplicate-subsection"),
+            "expected `G::analyze::unmerged-duplicate-subsection` in pre-fmt bag, got: {:?}",
+            ids
+        );
+    }
+
+    /// Test B — post-fmt: running `fmt_source` and re-checking yields neither
+    /// diagnostic. Other diagnostics are tolerated (we don't pin bag-empty
+    /// here; just that the two duplicate-subsection IDs are absent).
+    /// Also pins that the fmt run actually did work (`changed == true`) — a
+    /// silent no-op would let this test pass spuriously.
+    #[test]
+    fn duplicate_subsection_post_fmt_clears_both_tiers() {
+        let src = "\
+skill the_skill()
+    constraints:
+        require accuracy
+    constraints:
+        avoid stale_references
+    flow:
+        \"do work\"
+";
+        let result = fmt_source(src, false);
+        assert!(
+            result.changed,
+            "fmt must report changed=true on a duplicate-subsection input"
+        );
+        let bag = crate::check_source(&result.output, 0, "<test>");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::parse::duplicate-subsection"),
+            "post-fmt bag must not contain `G::parse::duplicate-subsection`; got: {:?}\noutput:\n{}",
+            ids,
+            result.output
+        );
+        assert!(
+            !ids.contains(&"G::analyze::unmerged-duplicate-subsection"),
+            "post-fmt bag must not contain `G::analyze::unmerged-duplicate-subsection`; got: {:?}\noutput:\n{}",
+            ids,
+            result.output
+        );
+    }
+
     /// Test 4 — no-op: a source with no duplicate sub-sections passes
     /// through unchanged. `changed == false`. The fmt's other rewrites
     /// (canonical reorder, hoisting) must not be triggered by this input.
