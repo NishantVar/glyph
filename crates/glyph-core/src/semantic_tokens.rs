@@ -768,14 +768,44 @@ fn push_span(
         return;
     }
     let (sline, scol) = line_index.line_col(span.start);
-    let length = span.end - span.start;
-    out.push(RawSemToken {
-        line: sline.saturating_sub(1),
-        start: scol.saturating_sub(1),
-        length,
-        token_type: ttype as u32,
-        modifiers,
-    });
+    let (eline, _) = line_index.line_col(span.end.saturating_sub(1));
+
+    if sline == eline {
+        out.push(RawSemToken {
+            line: sline.saturating_sub(1),
+            start: scol.saturating_sub(1),
+            length: span.end - span.start,
+            token_type: ttype as u32,
+            modifiers,
+        });
+        return;
+    }
+
+    // Multi-line span (e.g. triple-quoted block strings): split into one
+    // token per line so VS Code doesn't silently drop the whole token.
+    let ttype_u32 = ttype as u32;
+    for l in sline..=eline {
+        let line_start = line_index.byte_offset(l, 1);
+        let line_end_excl = line_index.byte_offset(l + 1, 1); // start of next line (after \n)
+        let seg_start = if l == sline { span.start } else { line_start };
+        let seg_end = if l == eline {
+            span.end
+        } else {
+            // exclude the \n itself
+            line_end_excl.saturating_sub(1)
+        };
+        if seg_end <= seg_start {
+            continue;
+        }
+        let col = if l == sline { scol.saturating_sub(1) } else { 0 };
+        out.push(RawSemToken {
+            line: l.saturating_sub(1),
+            start: col,
+            length: seg_end - seg_start,
+            token_type: ttype_u32,
+            modifiers,
+        });
+    }
 }
 
 /// Sort tokens by `(line, start)`, then dedup exact-overlap entries by
@@ -1143,6 +1173,36 @@ mod tests {
             .filter(|t| t.line == 1 && t.length == "description".len() as u32)
             .count();
         assert_eq!(count, 1, "exactly one description token; got {:?}", tokens);
+    }
+
+    #[test]
+    fn triple_quoted_string_splits_into_per_line_tokens() {
+        // A multi-line block string must produce one token per source line so
+        // VS Code doesn't silently drop the single over-long token.
+        let src = "skill s()\n    flow:\n        \"\"\"\n        hello\n        world\n        \"\"\"\n";
+        let tokens = collect_semantic_tokens(src, 0);
+        // All tokens must live on a single line (length never crosses a \n).
+        for t in &tokens {
+            assert!(
+                t.length < 200,
+                "suspiciously large token — probably not split: {:?}",
+                t
+            );
+        }
+        // The four source lines of the triple-quoted string (opening """,
+        // content line 1, content line 2, closing """) must each produce a
+        // GlyphFlowString token.
+        let flow_string_type = SemTokenType::GlyphFlowString as u32;
+        let flow_lines: Vec<u32> = tokens
+            .iter()
+            .filter(|t| t.token_type == flow_string_type)
+            .map(|t| t.line)
+            .collect();
+        // Lines 2,3,4,5 (0-indexed) should all have a flow-string token.
+        assert!(flow_lines.contains(&2), "line 2 (opening \"\"\") missing: {:?}", flow_lines);
+        assert!(flow_lines.contains(&3), "line 3 (hello) missing: {:?}", flow_lines);
+        assert!(flow_lines.contains(&4), "line 4 (world) missing: {:?}", flow_lines);
+        assert!(flow_lines.contains(&5), "line 5 (closing \"\"\") missing: {:?}", flow_lines);
     }
 
     #[test]
