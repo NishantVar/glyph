@@ -144,6 +144,8 @@ Defaults can be string literals, integer literals, float literals, booleans (`tr
 | `comment` | `// text` | Leaf |
 | `qualified_name` | `module.member` | Branch |
 
+**Duplicate sub-section recovery.** The grammar does not enforce singleton-ness on `description_section`, `context_section`, `constraints_section`, `effects_section`, or `flow_section` — a `declaration_body` may parse with multiple occurrences of the same sub-section kind. The CST therefore preserves every occurrence as a sibling node in source order. The AST builder lifts the **first** occurrence of each kind into the canonical singleton field on the declaration AST node and pushes every **later** occurrence into the additive recovery slot `extra_subsections: Vec<DuplicateSubsection>` (see `language-surface.md` §2.5). Each `DuplicateSubsection` retains the sub-section kind, its full body span, and its associated comment trivia so Phase 3a's deterministic merge (`repair.md` §4.11) can splice bodies and comments without reparsing.
+
 ### 2.2 Keyword Tokens
 
 These are named keyword tokens (not anonymous string literals) for reliable highlighting:
