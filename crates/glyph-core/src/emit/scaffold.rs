@@ -273,9 +273,9 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                     IrNode::Call(c) if c.projection_tier == Some(3) => {
                         let proc_path = c.procedure_path.as_deref().unwrap_or("unknown");
                         s.push_literal(format!(
-                            "{}. Load and follow the procedure in `{}`.\n",
+                            "{}. {}\n",
                             idx + 1,
-                            proc_path
+                            templates::external_file_step(proc_path)
                         ));
                     }
                     IrNode::Call(c) => {
