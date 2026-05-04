@@ -486,11 +486,64 @@ fn emit_merged_sections(out: &mut String, matching: &[&Section]) {
 fn emit_merged_multiline(out: &mut String, matching: &[&Section]) {
     let mut iter = matching.iter();
     if let Some(first) = iter.next() {
-        // The first occurrence keeps its inline content if any (e.g.
-        // `context: "first"`) — that's already valid canonical syntax.
-        for line in &first.lines {
-            out.push_str(line);
-            out.push('\n');
+        // Anchor emission. The standard case (single section, or anchor
+        // already in long-form) is verbatim. The corner case (anchor in
+        // SHORT form `<kind>: "x"` AND at least one duplicate) requires
+        // normalization: a short-form header followed by appended body
+        // lines (from the duplicate) is invalid Glyph — short-form is
+        // exclusive. So when both conditions hold, we lift the anchor's
+        // inline content into a body line under a bare `<kind>:` header,
+        // preserving any trailing comment on the original short-form
+        // header. Long-form duplicates then splice cleanly underneath.
+        let header_line = first.lines.first().map(|s| s.as_str()).unwrap_or("");
+        let anchor_inline_raw = inline_content_after_colon(header_line);
+        let anchor_inline_payload = anchor_inline_raw
+            .map(|c| strip_trailing_comment(c).trim().to_string())
+            .filter(|s| !s.is_empty());
+        let anchor_is_short_form = anchor_inline_payload.is_some();
+        let has_duplicates = matching.len() > 1;
+
+        if anchor_is_short_form && has_duplicates {
+            let indent = leading_whitespace_of(header_line);
+            if let Some(colon_pos) = header_line.find(':') {
+                // Bare `<indent><kind>:` header. If the original short-form
+                // header had a trailing comment, hoist it onto the bare
+                // header line so no source-author comment is dropped.
+                out.push_str(&header_line[..=colon_pos]);
+                if let Some(comment) = trailing_comment_after_keyword(header_line) {
+                    out.push_str("  ");
+                    out.push_str(&comment);
+                }
+                out.push('\n');
+                // Lift inline content into an indent-2 body line under the
+                // canonical bare header.
+                if let Some(payload) = anchor_inline_payload {
+                    out.push_str(indent);
+                    out.push_str("    ");
+                    out.push_str(&payload);
+                    out.push('\n');
+                }
+                // Anchor-side body lines after the header (rare for true
+                // short-form, but preserve them if present).
+                for line in first.lines.iter().skip(1) {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            } else {
+                // Pathological — no colon in header. Fall back to verbatim.
+                for line in &first.lines {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        } else {
+            // Single section, or anchor already in long-form, or anchor's
+            // inline content is empty (e.g. trailing-only comment) — emit
+            // verbatim, which is the canonical form.
+            for line in &first.lines {
+                out.push_str(line);
+                out.push('\n');
+            }
         }
     }
     for section in iter {
@@ -529,7 +582,24 @@ fn emit_merged_multiline(out: &mut String, matching: &[&Section]) {
 /// canonical `description: "<a> <b> ..."` line. Trailing comments from
 /// removed lines are emitted as whole-line comments at the original indent
 /// before the merged line.
+///
+/// When there is only one occurrence (no merge needed), the section is
+/// emitted verbatim. This is required for correctness — the merge path
+/// rebuilds the string literal via `unwrap_string_literal` + concatenation,
+/// which does NOT round-trip escapes (`\"`, `\\`) and would corrupt them on
+/// every fmt run. Comment-preservation is also handled by verbatim emission
+/// (rule b lifts comments off DROPPED headers; the single-section case has
+/// no dropped header, so the original line is the canonical form).
 fn emit_merged_descriptions(out: &mut String, matching: &[&Section]) {
+    if matching.len() <= 1 {
+        if let Some(section) = matching.first() {
+            for line in &section.lines {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        return;
+    }
     let mut bodies: Vec<String> = Vec::new();
     let indent = matching
         .first()
@@ -572,7 +642,22 @@ fn emit_merged_descriptions(out: &mut String, matching: &[&Section]) {
 /// Effects merge: the parser only accepts a single-line short form
 /// (comma-separated idents), so duplicates collapse by concatenating their
 /// effect lists into one canonical `effects: a, b, c, ...` line.
+///
+/// When there is only one occurrence (no merge needed), the section is
+/// emitted verbatim — the merge path rebuilds the line from
+/// `effects_acc.join(", ")`, which drops any trailing comment on the
+/// original header. Verbatim emission preserves the comment and any
+/// non-canonical whitespace the user wrote.
 fn emit_merged_effects(out: &mut String, matching: &[&Section]) {
+    if matching.len() <= 1 {
+        if let Some(section) = matching.first() {
+            for line in &section.lines {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        return;
+    }
     let mut effects_acc: Vec<String> = Vec::new();
     let mut header_indent: Option<String> = None;
     let mut comments: Vec<(String, String)> = Vec::new();
@@ -1797,6 +1882,173 @@ skill the_skill()
             !ids.contains(&"G::analyze::unmerged-duplicate-subsection"),
             "post-fmt bag must not contain `G::analyze::unmerged-duplicate-subsection`; got: {:?}\noutput:\n{}",
             ids,
+            result.output
+        );
+    }
+
+    // --- Issue #109 codex-pass-1 fixes ---
+
+    /// Codex finding 2 — single `description:` with escaped chars must NOT
+    /// be re-emitted (the merge helper double-escapes existing `\"` and `\\`
+    /// because `unwrap_string_literal` strips quotes but not escapes). The
+    /// fix is to early-return verbatim when there's only one section to emit.
+    /// Property: `fmt_source` is a no-op (`changed=false`, byte-equal output)
+    /// on a single description containing escaped characters.
+    #[test]
+    fn fmt_does_not_double_escape_single_description_with_escapes() {
+        let src = "\
+skill the_skill()
+    description: \"He said \\\"hi\\\"\"
+    flow:
+        \"do work\"
+";
+        let result = fmt_source(src, false);
+        assert!(
+            !result.changed,
+            "fmt should be a no-op on a single description with escapes; got changed=true with output:\n{}",
+            result.output
+        );
+        assert_eq!(
+            result.output, src,
+            "single description with escapes must round-trip byte-for-byte; got:\n{}",
+            result.output
+        );
+    }
+
+    /// Codex finding 3a — single `description:` with a trailing `// note`
+    /// comment must preserve the comment. Pre-fix, the merge helper only
+    /// lifted trailing comments off DUPLICATE headers (idx > 0), so on a
+    /// single section the comment was silently dropped. Fixed by the same
+    /// early-return-verbatim that fixes Finding 2 (the original line carries
+    /// the comment).
+    #[test]
+    fn fmt_preserves_trailing_comment_on_single_description() {
+        let src = "\
+skill the_skill()
+    description: \"x\"  // important note
+    flow:
+        \"do work\"
+";
+        let result = fmt_source(src, false);
+        assert!(
+            !result.changed,
+            "fmt should be a no-op on a single description with a trailing comment; got changed=true with output:\n{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("// important note"),
+            "trailing comment dropped from single description; output:\n{}",
+            result.output
+        );
+    }
+
+    /// Codex finding 3b — single `effects:` with a trailing `// note`
+    /// comment must preserve the comment, same as 3a but for the effects
+    /// kind. Pre-fix, `emit_merged_effects` rebuilt the line from
+    /// `effects_acc.join(", ")` and dropped the trailing comment.
+    #[test]
+    fn fmt_preserves_trailing_comment_on_single_effects() {
+        let src = "\
+skill the_skill()
+    effects: reads_files  // important note
+    flow:
+        \"do work\"
+";
+        let result = fmt_source(src, true);
+        assert!(
+            !result.changed,
+            "fmt should be a no-op on a single effects line with a trailing comment; got changed=true with output:\n{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("// important note"),
+            "trailing comment dropped from single effects line; output:\n{}",
+            result.output
+        );
+    }
+
+    /// Codex finding 1 — anchor `context:` is short-form (`context: "x"`)
+    /// and the duplicate is long-form (`context:` + indented body lines).
+    /// Pre-fix, the merge emitted the anchor verbatim then appended the
+    /// duplicate's body lines underneath, producing:
+    ///     context: "first"
+    ///         some entry
+    ///         another entry
+    /// — which the parser rejects (short-form is exclusive). Fix: when the
+    /// anchor is short-form and any subsequent duplicate exists, normalize
+    /// the anchor to long-form (bare `context:` header + inline content as
+    /// indent-2 body line) before appending duplicate bodies.
+    ///
+    /// The acceptance shape is "output re-parses cleanly through the public
+    /// `check_source` API with no `G::parse::*` errors on the merged kind"
+    /// — so we re-parse the fmt output and assert no parse failure on
+    /// `context:`.
+    #[test]
+    fn fmt_normalizes_anchor_short_context_with_long_duplicate() {
+        let src = "\
+skill the_skill()
+    context: \"first inline\"
+    context:
+        \"long form entry\"
+    flow:
+        \"do work\"
+";
+        let result = fmt_source(src, false);
+        assert!(result.changed, "fmt should report changed=true");
+
+        // Re-parse the output: it must be valid Glyph (the duplicate-
+        // subsection diagnostic is fine; the output must NOT trigger any
+        // structural parse errors on the merged `context:` block).
+        let mut bag = DiagBag::new();
+        let line_index = LineIndex::new(&result.output);
+        let reparsed = parse::parse_with_diagnostics_opts(
+            &result.output,
+            0,
+            "<reparse>",
+            &line_index,
+            &mut bag,
+            false,
+        );
+        assert!(
+            reparsed.is_some(),
+            "fmt output failed to re-parse:\n{}\nbag:\n{:?}",
+            result.output,
+            bag.iter().map(|d| (&d.id, &d.message)).collect::<Vec<_>>()
+        );
+        // No duplicate-subsection diagnostic on the merged form (the merge
+        // succeeded — i.e., the AST does not contain unmerged extras).
+        let dup_count = bag
+            .iter()
+            .filter(|d| d.id == "G::parse::duplicate-subsection")
+            .count();
+        assert_eq!(
+            dup_count, 0,
+            "merged output still has duplicate-subsection diagnostic; output:\n{}",
+            result.output
+        );
+        // The merged `context:` must be in valid long-form: a bare `context:`
+        // header at indent 1 followed by indented body lines that include
+        // both the lifted anchor's inline string and the duplicate's body.
+        assert!(
+            result.output.contains("first inline"),
+            "anchor's inline content lost in merge:\n{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("long form entry"),
+            "duplicate's body content lost in merge:\n{}",
+            result.output
+        );
+        // There must be exactly one `context:` header (possibly with inline
+        // content stripped — the canonical form is bare `context:`).
+        let context_headers = result
+            .output
+            .lines()
+            .filter(|l| l.trim() == "context:")
+            .count();
+        assert_eq!(
+            context_headers, 1,
+            "expected exactly one bare `context:` header after merge; output:\n{}",
             result.output
         );
     }
