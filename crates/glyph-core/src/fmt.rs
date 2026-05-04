@@ -45,7 +45,8 @@ pub fn fmt_source(source: &str, enable_effects: bool) -> FmtResult {
     match parsed {
         Some(file) => {
             // Stratum 2: AST-level rewrites.
-            let after_ast = ast_rewrite(&after_preparse, &file);
+            let signals = crate::analyze::fmt_signals(&file);
+            let after_ast = ast_rewrite(&after_preparse, &file, &signals, enable_effects);
             let changed = after_ast != source;
             FmtResult {
                 output: after_ast,
@@ -119,7 +120,12 @@ fn preparse_rewrite(source: &str) -> String {
 /// Operates by identifying declaration boundaries in the source text, then
 /// reconstructing each declaration body in canonical sub-section order with
 /// hoisted constraints and context.
-fn ast_rewrite(source: &str, file: &crate::ast::SourceFile) -> String {
+fn ast_rewrite(
+    source: &str,
+    file: &crate::ast::SourceFile,
+    _signals: &crate::analyze::FmtSignals,
+    _enable_effects: bool,
+) -> String {
     let lines: Vec<&str> = source.lines().collect();
     if lines.is_empty() {
         return source.to_string();

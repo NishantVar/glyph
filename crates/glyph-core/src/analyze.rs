@@ -2834,6 +2834,150 @@ fn analyze_export_block(
     }
 }
 
+// ---------------------------------------------------------------------------
+// FmtSignals — structured signals for `glyph fmt` auto-fix pass
+// ---------------------------------------------------------------------------
+
+/// Structured signals extracted from a parsed `SourceFile` for `glyph fmt`'s
+/// auto-fix pass to consume. Single-file scope — no cross-file resolution.
+#[derive(Debug, Default)]
+pub struct FmtSignals {
+    pub referenced_names: std::collections::HashSet<String>,
+    pub unresolved_names: std::collections::HashSet<String>,
+    pub inferred_effects: std::collections::HashMap<String, Vec<String>>,
+}
+
+pub fn fmt_signals(file: &SourceFile) -> FmtSignals {
+    let mut signals = FmtSignals::default();
+    let mut bound: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for decl in &file.decls {
+        match decl {
+            Decl::Const(c) => { bound.insert(c.node.name.clone()); }
+            Decl::Block(b) => { bound.insert(b.node.name.clone()); }
+            Decl::ExportBlock(b) => { bound.insert(b.node.name.clone()); }
+            Decl::Skill(s) => { bound.insert(s.node.name.clone()); }
+            Decl::Import(imp) => match &imp.node.kind {
+                ast::ImportKind::Selective(names) => {
+                    for n in names {
+                        let local = n.alias.clone().unwrap_or_else(|| n.name.node.clone());
+                        bound.insert(local);
+                    }
+                }
+                ast::ImportKind::WholeModule { alias } => {
+                    bound.insert(alias.clone());
+                }
+            },
+        }
+    }
+
+    for decl in &file.decls {
+        collect_refs_from_decl(decl, &mut signals.referenced_names);
+        if let Some((name, effects)) = infer_decl_effects(decl) {
+            if !effects.is_empty() {
+                signals.inferred_effects.insert(name, effects);
+            }
+        }
+    }
+
+    for name in &signals.referenced_names {
+        if !bound.contains(name) {
+            signals.unresolved_names.insert(name.clone());
+        }
+    }
+    signals
+}
+
+fn collect_refs_from_decl(decl: &Decl, out: &mut std::collections::HashSet<String>) {
+    match decl {
+        Decl::Skill(s) => {
+            for stmt in &s.node.flow { collect_refs_from_flow_stmt(stmt, out); }
+            for n in &s.node.body_bare_names { out.insert(n.clone()); }
+        }
+        Decl::Block(b) => {
+            for stmt in &b.node.flow { collect_refs_from_flow_stmt(stmt, out); }
+        }
+        Decl::ExportBlock(b) => {
+            if let Some(expr) = &b.node.terminal_return {
+                collect_refs_from_return_expr(expr, out);
+            }
+        }
+        Decl::Const(_) | Decl::Import(_) => {}
+    }
+}
+
+fn collect_refs_from_flow_stmt(stmt: &FlowStmt, out: &mut std::collections::HashSet<String>) {
+    match stmt {
+        FlowStmt::Call { target, .. } => { out.insert(target.node.clone()); }
+        FlowStmt::Return(expr) => collect_refs_from_return_expr(expr, out),
+        FlowStmt::Branch { then_body, elif_branches, else_body, .. } => {
+            for s in then_body { collect_refs_from_flow_stmt(s, out); }
+            for eb in elif_branches {
+                for s in &eb.body { collect_refs_from_flow_stmt(s, out); }
+            }
+            if let Some(eb) = else_body {
+                for s in eb { collect_refs_from_flow_stmt(s, out); }
+            }
+        }
+        FlowStmt::BareName(n) => { out.insert(n.node.clone()); }
+        FlowStmt::InlineString(_)
+        | FlowStmt::ConstraintMarker(_)
+        | FlowStmt::ContextMarker(_) => {}
+    }
+}
+
+fn collect_refs_from_return_expr(expr: &ReturnExpr, out: &mut std::collections::HashSet<String>) {
+    match expr {
+        ReturnExpr::Call { target, .. } => { out.insert(target.node.clone()); }
+        ReturnExpr::Name(n) => { out.insert(n.node.clone()); }
+        ReturnExpr::None | ReturnExpr::Inline(_) | ReturnExpr::OutputTarget(_) => {}
+    }
+}
+
+fn infer_decl_effects(decl: &Decl) -> Option<(String, Vec<String>)> {
+    match decl {
+        Decl::Skill(s) => {
+            if !s.node.effects.is_empty() {
+                return Some((s.node.name.clone(), Vec::new()));
+            }
+            Some((s.node.name.clone(), infer_effects_for_flow(&s.node.flow)))
+        }
+        Decl::Block(b) => {
+            if !b.node.effects.is_empty() {
+                return Some((b.node.name.clone(), Vec::new()));
+            }
+            Some((b.node.name.clone(), infer_effects_for_flow(&b.node.flow)))
+        }
+        _ => None,
+    }
+}
+
+fn infer_effects_for_flow(flow: &[FlowStmt]) -> Vec<String> {
+    let mut effects: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    fn walk(stmt: &FlowStmt, effects: &mut std::collections::BTreeSet<String>) {
+        match stmt {
+            FlowStmt::Call { target, .. } => {
+                if let Some(eff) = stdlib_block_effects(target.node.as_str()) {
+                    for e in eff { effects.insert((*e).to_string()); }
+                }
+            }
+            FlowStmt::Return(ReturnExpr::Call { target, .. }) => {
+                if let Some(eff) = stdlib_block_effects(target.node.as_str()) {
+                    for e in eff { effects.insert((*e).to_string()); }
+                }
+            }
+            FlowStmt::Branch { then_body, elif_branches, else_body, .. } => {
+                for s in then_body { walk(s, effects); }
+                for eb in elif_branches { for s in &eb.body { walk(s, effects); } }
+                if let Some(eb) = else_body { for s in eb { walk(s, effects); } }
+            }
+            _ => {}
+        }
+    }
+    for stmt in flow { walk(stmt, &mut effects); }
+    effects.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3079,6 +3223,7 @@ skill current() -> BranchName
                 body_bare_names: Vec::new(),
                 effects: Vec::new(),
                 context_section: Vec::new(),
+                constraints_section: Vec::new(),
                 return_type: None,
             },
             span: Span::new(0, 0, 10),
@@ -4995,5 +5140,27 @@ skill main()
             .count();
         assert_eq!(import_kind_count, 1, "expected 1 Import-kind resolution");
         assert_eq!(block_kind_count, 1, "expected 1 Block/ExportBlock-kind resolution");
+    }
+
+    #[test]
+    fn fmt_signals_extracts_referenced_unresolved_and_effects() {
+        let src = r#"import "@glyph/std" { send }
+
+skill main()
+    description: "Main."
+    flow:
+        send("hi")
+        subagent("nested")
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+
+        let signals = crate::analyze::fmt_signals(&file);
+
+        assert!(signals.referenced_names.contains("send"));
+        assert!(signals.referenced_names.contains("subagent"));
+        assert!(signals.unresolved_names.contains("subagent"),
+            "subagent is not imported and not local — should be unresolved");
+        assert!(!signals.unresolved_names.contains("send"),
+            "send is imported, should not be unresolved");
     }
 }
