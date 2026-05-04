@@ -135,27 +135,17 @@ fn collapse_duplicate_imports(source: &str, file: &crate::ast::SourceFile) -> St
     }
 
     let lines: Vec<&str> = source.lines().collect();
-
-    // Collect the 0-based line indices of top-level import lines (indent 0).
-    let mut import_line_idx: Vec<usize> = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        if !line.starts_with(' ') && !line.starts_with('\t') && line.trim().starts_with("import ") {
-            import_line_idx.push(i);
-        }
-    }
+    let line_index = crate::span::LineIndex::new(source);
 
     // Build groups keyed by import path, preserving first-seen order.
     let mut groups: HashMap<String, Group> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
 
-    let mut import_seq = 0usize;
     for decl in &file.decls {
         if let Decl::Import(imp) = decl {
-            if import_seq >= import_line_idx.len() {
-                break;
-            }
-            let line_idx = import_line_idx[import_seq];
-            import_seq += 1;
+            // Derive the 0-based line index directly from the span byte offset.
+            let (line_1based, _col) = line_index.line_col(imp.span.start);
+            let line_idx = (line_1based - 1) as usize;
 
             let entry = groups.entry(imp.node.path.clone()).or_insert_with(|| {
                 order.push(imp.node.path.clone());
@@ -206,7 +196,7 @@ fn collapse_duplicate_imports(source: &str, file: &crate::ast::SourceFile) -> St
         }
         // Build the merged import line.
         let merged = if g.is_whole_module {
-            format!(r#"import "{}" as {}"#, path, g.whole_module_alias.as_deref().unwrap_or(""))
+            format!(r#"import "{}" as {}"#, path, g.whole_module_alias.as_deref().expect("WholeModule branch always sets alias"))
         } else {
             let names = g
                 .selective_names
@@ -1148,7 +1138,7 @@ skill current()
     }
 
     #[test]
-    fn fmt_collapse_two_whole_module_imports_same_path() {
+    fn fmt_collapse_two_selective_imports_drops_exact_duplicate() {
         let src = r#"import "@glyph/std" { send }
 import "@glyph/std" { send }
 
@@ -1215,5 +1205,37 @@ skill main()
         let once = fmt_source(src, true).output;
         let twice = fmt_source(&once, true).output;
         assert_eq!(once, twice, "fmt should be idempotent");
+    }
+
+    #[test]
+    fn fmt_collapse_two_whole_module_imports_same_path() {
+        let src = r#"import "@glyph/std" as Std
+import "@glyph/std" as Std
+
+skill main()
+    description: "Main."
+"#;
+        let result = fmt_source(src, true);
+        assert_eq!(result.output.matches(r#"import "@glyph/std""#).count(), 1);
+        assert!(result.output.contains(r#"import "@glyph/std" as Std"#));
+        assert!(result.changed);
+    }
+
+    #[test]
+    fn fmt_collapse_whole_module_supersedes_selective() {
+        let src = r#"import "@glyph/std" { send }
+import "@glyph/std" as Std
+
+skill main()
+    description: "Main."
+    flow:
+        send("hi")
+"#;
+        let result = fmt_source(src, true);
+        // Whole-module form wins; selective form is replaced.
+        assert_eq!(result.output.matches(r#"import "@glyph/std""#).count(), 1);
+        assert!(result.output.contains(r#"import "@glyph/std" as Std"#));
+        assert!(!result.output.contains(r#"import "@glyph/std" { send }"#));
+        assert!(result.changed);
     }
 }
