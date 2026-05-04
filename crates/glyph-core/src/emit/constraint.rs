@@ -1,0 +1,107 @@
+//! Locked four-form `(strength × polarity)` constraint renderer.
+//!
+//! See `obsidian/plans/expand-emitter-design-2026-05-04.md` §Locked Templates
+//! and `design/compiled-output.md` §Constraint Rendering.
+
+use crate::ir::{Polarity, Strength};
+
+pub const HARD_REQUIRE: &str = "You must {text}.";
+pub const HARD_AVOID: &str = "You must never {text}.";
+pub const SOFT_REQUIRE: &str = "{Text}.";
+pub const SOFT_AVOID: &str = "Avoid {text}.";
+
+pub fn render(strength: Strength, polarity: Polarity, text: &str) -> String {
+    let normalized = normalize(text);
+    match (strength, polarity) {
+        (Strength::Hard, Polarity::Require) => HARD_REQUIRE.replace("{text}", &normalized),
+        (Strength::Hard, Polarity::Avoid) => HARD_AVOID.replace("{text}", &normalized),
+        (Strength::Soft, Polarity::Require) => {
+            SOFT_REQUIRE.replace("{Text}", &capitalize_first(&normalized))
+        }
+        (Strength::Soft, Polarity::Avoid) => SOFT_AVOID.replace("{text}", &normalized),
+    }
+}
+
+fn normalize(text: &str) -> String {
+    let trimmed = text.trim().trim_end_matches('.');
+    let mut chars = trimmed.chars();
+    match chars.next() {
+        Some(c) if c.is_uppercase() => {
+            let mut out = String::new();
+            for lc in c.to_lowercase() {
+                out.push(lc);
+            }
+            out.push_str(chars.as_str());
+            out
+        }
+        _ => trimmed.to_string(),
+    }
+}
+
+fn capitalize_first(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(c) => {
+            let mut out = String::new();
+            for uc in c.to_uppercase() {
+                out.push(uc);
+            }
+            out.push_str(chars.as_str());
+            out
+        }
+        None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hard_require() {
+        assert_eq!(
+            render(Strength::Hard, Polarity::Require, "stay focused"),
+            "You must stay focused."
+        );
+    }
+
+    #[test]
+    fn hard_avoid() {
+        assert_eq!(
+            render(Strength::Hard, Polarity::Avoid, "skip the tests"),
+            "You must never skip the tests."
+        );
+    }
+
+    #[test]
+    fn soft_require_capitalizes() {
+        assert_eq!(
+            render(Strength::Soft, Polarity::Require, "tests pass"),
+            "Tests pass."
+        );
+    }
+
+    #[test]
+    fn soft_avoid() {
+        assert_eq!(
+            render(Strength::Soft, Polarity::Avoid, "leaving stale references"),
+            "Avoid leaving stale references."
+        );
+    }
+
+    #[test]
+    fn normalizes_capital_and_period() {
+        assert_eq!(
+            render(Strength::Soft, Polarity::Avoid, "Leaving stale references."),
+            "Avoid leaving stale references."
+        );
+    }
+
+    #[test]
+    fn soft_require_strips_period_then_capitalizes() {
+        assert_eq!(
+            render(Strength::Soft, Polarity::Require, "tests pass."),
+            "Tests pass."
+        );
+    }
+}
