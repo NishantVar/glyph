@@ -371,7 +371,8 @@ fn ast_rewrite(
             let new_signals = crate::analyze::fmt_signals(&reparsed);
             return ast_rewrite_inner(&after_unused, &reparsed, &new_signals, enable_effects);
         }
-        // Re-parse failed after unused removal — return source before this pass.
+        // Re-parse failed after unused removal — return the rewritten source
+        // without running ast_rewrite_inner (no fresh AST available).
         return after_unused;
     }
 
@@ -1424,5 +1425,23 @@ skill main()
         let once = fmt_source(src, true).output;
         let twice = fmt_source(&once, true).output;
         assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn fmt_remove_unused_keeps_aliased_selective_when_alias_used() {
+        let src = r#"import "@glyph/std" { send as S, subagent as Sub }
+
+skill main()
+    description: "Main."
+    flow:
+        S("hi")
+"#;
+        let result = fmt_source(src, true);
+        // Aliased name `S` is referenced; raw name `subagent` (alias `Sub`) is not.
+        assert!(result.output.contains(r#"import "@glyph/std" { send as S }"#),
+            "expected only `send as S` to remain, got: {}", result.output);
+        assert!(!result.output.contains("Sub"));
+        assert!(!result.output.contains("subagent"));
+        assert!(result.changed);
     }
 }
