@@ -358,19 +358,16 @@ pub fn parse_with_diagnostics_opts(
         }
     }
 
-    // `G::parse::duplicate-subsection` (issue #109) is the first parser
-    // diagnostic whose contract explicitly requires the AST to flow through
-    // to analyze + downstream phases — the duplicate body is recovered into
-    // `extra_subsections` and `glyph fmt` later merges it. So a bag that
-    // contains *only* duplicate-subsection repairables must NOT suppress the
-    // AST. All other repairables keep their pre-#109 fatal-on-emit semantics
-    // (suppress AST).
-    let only_recoverable_repairables = bag
-        .iter()
-        .filter(|d| d.classification == Classification::Repairable)
-        .all(|d| d.id == "G::parse::duplicate-subsection");
-
-    if bag.has_error() || (bag.has_repairable() && !only_recoverable_repairables) {
+    // Issue #109 codex pass-3 finding 8: gate AST suppression on tier
+    // alone — repairable-only bags flow through; any error suppresses.
+    // The principle: any combination of repairables is itself repairable,
+    // and downstream consumers (`glyph fmt`, agent repair loop) need the
+    // AST to operate on. Pre-#109 the gate was tier-only too; the brief
+    // window where it was scoped to a single ID was a defensive narrowing
+    // for chunk 2 and is no longer needed once all repairable IDs have
+    // been audited to confirm none of them produce a structurally-broken
+    // AST that would crash later phases (audit done in pass-3 review).
+    if bag.has_error() {
         return None;
     }
 
@@ -985,6 +982,16 @@ impl<'a> Parser<'a> {
         let mut description_present = false;
         let mut effects_present = false;
         let mut flow_present = false;
+        // Issue #109 codex pass-3 finding 9: `context:` and `constraints:`
+        // are valid sub-sections on `export block` per
+        // `design/language-surface.md` §2.5 ("Inside a `skill`, `block`, or
+        // `export block` body…"). The export-block flat scanner does not
+        // structurally parse their bodies into AST fields, but we still
+        // need to detect duplicates and surface them via
+        // `extra_subsections` with an empty body so `glyph fmt` can lift
+        // the merge / dedup work back into the source-text stratum.
+        let mut context_present = false;
+        let mut constraints_present = false;
         let mut current_dup_kind: Option<&'static str> = None;
         let mut dup_description: Option<String> = None;
         let mut dup_effects: Vec<String> = Vec::new();
@@ -1179,8 +1186,9 @@ impl<'a> Parser<'a> {
                                 }
                                 current_section = Some("flow");
                             }
-                            "constraints" | "context" => {
+                            "context" => {
                                 line_is_section_header = true;
+                                let kw_tok_span = self.peek().span;
                                 flush_dup_export_block(
                                     &mut extra_subsections,
                                     &mut current_dup_kind,
@@ -1188,6 +1196,73 @@ impl<'a> Parser<'a> {
                                     &mut dup_effects,
                                     &mut dup_flow_strings,
                                 );
+                                if context_present {
+                                    // Issue #109 codex pass-3 finding 9:
+                                    // duplicate `context:` is repairable.
+                                    // The flat scanner doesn't structurally
+                                    // capture context entries, so push an
+                                    // empty `Vec<ContextEntry>` — fmt's
+                                    // source-text stratum is responsible
+                                    // for the actual merge.
+                                    self.bag.push(
+                                        Diagnostic {
+                                            id: "G::parse::duplicate-subsection".into(),
+                                            classification: Classification::Repairable,
+                                            message: "duplicate `context:` sub-section in export block body".into(),
+                                            span: SourceSpan::from_byte_span(
+                                                self.file_label,
+                                                kw_tok_span,
+                                                self.line_index,
+                                            ),
+                                            related: Vec::new(),
+                                            hints: vec![
+                                                "remove the duplicate or merge contents into one `context:`".into(),
+                                            ],
+                                        },
+                                        kw_tok_span,
+                                    );
+                                    extra_subsections
+                                        .push(DuplicateSubsection::Context(Vec::new()));
+                                } else {
+                                    context_present = true;
+                                }
+                                current_section = Some("other");
+                            }
+                            "constraints" => {
+                                line_is_section_header = true;
+                                let kw_tok_span = self.peek().span;
+                                flush_dup_export_block(
+                                    &mut extra_subsections,
+                                    &mut current_dup_kind,
+                                    &mut dup_description,
+                                    &mut dup_effects,
+                                    &mut dup_flow_strings,
+                                );
+                                if constraints_present {
+                                    // Issue #109 codex pass-3 finding 9:
+                                    // duplicate `constraints:` is repairable.
+                                    self.bag.push(
+                                        Diagnostic {
+                                            id: "G::parse::duplicate-subsection".into(),
+                                            classification: Classification::Repairable,
+                                            message: "duplicate `constraints:` sub-section in export block body".into(),
+                                            span: SourceSpan::from_byte_span(
+                                                self.file_label,
+                                                kw_tok_span,
+                                                self.line_index,
+                                            ),
+                                            related: Vec::new(),
+                                            hints: vec![
+                                                "remove the duplicate or merge contents into one `constraints:`".into(),
+                                            ],
+                                        },
+                                        kw_tok_span,
+                                    );
+                                    extra_subsections
+                                        .push(DuplicateSubsection::Constraints(Vec::new()));
+                                } else {
+                                    constraints_present = true;
+                                }
                                 current_section = Some("other");
                             }
                             _ => {}
@@ -1309,6 +1384,15 @@ impl<'a> Parser<'a> {
         let mut effects_present = false;
         let mut flow: Vec<FlowStmt> = Vec::new();
         let mut flow_present = false;
+        // Issue #109 codex pass-3 finding 9: `BlockDecl` has no canonical
+        // `context_section` / `body_constraints` AST fields, so the first
+        // occurrence of `context:` / `constraints:` is silently consumed
+        // (the body parses but its content is discarded). Subsequent
+        // occurrences emit `G::parse::duplicate-subsection` (Repairable)
+        // and route the body intact into `extra_subsections` so `glyph
+        // fmt` can splice them back later.
+        let mut context_present = false;
+        let mut constraints_present = false;
         // Issue #109: track duplicate sub-section bodies so `glyph fmt` can
         // splice them back into the canonical singletons instead of dropping
         // them silently.
@@ -1476,6 +1560,212 @@ impl<'a> Parser<'a> {
                                     } else {
                                         flow_present = true;
                                         flow.extend(local_flow);
+                                    }
+                                }
+                                "context" => {
+                                    // Issue #109 codex pass-3 finding 9:
+                                    // `context:` is a valid sub-section on
+                                    // `block` per `design/language-surface.md`
+                                    // §2.5. `BlockDecl` has no canonical
+                                    // field for it, so the first occurrence
+                                    // is silently absorbed; subsequent
+                                    // occurrences land in `extra_subsections`.
+                                    self.pos += 1;
+                                    self.expect(&TokenKind::Colon)?;
+                                    let mut local_entries: Vec<ContextEntry> = Vec::new();
+                                    // Short form: `context: "inline"` on the same line.
+                                    if let TokenKind::StringLit(s) = &self.peek().kind {
+                                        let lit_span = self.peek().span;
+                                        let v = s.clone();
+                                        for slot in scan_slots(&v) {
+                                            let span_start =
+                                                lit_span.start + 1 + slot.start_in_content as u32;
+                                            let span =
+                                                Span::new(self.file_id, span_start, span_start + 1);
+                                            self.bag.push(
+                                                Diagnostic {
+                                                    id: "G::parse::param-slot-in-non-instruction-string".into(),
+                                                    classification: Classification::Repairable,
+                                                    message: format!(
+                                                        "`{{{}}}` slot is not allowed in `context:` — context is not instruction-bearing",
+                                                        slot.name
+                                                    ),
+                                                    span: SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                                    related: Vec::new(),
+                                                    hints: vec![
+                                                        "remove the braces or move the slot into an instruction string".into(),
+                                                    ],
+                                                },
+                                                span,
+                                            );
+                                        }
+                                        self.pos += 1;
+                                        local_entries.push(ContextEntry::InlineString(v));
+                                    }
+                                    // Long form: indented entries at indent 2.
+                                    loop {
+                                        match self.current_line_indent() {
+                                            Some(2) => {
+                                                self.expect_line_start()?;
+                                                match &self.peek().kind {
+                                                    TokenKind::StringLit(s) => {
+                                                        let lit_span = self.peek().span;
+                                                        let v = s.clone();
+                                                        for slot in scan_slots(&v) {
+                                                            let span_start = lit_span.start
+                                                                + 1
+                                                                + slot.start_in_content as u32;
+                                                            let span = Span::new(
+                                                                self.file_id,
+                                                                span_start,
+                                                                span_start + 1,
+                                                            );
+                                                            self.bag.push(
+                                                                Diagnostic {
+                                                                    id: "G::parse::param-slot-in-non-instruction-string".into(),
+                                                                    classification: Classification::Repairable,
+                                                                    message: format!(
+                                                                        "`{{{}}}` slot is not allowed in `context:` — context is not instruction-bearing",
+                                                                        slot.name
+                                                                    ),
+                                                                    span: SourceSpan::from_byte_span(self.file_label, span, self.line_index),
+                                                                    related: Vec::new(),
+                                                                    hints: vec![
+                                                                        "remove the braces or move the slot into an instruction string".into(),
+                                                                    ],
+                                                                },
+                                                                span,
+                                                            );
+                                                        }
+                                                        self.pos += 1;
+                                                        local_entries
+                                                            .push(ContextEntry::InlineString(v));
+                                                    }
+                                                    TokenKind::Ident(name) => {
+                                                        let v = name.clone();
+                                                        let name_span = self.peek().span;
+                                                        self.pos += 1;
+                                                        local_entries.push(ContextEntry::NameRef(
+                                                            Spanned::new(v, name_span),
+                                                        ));
+                                                    }
+                                                    _ => {
+                                                        return Err(ParseError::Unexpected {
+                                                            span: self.peek().span,
+                                                            message: "expected string literal or name in `context:` body".into(),
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                            _ => break,
+                                        }
+                                    }
+                                    if context_present {
+                                        let span = kw_tok_span;
+                                        self.bag.push(
+                                            Diagnostic {
+                                                id: "G::parse::duplicate-subsection".into(),
+                                                classification: Classification::Repairable,
+                                                message: "duplicate `context:` sub-section in block body".into(),
+                                                span: SourceSpan::from_byte_span(
+                                                    self.file_label,
+                                                    span,
+                                                    self.line_index,
+                                                ),
+                                                related: Vec::new(),
+                                                hints: vec![
+                                                    "remove the duplicate or merge contents into one `context:`".into(),
+                                                ],
+                                            },
+                                            span,
+                                        );
+                                        extra_subsections
+                                            .push(DuplicateSubsection::Context(local_entries));
+                                    } else {
+                                        context_present = true;
+                                        // First occurrence: silently
+                                        // discard. `BlockDecl` has no
+                                        // canonical context_section field.
+                                    }
+                                }
+                                "constraints" => {
+                                    // Issue #109 codex pass-3 finding 9.
+                                    self.pos += 1;
+                                    self.expect(&TokenKind::Colon)?;
+                                    let mut local_markers: Vec<ConstraintMarker> = Vec::new();
+                                    loop {
+                                        match self.current_line_indent() {
+                                            Some(2) => {
+                                                self.expect_line_start()?;
+                                                match &self.peek().kind {
+                                                    TokenKind::Ident(kw) => {
+                                                        let kw = kw.clone();
+                                                        self.pos += 1;
+                                                        let kind = match kw.as_str() {
+                                                            "require" => ConstraintMarkerKind::Require,
+                                                            "avoid" => ConstraintMarkerKind::Avoid,
+                                                            "must" => {
+                                                                if let TokenKind::Ident(next) =
+                                                                    &self.peek().kind
+                                                                {
+                                                                    if next == "avoid" {
+                                                                        self.pos += 1;
+                                                                        ConstraintMarkerKind::MustAvoid
+                                                                    } else {
+                                                                        ConstraintMarkerKind::Must
+                                                                    }
+                                                                } else {
+                                                                    ConstraintMarkerKind::Must
+                                                                }
+                                                            }
+                                                            _ => {
+                                                                return Err(ParseError::Unexpected {
+                                                                    span: self.peek().span,
+                                                                    message: format!("expected constraint keyword (`require`, `avoid`, `must`), found `{}`", kw),
+                                                                });
+                                                            }
+                                                        };
+                                                        let (name, name_span) =
+                                                            self.expect_ident(None)?;
+                                                        local_markers.push(ConstraintMarker {
+                                                            marker: kind,
+                                                            name: Spanned::new(name, name_span),
+                                                        });
+                                                    }
+                                                    _ => {
+                                                        return Err(ParseError::Unexpected {
+                                                            span: self.peek().span,
+                                                            message: "expected constraint marker in `constraints:` body".into(),
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                            _ => break,
+                                        }
+                                    }
+                                    if constraints_present {
+                                        let span = kw_tok_span;
+                                        self.bag.push(
+                                            Diagnostic {
+                                                id: "G::parse::duplicate-subsection".into(),
+                                                classification: Classification::Repairable,
+                                                message: "duplicate `constraints:` sub-section in block body".into(),
+                                                span: SourceSpan::from_byte_span(
+                                                    self.file_label,
+                                                    span,
+                                                    self.line_index,
+                                                ),
+                                                related: Vec::new(),
+                                                hints: vec![
+                                                    "remove the duplicate or merge contents into one `constraints:`".into(),
+                                                ],
+                                            },
+                                            span,
+                                        );
+                                        extra_subsections
+                                            .push(DuplicateSubsection::Constraints(local_markers));
+                                    } else {
+                                        constraints_present = true;
                                     }
                                 }
                                 _ => {
@@ -4698,6 +4988,225 @@ export block foo() -> Report
                 }
             }
             other => panic!("expected DuplicateSubsection::Flow, got {:?}", other),
+        }
+        let dups = duplicate_subsection_diags(&bag);
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].classification, Classification::Repairable);
+    }
+
+    // --- Issue #109 codex pass-3 finding 8 ---
+    //
+    // The AST-suppression gate at `parse_with_diagnostics_opts` originally
+    // returned `None` whenever the bag contained any repairable other than
+    // `G::parse::duplicate-subsection`. That broke fmt's recovery contract
+    // for mixed-diagnostic inputs: a file with a duplicate sub-section AND
+    // any other repairable (e.g., a `{slot}` inside a `context:` body
+    // emitting `G::parse::param-slot-in-non-instruction-string`) had its
+    // AST suppressed, the merge never fired, and the duplicate body was
+    // lost. Fix: gate on tier alone — repairable-only bags flow through;
+    // any error/fatal still suppresses. The principle is "any combination
+    // of repairables is repairable" — that's what the tier means.
+
+    /// Finding 8 — a file that emits both `G::parse::duplicate-subsection`
+    /// AND another repairable diagnostic of an unrelated kind must still
+    /// return a `Some(file)` from the parser so fmt can merge the
+    /// duplicate. The unrelated repairable used here is
+    /// `G::parse::param-slot-in-non-instruction-string` from a `{name}`
+    /// slot inside a `context:` body — orthogonal to duplicate-subsection
+    /// recovery but sharing the repairable tier.
+    #[test]
+    fn ast_flows_through_for_mixed_repairables() {
+        let src = "\
+skill foo()
+    context:
+        \"ctx with {slot}\"
+    context:
+        \"second ctx\"
+    flow:
+        \"do work\"
+";
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let file = parse_with_diagnostics_opts(
+            src,
+            0,
+            "dup.glyph.md",
+            &line_index,
+            &mut bag,
+            true,
+        );
+
+        // Pin the bag shape: at least one duplicate-subsection AND at
+        // least one param-slot diagnostic, both repairable.
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.iter().any(|id| *id == "G::parse::duplicate-subsection"),
+            "expected duplicate-subsection in bag, got {:?}",
+            ids
+        );
+        assert!(
+            ids.iter()
+                .any(|id| *id == "G::parse::param-slot-in-non-instruction-string"),
+            "expected param-slot-in-non-instruction-string in bag, got {:?}",
+            ids
+        );
+
+        // Both diagnostics must be repairable (no errors); the AST must
+        // flow through so fmt can later splice the duplicate body back
+        // into the singleton.
+        let any_error = bag
+            .iter()
+            .any(|d| matches!(d.classification, Classification::Error));
+        assert!(
+            !any_error,
+            "all diagnostics in this scenario should be repairable; bag: {:?}",
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.classification))
+                .collect::<Vec<_>>()
+        );
+
+        let file = file.expect(
+            "AST must flow through when bag is repairable-only (any combination); \
+             gate suppressed it",
+        );
+
+        // The recovered duplicate must land in `extra_subsections` so fmt
+        // can pick it up.
+        let skill = file
+            .decls
+            .into_iter()
+            .find_map(|d| match d {
+                Decl::Skill(s) => Some(s.node),
+                _ => None,
+            })
+            .expect("expected a skill decl");
+        assert_eq!(
+            skill.extra_subsections.len(),
+            1,
+            "duplicate context body must land in extras"
+        );
+    }
+
+    // --- Issue #109 codex pass-3 finding 9 ---
+    //
+    // Finding 4's `parse_export_block` recovery only covered
+    // `description:` / `effects:` / `flow:`. `context:` and `constraints:`
+    // also pass through `parse_export_block` (`design/language-surface.md`
+    // §2.5: "Inside a `skill`, `block`, or `export block` body…"), but
+    // duplicates of those kinds were silently dropped. These tests pin
+    // the recovery contract for both kinds on `export block` AND `block`.
+
+    /// Finding 9 — duplicate `context:` in an `export block` is recovered.
+    #[test]
+    fn export_block_two_contexts_first_wins_second_in_extras() {
+        let src = "\
+export block foo() -> Report
+    context:
+        \"first ctx\"
+    context:
+        \"second ctx\"
+    flow:
+        \"Do something.\"
+        return <result>
+";
+        let (eb, bag) = parse_first_export_block_with_bag(src);
+        assert_eq!(
+            eb.extra_subsections.len(),
+            1,
+            "duplicate context body must land in extras; got {:?}",
+            eb.extra_subsections
+        );
+        match &eb.extra_subsections[0] {
+            DuplicateSubsection::Context(_) => {}
+            other => panic!("expected DuplicateSubsection::Context, got {:?}", other),
+        }
+        let dups = duplicate_subsection_diags(&bag);
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].classification, Classification::Repairable);
+    }
+
+    /// Finding 9 — duplicate `constraints:` in an `export block` is recovered.
+    #[test]
+    fn export_block_two_constraints_first_wins_second_in_extras() {
+        let src = "\
+export block foo() -> Report
+    constraints:
+        require accuracy
+    constraints:
+        avoid stale_references
+    flow:
+        \"Do something.\"
+        return <result>
+";
+        let (eb, bag) = parse_first_export_block_with_bag(src);
+        assert_eq!(
+            eb.extra_subsections.len(),
+            1,
+            "duplicate constraints body must land in extras; got {:?}",
+            eb.extra_subsections
+        );
+        match &eb.extra_subsections[0] {
+            DuplicateSubsection::Constraints(_) => {}
+            other => panic!("expected DuplicateSubsection::Constraints, got {:?}", other),
+        }
+        let dups = duplicate_subsection_diags(&bag);
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].classification, Classification::Repairable);
+    }
+
+    /// Finding 9 (block coverage) — duplicate `context:` in a `block` is
+    /// recovered. Mirrors the export-block test for the inner `block`
+    /// declaration kind.
+    #[test]
+    fn block_two_contexts_first_wins_second_in_extras() {
+        let src = "\
+block foo()
+    context:
+        \"first ctx\"
+    context:
+        \"second ctx\"
+    flow:
+        \"Do something.\"
+";
+        let (block, bag) = parse_first_block_with_bag(src);
+        assert_eq!(
+            block.extra_subsections.len(),
+            1,
+            "duplicate context body must land in extras; got {:?}",
+            block.extra_subsections
+        );
+        match &block.extra_subsections[0] {
+            DuplicateSubsection::Context(_) => {}
+            other => panic!("expected DuplicateSubsection::Context, got {:?}", other),
+        }
+        let dups = duplicate_subsection_diags(&bag);
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].classification, Classification::Repairable);
+    }
+
+    /// Finding 9 (block coverage) — duplicate `constraints:` in a `block`
+    /// is recovered.
+    #[test]
+    fn block_two_constraints_first_wins_second_in_extras() {
+        let src = "\
+block foo()
+    constraints:
+        require accuracy
+    constraints:
+        avoid stale_references
+    flow:
+        \"Do something.\"
+";
+        let (block, bag) = parse_first_block_with_bag(src);
+        assert_eq!(
+            block.extra_subsections.len(),
+            1,
+            "duplicate constraints body must land in extras; got {:?}",
+            block.extra_subsections
+        );
+        match &block.extra_subsections[0] {
+            DuplicateSubsection::Constraints(_) => {}
+            other => panic!("expected DuplicateSubsection::Constraints, got {:?}", other),
         }
         let dups = duplicate_subsection_diags(&bag);
         assert_eq!(dups.len(), 1);

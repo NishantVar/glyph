@@ -647,7 +647,14 @@ fn emit_merged_descriptions(out: &mut String, matching: &[&Section]) {
         out.push('\n');
     }
     let header_indent = header_indent_for_first.unwrap_or(indent);
-    let merged = bodies.join(" ");
+    // Issue #109 codex pass-3 finding 10: `design/repair.md` §4.11.4 says
+    // multi-line `description:` merges concatenate "with a single blank
+    // line between bodies"; the design is silent on the inline-string
+    // form, so we default to a single `\n` embedded inside the merged
+    // literal. `escape_string_literal` re-encodes that `\n` back to the
+    // two-character `\n` source escape so the merged inline literal stays
+    // single-line in the source file.
+    let merged = bodies.join("\n");
     out.push_str(&header_indent);
     out.push_str("description: \"");
     out.push_str(&escape_string_literal(&merged));
@@ -857,15 +864,26 @@ fn unescape_string_literal_inner(inner: &str) -> String {
 }
 
 /// Re-escape a description payload before re-emitting it as a Glyph string
-/// literal. Only `"` and `\` need escaping — control characters in a
+/// literal.
+///
+/// `"` and `\` always need escaping. Control characters in a single
 /// description body would already have failed Chunk-2 parsing because the
-/// parser tokenizes string literals before we ever see them.
+/// parser tokenizes string literals before we ever see them — but the
+/// post-merge string handed in here can contain a real `\n` or `\t`,
+/// because issue #109 codex pass-3 finding 10 chose `\n` as the
+/// inline-form description merge separator. Re-encoding those control
+/// characters back to their two-character source escapes keeps the
+/// merged inline literal single-line and re-parseable, mirroring the
+/// tokenizer's escape vocabulary in `crate::tokenize` (`\"`, `\\`, `\n`,
+/// `\t`).
 fn escape_string_literal(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch {
             '\\' => out.push_str("\\\\"),
             '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
             other => out.push(other),
         }
     }
@@ -2205,7 +2223,9 @@ skill the_skill()
 
         // Decoded bodies (what the parser already produced for the two
         // duplicates): `He said "hi"` and `and \done`. After merging they
-        // should collapse into `He said "hi" and \done` — joined by space.
+        // collapse into `He said "hi"\nand \done` — joined by a `\n`
+        // separator (codex pass-3 finding 10; design silent on inline-form
+        // join, default per planner is `\n`).
         let merged_value = reparsed
             .decls
             .iter()
@@ -2216,7 +2236,7 @@ skill the_skill()
             .expect("merged skill must have a description");
         assert_eq!(
             merged_value,
-            "He said \"hi\" and \\done",
+            "He said \"hi\"\nand \\done",
             "description merge double-escaped or otherwise mangled content; got `{}`",
             merged_value
         );
@@ -2226,6 +2246,74 @@ skill the_skill()
         assert!(
             !second.changed,
             "fmt is not idempotent on description merge with escapes"
+        );
+        assert_eq!(second.output, result.output);
+    }
+
+    /// Codex pass-3 finding 10 — inline-form `description:` merge separator.
+    ///
+    /// `design/repair.md` §4.11.4 specifies a "single blank line between
+    /// bodies" for the multi-line bare form, and is silent on the
+    /// inline-string form. Per the planner default, the inline-string
+    /// merge concatenates two bodies with a single `\n` (LF) embedded
+    /// inside the merged literal — so the merged source looks like
+    /// `description: "first.\nsecond."`. The semantic value (after
+    /// re-parsing the merged source) is `"first.\nsecond."`.
+    #[test]
+    fn fmt_merges_two_inline_descriptions_with_newline_separator() {
+        let src = "\
+skill the_skill()
+    description: \"first.\"
+    description: \"second.\"
+    flow:
+        \"do work\"
+";
+        let result = fmt_source(src, false);
+        assert!(result.changed, "fmt should merge duplicates");
+
+        // Re-parse the merged output and inspect the AST description value.
+        let mut bag = DiagBag::new();
+        let line_index = LineIndex::new(&result.output);
+        let reparsed = parse::parse_with_diagnostics_opts(
+            &result.output,
+            0,
+            "<reparse>",
+            &line_index,
+            &mut bag,
+            false,
+        )
+        .unwrap_or_else(|| {
+            panic!(
+                "fmt output failed to re-parse:\n{}\nbag:\n{:?}",
+                result.output,
+                bag.iter().map(|d| (&d.id, &d.message)).collect::<Vec<_>>()
+            )
+        });
+        let dup_count = bag
+            .iter()
+            .filter(|d| d.id == "G::parse::duplicate-subsection")
+            .count();
+        assert_eq!(dup_count, 0, "merge must collapse to a single description:");
+
+        let merged_value = reparsed
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                crate::ast::Decl::Skill(s) => s.node.description.clone(),
+                _ => None,
+            })
+            .expect("merged skill must have a description");
+        assert_eq!(
+            merged_value, "first.\nsecond.",
+            "inline-form merge must use a `\\n` separator (single newline embedded inside the merged literal); got `{:?}`",
+            merged_value
+        );
+
+        // Idempotence: a second pass is a no-op.
+        let second = fmt_source(&result.output, false);
+        assert!(
+            !second.changed,
+            "fmt is not idempotent on inline-form description merge"
         );
         assert_eq!(second.output, result.output);
     }
