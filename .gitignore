@@ -6,6 +6,7 @@ target/
 __pycache__
 .worktrees
 .claude/worktrees
+docs/supwerpowers
 
 # Compiler output emitted next to .glyph.md sources during tests
 crates/glyph-cli/tests/corpus/**/*.md
