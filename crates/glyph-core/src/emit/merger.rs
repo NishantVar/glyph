@@ -36,3 +36,64 @@ pub fn merge(scaffold: Scaffold, fills: HashMap<SpanId, String>) -> Result<Strin
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::emit::scaffold::{Scaffold, SpanId, SpanKind, SpanPayload, SpanRef};
+    use crate::ir::NodeId;
+
+    fn span(id: u32, kind: SpanKind) -> SpanRef {
+        SpanRef {
+            id: SpanId(id),
+            kind,
+            ir_node: NodeId(0),
+            payload: SpanPayload::default(),
+        }
+    }
+
+    #[test]
+    fn merge_literal_only() {
+        let mut s = Scaffold::default();
+        s.push_literal("hello\n");
+        let fills = HashMap::new();
+        assert_eq!(merge(s, fills).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn merge_with_span_fill() {
+        let mut s = Scaffold::default();
+        s.push_literal("- **name**");
+        s.push_span(span(0, SpanKind::ParamDescription));
+        s.push_literal(" (required)\n");
+        let mut fills = HashMap::new();
+        fills.insert(SpanId(0), ": the description".into());
+        assert_eq!(
+            merge(s, fills).unwrap(),
+            "- **name**: the description (required)\n"
+        );
+    }
+
+    #[test]
+    fn merge_missing_fill_errors() {
+        let mut s = Scaffold::default();
+        s.push_span(span(7, SpanKind::CallBodyShape));
+        let result = merge(s, HashMap::new());
+        match result {
+            Err(MergeError::MissingSpan(SpanId(7))) => {}
+            other => panic!("expected MissingSpan(7), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn merge_unknown_fill_errors() {
+        let mut s = Scaffold::default();
+        s.push_literal("ok");
+        let mut fills = HashMap::new();
+        fills.insert(SpanId(99), "unexpected".into());
+        match merge(s, fills) {
+            Err(MergeError::UnknownSpan(SpanId(99))) => {}
+            other => panic!("expected UnknownSpan(99), got {other:?}"),
+        }
+    }
+}
