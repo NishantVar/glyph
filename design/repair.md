@@ -215,7 +215,7 @@ The author resolves manually: rename one of the conflicting declarations, or exp
 
 Phase 3 has three sub-steps:
 
-- **3a — deterministic auto-fixes.** Tab→spaces, unused import removal, etc. No LLM. 3a operates in two strata mirroring `glyph fmt` (`cli.md` §`glyph fmt`): pre-Parse text-level rewrites (tab → 4 spaces, mixed-indent normalization, legacy `-> None` strip on declaration headers — see §7) run first on raw source and may turn a previously-rejecting source into one Phase 1 can accept; post-Parse AST-level rewrites (unconditional constraint hoisting, duplicate import merging, unused import removal, source section reordering) require a successful Phase 1. If Phase 1 fails after the pre-Parse pass, only the pre-Parse fixes are written and the parse diagnostic is surfaced to subsequent phases; AST-level rewrites are skipped.
+- **3a — deterministic auto-fixes.** Tab→spaces, mixed-indent normalization, legacy `-> None` strip, constraint/context hoisting, canonical sub-section reorder, duplicate sub-section merge (#109), duplicate import collapse (#107), unused import removal (#108), stdlib auto-import (#110), const-in-flow parens-add (#111), effects auto-insert (#112, gated on `--enable-effects`), placeholder return rewrite (#113). No LLM. 3a operates in two strata mirroring `glyph fmt` (`cli.md` §`glyph fmt`): pre-Parse text-level rewrites (tab → 4 spaces, mixed-indent normalization, legacy `-> None` strip on declaration headers — see §7) run first on raw source and may turn a previously-rejecting source into one Phase 1 can accept; post-Parse AST-level rewrites (unconditional constraint hoisting, duplicate import merging, unused import removal, source section reordering) require a successful Phase 1. If Phase 1 fails after the pre-Parse pass, only the pre-Parse fixes are written and the parse diagnostic is surfaced to subsequent phases; AST-level rewrites are skipped.
 - **3b — LLM-assisted repairs.** Driven by `repairable` diagnostics from Phase 2 (undefined names, ambiguous roles, missing returns, etc.).
 - **3c — constraint conflict scan.** Always runs (when triggered by constraint count). Independent of Phase 2 diagnostics.
 
@@ -409,7 +409,7 @@ The repair pass may add:
 - local declarations for author-defined shorthand;
 - stable `generated const` definitions for undefined bare names used with keyword prefixes (`require`/`avoid`/`must`/`context`);
 - stable `generated block` definitions for undefined parens-calls and undefined bare names in `flow:` (single-string bodies);
-- missing imports when the referenced library is obvious from available context (deferred from MVP — see `todo.md`);
+- missing imports when the referenced library is obvious from available context — for the standard library (`@glyph/std`), Phase 3a handles this deterministically (#110, `G::analyze::stdlib-missing-import`); for non-stdlib imports this remains deferred (see `todo.md`);
 - missing `effects:` on any declaration (skill, block, or export block) whose inferred set is non-empty — Phase 3a deterministically inserts an `effects:` sub-section with the inferred set into the source, triggered by `G::analyze::missing-effects`, and emits `G::repair::inferred-effects` (warning, informational) so the author knows what was added (see `ir-and-semantics.md` §3 and `diagnostics.md`);
 - missing `description:` on a `skill` — Phase 3b generates a single-string description from the skill name, parameters, and body, and adds it as a `description:` sub-section, triggered by `G::analyze::missing-description` (see `ir-and-semantics.md` §4 and `diagnostics.md`);
 - placeholder string returns on domain-typed declarations — Phase 3a rewrites a terminal `return "<…>"` whose enclosing declaration has `-> DomainType` into the appropriate output-target form, triggered by `G::analyze::placeholder-string-return`. The repair bifurcates on placeholder shape (both branches are deterministic, no LLM):
@@ -423,7 +423,7 @@ The repair pass may add:
 
 The repair pass may remove:
 
-- duplicate declarations that make resolution impossible;
+- duplicate declarations that make resolution impossible — note that Phase 3a (`glyph fmt`) already removes duplicate import lines (#107, `G::analyze::duplicate-import`), unused imports (#108, `G::analyze::unused-import`), and merges duplicate sub-sections (#109, `G::parse::duplicate-subsection`); the LLM repair pass (Phase 3b) handles the remaining semantic duplicates;
 - syntax that is invalid and has a clear local correction;
 - legacy `-> None` return-type annotations on `skill` / `block` / `export block` / `generated block` declaration headers — the `None` type annotation has been removed in MVP, and a declaration with no meaningful return omits `->` entirely (`types.md` §`none` Value, `language-surface.md` §3.3). Implemented as a Phase 3a pre-Parse text-level rewrite (`glyph fmt` stratum 1): the trailing ` -> None` is stripped from indent-0 declaration headers, case-insensitive on `none`, with identifier-boundary semantics. The value keyword `none` (in `return none`, `effects: none`, and other value positions per `values-and-names.md` §None) is preserved untouched. Triggered by `G::parse::none-as-return-type` (`diagnostics.md`).
 
