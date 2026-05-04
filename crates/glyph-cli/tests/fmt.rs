@@ -423,3 +423,33 @@ fn fmt_with_enable_effects_preserves_effects_section() {
         after,
     );
 }
+
+#[test]
+fn multi_autofix_converges() {
+    let input = include_str!("corpus/fmt/multi_autofix_input.glyph.md");
+    let expected = include_str!("corpus/fmt/multi_autofix_expected.glyph.md");
+
+    // Step 1: fmt produces the expected canonical source.
+    let result = glyph_core::fmt::fmt_source(input, true);
+    assert_eq!(result.output, expected, "fmt output mismatch");
+
+    // Step 2: the post-fmt source must analyze cleanly (no repairables).
+    // Use the import-aware `check_file_with_effects` path (what `glyph check`
+    // uses) so stdlib import names actually populate `block_names`. The
+    // single-file `analyze_with_diagnostics` entry does not resolve imports
+    // and would spuriously flag `send`/`subagent` as missing imports even
+    // though they ARE imported on the post-fmt source.
+    let dir = tempfile::tempdir().unwrap();
+    let tmp_path = dir.path().join("multi_autofix.glyph.md");
+    std::fs::write(&tmp_path, expected).unwrap();
+    let bag = glyph_core::check_file_with_effects(&tmp_path, true);
+    let repairable: Vec<_> = bag
+        .iter()
+        .filter(|d| d.classification == glyph_core::diagnostic::Classification::Repairable)
+        .collect();
+    assert!(
+        repairable.is_empty(),
+        "expected no repairable diagnostics on post-fmt source, got: {:?}",
+        repairable
+    );
+}
