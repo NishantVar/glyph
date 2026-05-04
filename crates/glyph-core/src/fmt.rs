@@ -774,13 +774,11 @@ fn rewrite_decl_body(
         match target_kind {
             SectionKind::Effects => {
                 if let Some(sec) = section {
-                    // Existing effects: section — emit as-is.
                     for line in &sec.lines {
                         out.push_str(line);
                         out.push('\n');
                     }
                 } else if enable_effects {
-                    // No effects section in source — auto-insert if inferred effects exist.
                     if let Some(name) = decl_name {
                         if let Some(effects) = signals.inferred_effects.get(name) {
                             if !effects.is_empty() {
