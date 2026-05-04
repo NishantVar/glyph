@@ -369,20 +369,20 @@ fn rewrite_decl_body(body_lines: &[&str], ast_decl: Option<&crate::ast::Decl>) -
     let mut out = String::new();
 
     for target_kind in &canonical_order {
-        // Find existing section of this kind.
-        let section = sections.iter().find(|s| &s.kind == target_kind);
+        // Issue #109 chunk 4 — gather ALL sections of this kind so duplicate
+        // sub-sections under the same declaration get merged into a single
+        // canonical block (instead of being silently dropped, which was the
+        // pre-#109 behavior of `sections.iter().find(...)`).
+        let matching: Vec<&Section> = sections.iter().filter(|s| &s.kind == target_kind).collect();
+        let has_section = !matching.is_empty();
 
         match target_kind {
             SectionKind::Context => {
-                if !hoisted_context.is_empty() || section.is_some() {
-                    // Build context section.
-                    if let Some(sec) = section {
-                        // Existing context: section — append hoisted entries.
-                        for line in &sec.lines {
-                            out.push_str(line);
-                            out.push('\n');
-                        }
-                        // Add hoisted entries at indent 2.
+                if !hoisted_context.is_empty() || has_section {
+                    if has_section {
+                        // Existing context: section(s) — emit merged form,
+                        // then append hoisted entries.
+                        emit_merged_sections(&mut out, &matching);
                         for entry in &hoisted_context {
                             out.push_str("        ");
                             out.push_str(entry);
@@ -400,20 +400,15 @@ fn rewrite_decl_body(body_lines: &[&str], ast_decl: Option<&crate::ast::Decl>) -
                 }
             }
             SectionKind::Constraints => {
-                if !hoisted_constraints.is_empty() || section.is_some() {
-                    if let Some(sec) = section {
-                        // Existing constraints: section — append hoisted entries.
-                        for line in &sec.lines {
-                            out.push_str(line);
-                            out.push('\n');
-                        }
+                if !hoisted_constraints.is_empty() || has_section {
+                    if has_section {
+                        emit_merged_sections(&mut out, &matching);
                         for marker in &hoisted_constraints {
                             out.push_str("        ");
                             out.push_str(marker);
                             out.push('\n');
                         }
                     } else {
-                        // Create new constraints: section.
                         out.push_str("    constraints:\n");
                         for marker in &hoisted_constraints {
                             out.push_str("        ");
@@ -424,11 +419,8 @@ fn rewrite_decl_body(body_lines: &[&str], ast_decl: Option<&crate::ast::Decl>) -
                 }
             }
             _ => {
-                if let Some(sec) = section {
-                    for line in &sec.lines {
-                        out.push_str(line);
-                        out.push('\n');
-                    }
+                if has_section {
+                    emit_merged_sections(&mut out, &matching);
                 }
             }
         }
@@ -448,6 +440,258 @@ fn rewrite_decl_body(body_lines: &[&str], ast_decl: Option<&crate::ast::Decl>) -
     }
 
     out
+}
+
+/// Issue #109 chunk 4 — merge multiple sections of the same kind into one
+/// canonical block.
+///
+/// `matching` must be non-empty and must list the sections in source order
+/// (which it is, because the caller iterates `sections` in source order via
+/// `filter`).
+///
+/// Emission rules (per `design/repair.md` §4.11):
+/// - The first section is emitted verbatim (header line + body lines), so
+///   the canonical sub-section header keeps its original formatting,
+///   indentation, and any trailing comment.
+/// - For each subsequent section, the `<kind>:` header line is dropped —
+///   but if it carried a trailing comment (rule b), that comment is
+///   surfaced as a whole-line comment on its own line before the appended
+///   body, indented to match the dropped header.
+/// - Body lines (everything after the header) are appended verbatim. Whole-
+///   line comments inside the body (rule a) and comments at the boundary
+///   that landed in the previous section's accumulator (rule c) ride along
+///   automatically because they are already in `lines`.
+///
+/// The single-line forms (`description: "..."` and `effects: a, b`) need
+/// special handling: their "body" lives on the header line itself, and the
+/// parser doesn't admit a multi-line form, so duplicates can only be
+/// reconciled by concatenating the inline contents into one canonical
+/// header. Multi-line forms (`context:`, `constraints:`, `flow:`) splice
+/// body lines verbatim.
+fn emit_merged_sections(out: &mut String, matching: &[&Section]) {
+    if matching.is_empty() {
+        return;
+    }
+    match matching[0].kind {
+        SectionKind::Description => emit_merged_descriptions(out, matching),
+        SectionKind::Effects => emit_merged_effects(out, matching),
+        _ => emit_merged_multiline(out, matching),
+    }
+}
+
+/// Multi-line merge: appropriate for `context:`, `constraints:`, `flow:`.
+/// Mixed short/long context (`context: "x"` followed by another `context:`
+/// with indented entries) is supported by lifting the short form's inline
+/// string into an indented body line under the canonical header.
+fn emit_merged_multiline(out: &mut String, matching: &[&Section]) {
+    let mut iter = matching.iter();
+    if let Some(first) = iter.next() {
+        // The first occurrence keeps its inline content if any (e.g.
+        // `context: "first"`) — that's already valid canonical syntax.
+        for line in &first.lines {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    for section in iter {
+        // Drop the header line, preserve any trailing comment on it as a
+        // whole-line comment at the boundary (rule b).
+        if let Some(header_line) = section.lines.first() {
+            if let Some(comment) = trailing_comment_after_keyword(header_line) {
+                let indent = leading_whitespace_of(header_line);
+                out.push_str(indent);
+                out.push_str(&comment);
+                out.push('\n');
+            }
+            // If this duplicate used the short inline form (e.g.
+            // `context: "x"` instead of `context:` + indented body), lift
+            // the inline content into a body line at indent 2 so the merged
+            // form stays valid syntax.
+            if let Some(inline) = inline_content_after_colon(header_line) {
+                let trimmed_inline = strip_trailing_comment(inline);
+                let trimmed_inline = trimmed_inline.trim();
+                if !trimmed_inline.is_empty() {
+                    out.push_str("        ");
+                    out.push_str(trimmed_inline);
+                    out.push('\n');
+                }
+            }
+        }
+        for line in section.lines.iter().skip(1) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+}
+
+/// Description merge: the parser only accepts a single-line form, so
+/// duplicates collapse by concatenating their inline strings into one
+/// canonical `description: "<a> <b> ..."` line. Trailing comments from
+/// removed lines are emitted as whole-line comments at the original indent
+/// before the merged line.
+fn emit_merged_descriptions(out: &mut String, matching: &[&Section]) {
+    let mut bodies: Vec<String> = Vec::new();
+    let indent = matching
+        .first()
+        .and_then(|s| s.lines.first())
+        .map(|l| leading_whitespace_of(l).to_string())
+        .unwrap_or_else(|| "    ".to_string());
+    let mut header_indent_for_first: Option<String> = None;
+    let mut comments: Vec<(String, String)> = Vec::new(); // (indent, comment)
+    for (idx, section) in matching.iter().enumerate() {
+        if let Some(line) = section.lines.first() {
+            let line_indent = leading_whitespace_of(line).to_string();
+            if idx == 0 {
+                header_indent_for_first = Some(line_indent.clone());
+            } else if let Some(comment) = trailing_comment_after_keyword(line) {
+                comments.push((line_indent, comment));
+            }
+            if let Some(content) = inline_content_after_colon(line) {
+                let payload = strip_trailing_comment(content);
+                if let Some(s) = unwrap_string_literal(payload.trim()) {
+                    bodies.push(s);
+                }
+            }
+        }
+    }
+    // Emit any trailing comments from removed headers BEFORE the canonical
+    // line (rule b — boundary).
+    for (cindent, ctext) in &comments {
+        out.push_str(cindent);
+        out.push_str(ctext);
+        out.push('\n');
+    }
+    let header_indent = header_indent_for_first.unwrap_or(indent);
+    let merged = bodies.join(" ");
+    out.push_str(&header_indent);
+    out.push_str("description: \"");
+    out.push_str(&escape_string_literal(&merged));
+    out.push_str("\"\n");
+}
+
+/// Effects merge: the parser only accepts a single-line short form
+/// (comma-separated idents), so duplicates collapse by concatenating their
+/// effect lists into one canonical `effects: a, b, c, ...` line.
+fn emit_merged_effects(out: &mut String, matching: &[&Section]) {
+    let mut effects_acc: Vec<String> = Vec::new();
+    let mut header_indent: Option<String> = None;
+    let mut comments: Vec<(String, String)> = Vec::new();
+    for (idx, section) in matching.iter().enumerate() {
+        if let Some(line) = section.lines.first() {
+            let line_indent = leading_whitespace_of(line).to_string();
+            if idx == 0 {
+                header_indent = Some(line_indent.clone());
+            } else if let Some(comment) = trailing_comment_after_keyword(line) {
+                comments.push((line_indent, comment));
+            }
+            if let Some(content) = inline_content_after_colon(line) {
+                let payload = strip_trailing_comment(content);
+                for tok in payload.split(',') {
+                    let t = tok.trim();
+                    if !t.is_empty() {
+                        effects_acc.push(t.to_string());
+                    }
+                }
+            }
+        }
+    }
+    for (cindent, ctext) in &comments {
+        out.push_str(cindent);
+        out.push_str(ctext);
+        out.push('\n');
+    }
+    let header_indent = header_indent.unwrap_or_else(|| "    ".to_string());
+    out.push_str(&header_indent);
+    out.push_str("effects: ");
+    out.push_str(&effects_acc.join(", "));
+    out.push('\n');
+}
+
+/// Return the slice after the first `:` on a section header line, or `None`
+/// if the line is just `<indent><kind>:` (no inline content). Returned
+/// slice is the raw content (may begin with whitespace and may include a
+/// trailing comment) — callers further parse it.
+fn inline_content_after_colon(line: &str) -> Option<&str> {
+    let colon = line.find(':')?;
+    let after = &line[colon + 1..];
+    if after.trim().is_empty() {
+        return None;
+    }
+    Some(after)
+}
+
+/// Strip a trailing `// ...` line comment from a string slice (string-literal
+/// aware). Returns the slice up to (not including) the comment marker.
+fn strip_trailing_comment(s: &str) -> &str {
+    let mut in_string = false;
+    let mut prev: char = ' ';
+    let bytes = s.as_bytes();
+    for (i, ch) in s.char_indices() {
+        if in_string {
+            if ch == '"' && prev != '\\' {
+                in_string = false;
+            }
+        } else if ch == '"' {
+            in_string = true;
+        } else if ch == '/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            return &s[..i];
+        }
+        prev = ch;
+    }
+    s
+}
+
+/// Trailing-comment extractor for the case where the comment sits on a
+/// `<kind>:` header line — this includes lines like `    constraints:  // foo`
+/// and `    description: "x"  // bar`. String-literal aware, same as
+/// [`strip_trailing_comment`]. Returns the comment slice trimmed of leading
+/// whitespace, including the `//` marker.
+fn trailing_comment_after_keyword(line: &str) -> Option<String> {
+    let mut in_string = false;
+    let mut prev: char = ' ';
+    let bytes = line.as_bytes();
+    for (i, ch) in line.char_indices() {
+        if in_string {
+            if ch == '"' && prev != '\\' {
+                in_string = false;
+            }
+        } else if ch == '"' {
+            in_string = true;
+        } else if ch == '/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            return Some(line[i..].trim().to_string());
+        }
+        prev = ch;
+    }
+    None
+}
+
+/// Strip the surrounding `"..."` from a string literal token slice. Returns
+/// `None` if the slice isn't a quoted string.
+fn unwrap_string_literal(s: &str) -> Option<String> {
+    let inner = s.strip_prefix('"').and_then(|x| x.strip_suffix('"'))?;
+    Some(inner.to_string())
+}
+
+/// Re-escape a description payload before re-emitting it as a Glyph string
+/// literal. Only `"` and `\` need escaping — control characters in a
+/// description body would already have failed Chunk-2 parsing because the
+/// parser tokenizes string literals before we ever see them.
+fn escape_string_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Return the leading-whitespace prefix of `line` as a borrowed slice.
+fn leading_whitespace_of(line: &str) -> &str {
+    let n = line.len() - line.trim_start().len();
+    &line[..n]
 }
 
 fn is_constraint_marker(trimmed: &str) -> bool {
@@ -985,6 +1229,606 @@ skill current()
             out, "block bar(p = \"ignore\")\n    flow:\n        \"x\"\n",
             "trailing `-> None` must be stripped while `(p = \"ignore\")` is preserved, got:\n{}",
             out
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #109 chunk 4 — fmt merges duplicate sub-sections.
+    //
+    // After Chunks 1-3, the parser recovers a duplicate sub-section into
+    // `extra_subsections` (emitting `G::parse::duplicate-subsection`,
+    // Repairable) and Analyze gates Lower with
+    // `G::analyze::unmerged-duplicate-subsection` (Error). `glyph fmt` is
+    // the merger: when it encounters duplicate `<kind>:` headers under one
+    // declaration, it keeps the first header verbatim, appends the bodies
+    // of subsequent occurrences in source order, and removes the second-
+    // and-beyond header lines (preserving any trailing comments on those
+    // headers per `design/repair.md` §4.11 rule b). After fmt runs and the
+    // output is re-parsed, `extra_subsections` is empty and the parse-tier
+    // diagnostic does not refire — the recovery loop converges.
+    // ---------------------------------------------------------------------
+
+    /// Test 1 — two `constraints:` sub-sections under one `skill` merge into
+    /// a single `constraints:` whose body carries both originals' markers in
+    /// source order. `changed == true`.
+    #[test]
+    fn fmt_merges_two_constraints_sections_in_skill() {
+        let src = "\
+skill the_skill()
+    constraints:
+        require accuracy
+    constraints:
+        avoid stale_references
+    flow:
+        \"do work\"
+";
+        let result = fmt_source(src, false);
+        assert!(result.changed, "fmt should report changed=true");
+
+        // Exactly one `constraints:` header line in the output.
+        let header_lines = result
+            .output
+            .lines()
+            .filter(|l| l.trim() == "constraints:")
+            .count();
+        assert_eq!(
+            header_lines, 1,
+            "expected exactly one `constraints:` header in output, got:\n{}",
+            result.output
+        );
+
+        // Both markers present, and the first body's marker comes before the
+        // second's (source-order preservation).
+        let req_idx = result.output.find("require accuracy").unwrap_or_else(|| {
+            panic!("first body's marker missing from output:\n{}", result.output)
+        });
+        let avd_idx = result
+            .output
+            .find("avoid stale_references")
+            .unwrap_or_else(|| {
+                panic!("second body's marker missing from output:\n{}", result.output)
+            });
+        assert!(
+            req_idx < avd_idx,
+            "first body's marker must precede second body's marker in source order; got:\n{}",
+            result.output
+        );
+    }
+
+    /// Test 2a — two `description:` sub-sections merge.
+    #[test]
+    fn fmt_merges_two_descriptions_in_skill() {
+        let src = "\
+skill the_skill()
+    description: \"First.\"
+    description: \"Second.\"
+    flow:
+        \"do work\"
+";
+        let result = fmt_source(src, false);
+        assert!(result.changed, "fmt should report changed=true");
+
+        let header_lines = result
+            .output
+            .lines()
+            .filter(|l| l.trim_start().starts_with("description:"))
+            .count();
+        assert_eq!(
+            header_lines, 1,
+            "expected exactly one `description:` header in output, got:\n{}",
+            result.output
+        );
+
+        let first_idx = result.output.find("First.").expect("first body lost");
+        let second_idx = result.output.find("Second.").expect("second body lost");
+        assert!(
+            first_idx < second_idx,
+            "source order must be preserved; got:\n{}",
+            result.output
+        );
+    }
+
+    /// Test 2b — two `context:` sub-sections merge.
+    #[test]
+    fn fmt_merges_two_contexts_in_skill() {
+        let src = "\
+skill the_skill()
+    context:
+        \"first context entry\"
+    context:
+        \"second context entry\"
+    flow:
+        \"do work\"
+";
+        let result = fmt_source(src, false);
+        assert!(result.changed, "fmt should report changed=true");
+
+        // After merge there is exactly one `context:` header (counted as a
+        // line whose trimmed content equals `context:` — body-level
+        // `context <name>` markers don't match this).
+        let header_lines = result
+            .output
+            .lines()
+            .filter(|l| l.trim() == "context:")
+            .count();
+        assert_eq!(
+            header_lines, 1,
+            "expected exactly one `context:` header, got:\n{}",
+            result.output
+        );
+
+        let first_idx = result
+            .output
+            .find("first context entry")
+            .expect("first body lost");
+        let second_idx = result
+            .output
+            .find("second context entry")
+            .expect("second body lost");
+        assert!(
+            first_idx < second_idx,
+            "source order must be preserved; got:\n{}",
+            result.output
+        );
+    }
+
+    /// Test 2c — two `flow:` sub-sections merge.
+    #[test]
+    fn fmt_merges_two_flows_in_skill() {
+        let src = "\
+skill the_skill()
+    flow:
+        \"step from first flow\"
+    flow:
+        \"step from second flow\"
+";
+        let result = fmt_source(src, false);
+        assert!(result.changed, "fmt should report changed=true");
+
+        let header_lines = result
+            .output
+            .lines()
+            .filter(|l| l.trim() == "flow:")
+            .count();
+        assert_eq!(
+            header_lines, 1,
+            "expected exactly one `flow:` header, got:\n{}",
+            result.output
+        );
+
+        let first_idx = result
+            .output
+            .find("step from first flow")
+            .expect("first body lost");
+        let second_idx = result
+            .output
+            .find("step from second flow")
+            .expect("second body lost");
+        assert!(
+            first_idx < second_idx,
+            "source order must be preserved; got:\n{}",
+            result.output
+        );
+    }
+
+    /// Test 5 — idempotence: running `fmt_source` twice yields the same
+    /// output as running it once, and the second run reports `changed=false`.
+    /// This is the classic fixpoint property — fmt's job is to drive the
+    /// agent-repair loop to convergence; a non-idempotent merge would loop.
+    #[test]
+    fn fmt_merge_is_idempotent() {
+        let src = "\
+skill the_skill()
+    constraints:
+        require accuracy
+    constraints:
+        avoid stale_references
+    flow:
+        \"do work\"
+";
+        let first = fmt_source(src, false);
+        assert!(first.changed, "first fmt run must report changed=true");
+        let second = fmt_source(&first.output, false);
+        assert!(
+            !second.changed,
+            "second fmt run must report changed=false (idempotence)"
+        );
+        assert_eq!(
+            second.output, first.output,
+            "second-run output must equal first-run output byte-for-byte"
+        );
+    }
+
+    /// Test 6 — rule (a): a whole-line comment inside the body of a
+    /// duplicate sub-section survives the merge, in its relative position
+    /// inside the appended body. Body lines are verbatim — only the
+    /// header line of the duplicate is dropped.
+    #[test]
+    fn fmt_preserves_comment_inside_duplicate_body() {
+        let src = "\
+skill the_skill()
+    constraints:
+        require accuracy
+    constraints:
+        // author note: tightening below
+        avoid stale_references
+    flow:
+        \"do work\"
+";
+        let result = fmt_source(src, false);
+        assert!(result.changed, "fmt should report changed=true");
+
+        let header_lines = result
+            .output
+            .lines()
+            .filter(|l| l.trim() == "constraints:")
+            .count();
+        assert_eq!(
+            header_lines, 1,
+            "expected exactly one `constraints:` header, got:\n{}",
+            result.output
+        );
+
+        let comment_idx = result
+            .output
+            .find("// author note: tightening below")
+            .expect("body comment lost");
+        let avoid_idx = result
+            .output
+            .find("avoid stale_references")
+            .expect("second body lost");
+        let require_idx = result
+            .output
+            .find("require accuracy")
+            .expect("first body lost");
+        assert!(
+            require_idx < comment_idx && comment_idx < avoid_idx,
+            "comment must remain immediately above its original successor (between bodies):\n{}",
+            result.output
+        );
+    }
+
+    /// Test 7 — rule (b): a trailing `//` comment on the second
+    /// `<kind>:` header (which gets dropped by the merge) is preserved as
+    /// a whole-line comment at the boundary, indented to match the dropped
+    /// header. The rule says: "no source-author comment vanishes."
+    #[test]
+    fn fmt_preserves_trailing_comment_on_removed_header() {
+        let src = "\
+skill the_skill()
+    constraints:
+        require accuracy
+    constraints:  // extras for second pass
+        avoid stale_references
+    flow:
+        \"do work\"
+";
+        let result = fmt_source(src, false);
+        assert!(result.changed, "fmt should report changed=true");
+
+        let header_lines = result
+            .output
+            .lines()
+            .filter(|l| l.trim() == "constraints:")
+            .count();
+        assert_eq!(
+            header_lines, 1,
+            "expected exactly one `constraints:` header (the trailing comment must be lifted off the dropped header):\n{}",
+            result.output
+        );
+
+        let comment_idx = result
+            .output
+            .find("// extras for second pass")
+            .expect("trailing comment from removed header lost");
+        let require_idx = result
+            .output
+            .find("require accuracy")
+            .expect("first body lost");
+        let avoid_idx = result
+            .output
+            .find("avoid stale_references")
+            .expect("second body lost");
+        assert!(
+            require_idx < comment_idx && comment_idx < avoid_idx,
+            "trailing comment from removed header must land between the two bodies:\n{}",
+            result.output
+        );
+    }
+
+    /// Test 8 — rule (c): a whole-line comment that sits between the end
+    /// of the first body and the second `<kind>:` header is captured into
+    /// the first section's accumulator (because the line-grouper appends
+    /// it to whatever section is currently open). After the merge it
+    /// emerges in source-order — i.e. between the two original bodies.
+    #[test]
+    fn fmt_preserves_comment_between_bodies() {
+        let src = "\
+skill the_skill()
+    constraints:
+        require accuracy
+        // boundary note: more below
+    constraints:
+        avoid stale_references
+    flow:
+        \"do work\"
+";
+        let result = fmt_source(src, false);
+        assert!(result.changed, "fmt should report changed=true");
+
+        let header_lines = result
+            .output
+            .lines()
+            .filter(|l| l.trim() == "constraints:")
+            .count();
+        assert_eq!(
+            header_lines, 1,
+            "expected exactly one `constraints:` header, got:\n{}",
+            result.output
+        );
+
+        let comment_idx = result
+            .output
+            .find("// boundary note: more below")
+            .expect("between-bodies comment lost");
+        let require_idx = result
+            .output
+            .find("require accuracy")
+            .expect("first body lost");
+        let avoid_idx = result
+            .output
+            .find("avoid stale_references")
+            .expect("second body lost");
+        assert!(
+            require_idx < comment_idx && comment_idx < avoid_idx,
+            "between-bodies comment must remain between the two bodies in source order:\n{}",
+            result.output
+        );
+    }
+
+    /// Test 9 — multiple sub-section kinds duplicated within one
+    /// declaration: `constraints:` AND `flow:` each appear twice in the
+    /// same skill. Both pairs must merge independently — the merger gathers
+    /// per-kind, so cross-kind interference must not happen.
+    #[test]
+    fn fmt_merges_multiple_duplicate_kinds_in_one_decl() {
+        let src = "\
+skill the_skill()
+    constraints:
+        require accuracy
+    constraints:
+        avoid stale_references
+    flow:
+        \"step from first flow\"
+    flow:
+        \"step from second flow\"
+";
+        let result = fmt_source(src, false);
+        assert!(result.changed, "fmt should report changed=true");
+
+        let constraints_headers = result
+            .output
+            .lines()
+            .filter(|l| l.trim() == "constraints:")
+            .count();
+        assert_eq!(
+            constraints_headers, 1,
+            "expected exactly one `constraints:` header, got:\n{}",
+            result.output
+        );
+
+        let flow_headers = result
+            .output
+            .lines()
+            .filter(|l| l.trim() == "flow:")
+            .count();
+        assert_eq!(
+            flow_headers, 1,
+            "expected exactly one `flow:` header, got:\n{}",
+            result.output
+        );
+
+        // All four bodies present.
+        for marker in [
+            "require accuracy",
+            "avoid stale_references",
+            "step from first flow",
+            "step from second flow",
+        ] {
+            assert!(
+                result.output.contains(marker),
+                "marker {:?} missing from output:\n{}",
+                marker,
+                result.output
+            );
+        }
+    }
+
+    /// Test 10 — convergence: after fmt, re-parsing the output must
+    /// yield zero `extra_subsections` and zero `G::parse::duplicate-subsection`
+    /// diagnostics. This is the contract that lets the agent-repair loop
+    /// terminate: fmt's output must be a fixed point relative to the
+    /// duplicate-subsection diagnostic.
+    #[test]
+    fn fmt_output_reparses_without_duplicate_subsection_diagnostic() {
+        let src = "\
+skill the_skill()
+    constraints:
+        require accuracy
+    constraints:
+        avoid stale_references
+    flow:
+        \"do work\"
+";
+        let result = fmt_source(src, false);
+        assert!(result.changed, "fmt should report changed=true");
+
+        // Re-parse the output through the same parser fmt itself uses.
+        let mut bag = DiagBag::new();
+        let line_index = LineIndex::new(&result.output);
+        let reparsed = parse::parse_with_diagnostics_opts(
+            &result.output,
+            0,
+            "<reparse>",
+            &line_index,
+            &mut bag,
+            false,
+        )
+        .expect("fmt output must re-parse to Some(file)");
+
+        // No duplicate-subsection diagnostic should fire on the merged form.
+        let dup_diags: Vec<&crate::diagnostic::Diagnostic> = bag
+            .iter()
+            .filter(|d| d.id == "G::parse::duplicate-subsection")
+            .collect();
+        assert!(
+            dup_diags.is_empty(),
+            "expected zero duplicate-subsection diagnostics on reparse, got {}:\n{}",
+            dup_diags.len(),
+            result.output
+        );
+
+        // Every skill / block / export-block decl must have empty
+        // `extra_subsections` (the AST-level signal of unmerged duplicates).
+        for decl in &reparsed.decls {
+            match decl {
+                crate::ast::Decl::Skill(s) => {
+                    assert!(
+                        s.node.extra_subsections.is_empty(),
+                        "skill {:?} still has extra_subsections after fmt:\n{}",
+                        s.node.name,
+                        result.output
+                    );
+                }
+                crate::ast::Decl::Block(b) => {
+                    assert!(
+                        b.node.extra_subsections.is_empty(),
+                        "block {:?} still has extra_subsections after fmt:\n{}",
+                        b.node.name,
+                        result.output
+                    );
+                }
+                crate::ast::Decl::ExportBlock(e) => {
+                    assert!(
+                        e.node.extra_subsections.is_empty(),
+                        "export block {:?} still has extra_subsections after fmt:\n{}",
+                        e.node.name,
+                        result.output
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Test 4 — no-op: a source with no duplicate sub-sections passes
+    /// through unchanged. `changed == false`. The fmt's other rewrites
+    /// (canonical reorder, hoisting) must not be triggered by this input.
+    #[test]
+    fn fmt_no_op_when_no_duplicates() {
+        let src = "\
+skill the_skill()
+    description: \"A skill that does work.\"
+    context:
+        \"some context\"
+    constraints:
+        require accuracy
+    flow:
+        \"do work\"
+";
+        let result = fmt_source(src, false);
+        assert!(
+            !result.changed,
+            "fmt should report changed=false on input without duplicates; got changed=true with output:\n{}",
+            result.output
+        );
+        assert_eq!(
+            result.output, src,
+            "output should equal input byte-for-byte"
+        );
+    }
+
+    /// Test 3 — triple `constraints:` sub-sections all merge into one.
+    /// Pins source-order across more than two duplicates: the bodies must
+    /// appear in their original 1→2→3 order.
+    #[test]
+    fn fmt_merges_three_constraints_sections_in_skill() {
+        let src = "\
+skill the_skill()
+    constraints:
+        require accuracy
+    constraints:
+        avoid stale_references
+    constraints:
+        must verify
+    flow:
+        \"do work\"
+";
+        let result = fmt_source(src, false);
+        assert!(result.changed, "fmt should report changed=true");
+
+        let header_lines = result
+            .output
+            .lines()
+            .filter(|l| l.trim() == "constraints:")
+            .count();
+        assert_eq!(
+            header_lines, 1,
+            "expected exactly one `constraints:` header in output, got:\n{}",
+            result.output
+        );
+
+        let one = result.output.find("require accuracy").expect("first lost");
+        let two = result
+            .output
+            .find("avoid stale_references")
+            .expect("second lost");
+        let three = result.output.find("must verify").expect("third lost");
+        assert!(
+            one < two && two < three,
+            "all three bodies must appear in source order; got:\n{}",
+            result.output
+        );
+    }
+
+    /// Test 2d — two `effects:` sub-sections merge.
+    #[test]
+    fn fmt_merges_two_effects_in_skill() {
+        let src = "\
+skill the_skill()
+    effects: writes_files
+    effects: reads_files
+    flow:
+        \"do work\"
+";
+        // Effects are gated by the parser flag — pass `true` so the source
+        // parses and ast_rewrite gets a chance to merge.
+        let result = fmt_source(src, true);
+        assert!(result.changed, "fmt should report changed=true");
+
+        let header_lines = result
+            .output
+            .lines()
+            .filter(|l| l.trim_start().starts_with("effects:"))
+            .count();
+        assert_eq!(
+            header_lines, 1,
+            "expected exactly one `effects:` header, got:\n{}",
+            result.output
+        );
+
+        let first_idx = result
+            .output
+            .find("writes_files")
+            .expect("first body lost");
+        let second_idx = result
+            .output
+            .find("reads_files")
+            .expect("second body lost");
+        assert!(
+            first_idx < second_idx,
+            "source order must be preserved; got:\n{}",
+            result.output
         );
     }
 }
