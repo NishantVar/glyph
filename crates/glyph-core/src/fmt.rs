@@ -490,7 +490,7 @@ fn ast_rewrite_inner(
     source: &str,
     file: &crate::ast::SourceFile,
     signals: &crate::analyze::FmtSignals,
-    _enable_effects: bool,
+    enable_effects: bool,
 ) -> String {
     let lines: Vec<&str> = source.lines().collect();
     if lines.is_empty() {
@@ -568,7 +568,7 @@ fn ast_rewrite_inner(
 
         // Parse body lines into sections.
         let body_lines: Vec<&str> = (start + 1..end).map(|i| lines[i]).collect();
-        let rewritten = rewrite_decl_body(&body_lines, ast_decl, signals);
+        let rewritten = rewrite_decl_body(&body_lines, ast_decl, signals, enable_effects);
         out.push_str(&rewritten);
     }
 
@@ -609,11 +609,22 @@ struct Section {
     lines: Vec<String>,
 }
 
+/// Build a synthesized `effects:` sub-section line.
+fn synthesize_effects_section(effects: &[String], indent: &str) -> String {
+    let mut s = String::new();
+    s.push_str(indent);
+    s.push_str("effects: ");
+    s.push_str(&effects.join(", "));
+    s.push('\n');
+    s
+}
+
 /// Rewrite a declaration body (lines at indent >= 1) in canonical order.
 fn rewrite_decl_body(
     body_lines: &[&str],
     ast_decl: Option<&crate::ast::Decl>,
     signals: &crate::analyze::FmtSignals,
+    enable_effects: bool,
 ) -> String {
     let placeholder_target = placeholder_string_return_target(ast_decl);
 
@@ -738,6 +749,13 @@ fn rewrite_decl_body(
         });
     }
 
+    // Compute the decl name for effects lookup (Skill and Block only).
+    let decl_name: Option<&str> = ast_decl.and_then(|d| match d {
+        crate::ast::Decl::Skill(s) => Some(s.node.name.as_str()),
+        crate::ast::Decl::Block(b) => Some(b.node.name.as_str()),
+        _ => None,
+    });
+
     // Now reconstruct in canonical order: description, effects, context, constraints, flow.
     let canonical_order = [
         SectionKind::Description,
@@ -754,6 +772,24 @@ fn rewrite_decl_body(
         let section = sections.iter().find(|s| &s.kind == target_kind);
 
         match target_kind {
+            SectionKind::Effects => {
+                if let Some(sec) = section {
+                    // Existing effects: section — emit as-is.
+                    for line in &sec.lines {
+                        out.push_str(line);
+                        out.push('\n');
+                    }
+                } else if enable_effects {
+                    // No effects section in source — auto-insert if inferred effects exist.
+                    if let Some(name) = decl_name {
+                        if let Some(effects) = signals.inferred_effects.get(name) {
+                            if !effects.is_empty() {
+                                out.push_str(&synthesize_effects_section(effects, "    "));
+                            }
+                        }
+                    }
+                }
+            }
             SectionKind::Context => {
                 if !hoisted_context.is_empty() || section.is_some() {
                     // Build context section.
@@ -1408,6 +1444,7 @@ skill main()
 
 skill main()
     description: "Main."
+    effects: spawns_agent
     flow:
         send("hi")
 "#;
@@ -1544,8 +1581,18 @@ skill main()
         subagent("y")
 "#;
         let result = fmt_source(src, true);
-        assert_eq!(result.output, src);
-        assert!(!result.changed);
+        // Both names are used (no import change), but effects are auto-inserted.
+        let expected = r#"import "@glyph/std" { send, subagent }
+
+skill main()
+    description: "Main."
+    effects: spawns_agent
+    flow:
+        send("x")
+        subagent("y")
+"#;
+        assert_eq!(result.output, expected);
+        assert!(result.changed);
     }
 
     #[test]
@@ -1735,6 +1782,76 @@ skill main()
     description: "Main."
     flow:
         helper
+"#;
+        let once = fmt_source(src, true).output;
+        let twice = fmt_source(&once, true).output;
+        assert_eq!(once, twice);
+    }
+
+    // --- Task 5: #112 Effects auto-insert ---
+
+    #[test]
+    fn fmt_effects_auto_insert_adds_inferred_effects() {
+        let src = r#"import "@glyph/std" { send }
+
+skill main()
+    description: "Main."
+    flow:
+        send("hi")
+"#;
+        let result = fmt_source(src, true);
+        assert!(result.output.contains("effects: spawns_agent"),
+            "expected inferred effects inserted, got: {}", result.output);
+        assert!(result.changed);
+    }
+
+    #[test]
+    fn fmt_effects_auto_insert_no_op_when_user_declared() {
+        let src = r#"import "@glyph/std" { send }
+
+skill main()
+    description: "Main."
+    effects: none
+    flow:
+        send("hi")
+"#;
+        let result = fmt_source(src, true);
+        assert!(result.output.contains("effects: none"));
+        assert!(!result.output.contains("effects: spawns_agent"));
+    }
+
+    #[test]
+    fn fmt_effects_auto_insert_no_op_when_inferred_empty() {
+        let src = r#"skill main()
+    description: "Main."
+    flow:
+        return "<done>"
+"#;
+        let result = fmt_source(src, true);
+        assert!(!result.output.contains("effects:"));
+    }
+
+    #[test]
+    fn fmt_effects_auto_insert_no_op_when_enable_effects_false() {
+        let src = r#"import "@glyph/std" { send }
+
+skill main()
+    description: "Main."
+    flow:
+        send("hi")
+"#;
+        let result = fmt_source(src, false);
+        assert!(!result.output.contains("effects:"));
+    }
+
+    #[test]
+    fn fmt_effects_auto_insert_idempotent() {
+        let src = r#"import "@glyph/std" { send }
+
+skill main()
+    description: "Main."
+    flow:
+        send("hi")
 "#;
         let once = fmt_source(src, true).output;
         let twice = fmt_source(&once, true).output;
