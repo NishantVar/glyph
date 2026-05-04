@@ -232,30 +232,150 @@ fn collapse_duplicate_imports(source: &str, file: &crate::ast::SourceFile) -> St
     out
 }
 
+/// Drop selective import names that are never referenced; if all names in a
+/// selective list are unused, drop the entire import line. Whole-module imports
+/// whose alias is never referenced are dropped entirely.
+///
+/// Returns the source unchanged (same `String` value) when nothing to drop.
+fn remove_unused_imports(
+    source: &str,
+    file: &crate::ast::SourceFile,
+    signals: &crate::analyze::FmtSignals,
+) -> String {
+    use crate::ast::{Decl, ImportKind};
+    use std::collections::{HashMap, HashSet};
+
+    let lines: Vec<&str> = source.lines().collect();
+    let line_index = crate::span::LineIndex::new(source);
+
+    let mut to_drop: HashSet<usize> = HashSet::new();
+    let mut replacements: HashMap<usize, String> = HashMap::new();
+
+    for decl in &file.decls {
+        let Decl::Import(imp) = decl else { continue };
+        // Derive the 0-based line index directly from the span byte offset
+        // (same pattern as collapse_duplicate_imports).
+        let (line_1based, _col) = line_index.line_col(imp.span.start);
+        let line_idx = (line_1based - 1) as usize;
+
+        match &imp.node.kind {
+            ImportKind::Selective(names) => {
+                let kept: Vec<_> = names
+                    .iter()
+                    .filter(|n| {
+                        let local = n.alias.as_deref().unwrap_or(&n.name.node);
+                        signals.referenced_names.contains(local)
+                    })
+                    .collect();
+                if kept.is_empty() {
+                    to_drop.insert(line_idx);
+                } else if kept.len() < names.len() {
+                    let names_str = kept
+                        .iter()
+                        .map(|n| match &n.alias {
+                            Some(a) => format!("{} as {}", n.name.node, a),
+                            None => n.name.node.clone(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    replacements.insert(
+                        line_idx,
+                        format!(r#"import "{}" {{ {} }}"#, imp.node.path, names_str),
+                    );
+                }
+            }
+            ImportKind::WholeModule { alias } => {
+                if !signals.referenced_names.contains(alias) {
+                    to_drop.insert(line_idx);
+                }
+            }
+        }
+    }
+
+    if to_drop.is_empty() && replacements.is_empty() {
+        return source.to_string();
+    }
+
+    let mut out = String::with_capacity(source.len());
+    for (i, line) in lines.iter().enumerate() {
+        if to_drop.contains(&i) {
+            continue;
+        }
+        if let Some(repl) = replacements.get(&i) {
+            out.push_str(repl);
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    // Preserve original trailing-newline behaviour.
+    if !source.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
 /// Stratum 2: AST-level rewrites (dispatcher).
 ///
-/// First runs `collapse_duplicate_imports`. If any imports were collapsed the
-/// source is re-parsed and signals are recomputed before forwarding to
-/// `ast_rewrite_inner`, because the earlier AST is now stale.
+/// Runs file-level passes in sequence:
+/// 1. `collapse_duplicate_imports` — merge duplicate import lines.
+/// 2. `remove_unused_imports` — drop names/lines that are never referenced.
+///
+/// After each pass that changes the source, the file is re-parsed and signals
+/// are recomputed before the next pass uses the AST. After all file-level
+/// passes, if any changed occurred, `ast_rewrite_inner` is called with the
+/// fresh AST/signals. If any re-parse fails, the latest valid source is
+/// returned unchanged (no crash, no regression).
 fn ast_rewrite(
     source: &str,
     file: &crate::ast::SourceFile,
     signals: &crate::analyze::FmtSignals,
     enable_effects: bool,
 ) -> String {
-    let collapsed = collapse_duplicate_imports(source, file);
-    if collapsed != source {
-        let line_index = crate::span::LineIndex::new(&collapsed);
+    // Pass 1: collapse duplicate imports.
+    let after_collapse = collapse_duplicate_imports(source, file);
+    // If the source changed, re-parse so Pass 2 has a fresh AST/signals.
+    let (current, current_file_owned, current_signals_owned) = if after_collapse != source {
+        let line_index = crate::span::LineIndex::new(&after_collapse);
+        let mut bag = crate::diagnostic::DiagBag::new();
+        match crate::parse::parse_with_diagnostics_opts(
+            &after_collapse, 0, "<fmt>", &line_index, &mut bag, enable_effects,
+        ) {
+            Some(reparsed) => {
+                let new_signals = crate::analyze::fmt_signals(&reparsed);
+                (after_collapse, Some(reparsed), Some(new_signals))
+            }
+            None => {
+                // Re-parse failed after collapse — return the collapsed source.
+                return after_collapse;
+            }
+        }
+    } else {
+        (source.to_string(), None, None)
+    };
+
+    // Borrow either the freshly-parsed AST/signals or the originals.
+    let current_file: &crate::ast::SourceFile =
+        current_file_owned.as_ref().unwrap_or(file);
+    let current_signals: &crate::analyze::FmtSignals =
+        current_signals_owned.as_ref().unwrap_or(signals);
+
+    // Pass 2: remove unused imports.
+    let after_unused = remove_unused_imports(&current, current_file, current_signals);
+    if after_unused != current {
+        let line_index = crate::span::LineIndex::new(&after_unused);
         let mut bag = crate::diagnostic::DiagBag::new();
         if let Some(reparsed) = crate::parse::parse_with_diagnostics_opts(
-            &collapsed, 0, "<fmt>", &line_index, &mut bag, enable_effects,
+            &after_unused, 0, "<fmt>", &line_index, &mut bag, enable_effects,
         ) {
             let new_signals = crate::analyze::fmt_signals(&reparsed);
-            return ast_rewrite_inner(&collapsed, &reparsed, &new_signals, enable_effects);
+            return ast_rewrite_inner(&after_unused, &reparsed, &new_signals, enable_effects);
         }
-        return collapsed;
+        // Re-parse failed after unused removal — return source before this pass.
+        return after_unused;
     }
-    ast_rewrite_inner(source, file, signals, enable_effects)
+
+    ast_rewrite_inner(&current, current_file, current_signals, enable_effects)
 }
 
 /// Stratum 2: AST-level rewrites (inner).
@@ -1178,6 +1298,8 @@ skill main()
 
     #[test]
     fn fmt_collapse_imports_no_op_when_paths_differ() {
+        // Both imports are used, so unused-removal won't touch them.
+        // Collapse only fires when two imports share the same path.
         let src = r#"import "./a.glyph.md" { foo }
 import "./b.glyph.md" { bar }
 
@@ -1185,6 +1307,7 @@ skill main()
     description: "Main."
     flow:
         foo()
+        bar()
 "#;
         let result = fmt_source(src, true);
         assert_eq!(result.output, src);
@@ -1209,11 +1332,14 @@ skill main()
 
     #[test]
     fn fmt_collapse_two_whole_module_imports_same_path() {
+        // Reference `Std` in the flow so unused-removal keeps the collapsed import.
         let src = r#"import "@glyph/std" as Std
 import "@glyph/std" as Std
 
 skill main()
     description: "Main."
+    flow:
+        Std("x")
 "#;
         let result = fmt_source(src, true);
         assert_eq!(result.output.matches(r#"import "@glyph/std""#).count(), 1);
@@ -1223,13 +1349,14 @@ skill main()
 
     #[test]
     fn fmt_collapse_whole_module_supersedes_selective() {
+        // Reference `Std` so unused-removal keeps the collapsed whole-module import.
         let src = r#"import "@glyph/std" { send }
 import "@glyph/std" as Std
 
 skill main()
     description: "Main."
     flow:
-        send("hi")
+        Std("hi")
 "#;
         let result = fmt_source(src, true);
         // Whole-module form wins; selective form is replaced.
@@ -1237,5 +1364,65 @@ skill main()
         assert!(result.output.contains(r#"import "@glyph/std" as Std"#));
         assert!(!result.output.contains(r#"import "@glyph/std" { send }"#));
         assert!(result.changed);
+    }
+
+    #[test]
+    fn fmt_remove_unused_selective_name_keeps_used_one() {
+        let src = r#"import "@glyph/std" { send, subagent }
+
+skill main()
+    description: "Main."
+    flow:
+        send("hi")
+"#;
+        let result = fmt_source(src, true);
+        assert!(result.output.contains(r#"import "@glyph/std" { send }"#),
+            "expected only `send` to remain, got: {}", result.output);
+        assert!(!result.output.contains("subagent"));
+        assert!(result.changed);
+    }
+
+    #[test]
+    fn fmt_remove_unused_drops_entire_line_when_all_unused() {
+        let src = r#"import "@glyph/std" { send, subagent }
+
+skill main()
+    description: "Main."
+    flow:
+        return "<done>"
+"#;
+        let result = fmt_source(src, true);
+        assert!(!result.output.contains("import"),
+            "expected import line dropped, got: {}", result.output);
+        assert!(result.changed);
+    }
+
+    #[test]
+    fn fmt_remove_unused_no_op_when_all_used() {
+        let src = r#"import "@glyph/std" { send, subagent }
+
+skill main()
+    description: "Main."
+    flow:
+        send("x")
+        subagent("y")
+"#;
+        let result = fmt_source(src, true);
+        assert_eq!(result.output, src);
+        assert!(!result.changed);
+    }
+
+    #[test]
+    fn fmt_remove_unused_idempotent() {
+        let src = r#"import "@glyph/std" { send, subagent }
+
+skill main()
+    description: "Main."
+    flow:
+        send("x")
+"#;
+        let once = fmt_source(src, true).output;
+        let twice = fmt_source(&once, true).output;
+        assert_eq!(once, twice);
     }
 }
