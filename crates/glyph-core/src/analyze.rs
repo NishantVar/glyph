@@ -9,9 +9,13 @@
 //! - `G::analyze::missing-param-default` — error. An `export block` declares a
 //!   parameter without a default. Skill parameters without defaults are legal
 //!   (runtime-required); only `export block` parameters require defaults per
-//!   `design/language-surface.md` §3.10.
+//!   `design/language-surface.md` §3.10. (Retiring: PRD #103 / Slice 2.)
+//! - `G::analyze::missing-required-arg` — error. A call site (currently
+//!   private-`block` callees only; PRD #103 / Slice 1) omits a positional
+//!   argument for a parameter that has no default. Reported at the call site
+//!   span, naming the missing parameter and the callee.
 //!
-//! Both diagnostics fire from the parsed AST, before lowering, so they surface
+//! All three fire from the parsed AST, before lowering, so they surface
 //! through `glyph check` as well as `glyph compile`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -916,6 +920,42 @@ pub fn analyze_with_diagnostics(
         })
         .collect();
 
+    // Collect context-only and constraint-only skill names (no imports path).
+    let context_skill_names: HashSet<&str> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Skill(s) => {
+                let sk = &s.node;
+                if sk.body_constraints.is_empty() && sk.flow.is_empty() && !sk.flow_present {
+                    Some(s.node.name.as_str())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .collect();
+    let constraint_skill_names: HashSet<&str> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Skill(s) => {
+                let sk = &s.node;
+                if sk.context_section.is_empty()
+                    && sk.body_context.is_empty()
+                    && sk.flow.is_empty()
+                    && !sk.flow_present
+                {
+                    Some(s.node.name.as_str())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .collect();
+
     // Collect block declarations for effect inference.
     let block_decls: HashMap<&str, &BlockDecl> = file
         .decls
@@ -990,6 +1030,8 @@ pub fn analyze_with_diagnostics(
                 &HashMap::new(),
                 &local_callee_return_types,
                 &empty_imported_block_return_types,
+                &context_skill_names,
+                &constraint_skill_names,
             ),
             Decl::ExportBlock(spanned) => {
                 analyze_export_block(
@@ -1211,7 +1253,7 @@ pub fn collect_same_file_resolutions(file: &SourceFile, file_path: &PathBuf) -> 
                 }
                 for entry in skill.body_context.iter().chain(skill.context_section.iter()) {
                     if let ContextEntry::NameRef(name) = entry {
-                        record_text_use(&name.node, name.span, &text_defs, file_path, &mut out);
+                        record_context_name_use(&name.node, name.span, &text_defs, &block_defs, &export_block_defs, &skill_defs, file_path, &mut out);
                     }
                 }
                 // body_bare_names are plain Strings without span info; skip for resolution.
@@ -1304,7 +1346,7 @@ pub fn collect_cross_file_resolutions(
                 }
                 for entry in skill.body_context.iter().chain(skill.context_section.iter()) {
                     if let ContextEntry::NameRef(name) = entry {
-                        record_cross_file_text_use(name, targets, &mut out);
+                        record_cross_file_any_use(name, targets, &mut out);
                     }
                 }
                 // body_bare_names are plain Strings without span info; skip for cross-file resolution.
@@ -1357,6 +1399,29 @@ fn record_text_use(
             def_file: file_path.clone(),
             kind: ResolutionKind::Text,
         });
+    }
+}
+
+/// Resolve a context-entry name reference. Tries text, block, export block,
+/// and skill defs in that order — context entries can point to any of these.
+fn record_context_name_use(
+    name: &str,
+    use_span: Span,
+    text_defs: &HashMap<&str, Span>,
+    block_defs: &HashMap<&str, Span>,
+    export_block_defs: &HashMap<&str, Span>,
+    skill_defs: &HashMap<&str, Span>,
+    file_path: &PathBuf,
+    out: &mut Vec<Resolution>,
+) {
+    if let Some(def_span) = text_defs.get(name) {
+        out.push(Resolution { use_span, def_span: *def_span, def_file: file_path.clone(), kind: ResolutionKind::Text });
+    } else if let Some(def_span) = block_defs.get(name) {
+        out.push(Resolution { use_span, def_span: *def_span, def_file: file_path.clone(), kind: ResolutionKind::Block });
+    } else if let Some(def_span) = export_block_defs.get(name) {
+        out.push(Resolution { use_span, def_span: *def_span, def_file: file_path.clone(), kind: ResolutionKind::ExportBlock });
+    } else if let Some(def_span) = skill_defs.get(name) {
+        out.push(Resolution { use_span, def_span: *def_span, def_file: file_path.clone(), kind: ResolutionKind::Skill });
     }
 }
 
@@ -1500,6 +1565,23 @@ fn record_cross_file_text_use(
     }
 }
 
+/// Like [`record_cross_file_text_use`] but accepts any resolution kind — used
+/// for context entries which can reference skills, blocks, or text constants.
+fn record_cross_file_any_use(
+    name: &Spanned<String>,
+    targets: &HashMap<String, ImportTarget>,
+    out: &mut Vec<Resolution>,
+) {
+    if let Some(t) = targets.get(&name.node) {
+        out.push(Resolution {
+            use_span: name.span,
+            def_span: t.def_span,
+            def_file: t.def_file.clone(),
+            kind: t.kind,
+        });
+    }
+}
+
 fn record_cross_file_call(
     target: &Spanned<String>,
     targets: &HashMap<String, ImportTarget>,
@@ -1531,6 +1613,8 @@ pub fn analyze_with_imports(
     bag: &mut DiagBag,
     imported_texts: &HashSet<String>,
     imported_blocks: &HashSet<String>,
+    imported_context_skills: &HashSet<String>,
+    imported_constraint_skills: &HashSet<String>,
     used_import_names: &mut HashSet<String>,
     imported_block_descriptions: &HashMap<String, String>,
     registry: &mut crate::domain_registry::Registry,
@@ -1563,6 +1647,42 @@ pub fn analyze_with_imports(
         })
         .collect();
 
+    // Build local context-only and constraint-only skill name sets.
+    let local_context_skill_names: HashSet<&str> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Skill(s) => {
+                let sk = &s.node;
+                if sk.body_constraints.is_empty() && sk.flow.is_empty() && !sk.flow_present {
+                    Some(s.node.name.as_str())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .collect();
+    let local_constraint_skill_names: HashSet<&str> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Skill(s) => {
+                let sk = &s.node;
+                if sk.context_section.is_empty()
+                    && sk.body_context.is_empty()
+                    && sk.flow.is_empty()
+                    && !sk.flow_present
+                {
+                    Some(s.node.name.as_str())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .collect();
+
     // Combined sets including imports.
     let mut text_names: HashSet<&str> = local_text_names;
     let imported_text_refs: Vec<String> = imported_texts.iter().cloned().collect();
@@ -1574,6 +1694,18 @@ pub fn analyze_with_imports(
     let imported_block_refs: Vec<String> = imported_blocks.iter().cloned().collect();
     for b in &imported_block_refs {
         block_names.insert(b.as_str());
+    }
+
+    let mut context_skill_names: HashSet<&str> = local_context_skill_names;
+    let imported_context_skill_refs: Vec<String> = imported_context_skills.iter().cloned().collect();
+    for s in &imported_context_skill_refs {
+        context_skill_names.insert(s.as_str());
+    }
+
+    let mut constraint_skill_names: HashSet<&str> = local_constraint_skill_names;
+    let imported_constraint_skill_refs: Vec<String> = imported_constraint_skills.iter().cloned().collect();
+    for s in &imported_constraint_skill_refs {
+        constraint_skill_names.insert(s.as_str());
     }
 
     // Collect block declarations for effect inference (local only).
@@ -1652,10 +1784,14 @@ pub fn analyze_with_imports(
                     &block_decls,
                     imported_texts,
                     imported_blocks,
+                    imported_context_skills,
+                    imported_constraint_skills,
                     used_import_names,
                     imported_block_descriptions,
                     &local_callee_return_types,
                     imported_block_return_types,
+                    &context_skill_names,
+                    &constraint_skill_names,
                 );
             }
             Decl::ExportBlock(spanned) => {
@@ -1801,10 +1937,14 @@ fn analyze_skill_with_usage_tracking(
     block_decls: &HashMap<&str, &crate::ast::BlockDecl>,
     imported_texts: &HashSet<String>,
     imported_blocks: &HashSet<String>,
+    imported_context_skills: &HashSet<String>,
+    imported_constraint_skills: &HashSet<String>,
     used_import_names: &mut HashSet<String>,
     imported_block_descriptions: &HashMap<String, String>,
     local_callee_return_types: &HashMap<&str, &Spanned<String>>,
     imported_block_return_types: &HashMap<String, Spanned<String>>,
+    context_skill_names: &HashSet<&str>,
+    constraint_skill_names: &HashSet<&str>,
 ) {
     // Run the normal analysis.
     analyze_skill(
@@ -1820,6 +1960,8 @@ fn analyze_skill_with_usage_tracking(
         imported_block_descriptions,
         local_callee_return_types,
         imported_block_return_types,
+        context_skill_names,
+        constraint_skill_names,
     );
 
     // Track usage: walk flow/constraints/context to see which imported names are referenced.
@@ -1835,14 +1977,23 @@ fn analyze_skill_with_usage_tracking(
     // Check context entries.
     for entry in &skill.body_context {
         if let crate::ast::ContextEntry::NameRef(name) = entry {
-            if imported_texts.contains(&name.node) {
+            if imported_texts.contains(&name.node) || imported_context_skills.contains(&name.node) {
                 used_import_names.insert(name.node.clone());
             }
         }
     }
     for entry in &skill.context_section {
         if let crate::ast::ContextEntry::NameRef(name) = entry {
-            if imported_texts.contains(&name.node) {
+            if imported_texts.contains(&name.node) || imported_context_skills.contains(&name.node) {
+                used_import_names.insert(name.node.clone());
+            }
+        }
+    }
+
+    // Check constraints_section skill refs.
+    for entry in &skill.constraints_section {
+        if let crate::ast::ContextEntry::NameRef(name) = entry {
+            if imported_constraint_skills.contains(&name.node) {
                 used_import_names.insert(name.node.clone());
             }
         }
@@ -1932,6 +2083,8 @@ fn analyze_skill(
     imported_block_descriptions: &HashMap<String, String>,
     local_callee_return_types: &HashMap<&str, &Spanned<String>>,
     imported_block_return_types: &HashMap<String, Spanned<String>>,
+    context_skill_names: &HashSet<&str>,
+    constraint_skill_names: &HashSet<&str>,
 ) {
     let skill = &spanned.node;
     let declared: HashSet<&str> = skill.params.iter().map(|p| p.name.as_str()).collect();
@@ -2020,7 +2173,7 @@ fn analyze_skill(
                     span,
                 );
             }
-            FlowStmt::Call { target, .. } => {
+            FlowStmt::Call { target, args, .. } => {
                 // Check that the call target resolves to a declared block.
                 if !block_names.contains(target.node.as_str()) {
                     // Check if this is a stdlib name used without import.
@@ -2061,6 +2214,22 @@ fn analyze_skill(
                             span,
                         );
                     }
+                } else if let Some(callee) = block_decls.get(target.node.as_str()) {
+                    // PRD #103 / Slice 1 (#104): private-block callee — verify
+                    // each required parameter is satisfied by a positional arg.
+                    // Pin the diagnostic to the callee identifier's span so a
+                    // skill with multiple calls highlights the offending call,
+                    // not the enclosing skill declaration.
+                    for d in validate_call_args(
+                        &target.node,
+                        &callee.params,
+                        args,
+                        target.span,
+                        file_label,
+                        line_index,
+                    ) {
+                        bag.push(d, target.span);
+                    }
                 }
             }
             FlowStmt::ConstraintMarker(marker) => {
@@ -2081,6 +2250,7 @@ fn analyze_skill(
                 check_context_entry_name(
                     entry,
                     text_names,
+                    context_skill_names,
                     spanned.span,
                     file_label,
                     line_index,
@@ -2172,6 +2342,7 @@ fn analyze_skill(
                     bag,
                     &text_names,
                     &block_names,
+                    context_skill_names,
                 );
                 for elif in elif_branches {
                     check_branch_body_names(
@@ -2182,6 +2353,7 @@ fn analyze_skill(
                         bag,
                         &text_names,
                         &block_names,
+                        context_skill_names,
                     );
                 }
                 if let Some(eb) = else_body {
@@ -2193,6 +2365,7 @@ fn analyze_skill(
                         bag,
                         &text_names,
                         &block_names,
+                        context_skill_names,
                     );
                 }
                 // Issue #84 codex pass 2 — F1: recurse into branch bodies so
@@ -2260,12 +2433,32 @@ fn analyze_skill(
 
     // Check body-level context name refs.
     for entry in &skill.body_context {
-        check_context_entry_name(entry, text_names, spanned.span, file_label, line_index, bag);
+        check_context_entry_name(entry, text_names, context_skill_names, spanned.span, file_label, line_index, bag);
     }
 
     // Check context: section name refs.
     for entry in &skill.context_section {
-        check_context_entry_name(entry, text_names, spanned.span, file_label, line_index, bag);
+        check_context_entry_name(entry, text_names, context_skill_names, spanned.span, file_label, line_index, bag);
+    }
+
+    // Check constraints: section skill refs.
+    for entry in &skill.constraints_section {
+        if let crate::ast::ContextEntry::NameRef(name) = entry {
+            if !constraint_skill_names.contains(name.node.as_str()) {
+                let span = spanned.span;
+                bag.push(
+                    Diagnostic::error(
+                        "G::analyze::undefined-name",
+                        format!(
+                            "`{}` is not a constraint-only skill in this file or its imports",
+                            name.node
+                        ),
+                        SourceSpan::from_byte_span(file_label, span, line_index),
+                    ),
+                    span,
+                );
+            }
+        }
     }
 
     // Check body-level bare names against text declarations.
@@ -2492,17 +2685,23 @@ fn infer_effects_for_skill(
 fn check_context_entry_name(
     entry: &ContextEntry,
     text_names: &HashSet<&str>,
+    context_skill_names: &HashSet<&str>,
     span: crate::span::Span,
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
 ) {
     if let ContextEntry::NameRef(name) = entry {
-        if !text_names.contains(name.node.as_str()) {
+        if !text_names.contains(name.node.as_str())
+            && !context_skill_names.contains(name.node.as_str())
+        {
             bag.push(
                 Diagnostic::error(
                     "G::analyze::undefined-name",
-                    format!("`{}` is not a declared `text` in this file", name.node),
+                    format!(
+                        "`{}` is not a declared `text` or context-only skill in this file",
+                        name.node
+                    ),
                     SourceSpan::from_byte_span(file_label, span, line_index),
                 ),
                 span,
@@ -2645,6 +2844,7 @@ fn check_branch_body_names(
     bag: &mut DiagBag,
     text_names: &HashSet<&str>,
     block_names: &HashSet<&str>,
+    context_skill_names: &HashSet<&str>,
 ) {
     for stmt in body {
         match stmt {
@@ -2700,7 +2900,7 @@ fn check_branch_body_names(
                 }
             }
             FlowStmt::ContextMarker(entry) => {
-                check_context_entry_name(entry, text_names, span, file_label, line_index, bag);
+                check_context_entry_name(entry, text_names, context_skill_names, span, file_label, line_index, bag);
             }
             // Issue #84 codex pass 4 — AC-pass4-5: a `return some_callee()`
             // nested inside an `if`/`elif`/`else` body must run the same
@@ -2784,6 +2984,46 @@ pub fn emit_lossy_coercion(
         ),
         span,
     );
+}
+
+/// PRD #103 / Slice 1 (#104): pure validator for call-site argument
+/// satisfaction.
+///
+/// Given a call's positional `args` and the resolved `callee_params`, return
+/// one `G::analyze::missing-required-arg` Error diagnostic per required
+/// parameter (i.e. `default.is_none()`) that no positional argument satisfies.
+/// Pure: no I/O, no bag, no reliance on the rest of the analyze pipeline —
+/// the caller pushes returned diagnostics into its own `DiagBag`.
+///
+/// Binding rule for MVP: positional. Param at index `i` is satisfied iff
+/// `i < args.len()`. Defaulted params are never reported. Named arguments
+/// are out of scope (PRD §"Out of Scope").
+///
+/// Reusable across `block`, `export block`, and `skill` callees. Slice 1
+/// only wires it for private `block` callees; later slices route export-block
+/// calls through the same function once the defaults-required rule is dropped.
+pub(crate) fn validate_call_args(
+    callee_name: &str,
+    callee_params: &[ast::Param],
+    args: &[String],
+    call_span: Span,
+    file_label: &str,
+    line_index: &LineIndex,
+) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for (i, p) in callee_params.iter().enumerate() {
+        if p.default.is_none() && i >= args.len() {
+            out.push(Diagnostic::error(
+                "G::analyze::missing-required-arg",
+                format!(
+                    "call to `{}()` is missing required argument `{}`",
+                    callee_name, p.name
+                ),
+                SourceSpan::from_byte_span(file_label, call_span, line_index),
+            ));
+        }
+    }
+    out
 }
 
 fn analyze_export_block(
@@ -3459,6 +3699,8 @@ skill current() -> BranchName
             &mut bag,
             &HashSet::new(),
             &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
             &mut used,
             &HashMap::new(),
             &mut registry,
@@ -4010,6 +4252,8 @@ const accuracy = "Be accurate."
             &mut bag,
             &HashSet::new(),
             &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
             &mut used,
             &HashMap::new(),
             &mut registry,
@@ -4115,6 +4359,8 @@ const accuracy = "Be accurate."
             &mut bag,
             &HashSet::new(),
             &imported_blocks,
+            &HashSet::new(),
+            &HashSet::new(),
             &mut used,
             &HashMap::new(),
             &mut registry,
@@ -4201,6 +4447,8 @@ const accuracy = "Be accurate."
             &mut bag,
             &HashSet::new(),
             &imported_blocks,
+            &HashSet::new(),
+            &HashSet::new(),
             &mut used,
             &HashMap::new(),
             &mut registry,
@@ -4281,6 +4529,8 @@ const accuracy = "Be accurate."
             &mut bag,
             &HashSet::new(),
             &imported_blocks,
+            &HashSet::new(),
+            &HashSet::new(),
             &mut used,
             &HashMap::new(),
             &mut registry,
@@ -4483,6 +4733,8 @@ const accuracy = "Be accurate."
             &mut bag,
             &HashSet::new(),
             &imported_blocks,
+            &HashSet::new(),
+            &HashSet::new(),
             &mut used,
             &HashMap::new(),
             &mut registry,
@@ -4756,6 +5008,8 @@ const accuracy = "Be accurate."
             &mut bag,
             &HashSet::new(),
             &imported_blocks,
+            &HashSet::new(),
+            &HashSet::new(),
             &mut used,
             &HashMap::new(),
             &mut registry,
@@ -4946,6 +5200,8 @@ const accuracy = "Be accurate."
             &mut bag,
             &HashSet::new(),
             &imported_blocks,
+            &HashSet::new(),
+            &HashSet::new(),
             &mut used,
             &HashMap::new(),
             &mut registry,
@@ -5036,6 +5292,8 @@ const accuracy = "Be accurate."
             &mut bag,
             &HashSet::new(),
             &imported_blocks,
+            &HashSet::new(),
+            &HashSet::new(),
             &mut used,
             &HashMap::new(),
             &mut registry,
@@ -5541,5 +5799,141 @@ export block foo() -> Report
             "clean AST must not emit unmerged-duplicate-subsection; got {:?}",
             dups
         );
+    }
+}
+
+// PRD #103 / Slice 1 (#104): pure-validator unit tests for
+    // `validate_call_args`. Table-driven over (params × args) per the
+    // acceptance criteria — exercises the validator in isolation, not
+    // the wiring into the analyze pipeline.
+
+    #[cfg(test)]
+    mod validate_call_tests {
+        use super::*;
+
+    fn p(name: &str, default: Option<&str>) -> ast::Param {
+        ast::Param {
+            name: name.to_string(),
+            default: default.map(|s| s.to_string()),
+            span: Span::new(0, 0, 1),
+        }
+    }
+
+    #[test]
+    fn validate_call_args_emits_diagnostic_for_missing_required() {
+        let li = LineIndex::new("");
+        let params = vec![p("x", None)];
+        let diags = validate_call_args(
+            "bar",
+            &params,
+            &[],
+            Span::new(0, 0, 1),
+            "test.glyph.md",
+            &li,
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].id, "G::analyze::missing-required-arg");
+        assert_eq!(diags[0].classification, Classification::Error);
+        assert!(
+            diags[0].message.contains("`x`") && diags[0].message.contains("`bar"),
+            "message should name param `x` and callee `bar`, got {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn validate_call_args_required_satisfied_positionally() {
+        let li = LineIndex::new("");
+        let params = vec![p("x", None)];
+        let diags = validate_call_args(
+            "bar",
+            &params,
+            &["v1".to_string()],
+            Span::new(0, 0, 1),
+            "test.glyph.md",
+            &li,
+        );
+        assert!(diags.is_empty(), "expected no diagnostics, got {:?}", diags);
+    }
+
+    #[test]
+    fn validate_call_args_all_defaulted_no_diagnostic() {
+        let li = LineIndex::new("");
+        let params = vec![p("a", Some("\"x\"")), p("b", Some("\"y\""))];
+        let diags = validate_call_args(
+            "callee",
+            &params,
+            &[],
+            Span::new(0, 0, 1),
+            "test.glyph.md",
+            &li,
+        );
+        assert!(diags.is_empty(), "expected no diagnostics, got {:?}", diags);
+    }
+
+    // Positional binding edge cases over `callee(a, b = "d", c)`.
+    fn mixed_params() -> Vec<ast::Param> {
+        vec![p("a", None), p("b", Some("\"d\"")), p("c", None)]
+    }
+
+    fn missing_arg_names(diags: &[Diagnostic]) -> Vec<String> {
+        diags
+            .iter()
+            .filter(|d| d.id == "G::analyze::missing-required-arg")
+            .map(|d| d.message.clone())
+            .collect()
+    }
+
+    #[test]
+    fn validate_call_args_mixed_no_args_reports_a_and_c() {
+        let li = LineIndex::new("");
+        let diags = validate_call_args(
+            "callee",
+            &mixed_params(),
+            &[],
+            Span::new(0, 0, 1),
+            "test.glyph.md",
+            &li,
+        );
+        let msgs = missing_arg_names(&diags);
+        assert_eq!(msgs.len(), 2, "expected 2 diagnostics, got {:?}", msgs);
+        assert!(msgs.iter().any(|m| m.contains("`a`")), "missing `a`: {:?}", msgs);
+        assert!(msgs.iter().any(|m| m.contains("`c`")), "missing `c`: {:?}", msgs);
+    }
+
+    #[test]
+    fn validate_call_args_mixed_one_arg_reports_only_c() {
+        let li = LineIndex::new("");
+        let diags = validate_call_args(
+            "callee",
+            &mixed_params(),
+            &["v1".to_string()],
+            Span::new(0, 0, 1),
+            "test.glyph.md",
+            &li,
+        );
+        let msgs = missing_arg_names(&diags);
+        assert_eq!(msgs.len(), 1, "expected 1 diagnostic, got {:?}", msgs);
+        assert!(msgs[0].contains("`c`"), "expected missing `c`, got {:?}", msgs[0]);
+    }
+
+    #[test]
+    fn validate_call_args_mixed_two_args_satisfies_b_via_position_still_reports_c() {
+        // Positional binding: arg index 1 binds to param `b` (which has a
+        // default) — the default is overridden, but `c` (index 2) is still
+        // missing. Pins the rule that defaulted params consume positional
+        // slots like ordinary params.
+        let li = LineIndex::new("");
+        let diags = validate_call_args(
+            "callee",
+            &mixed_params(),
+            &["v1".to_string(), "v2".to_string()],
+            Span::new(0, 0, 1),
+            "test.glyph.md",
+            &li,
+        );
+        let msgs = missing_arg_names(&diags);
+        assert_eq!(msgs.len(), 1, "expected 1 diagnostic, got {:?}", msgs);
+        assert!(msgs[0].contains("`c`"), "expected missing `c`, got {:?}", msgs[0]);
     }
 }

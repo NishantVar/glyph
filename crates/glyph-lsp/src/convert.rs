@@ -291,6 +291,27 @@ mod tests {
         assert_eq!(lsp.range.end.character, 5);
     }
 
+    /// PRD #103 / Slice 1 (#104): the new `G::analyze::missing-required-arg`
+    /// diagnostic must round-trip through the convert layer with severity
+    /// `Error` and `code` set to the diagnostic ID verbatim — no special-case
+    /// mapping required.
+    #[test]
+    fn missing_required_arg_roundtrip() {
+        let d = Diagnostic::error(
+            "G::analyze::missing-required-arg",
+            "call to `bar()` is missing required argument `x`",
+            span("f.glyph.md", 4, 9, 4, 13),
+        );
+        let lsp = diagnostic_to_lsp(&d);
+        assert_eq!(
+            lsp.code,
+            Some(NumberOrString::String(
+                "G::analyze::missing-required-arg".into()
+            ))
+        );
+        assert_eq!(lsp.severity, Some(DiagnosticSeverity::ERROR));
+    }
+
     /// Roundtrip test #3: a repairable warning with hints. Hints must be
     /// appended to the message; severity must be `Warning`.
     #[test]

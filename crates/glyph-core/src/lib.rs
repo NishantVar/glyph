@@ -864,6 +864,8 @@ fn check_one_file(
         bags.entry(key.clone()).or_default(),
         &imported_texts,
         &imported_blocks,
+        &HashSet::new(),
+        &HashSet::new(),
         &mut used_import_names,
         &HashMap::new(),
         &mut registry,
@@ -1499,7 +1501,9 @@ fn compile_source_with_resolved_imports(
     // exported block, re-keyed under the consumer's local spelling.
     let file = analyze::analyze_with_imports(
         &file, file_id, file_label, &line_index, &mut bag,
-        &resolved_imports.text_names, &all_imported_blocks, &mut used_import_names,
+        &resolved_imports.text_names, &all_imported_blocks,
+        &HashSet::new(), &HashSet::new(),
+        &mut used_import_names,
         &resolved_imports.block_descriptions,
         &mut registry,
         &resolved_imports.block_return_types,

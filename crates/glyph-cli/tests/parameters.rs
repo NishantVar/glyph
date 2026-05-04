@@ -125,6 +125,40 @@ fn export_block_missing_default_emits_analyze_diagnostic() {
 }
 
 #[test]
+fn missing_required_arg_at_call_site_emits_analyze_diagnostic() {
+    // PRD #103 / Slice 1 (#104): a private `block` with a required parameter
+    // called with no argument must surface `G::analyze::missing-required-arg`
+    // (hard error → exit 1). The diagnostic span must pin the offending
+    // callee identifier (line 5 in the fixture), not the enclosing skill
+    // header (line 1) — otherwise a skill with multiple calls cannot tell
+    // the IDE which call is broken.
+    let src = fixture("invalid", "missing_required_arg.glyph.md");
+    let result = run_compile(src, "json");
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "expected exit 1; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_has_diagnostic_id(&stdout, "G::analyze::missing-required-arg");
+
+    let diag = stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v.get("id").and_then(|x| x.as_str()) == Some("G::analyze::missing-required-arg"))
+        .expect("diagnostic must be present");
+    let span = &diag["span"];
+    assert_eq!(
+        span["start"]["line"].as_u64(),
+        Some(5),
+        "diagnostic must pin the call line (5), got span={}",
+        span
+    );
+}
+
+#[test]
 fn unknown_param_slot_emits_analyze_diagnostic() {
     let src = fixture("invalid", "unknown_param_slot.glyph.md");
     let result = run_compile(src, "json");
