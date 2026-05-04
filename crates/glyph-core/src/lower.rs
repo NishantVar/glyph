@@ -5,8 +5,8 @@
 //! traversal starting at `n0`.
 
 use crate::ast::{
-    BlockDecl, ConstValue, ConstraintMarkerKind, ContextEntry, Decl, FlowStmt, ReturnExpr, Skill,
-    SourceFile,
+    BlockDecl, ConstValue, ConstraintMarkerKind, ContextEntry, Decl, ExportBlockDecl, FlowStmt,
+    ReturnExpr, Skill, SourceFile,
 };
 use crate::ir::{
     IrArena, IrBlock, IrBranch, IrCall, IrConstraint, IrContext, IrElifBranch,
@@ -119,6 +119,15 @@ fn resolve_block_body_text(
     Ok(parts.join(" "))
 }
 
+/// PRD #103 / Slice 2 (#105): same-file export-block bodies must lower into
+/// `IrCall.resolved_body` when called from a sibling skill or block, otherwise
+/// the Validate pass fires `UnresolvedCallee`. ExportBlockDecl already keeps
+/// its inline string payload in `flow_strings`; mirror the private-block
+/// joiner above so call sites can reuse the same `BTreeMap` lookup pattern.
+fn resolve_export_block_body_text(block: &ExportBlockDecl) -> String {
+    block.flow_strings.join(" ")
+}
+
 fn resolve_context_entry(
     entry: &ContextEntry,
     texts: &BTreeMap<String, String>,
@@ -175,6 +184,7 @@ fn lower_flow_body(
     arena: &mut IrArena,
     texts: &BTreeMap<String, String>,
     blocks: &BTreeMap<String, &BlockDecl>,
+    export_blocks: &BTreeMap<String, &ExportBlockDecl>,
 ) -> Result<Vec<NodeId>, LowerError> {
     let mut ids = Vec::new();
     for stmt in stmts {
@@ -225,6 +235,8 @@ fn lower_flow_body(
                 let resolved_body = if let Some(block) = blocks.get(target.node.as_str()) {
                     let body_text = resolve_block_body_text(block, texts)?;
                     Some(body_text)
+                } else if let Some(eb) = export_blocks.get(target.node.as_str()) {
+                    Some(resolve_export_block_body_text(eb))
                 } else {
                     None
                 };
@@ -235,6 +247,11 @@ fn lower_flow_body(
                 let return_type = blocks
                     .get(target.node.as_str())
                     .and_then(|b| b.return_type.as_ref())
+                    .or_else(|| {
+                        export_blocks
+                            .get(target.node.as_str())
+                            .and_then(|b| b.return_type.as_ref())
+                    })
                     .map(|s| name_to_typetag(s.node.as_str()));
                 let next = NodeId(arena.len() as u32);
                 let id = arena.push(IrNode::Call(IrCall {
@@ -257,17 +274,17 @@ fn lower_flow_body(
                     text: String::new(),
                     role: Role::Step,
                 }));
-                let then_ids = lower_flow_body(then_body, arena, texts, blocks)?;
+                let then_ids = lower_flow_body(then_body, arena, texts, blocks, export_blocks)?;
                 let mut ir_elifs = Vec::new();
                 for elif in elif_branches {
-                    let elif_ids = lower_flow_body(&elif.body, arena, texts, blocks)?;
+                    let elif_ids = lower_flow_body(&elif.body, arena, texts, blocks, export_blocks)?;
                     ir_elifs.push(IrElifBranch {
                         condition: elif.condition.clone(),
                         body: elif_ids,
                     });
                 }
                 let ir_else = if let Some(eb) = else_body {
-                    Some(lower_flow_body(eb, arena, texts, blocks)?)
+                    Some(lower_flow_body(eb, arena, texts, blocks, export_blocks)?)
                 } else {
                     None
                 };
@@ -332,6 +349,16 @@ pub fn lower_with_imports(
     for d in &file.decls {
         if let Decl::Block(b) = d {
             blocks.insert(b.node.name.clone(), &b.node);
+        }
+    }
+    // PRD #103 / Slice 2 (#105): same-file export-block decls so calls in the
+    // skill's flow lower with `IrCall.resolved_body` populated. Without this
+    // map the Validate pass would fire `UnresolvedCallee` against the
+    // sibling export-block call.
+    let mut export_blocks: BTreeMap<String, &ExportBlockDecl> = BTreeMap::new();
+    for d in &file.decls {
+        if let Decl::ExportBlock(b) = d {
+            export_blocks.insert(b.node.name.clone(), &b.node);
         }
     }
 
@@ -511,6 +538,8 @@ pub fn lower_with_imports(
                 let resolved_body = if let Some(block) = blocks.get(target.node.as_str()) {
                     let body_text = resolve_block_body_text(block, &texts)?;
                     Some(body_text)
+                } else if let Some(eb) = export_blocks.get(target.node.as_str()) {
+                    Some(resolve_export_block_body_text(eb))
                 } else {
                     None // Analyze already flagged undefined-call.
                 };
@@ -520,6 +549,11 @@ pub fn lower_with_imports(
                 let return_type = blocks
                     .get(target.node.as_str())
                     .and_then(|b| b.return_type.as_ref())
+                    .or_else(|| {
+                        export_blocks
+                            .get(target.node.as_str())
+                            .and_then(|b| b.return_type.as_ref())
+                    })
                     .map(|s| name_to_typetag(s.node.as_str()));
                 let next = NodeId(arena.len() as u32);
                 let id = arena.push(IrNode::Call(IrCall {
@@ -585,17 +619,17 @@ pub fn lower_with_imports(
                     text: String::new(),
                     role: Role::Step,
                 }));
-                let then_ids = lower_flow_body(then_body, &mut arena, &texts, &blocks)?;
+                let then_ids = lower_flow_body(then_body, &mut arena, &texts, &blocks, &export_blocks)?;
                 let mut ir_elifs = Vec::new();
                 for elif in elif_branches {
-                    let elif_ids = lower_flow_body(&elif.body, &mut arena, &texts, &blocks)?;
+                    let elif_ids = lower_flow_body(&elif.body, &mut arena, &texts, &blocks, &export_blocks)?;
                     ir_elifs.push(IrElifBranch {
                         condition: elif.condition.clone(),
                         body: elif_ids,
                     });
                 }
                 let ir_else = if let Some(eb) = else_body {
-                    Some(lower_flow_body(eb, &mut arena, &texts, &blocks)?)
+                    Some(lower_flow_body(eb, &mut arena, &texts, &blocks, &export_blocks)?)
                 } else {
                     None
                 };

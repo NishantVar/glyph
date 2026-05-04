@@ -6,12 +6,13 @@
 //!   instruction-bearing string (the walking-skeleton subset = inline `flow:`
 //!   strings) refers to an identifier that is not a declared header parameter
 //!   on the enclosing skill.
-//! - `G::analyze::missing-param-default` — error. An `export block` declares a
-//!   parameter without a default. Skill parameters without defaults are legal
-//!   (runtime-required); only `export block` parameters require defaults per
-//!   `design/language-surface.md` §3.10.
+//! - `G::analyze::missing-required-arg` — error. A call site whose callee is
+//!   a private `block`, a same-file `export block`, or an imported
+//!   `export block` (PRD #103 / Slice 1 (#104) and Slice 2 (#105)) omits a
+//!   positional argument for a parameter that has no default. Reported at the
+//!   call site span, naming the missing parameter and the callee.
 //!
-//! Both diagnostics fire from the parsed AST, before lowering, so they surface
+//! Both fire from the parsed AST, before lowering, so they surface
 //! through `glyph check` as well as `glyph compile`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -907,11 +908,50 @@ pub fn analyze_with_diagnostics(
         .collect();
 
     // Collect block declaration names for call resolution.
+    // Includes both private `block` and `export block` so same-file calls to
+    // export blocks resolve (PRD #103 / Slice 2 (#105)).
     let block_names: HashSet<&str> = file
         .decls
         .iter()
         .filter_map(|d| match d {
             Decl::Block(b) => Some(b.node.name.as_str()),
+            Decl::ExportBlock(b) => Some(b.node.name.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    // Collect context-only and constraint-only skill names (no imports path).
+    let context_skill_names: HashSet<&str> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Skill(s) => {
+                let sk = &s.node;
+                if sk.body_constraints.is_empty() && sk.flow.is_empty() && !sk.flow_present {
+                    Some(s.node.name.as_str())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .collect();
+    let constraint_skill_names: HashSet<&str> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Skill(s) => {
+                let sk = &s.node;
+                if sk.context_section.is_empty()
+                    && sk.body_context.is_empty()
+                    && sk.flow.is_empty()
+                    && !sk.flow_present
+                {
+                    Some(s.node.name.as_str())
+                } else {
+                    None
+                }
+            }
             _ => None,
         })
         .collect();
@@ -922,6 +962,19 @@ pub fn analyze_with_diagnostics(
         .iter()
         .filter_map(|d| match d {
             Decl::Block(b) => Some((b.node.name.as_str(), &b.node)),
+            _ => None,
+        })
+        .collect();
+
+    // PRD #103 / Slice 2 (#105): same-file export-block call-arg validation.
+    // The FlowStmt::Call resolver uses this map to verify each required
+    // parameter is satisfied by a positional argument, mirroring the
+    // private-block path.
+    let export_block_decls: HashMap<&str, &crate::ast::ExportBlockDecl> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::ExportBlock(b) => Some((b.node.name.as_str(), &b.node)),
             _ => None,
         })
         .collect();
@@ -951,16 +1004,14 @@ pub fn analyze_with_diagnostics(
         .collect();
 
     // Issue #84 Chunk 4 (AC4 / D13): per-file local-callee return-type map.
-    // Issue #84 codex pass 1 — F3: only `Decl::Block` is recognized by the
-    // same-file call resolver (`block_names` is `Decl::Block`-only). Including
-    // `Decl::ExportBlock` here caused a false hard `nominal-mismatch` to fire
-    // against `return exported_fn()` boundaries that the resolver would
-    // otherwise reject. Cross-file matching for `export block` callees is
-    // owned by the `imported_block_return_types` map, sourced from
-    // `extract_exports::block_return_types` (lib.rs:216) — restricting this
-    // local map does not break cross-file matching. `Decl::Skill` stays out
-    // because skills cannot be called from other declarations' flow.
-    // The no-imports path has no cross-file map, so we pass an empty one.
+    // PRD #103 / #105 (Codex P2 follow-up): include `Decl::ExportBlock` too.
+    // Same-file `export block`s are now legal call targets (see `block_names`
+    // construction below), so a `return helper()` against a same-file export
+    // block must run the same nominal-match check as a private-block target.
+    // Pre-fix this map was Block-only, silently skipping the check for
+    // export-block callees and allowing typed mismatches to compile.
+    // `Decl::Skill` stays out because skills cannot be called from other
+    // declarations' flow.
     let local_callee_return_types: HashMap<&str, &Spanned<String>> = file
         .decls
         .iter()
@@ -970,10 +1021,16 @@ pub fn analyze_with_diagnostics(
                 .return_type
                 .as_ref()
                 .map(|rt| (b.node.name.as_str(), rt)),
+            Decl::ExportBlock(eb) => eb
+                .node
+                .return_type
+                .as_ref()
+                .map(|rt| (eb.node.name.as_str(), rt)),
             _ => None,
         })
         .collect();
     let empty_imported_block_return_types: HashMap<String, Spanned<String>> = HashMap::new();
+    let empty_imported_block_params: HashMap<String, Vec<crate::ast::Param>> = HashMap::new();
 
     for decl in &file.decls {
         match decl {
@@ -987,9 +1044,13 @@ pub fn analyze_with_diagnostics(
                 &text_names,
                 &block_names,
                 &block_decls,
+                &export_block_decls,
+                &empty_imported_block_params,
                 &HashMap::new(),
                 &local_callee_return_types,
                 &empty_imported_block_return_types,
+                &context_skill_names,
+                &constraint_skill_names,
             ),
             Decl::ExportBlock(spanned) => {
                 analyze_export_block(
@@ -1211,7 +1272,7 @@ pub fn collect_same_file_resolutions(file: &SourceFile, file_path: &PathBuf) -> 
                 }
                 for entry in skill.body_context.iter().chain(skill.context_section.iter()) {
                     if let ContextEntry::NameRef(name) = entry {
-                        record_text_use(&name.node, name.span, &text_defs, file_path, &mut out);
+                        record_context_name_use(&name.node, name.span, &text_defs, &block_defs, &export_block_defs, &skill_defs, file_path, &mut out);
                     }
                 }
                 // body_bare_names are plain Strings without span info; skip for resolution.
@@ -1304,7 +1365,7 @@ pub fn collect_cross_file_resolutions(
                 }
                 for entry in skill.body_context.iter().chain(skill.context_section.iter()) {
                     if let ContextEntry::NameRef(name) = entry {
-                        record_cross_file_text_use(name, targets, &mut out);
+                        record_cross_file_any_use(name, targets, &mut out);
                     }
                 }
                 // body_bare_names are plain Strings without span info; skip for cross-file resolution.
@@ -1357,6 +1418,29 @@ fn record_text_use(
             def_file: file_path.clone(),
             kind: ResolutionKind::Text,
         });
+    }
+}
+
+/// Resolve a context-entry name reference. Tries text, block, export block,
+/// and skill defs in that order — context entries can point to any of these.
+fn record_context_name_use(
+    name: &str,
+    use_span: Span,
+    text_defs: &HashMap<&str, Span>,
+    block_defs: &HashMap<&str, Span>,
+    export_block_defs: &HashMap<&str, Span>,
+    skill_defs: &HashMap<&str, Span>,
+    file_path: &PathBuf,
+    out: &mut Vec<Resolution>,
+) {
+    if let Some(def_span) = text_defs.get(name) {
+        out.push(Resolution { use_span, def_span: *def_span, def_file: file_path.clone(), kind: ResolutionKind::Text });
+    } else if let Some(def_span) = block_defs.get(name) {
+        out.push(Resolution { use_span, def_span: *def_span, def_file: file_path.clone(), kind: ResolutionKind::Block });
+    } else if let Some(def_span) = export_block_defs.get(name) {
+        out.push(Resolution { use_span, def_span: *def_span, def_file: file_path.clone(), kind: ResolutionKind::ExportBlock });
+    } else if let Some(def_span) = skill_defs.get(name) {
+        out.push(Resolution { use_span, def_span: *def_span, def_file: file_path.clone(), kind: ResolutionKind::Skill });
     }
 }
 
@@ -1500,6 +1584,23 @@ fn record_cross_file_text_use(
     }
 }
 
+/// Like [`record_cross_file_text_use`] but accepts any resolution kind — used
+/// for context entries which can reference skills, blocks, or text constants.
+fn record_cross_file_any_use(
+    name: &Spanned<String>,
+    targets: &HashMap<String, ImportTarget>,
+    out: &mut Vec<Resolution>,
+) {
+    if let Some(t) = targets.get(&name.node) {
+        out.push(Resolution {
+            use_span: name.span,
+            def_span: t.def_span,
+            def_file: t.def_file.clone(),
+            kind: t.kind,
+        });
+    }
+}
+
 fn record_cross_file_call(
     target: &Spanned<String>,
     targets: &HashMap<String, ImportTarget>,
@@ -1531,10 +1632,13 @@ pub fn analyze_with_imports(
     bag: &mut DiagBag,
     imported_texts: &HashSet<String>,
     imported_blocks: &HashSet<String>,
+    imported_context_skills: &HashSet<String>,
+    imported_constraint_skills: &HashSet<String>,
     used_import_names: &mut HashSet<String>,
     imported_block_descriptions: &HashMap<String, String>,
     registry: &mut crate::domain_registry::Registry,
     imported_block_return_types: &HashMap<String, Spanned<String>>,
+    imported_block_params: &HashMap<String, Vec<crate::ast::Param>>,
 ) -> SourceFile {
     // Issue #109 chunk 3 — Analyze invariant. Enforced on the import-aware
     // path too so multi-file compiles get identical guarantees. See
@@ -1554,11 +1658,50 @@ pub fn analyze_with_imports(
         .collect();
 
     // Collect local block declaration names.
+    // Includes both private `block` and `export block` so same-file calls to
+    // export blocks resolve (PRD #103 / Slice 2 (#105)).
     let local_block_names: HashSet<&str> = file
         .decls
         .iter()
         .filter_map(|d| match d {
             Decl::Block(b) => Some(b.node.name.as_str()),
+            Decl::ExportBlock(b) => Some(b.node.name.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    // Build local context-only and constraint-only skill name sets.
+    let local_context_skill_names: HashSet<&str> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Skill(s) => {
+                let sk = &s.node;
+                if sk.body_constraints.is_empty() && sk.flow.is_empty() && !sk.flow_present {
+                    Some(s.node.name.as_str())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .collect();
+    let local_constraint_skill_names: HashSet<&str> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Skill(s) => {
+                let sk = &s.node;
+                if sk.context_section.is_empty()
+                    && sk.body_context.is_empty()
+                    && sk.flow.is_empty()
+                    && !sk.flow_present
+                {
+                    Some(s.node.name.as_str())
+                } else {
+                    None
+                }
+            }
             _ => None,
         })
         .collect();
@@ -1576,12 +1719,36 @@ pub fn analyze_with_imports(
         block_names.insert(b.as_str());
     }
 
+    let mut context_skill_names: HashSet<&str> = local_context_skill_names;
+    let imported_context_skill_refs: Vec<String> = imported_context_skills.iter().cloned().collect();
+    for s in &imported_context_skill_refs {
+        context_skill_names.insert(s.as_str());
+    }
+
+    let mut constraint_skill_names: HashSet<&str> = local_constraint_skill_names;
+    let imported_constraint_skill_refs: Vec<String> = imported_constraint_skills.iter().cloned().collect();
+    for s in &imported_constraint_skill_refs {
+        constraint_skill_names.insert(s.as_str());
+    }
+
     // Collect block declarations for effect inference (local only).
     let block_decls: HashMap<&str, &crate::ast::BlockDecl> = file
         .decls
         .iter()
         .filter_map(|d| match d {
             Decl::Block(b) => Some((b.node.name.as_str(), &b.node)),
+            _ => None,
+        })
+        .collect();
+
+    // PRD #103 / Slice 2 (#105): same-file export-block decls for call-arg
+    // validation. Mirrors the `block_decls` map above; cross-file imported
+    // export-block params are wired separately via Slice C.
+    let export_block_decls: HashMap<&str, &crate::ast::ExportBlockDecl> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::ExportBlock(b) => Some((b.node.name.as_str(), &b.node)),
             _ => None,
         })
         .collect();
@@ -1617,11 +1784,14 @@ pub fn analyze_with_imports(
     // Issue #84 Chunk 4 (AC4 / D13): per-file local-callee return-type map.
     // Issue #84 codex pass 1 — F3: see the matching site in
     // `analyze_with_diagnostics` for rationale. Restricted to `Decl::Block`
-    // — the only kind recognized by the same-file resolver. Cross-file
-    // export-block matching is owned by `imported_block_return_types`.
-    // Keyed by callable name; valued by the `-> Type` annotation. Populated
-    // for callables that declare a return type only — absence means
-    // "skip the type-check" (covers undefined-callee and untyped-callee).
+    // — plus same-file `Decl::ExportBlock` per the PRD #103 / #105 Codex
+    // P2 follow-up: same-file export blocks are now legal call targets,
+    // so a `return helper()` against one must run the nominal-match
+    // check just like a private-block target. Cross-file export-block
+    // matching is owned by `imported_block_return_types`. Keyed by
+    // callable name; valued by the `-> Type` annotation. Populated for
+    // callables that declare a return type only — absence means "skip
+    // the type-check" (covers undefined-callee and untyped-callee).
     // The borrowed-string keys tie this map's lifetime to the file AST,
     // same pattern as `block_decls`.
     let local_callee_return_types: HashMap<&str, &Spanned<String>> = file
@@ -1633,6 +1803,11 @@ pub fn analyze_with_imports(
                 .return_type
                 .as_ref()
                 .map(|rt| (b.node.name.as_str(), rt)),
+            Decl::ExportBlock(eb) => eb
+                .node
+                .return_type
+                .as_ref()
+                .map(|rt| (eb.node.name.as_str(), rt)),
             _ => None,
         })
         .collect();
@@ -1650,12 +1825,18 @@ pub fn analyze_with_imports(
                     &text_names,
                     &block_names,
                     &block_decls,
+                    &export_block_decls,
+                    imported_block_params,
                     imported_texts,
                     imported_blocks,
+                    imported_context_skills,
+                    imported_constraint_skills,
                     used_import_names,
                     imported_block_descriptions,
                     &local_callee_return_types,
                     imported_block_return_types,
+                    &context_skill_names,
+                    &constraint_skill_names,
                 );
             }
             Decl::ExportBlock(spanned) => {
@@ -1799,12 +1980,18 @@ fn analyze_skill_with_usage_tracking(
     text_names: &HashSet<&str>,
     block_names: &HashSet<&str>,
     block_decls: &HashMap<&str, &crate::ast::BlockDecl>,
+    export_block_decls: &HashMap<&str, &crate::ast::ExportBlockDecl>,
+    imported_block_params: &HashMap<String, Vec<crate::ast::Param>>,
     imported_texts: &HashSet<String>,
     imported_blocks: &HashSet<String>,
+    imported_context_skills: &HashSet<String>,
+    imported_constraint_skills: &HashSet<String>,
     used_import_names: &mut HashSet<String>,
     imported_block_descriptions: &HashMap<String, String>,
     local_callee_return_types: &HashMap<&str, &Spanned<String>>,
     imported_block_return_types: &HashMap<String, Spanned<String>>,
+    context_skill_names: &HashSet<&str>,
+    constraint_skill_names: &HashSet<&str>,
 ) {
     // Run the normal analysis.
     analyze_skill(
@@ -1817,9 +2004,13 @@ fn analyze_skill_with_usage_tracking(
         text_names,
         block_names,
         block_decls,
+        export_block_decls,
+        imported_block_params,
         imported_block_descriptions,
         local_callee_return_types,
         imported_block_return_types,
+        context_skill_names,
+        constraint_skill_names,
     );
 
     // Track usage: walk flow/constraints/context to see which imported names are referenced.
@@ -1835,14 +2026,23 @@ fn analyze_skill_with_usage_tracking(
     // Check context entries.
     for entry in &skill.body_context {
         if let crate::ast::ContextEntry::NameRef(name) = entry {
-            if imported_texts.contains(&name.node) {
+            if imported_texts.contains(&name.node) || imported_context_skills.contains(&name.node) {
                 used_import_names.insert(name.node.clone());
             }
         }
     }
     for entry in &skill.context_section {
         if let crate::ast::ContextEntry::NameRef(name) = entry {
-            if imported_texts.contains(&name.node) {
+            if imported_texts.contains(&name.node) || imported_context_skills.contains(&name.node) {
+                used_import_names.insert(name.node.clone());
+            }
+        }
+    }
+
+    // Check constraints_section skill refs.
+    for entry in &skill.constraints_section {
+        if let crate::ast::ContextEntry::NameRef(name) = entry {
+            if imported_constraint_skills.contains(&name.node) {
                 used_import_names.insert(name.node.clone());
             }
         }
@@ -1929,9 +2129,13 @@ fn analyze_skill(
     text_names: &HashSet<&str>,
     block_names: &HashSet<&str>,
     block_decls: &HashMap<&str, &BlockDecl>,
+    export_block_decls: &HashMap<&str, &crate::ast::ExportBlockDecl>,
+    imported_block_params: &HashMap<String, Vec<crate::ast::Param>>,
     imported_block_descriptions: &HashMap<String, String>,
     local_callee_return_types: &HashMap<&str, &Spanned<String>>,
     imported_block_return_types: &HashMap<String, Spanned<String>>,
+    context_skill_names: &HashSet<&str>,
+    constraint_skill_names: &HashSet<&str>,
 ) {
     let skill = &spanned.node;
     let declared: HashSet<&str> = skill.params.iter().map(|p| p.name.as_str()).collect();
@@ -2020,7 +2224,7 @@ fn analyze_skill(
                     span,
                 );
             }
-            FlowStmt::Call { target, .. } => {
+            FlowStmt::Call { target, args, .. } => {
                 // Check that the call target resolves to a declared block.
                 if !block_names.contains(target.node.as_str()) {
                     // Check if this is a stdlib name used without import.
@@ -2061,6 +2265,55 @@ fn analyze_skill(
                             span,
                         );
                     }
+                } else if let Some(callee) = block_decls.get(target.node.as_str()) {
+                    // PRD #103 / Slice 1 (#104): private-block callee — verify
+                    // each required parameter is satisfied by a positional arg.
+                    // Pin the diagnostic to the callee identifier's span so a
+                    // skill with multiple calls highlights the offending call,
+                    // not the enclosing skill declaration.
+                    for d in validate_call_args(
+                        &target.node,
+                        &callee.params,
+                        args,
+                        target.span,
+                        file_label,
+                        line_index,
+                    ) {
+                        bag.push(d, target.span);
+                    }
+                } else if let Some(callee) = export_block_decls.get(target.node.as_str()) {
+                    // PRD #103 / Slice 2 (#105): same-file export-block callee —
+                    // export-block params may now omit a default, so a caller
+                    // that omits the corresponding positional argument must
+                    // surface `G::analyze::missing-required-arg` at the call
+                    // site, mirroring the private-block path above.
+                    for d in validate_call_args(
+                        &target.node,
+                        &callee.params,
+                        args,
+                        target.span,
+                        file_label,
+                        line_index,
+                    ) {
+                        bag.push(d, target.span);
+                    }
+                } else if let Some(params) = imported_block_params.get(target.node.as_str()) {
+                    // PRD #103 / Slice 2 (#105) — Slice C: imported export-block
+                    // callee — the consumer-side resolver consults the
+                    // alias-/prefix-keyed parameter list captured by
+                    // `extract_exports::block_params` (lib.rs) and re-keyed in
+                    // `build_resolved_imports`. Same `validate_call_args`
+                    // contract as the local paths above.
+                    for d in validate_call_args(
+                        &target.node,
+                        params.as_slice(),
+                        args,
+                        target.span,
+                        file_label,
+                        line_index,
+                    ) {
+                        bag.push(d, target.span);
+                    }
                 }
             }
             FlowStmt::ConstraintMarker(marker) => {
@@ -2081,6 +2334,7 @@ fn analyze_skill(
                 check_context_entry_name(
                     entry,
                     text_names,
+                    context_skill_names,
                     spanned.span,
                     file_label,
                     line_index,
@@ -2105,6 +2359,36 @@ fn analyze_skill(
                     line_index,
                     bag,
                 );
+                // Codex P2 follow-up to PRD #103 / #105: a `return foo(..)`
+                // must run the same required-arg check as a top-level
+                // `call foo(..)`. Pre-fix only the FlowStmt::Call arm
+                // wired `validate_call_args`, so `return helper()` against
+                // a callee with a required parameter compiled silently.
+                if let crate::ast::ReturnExpr::Call { target, args } = expr {
+                    let params: Option<&[crate::ast::Param]> = if let Some(c) =
+                        block_decls.get(target.node.as_str())
+                    {
+                        Some(&c.params)
+                    } else if let Some(c) = export_block_decls.get(target.node.as_str()) {
+                        Some(&c.params)
+                    } else {
+                        imported_block_params
+                            .get(target.node.as_str())
+                            .map(|v| v.as_slice())
+                    };
+                    if let Some(params) = params {
+                        for d in validate_call_args(
+                            &target.node,
+                            params,
+                            args,
+                            target.span,
+                            file_label,
+                            line_index,
+                        ) {
+                            bag.push(d, target.span);
+                        }
+                    }
+                }
                 // Return statements are validated structurally by the parser
                 // (check_return_rules). Issue #84 Chunk 4 (AC4 / D13):
                 // delegate the cross-/same-file nominal-mismatch check to
@@ -2172,6 +2456,10 @@ fn analyze_skill(
                     bag,
                     &text_names,
                     &block_names,
+                    context_skill_names,
+                    &block_decls,
+                    export_block_decls,
+                    imported_block_params,
                 );
                 for elif in elif_branches {
                     check_branch_body_names(
@@ -2182,6 +2470,10 @@ fn analyze_skill(
                         bag,
                         &text_names,
                         &block_names,
+                        context_skill_names,
+                        &block_decls,
+                        export_block_decls,
+                        imported_block_params,
                     );
                 }
                 if let Some(eb) = else_body {
@@ -2193,6 +2485,10 @@ fn analyze_skill(
                         bag,
                         &text_names,
                         &block_names,
+                        context_skill_names,
+                        &block_decls,
+                        export_block_decls,
+                        imported_block_params,
                     );
                 }
                 // Issue #84 codex pass 2 — F1: recurse into branch bodies so
@@ -2260,12 +2556,32 @@ fn analyze_skill(
 
     // Check body-level context name refs.
     for entry in &skill.body_context {
-        check_context_entry_name(entry, text_names, spanned.span, file_label, line_index, bag);
+        check_context_entry_name(entry, text_names, context_skill_names, spanned.span, file_label, line_index, bag);
     }
 
     // Check context: section name refs.
     for entry in &skill.context_section {
-        check_context_entry_name(entry, text_names, spanned.span, file_label, line_index, bag);
+        check_context_entry_name(entry, text_names, context_skill_names, spanned.span, file_label, line_index, bag);
+    }
+
+    // Check constraints: section skill refs.
+    for entry in &skill.constraints_section {
+        if let crate::ast::ContextEntry::NameRef(name) = entry {
+            if !constraint_skill_names.contains(name.node.as_str()) {
+                let span = spanned.span;
+                bag.push(
+                    Diagnostic::error(
+                        "G::analyze::undefined-name",
+                        format!(
+                            "`{}` is not a constraint-only skill in this file or its imports",
+                            name.node
+                        ),
+                        SourceSpan::from_byte_span(file_label, span, line_index),
+                    ),
+                    span,
+                );
+            }
+        }
     }
 
     // Check body-level bare names against text declarations.
@@ -2492,17 +2808,23 @@ fn infer_effects_for_skill(
 fn check_context_entry_name(
     entry: &ContextEntry,
     text_names: &HashSet<&str>,
+    context_skill_names: &HashSet<&str>,
     span: crate::span::Span,
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
 ) {
     if let ContextEntry::NameRef(name) = entry {
-        if !text_names.contains(name.node.as_str()) {
+        if !text_names.contains(name.node.as_str())
+            && !context_skill_names.contains(name.node.as_str())
+        {
             bag.push(
                 Diagnostic::error(
                     "G::analyze::undefined-name",
-                    format!("`{}` is not a declared `text` in this file", name.node),
+                    format!(
+                        "`{}` is not a declared `text` or context-only skill in this file",
+                        name.node
+                    ),
                     SourceSpan::from_byte_span(file_label, span, line_index),
                 ),
                 span,
@@ -2645,10 +2967,27 @@ fn check_branch_body_names(
     bag: &mut DiagBag,
     text_names: &HashSet<&str>,
     block_names: &HashSet<&str>,
+    context_skill_names: &HashSet<&str>,
+    block_decls: &HashMap<&str, &crate::ast::BlockDecl>,
+    export_block_decls: &HashMap<&str, &crate::ast::ExportBlockDecl>,
+    imported_block_params: &HashMap<String, Vec<crate::ast::Param>>,
 ) {
+    // Codex P2 follow-up to PRD #103 / #105: a call inside an `if`/`elif`/
+    // `else` body must run the same required-arg check as a top-level
+    // call. Pre-fix this walker only verified name resolution — branch-
+    // body callees with required parameters compiled silently.
+    let lookup_params = |name: &str| -> Option<&[crate::ast::Param]> {
+        if let Some(c) = block_decls.get(name) {
+            Some(&c.params)
+        } else if let Some(c) = export_block_decls.get(name) {
+            Some(&c.params)
+        } else {
+            imported_block_params.get(name).map(|v| v.as_slice())
+        }
+    };
     for stmt in body {
         match stmt {
-            FlowStmt::Call { target, .. } => {
+            FlowStmt::Call { target, args, .. } => {
                 if !block_names.contains(target.node.as_str()) {
                     if is_stdlib_block_name(&target.node) {
                         bag.push(
@@ -2685,6 +3024,17 @@ fn check_branch_body_names(
                             span,
                         );
                     }
+                } else if let Some(params) = lookup_params(target.node.as_str()) {
+                    for d in validate_call_args(
+                        &target.node,
+                        params,
+                        args,
+                        target.span,
+                        file_label,
+                        line_index,
+                    ) {
+                        bag.push(d, target.span);
+                    }
                 }
             }
             FlowStmt::ConstraintMarker(marker) => {
@@ -2700,7 +3050,7 @@ fn check_branch_body_names(
                 }
             }
             FlowStmt::ContextMarker(entry) => {
-                check_context_entry_name(entry, text_names, span, file_label, line_index, bag);
+                check_context_entry_name(entry, text_names, context_skill_names, span, file_label, line_index, bag);
             }
             // Issue #84 codex pass 4 — AC-pass4-5: a `return some_callee()`
             // nested inside an `if`/`elif`/`else` body must run the same
@@ -2710,6 +3060,20 @@ fn check_branch_body_names(
             // nominal-walk extension.
             FlowStmt::Return(expr) => {
                 check_return_call_undefined(expr, span, block_names, file_label, line_index, bag);
+                if let crate::ast::ReturnExpr::Call { target, args } = expr {
+                    if let Some(params) = lookup_params(target.node.as_str()) {
+                        for d in validate_call_args(
+                            &target.node,
+                            params,
+                            args,
+                            target.span,
+                            file_label,
+                            line_index,
+                        ) {
+                            bag.push(d, target.span);
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -2786,6 +3150,46 @@ pub fn emit_lossy_coercion(
     );
 }
 
+/// PRD #103 / Slice 1 (#104): pure validator for call-site argument
+/// satisfaction.
+///
+/// Given a call's positional `args` and the resolved `callee_params`, return
+/// one `G::analyze::missing-required-arg` Error diagnostic per required
+/// parameter (i.e. `default.is_none()`) that no positional argument satisfies.
+/// Pure: no I/O, no bag, no reliance on the rest of the analyze pipeline —
+/// the caller pushes returned diagnostics into its own `DiagBag`.
+///
+/// Binding rule for MVP: positional. Param at index `i` is satisfied iff
+/// `i < args.len()`. Defaulted params are never reported. Named arguments
+/// are out of scope (PRD §"Out of Scope").
+///
+/// Reusable across `block`, `export block`, and `skill` callees. Slice 1
+/// only wires it for private `block` callees; later slices route export-block
+/// calls through the same function once the defaults-required rule is dropped.
+pub(crate) fn validate_call_args(
+    callee_name: &str,
+    callee_params: &[ast::Param],
+    args: &[String],
+    call_span: Span,
+    file_label: &str,
+    line_index: &LineIndex,
+) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for (i, p) in callee_params.iter().enumerate() {
+        if p.default.is_none() && i >= args.len() {
+            out.push(Diagnostic::error(
+                "G::analyze::missing-required-arg",
+                format!(
+                    "call to `{}()` is missing required argument `{}`",
+                    callee_name, p.name
+                ),
+                SourceSpan::from_byte_span(file_label, call_span, line_index),
+            ));
+        }
+    }
+    out
+}
+
 fn analyze_export_block(
     spanned: &crate::span::Spanned<crate::ast::ExportBlockDecl>,
     file_label: &str,
@@ -2824,22 +3228,14 @@ fn analyze_export_block(
         );
     }
 
-    for p in &decl.params {
-        if p.default.is_none() {
-            let span: Span = p.span;
-            bag.push(
-                Diagnostic::error(
-                    "G::analyze::missing-param-default",
-                    format!(
-                        "`export block` parameter `{}` requires a default value",
-                        p.name
-                    ),
-                    SourceSpan::from_byte_span(file_label, span, line_index),
-                ),
-                span,
-            );
-        }
-    }
+    // PRD #103 / Slice 2 (#105): the previous `G::analyze::missing-param-default`
+    // rule (which required every export-block parameter to declare a default)
+    // has been retired. Export-block parameters may now be required, matching
+    // the private-`block` semantics. Call-site enforcement lives in
+    // `validate_call_args` (FlowStmt::Call resolver above) and surfaces
+    // `G::analyze::missing-required-arg` when a caller omits the positional
+    // argument for a required parameter.
+
     // G::analyze::missing-return — export block must have an explicit return.
     if !decl.has_return {
         let span = spanned.span;
@@ -3459,9 +3855,12 @@ skill current() -> BranchName
             &mut bag,
             &HashSet::new(),
             &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
             &mut used,
             &HashMap::new(),
             &mut registry,
+            &HashMap::new(),
             &HashMap::new(),
         );
         let entry = registry
@@ -4010,9 +4409,12 @@ const accuracy = "Be accurate."
             &mut bag,
             &HashSet::new(),
             &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
             &mut used,
             &HashMap::new(),
             &mut registry,
+            &HashMap::new(),
             &HashMap::new(),
         );
 
@@ -4115,10 +4517,13 @@ const accuracy = "Be accurate."
             &mut bag,
             &HashSet::new(),
             &imported_blocks,
+            &HashSet::new(),
+            &HashSet::new(),
             &mut used,
             &HashMap::new(),
             &mut registry,
             &imported_block_return_types,
+            &HashMap::new(),
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -4201,10 +4606,13 @@ const accuracy = "Be accurate."
             &mut bag,
             &HashSet::new(),
             &imported_blocks,
+            &HashSet::new(),
+            &HashSet::new(),
             &mut used,
             &HashMap::new(),
             &mut registry,
             &imported_block_return_types,
+            &HashMap::new(),
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -4281,9 +4689,12 @@ const accuracy = "Be accurate."
             &mut bag,
             &HashSet::new(),
             &imported_blocks,
+            &HashSet::new(),
+            &HashSet::new(),
             &mut used,
             &HashMap::new(),
             &mut registry,
+            &HashMap::new(),
             &HashMap::new(),
         );
 
@@ -4483,10 +4894,13 @@ const accuracy = "Be accurate."
             &mut bag,
             &HashSet::new(),
             &imported_blocks,
+            &HashSet::new(),
+            &HashSet::new(),
             &mut used,
             &HashMap::new(),
             &mut registry,
             &imported_block_return_types,
+            &HashMap::new(),
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -4656,39 +5070,19 @@ const accuracy = "Be accurate."
     }
 
     #[test]
-    fn t13_same_file_return_call_to_export_block_does_not_fire_nominal_mismatch() {
-        // Codex pass 1 — F3 [P2]. Chunk 4 populated
-        // `local_callee_return_types` from `Decl::Block`,
-        // `Decl::ExportBlock`, and `Decl::Skill`. But same-file call
-        // resolution recognizes only `Decl::Block` as a valid local
-        // callee. The chunk-4 nominal-match still found the
-        // export-block's `-> Type` entry though, so when the caller's and
-        // callee's declared types differed, a false hard
-        // `G::analyze::nominal-mismatch` (Error, exit 1) fired against
-        // a same-file `return exported_fn()` boundary that the resolver
-        // would otherwise flag as unresolved.
+    fn t13_same_file_return_call_to_export_block_fires_nominal_mismatch_on_type_mismatch() {
+        // PRD #103 / Slice 2 (#105) Codex P2 follow-up: same-file export
+        // blocks are now legal call targets (Slice A made
+        // `return exported_fn()` resolve via `export_block_decls`), so
+        // the chunk-4 nominal-match must run against export-block return
+        // types just like it does for `Decl::Block`. Pre-fix the
+        // `local_callee_return_types` map was restricted to `Decl::Block`,
+        // which silently skipped the type check for same-file export
+        // calls — a real type bug would slip through with no diagnostic.
         //
-        // Post-fix: `local_callee_return_types` is restricted to
-        // `Decl::Block` only. Cross-file matching uses the imports-path
-        // `imported_block_return_types` map (populated from
-        // `extract_exports::block_return_types` over `Decl::ExportBlock`
-        // exports — verified at `lib.rs:216`), so AC8's cross-file
-        // contract remains intact.
-        //
-        // Empirical note (orthogonal to this fix): the
-        // `analyze_skill::FlowStmt::Return(_)` arm currently does not run
-        // the same `block_names` resolution check that `FlowStmt::Call`
-        // does, so `return exported_fn()` to a same-file export-block
-        // surfaces no `undefined-call` diagnostic today. Pre-fix, the
-        // chunk-4 `nominal-mismatch` was the *only* diagnostic emitted
-        // for this fixture; post-fix the bag is empty for the call
-        // boundary itself. Adding a return-position resolution check is
-        // out of scope for this codex pass.
-        //
-        // Fixture uses *mismatched* types (`Plan` vs `Report`);
-        // matching-type fixtures cannot exercise the bug because
-        // `nominal_match` short-circuits to true and no diagnostic
-        // fires either way.
+        // Fixture uses mismatched types (`Plan` vs `Report`) so the
+        // check has something to fire on; matching-type fixtures
+        // short-circuit `nominal_match` to true regardless.
         let src = "export block exported_fn() -> Plan\n    description: \"Make a plan.\"\n    flow:\n        return \"x\"\n\nskill main() -> Report\n    description: \"Main.\"\n    flow:\n        return exported_fn()\n";
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
@@ -4702,12 +5096,11 @@ const accuracy = "Be accurate."
             &mut registry,
         );
 
-        // Primary contract: no false hard nominal-mismatch.
         let mismatches = nominal_mismatches(&bag);
         assert_eq!(
             mismatches.len(),
-            0,
-            "same-file call to `export block` must not fire chunk-4 nominal-mismatch; got: {:?}",
+            1,
+            "same-file `return` to export block with mismatched type must fire nominal-mismatch; got: {:?}",
             bag.iter()
                 .map(|d| (d.id.as_str(), d.message.as_str()))
                 .collect::<Vec<_>>()
@@ -4756,10 +5149,13 @@ const accuracy = "Be accurate."
             &mut bag,
             &HashSet::new(),
             &imported_blocks,
+            &HashSet::new(),
+            &HashSet::new(),
             &mut used,
             &HashMap::new(),
             &mut registry,
             &imported_block_return_types,
+            &HashMap::new(),
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -4946,9 +5342,12 @@ const accuracy = "Be accurate."
             &mut bag,
             &HashSet::new(),
             &imported_blocks,
+            &HashSet::new(),
+            &HashSet::new(),
             &mut used,
             &HashMap::new(),
             &mut registry,
+            &HashMap::new(),
             &HashMap::new(),
         );
 
@@ -5036,9 +5435,12 @@ const accuracy = "Be accurate."
             &mut bag,
             &HashSet::new(),
             &imported_blocks,
+            &HashSet::new(),
+            &HashSet::new(),
             &mut used,
             &HashMap::new(),
             &mut registry,
+            &HashMap::new(),
             &HashMap::new(),
         );
 
@@ -5085,14 +5487,13 @@ const accuracy = "Be accurate."
     }
 
     #[test]
-    fn t20_return_call_to_same_file_export_block_fires_undefined_call() {
-        // Codex pass 4 — AC-pass4-2. The same-file resolver's `block_names`
-        // is `Decl::Block`-only (analyze.rs:472, codex pass 1 F3 rationale
-        // documented in t13); a `return same_file_export_block()` boundary
-        // does not resolve against `block_names`, so undefined-call fires.
-        // This preserves the existing asymmetry — ExportBlock is not a
-        // valid same-file callee target — and closes t13's carry-forward
-        // observation about return-position resolution.
+    fn t20_return_call_to_same_file_export_block_resolves() {
+        // PRD #103 / Slice 2 (#105): same-file `export block` is now a valid
+        // call target — the prior asymmetry (Decl::Block-only `block_names`)
+        // has been retired so the FlowStmt::Call resolver and the Return
+        // resolver both recognize sibling export-block callees. A
+        // `return same_file_export_block()` boundary therefore resolves
+        // cleanly and no `undefined-call` is emitted.
         let src = "export block exported_fn() -> Plan\n    description: \"Make a plan.\"\n    flow:\n        return \"x\"\n\nskill main() -> Report\n    description: \"Main.\"\n    flow:\n        return exported_fn()\n";
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
@@ -5109,11 +5510,10 @@ const accuracy = "Be accurate."
         let diags = undefined_call_diags(&bag);
         assert_eq!(
             diags.len(),
-            1,
-            "expected one undefined-call for same-file ExportBlock callee in return position, got: {:?}",
+            0,
+            "same-file ExportBlock callee in return position must resolve without undefined-call; got: {:?}",
             bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>()
         );
-        assert!(diags[0].message.contains("exported_fn"));
     }
 
     #[test]
@@ -5541,5 +5941,141 @@ export block foo() -> Report
             "clean AST must not emit unmerged-duplicate-subsection; got {:?}",
             dups
         );
+    }
+}
+
+// PRD #103 / Slice 1 (#104): pure-validator unit tests for
+    // `validate_call_args`. Table-driven over (params × args) per the
+    // acceptance criteria — exercises the validator in isolation, not
+    // the wiring into the analyze pipeline.
+
+    #[cfg(test)]
+    mod validate_call_tests {
+        use super::*;
+
+    fn p(name: &str, default: Option<&str>) -> ast::Param {
+        ast::Param {
+            name: name.to_string(),
+            default: default.map(|s| s.to_string()),
+            span: Span::new(0, 0, 1),
+        }
+    }
+
+    #[test]
+    fn validate_call_args_emits_diagnostic_for_missing_required() {
+        let li = LineIndex::new("");
+        let params = vec![p("x", None)];
+        let diags = validate_call_args(
+            "bar",
+            &params,
+            &[],
+            Span::new(0, 0, 1),
+            "test.glyph.md",
+            &li,
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].id, "G::analyze::missing-required-arg");
+        assert_eq!(diags[0].classification, Classification::Error);
+        assert!(
+            diags[0].message.contains("`x`") && diags[0].message.contains("`bar"),
+            "message should name param `x` and callee `bar`, got {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn validate_call_args_required_satisfied_positionally() {
+        let li = LineIndex::new("");
+        let params = vec![p("x", None)];
+        let diags = validate_call_args(
+            "bar",
+            &params,
+            &["v1".to_string()],
+            Span::new(0, 0, 1),
+            "test.glyph.md",
+            &li,
+        );
+        assert!(diags.is_empty(), "expected no diagnostics, got {:?}", diags);
+    }
+
+    #[test]
+    fn validate_call_args_all_defaulted_no_diagnostic() {
+        let li = LineIndex::new("");
+        let params = vec![p("a", Some("\"x\"")), p("b", Some("\"y\""))];
+        let diags = validate_call_args(
+            "callee",
+            &params,
+            &[],
+            Span::new(0, 0, 1),
+            "test.glyph.md",
+            &li,
+        );
+        assert!(diags.is_empty(), "expected no diagnostics, got {:?}", diags);
+    }
+
+    // Positional binding edge cases over `callee(a, b = "d", c)`.
+    fn mixed_params() -> Vec<ast::Param> {
+        vec![p("a", None), p("b", Some("\"d\"")), p("c", None)]
+    }
+
+    fn missing_arg_names(diags: &[Diagnostic]) -> Vec<String> {
+        diags
+            .iter()
+            .filter(|d| d.id == "G::analyze::missing-required-arg")
+            .map(|d| d.message.clone())
+            .collect()
+    }
+
+    #[test]
+    fn validate_call_args_mixed_no_args_reports_a_and_c() {
+        let li = LineIndex::new("");
+        let diags = validate_call_args(
+            "callee",
+            &mixed_params(),
+            &[],
+            Span::new(0, 0, 1),
+            "test.glyph.md",
+            &li,
+        );
+        let msgs = missing_arg_names(&diags);
+        assert_eq!(msgs.len(), 2, "expected 2 diagnostics, got {:?}", msgs);
+        assert!(msgs.iter().any(|m| m.contains("`a`")), "missing `a`: {:?}", msgs);
+        assert!(msgs.iter().any(|m| m.contains("`c`")), "missing `c`: {:?}", msgs);
+    }
+
+    #[test]
+    fn validate_call_args_mixed_one_arg_reports_only_c() {
+        let li = LineIndex::new("");
+        let diags = validate_call_args(
+            "callee",
+            &mixed_params(),
+            &["v1".to_string()],
+            Span::new(0, 0, 1),
+            "test.glyph.md",
+            &li,
+        );
+        let msgs = missing_arg_names(&diags);
+        assert_eq!(msgs.len(), 1, "expected 1 diagnostic, got {:?}", msgs);
+        assert!(msgs[0].contains("`c`"), "expected missing `c`, got {:?}", msgs[0]);
+    }
+
+    #[test]
+    fn validate_call_args_mixed_two_args_satisfies_b_via_position_still_reports_c() {
+        // Positional binding: arg index 1 binds to param `b` (which has a
+        // default) — the default is overridden, but `c` (index 2) is still
+        // missing. Pins the rule that defaulted params consume positional
+        // slots like ordinary params.
+        let li = LineIndex::new("");
+        let diags = validate_call_args(
+            "callee",
+            &mixed_params(),
+            &["v1".to_string(), "v2".to_string()],
+            Span::new(0, 0, 1),
+            "test.glyph.md",
+            &li,
+        );
+        let msgs = missing_arg_names(&diags);
+        assert_eq!(msgs.len(), 1, "expected 1 diagnostic, got {:?}", msgs);
+        assert!(msgs[0].contains("`c`"), "expected missing `c`, got {:?}", msgs[0]);
     }
 }

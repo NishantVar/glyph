@@ -172,15 +172,14 @@ Use `<output_name>` or `<"description">` only when the producer is a prose instr
 ## Parameter syntax (4 forms)
 
 ```
-name                              // untyped, no default (skill: runtime-required; export block: error)
+name                              // untyped, no default (skill: runtime-required; block / export block: required at every call site)
 name = "default"                  // untyped, with default
 name: DomainType                  // typed, no default
 name: DomainType = default_value  // typed, with default
 ```
 
 - **Skill** params without a default = runtime-required (LLM extracts from user prompt).
-- **`export block`** params **must** have a default — `G::analyze::missing-param-default` otherwise.
-- **Private `block`** params may omit defaults (caller fills them).
+- **`block` / `export block`** params without a default are required at every call site — `call name(...)` that omits the positional argument fires `G::analyze::missing-required-arg` at the call (uniform across private, same-file export, and cross-file imported export blocks).
 - **Type slot is domain-only.** Use `: PathSpec`, `: RiskLevel`, `: Plan`, etc. — not `: String`/`: Int`/`: Bool`. Primitive type names are not part of the author surface.
 
 Default values: literal (string/int/float/bool/`none`) or a name reference to a `const` (compile-time constant).
@@ -222,6 +221,6 @@ Compiles identically to the `flow: \n "Summarize ..."` form. The bare string is 
 | `G::parse::return-in-branch` | `return` inside `if`/`elif`/`else` | Factor into a helper block. |
 | `G::analyze::const-in-flow` | Bare `const` name used in `flow:` | Use a `block` for instructions. |
 | `G::analyze::missing-return` | `export block` has no `return` | Add `return none` (or a real return). |
-| `G::analyze::missing-param-default` | `export block` parameter has no default | Add `name = <literal>`. |
+| `G::analyze::missing-required-arg` | `call name(...)` omits a positional argument for a callee parameter without a default | Pass the argument at the call, or add a default to the callee parameter. |
 | `G::analyze::no-exports-in-library` | Library file with zero exports | Add `export` to at least one declaration, or move the skill into the file. |
 | `G::analyze::effects-under-declared` | Caller's `effects:` missing a callee's effect | Add the missing effect or remove the declaration entirely (let inference fill it). |

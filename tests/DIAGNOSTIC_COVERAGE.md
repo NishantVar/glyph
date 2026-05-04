@@ -54,7 +54,7 @@ Single source of truth mapping every compiler-scope diagnostic ID to at least on
 | `G::analyze::nested-branch` | glyph-core::tests::nested_branch_fires_diagnostic |
 | `G::analyze::empty-skill-body` | glyph-core::tests::analyze_empty_skill_body_diagnostic |
 | `G::analyze::no-exports-in-library` | glyph-core::tests::ac4_library_with_zero_exports_fires_no_exports_in_library |
-| `G::analyze::missing-param-default` | glyph-core::tests::export_block_missing_default_emits_analyze_diagnostic |
+| `G::analyze::missing-required-arg` | glyph-cli::parameters::missing_required_arg_at_call_site_emits_analyze_diagnostic / export_block_missing_required_arg_at_call_site_emits_analyze_diagnostic / glyph-cli::imports::imported_export_block_missing_required_arg_exit_1 |
 | `G::analyze::missing-description` | glyph-core::tests::missing_description_fires_repairable_diagnostic |
 | `G::analyze::text-in-flow` | glyph-core::tests::bare_name_in_flow_fires_text_in_flow_diagnostic |
 | `G::analyze::applies-on-non-block` | glyph-core::tests::applies_on_non_block_fires_error |

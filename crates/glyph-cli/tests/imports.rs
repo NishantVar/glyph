@@ -129,6 +129,27 @@ fn ac5_unused_import_exit_2() {
     );
 }
 
+/// PRD #103 / Slice 2 (#105): an imported export-block parameter without a
+/// default is required. A consumer that imports such a callee and omits the
+/// positional argument must surface `G::analyze::missing-required-arg` at the
+/// call site (exit 1), mirroring the same-file private-block / export-block
+/// validation paths.
+#[test]
+fn imported_export_block_missing_required_arg_exit_1() {
+    let output = run_check(
+        "invalid/imports/missing_required_arg_imported.glyph.md",
+        "json",
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_contains_diagnostic_id(&stdout, "G::analyze::missing-required-arg");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "missing required arg on imported callee should be exit 1; stdout={}",
+        stdout
+    );
+}
+
 /// Missing import file produces G::analyze::missing-file.
 #[test]
 fn missing_import_file_exit_1() {

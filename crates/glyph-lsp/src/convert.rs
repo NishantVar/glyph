@@ -270,25 +270,49 @@ mod tests {
         assert!(lsp.related_information.is_none());
     }
 
-    /// Roundtrip test #2: an analyze error.
+    /// Roundtrip test #2: an analyze error. Uses
+    /// `G::analyze::undefined-name` as a representative live error ID so the
+    /// test exercises the generic Error → LSP path without depending on any
+    /// retired diagnostic.
     #[test]
     fn analyze_error_roundtrip() {
         let d = Diagnostic::error(
-            "G::analyze::missing-param-default",
-            "export block parameter `x` lacks a default value",
+            "G::analyze::undefined-name",
+            "`x` is not a declared `text` in this file",
             span("f.glyph.md", 10, 5, 10, 5),
         );
         let lsp = diagnostic_to_lsp(&d);
         assert_eq!(
             lsp.code,
             Some(NumberOrString::String(
-                "G::analyze::missing-param-default".into()
+                "G::analyze::undefined-name".into()
             ))
         );
         assert_eq!(lsp.severity, Some(DiagnosticSeverity::ERROR));
-        assert!(lsp.message.starts_with("export block parameter"));
+        assert!(lsp.message.starts_with("`x` is not a declared"));
         // Inclusive single-char span: end.character == 5 (not 4, not 6).
         assert_eq!(lsp.range.end.character, 5);
+    }
+
+    /// PRD #103 / Slice 1 (#104): the new `G::analyze::missing-required-arg`
+    /// diagnostic must round-trip through the convert layer with severity
+    /// `Error` and `code` set to the diagnostic ID verbatim — no special-case
+    /// mapping required.
+    #[test]
+    fn missing_required_arg_roundtrip() {
+        let d = Diagnostic::error(
+            "G::analyze::missing-required-arg",
+            "call to `bar()` is missing required argument `x`",
+            span("f.glyph.md", 4, 9, 4, 13),
+        );
+        let lsp = diagnostic_to_lsp(&d);
+        assert_eq!(
+            lsp.code,
+            Some(NumberOrString::String(
+                "G::analyze::missing-required-arg".into()
+            ))
+        );
+        assert_eq!(lsp.severity, Some(DiagnosticSeverity::ERROR));
     }
 
     /// Roundtrip test #3: a repairable warning with hints. Hints must be

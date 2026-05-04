@@ -16,8 +16,7 @@ pub struct SourceFile {
 pub enum Decl {
     Skill(Spanned<Skill>),
     /// Minimal `export block` placeholder — slice 4 only needs to identify the
-    /// declaration shape and its parameter list so it can validate
-    /// `G::analyze::missing-param-default`. Body content (flow, return,
+    /// declaration shape and its parameter list. Body content (flow, return,
     /// constraints) is parsed structurally but not lowered to IR in slice 4 —
     /// full `export block` lowering ships in slice 7/13.
     ExportBlock(Spanned<ExportBlockDecl>),
@@ -129,7 +128,8 @@ pub enum DuplicateSubsection {
 }
 
 /// Minimal `export block` declaration — slice 4 captures the header shape only.
-/// Used to surface `G::analyze::missing-param-default` (export-block-only rule).
+/// Drives same-file and cross-file call-arg validation
+/// (`G::analyze::missing-required-arg`).
 #[derive(Clone, Debug)]
 pub struct ExportBlockDecl {
     pub name: String,
@@ -198,8 +198,11 @@ pub struct ExportBlockDecl {
 pub struct Param {
     pub name: String,
     /// Pre-rendered default value (e.g., `"."` including quotes for strings).
-    /// `None` means the parameter is runtime-required (skills) or triggers
-    /// `G::analyze::missing-param-default` (export blocks).
+    /// `None` means the parameter is required: skill parameters become
+    /// runtime-required inputs (rendered in `## Parameters`), while `block`
+    /// and `export block` parameters become callee-required positional
+    /// arguments — call sites that omit them surface
+    /// `G::analyze::missing-required-arg`.
     pub default: Option<String>,
     /// Span covering the parameter (header position, used for diagnostic
     /// reporting in slice 4).
