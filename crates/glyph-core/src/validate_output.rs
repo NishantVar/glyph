@@ -7,6 +7,7 @@
 //! This module operates on external files (not the compiler's internal IR),
 //! using `serde_json::Value` to parse the IR JSON.
 
+use crate::emit::templates::kebab_case;
 use serde_json::Value;
 
 /// A single validation violation.
@@ -1292,7 +1293,7 @@ fn check_procedures(md_struct: &MdStructure, skill: &Value, violations: &mut Vec
     // procedure-name-mismatch
     for actual_name in &actual_names {
         let kebab = actual_name.to_string();
-        let matching = unique_procedures.iter().any(|p| to_kebab(p) == kebab);
+        let matching = unique_procedures.iter().any(|p| kebab_case(p) == kebab);
         if !matching {
             violations.push(Violation::new(
                 "G::expand::procedure-name-mismatch",
@@ -1340,7 +1341,7 @@ fn check_procedures(md_struct: &MdStructure, skill: &Value, violations: &mut Vec
     // calls mention the procedure name
     if let Some(steps) = find_instructions_h3(md_struct, "Steps") {
         for proc_name in &unique_procedures {
-            let kebab = to_kebab(proc_name);
+            let kebab = kebab_case(proc_name);
             let referenced = steps.items.iter().any(|item| item.text.contains(&kebab));
             if !referenced {
                 violations.push(Violation::new(
@@ -1359,7 +1360,7 @@ fn check_procedures(md_struct: &MdStructure, skill: &Value, violations: &mut Vec
             // (actual_names are checked below for dangling refs)
             // Check if step references a procedure name that doesn't have a section
             for proc_name in &unique_procedures {
-                let kebab = to_kebab(proc_name);
+                let kebab = kebab_case(proc_name);
                 if item.text.contains(&kebab) && !actual_names.contains(&kebab) {
                     violations.push(Violation::new(
                         "G::expand::procedure-ref-dangling",
@@ -1447,7 +1448,7 @@ fn find_callee_flow_count(flow: &[Value], proc_name: &str) -> Option<usize> {
                 .get("projection_mode")
                 .and_then(|m| m.as_str())
                 .unwrap_or("inline");
-            if mode == "same_file_procedure" && to_kebab(target) == proc_name {
+            if mode == "same_file_procedure" && kebab_case(target) == proc_name {
                 if let Some(callee_flow) = node.get("callee_flow").and_then(|f| f.as_array()) {
                     return Some(callee_flow.len());
                 }
@@ -1477,10 +1478,6 @@ fn find_callee_flow_count(flow: &[Value], proc_name: &str) -> Option<usize> {
         }
     }
     None
-}
-
-fn to_kebab(name: &str) -> String {
-    name.replace('_', "-")
 }
 
 // ---------------------------------------------------------------------------
