@@ -408,6 +408,44 @@ struct Parser<'a> {
     enable_effects: bool,
 }
 
+/// Issue #109: commit any pending duplicate sub-section scratch from the
+/// section we are leaving in `parse_export_block` into `extra_subsections`,
+/// then reset the scratch state. Called on every section transition and once
+/// more at end-of-body.
+fn flush_dup_export_block(
+    extras: &mut Vec<DuplicateSubsection>,
+    current_dup_kind: &mut Option<&'static str>,
+    dup_description: &mut Option<String>,
+    dup_effects: &mut Vec<String>,
+    dup_flow_strings: &mut Vec<String>,
+) {
+    match *current_dup_kind {
+        Some("description") => {
+            // `description:` always carries an inline string; if the
+            // duplicate body parsed successfully, scratch is `Some`.
+            if let Some(s) = dup_description.take() {
+                extras.push(DuplicateSubsection::Description(s));
+            }
+        }
+        Some("effects") => {
+            extras.push(DuplicateSubsection::Effects(std::mem::take(dup_effects)));
+        }
+        Some("flow") => {
+            // The export-block parser only captures inline-string flow
+            // bodies (per `flow_strings` shape). Map them back into
+            // `FlowStmt::InlineString` so the duplicate carries the same
+            // shape `Flow(Vec<FlowStmt>)` expects.
+            let stmts = std::mem::take(dup_flow_strings)
+                .into_iter()
+                .map(FlowStmt::InlineString)
+                .collect();
+            extras.push(DuplicateSubsection::Flow(stmts));
+        }
+        _ => {}
+    }
+    *current_dup_kind = None;
+}
+
 impl<'a> Parser<'a> {
     fn peek(&self) -> &Token {
         &self.tokens[self.pos]
@@ -939,6 +977,19 @@ impl<'a> Parser<'a> {
         let mut root_flow_output_targets: Vec<(usize, Span)> = Vec::new();
         // Track which sub-section we are currently in.
         let mut current_section: Option<&'static str> = None;
+        // Issue #109: per-kind presence flags + scratch buffers for duplicate
+        // sub-section bodies. When a duplicate header is encountered, body
+        // tokens are routed to the scratch buffer and committed to
+        // `extra_subsections` on section transition (or end-of-body) so that
+        // `glyph fmt` can splice them back into the singletons later.
+        let mut description_present = false;
+        let mut effects_present = false;
+        let mut flow_present = false;
+        let mut current_dup_kind: Option<&'static str> = None;
+        let mut dup_description: Option<String> = None;
+        let mut dup_effects: Vec<String> = Vec::new();
+        let mut dup_flow_strings: Vec<String> = Vec::new();
+        let mut extra_subsections: Vec<DuplicateSubsection> = Vec::new();
         let body_keywords: &[&str] = &[
             "flow",
             "return",
@@ -1024,18 +1075,119 @@ impl<'a> Parser<'a> {
                             }
                             "description" => {
                                 line_is_section_header = true;
+                                let kw_tok_span = self.peek().span;
+                                // Flush any pending duplicate scratch from
+                                // the section we are leaving.
+                                flush_dup_export_block(
+                                    &mut extra_subsections,
+                                    &mut current_dup_kind,
+                                    &mut dup_description,
+                                    &mut dup_effects,
+                                    &mut dup_flow_strings,
+                                );
+                                if description_present {
+                                    // Duplicate `description:` — route body
+                                    // captures into scratch.
+                                    current_dup_kind = Some("description");
+                                    self.bag.push(
+                                        Diagnostic {
+                                            id: "G::parse::duplicate-subsection".into(),
+                                            classification: Classification::Repairable,
+                                            message: "duplicate `description:` sub-section in export block body".into(),
+                                            span: SourceSpan::from_byte_span(
+                                                self.file_label,
+                                                kw_tok_span,
+                                                self.line_index,
+                                            ),
+                                            related: Vec::new(),
+                                            hints: vec![
+                                                "remove the duplicate or merge contents into one `description:`".into(),
+                                            ],
+                                        },
+                                        kw_tok_span,
+                                    );
+                                } else {
+                                    description_present = true;
+                                }
                                 current_section = Some("description");
                             }
                             "effects" => {
                                 line_is_section_header = true;
+                                let kw_tok_span = self.peek().span;
+                                flush_dup_export_block(
+                                    &mut extra_subsections,
+                                    &mut current_dup_kind,
+                                    &mut dup_description,
+                                    &mut dup_effects,
+                                    &mut dup_flow_strings,
+                                );
+                                if effects_present {
+                                    current_dup_kind = Some("effects");
+                                    self.bag.push(
+                                        Diagnostic {
+                                            id: "G::parse::duplicate-subsection".into(),
+                                            classification: Classification::Repairable,
+                                            message: "duplicate `effects:` sub-section in export block body".into(),
+                                            span: SourceSpan::from_byte_span(
+                                                self.file_label,
+                                                kw_tok_span,
+                                                self.line_index,
+                                            ),
+                                            related: Vec::new(),
+                                            hints: vec![
+                                                "remove the duplicate or merge contents into one `effects:`".into(),
+                                            ],
+                                        },
+                                        kw_tok_span,
+                                    );
+                                } else {
+                                    effects_present = true;
+                                }
                                 current_section = Some("effects");
                             }
                             "flow" => {
                                 line_is_section_header = true;
+                                let kw_tok_span = self.peek().span;
+                                flush_dup_export_block(
+                                    &mut extra_subsections,
+                                    &mut current_dup_kind,
+                                    &mut dup_description,
+                                    &mut dup_effects,
+                                    &mut dup_flow_strings,
+                                );
+                                if flow_present {
+                                    current_dup_kind = Some("flow");
+                                    self.bag.push(
+                                        Diagnostic {
+                                            id: "G::parse::duplicate-subsection".into(),
+                                            classification: Classification::Repairable,
+                                            message: "duplicate `flow:` sub-section in export block body".into(),
+                                            span: SourceSpan::from_byte_span(
+                                                self.file_label,
+                                                kw_tok_span,
+                                                self.line_index,
+                                            ),
+                                            related: Vec::new(),
+                                            hints: vec![
+                                                "remove the duplicate or merge contents into one `flow:`".into(),
+                                            ],
+                                        },
+                                        kw_tok_span,
+                                    );
+                                } else {
+                                    flow_present = true;
+                                }
                                 current_section = Some("flow");
                             }
                             "constraints" | "context" => {
                                 line_is_section_header = true;
+                                flush_dup_export_block(
+                                    &mut extra_subsections,
+                                    &mut current_dup_kind,
+                                    &mut dup_description,
+                                    &mut dup_effects,
+                                    &mut dup_flow_strings,
+                                );
                                 current_section = Some("other");
                             }
                             _ => {}
@@ -1062,7 +1214,11 @@ impl<'a> Parser<'a> {
                                     body_refs.push(ident.clone());
                                     // Capture effect names
                                     if current_section == Some("effects") {
-                                        effects.push(ident.clone());
+                                        if current_dup_kind == Some("effects") {
+                                            dup_effects.push(ident.clone());
+                                        } else {
+                                            effects.push(ident.clone());
+                                        }
                                     }
                                 }
                                 body_word_count += 1;
@@ -1072,10 +1228,18 @@ impl<'a> Parser<'a> {
                                 // Capture description and flow strings
                                 match current_section {
                                     Some("description") => {
-                                        description = Some(s.clone());
+                                        if current_dup_kind == Some("description") {
+                                            dup_description = Some(s.clone());
+                                        } else {
+                                            description = Some(s.clone());
+                                        }
                                     }
                                     Some("flow") => {
-                                        flow_strings.push(s.clone());
+                                        if current_dup_kind == Some("flow") {
+                                            dup_flow_strings.push(s.clone());
+                                        } else {
+                                            flow_strings.push(s.clone());
+                                        }
                                     }
                                     _ => {}
                                 }
@@ -1094,6 +1258,16 @@ impl<'a> Parser<'a> {
                 self.emit_output_target_outside_return(span);
             }
         }
+
+        // Final flush: commit any pending duplicate scratch left over from
+        // the last duplicate sub-section in the body.
+        flush_dup_export_block(
+            &mut extra_subsections,
+            &mut current_dup_kind,
+            &mut dup_description,
+            &mut dup_effects,
+            &mut dup_flow_strings,
+        );
 
         let end_span = if self.pos > 0 {
             self.tokens[self.pos - 1].span
@@ -1114,7 +1288,7 @@ impl<'a> Parser<'a> {
                 flow_strings,
                 return_type,
                 terminal_return,
-                extra_subsections: Vec::new(),
+                extra_subsections,
             },
             span,
         ))
@@ -1132,7 +1306,13 @@ impl<'a> Parser<'a> {
 
         let mut description: Option<String> = None;
         let mut effects: Vec<String> = Vec::new();
+        let mut effects_present = false;
         let mut flow: Vec<FlowStmt> = Vec::new();
+        let mut flow_present = false;
+        // Issue #109: track duplicate sub-section bodies so `glyph fmt` can
+        // splice them back into the canonical singletons instead of dropping
+        // them silently.
+        let mut extra_subsections: Vec<DuplicateSubsection> = Vec::new();
 
         // Parse body lines at indent 1.
         loop {
@@ -1144,16 +1324,41 @@ impl<'a> Parser<'a> {
                     match &self.peek().kind {
                         TokenKind::Ident(kw) => {
                             let kw = kw.clone();
+                            let kw_tok_span = self.peek().span;
                             match kw.as_str() {
                                 "description" => {
                                     self.pos += 1;
                                     self.expect(&TokenKind::Colon)?;
                                     let s = self.consume_string_after_colon()?;
-                                    description = Some(s);
+                                    if description.is_some() {
+                                        // Issue #109: duplicate `description:` on a block.
+                                        let span = kw_tok_span;
+                                        self.bag.push(
+                                            Diagnostic {
+                                                id: "G::parse::duplicate-subsection".into(),
+                                                classification: Classification::Repairable,
+                                                message: "duplicate `description:` sub-section in block body".into(),
+                                                span: SourceSpan::from_byte_span(
+                                                    self.file_label,
+                                                    span,
+                                                    self.line_index,
+                                                ),
+                                                related: Vec::new(),
+                                                hints: vec![
+                                                    "remove the duplicate or merge contents into one `description:`".into(),
+                                                ],
+                                            },
+                                            span,
+                                        );
+                                        extra_subsections
+                                            .push(DuplicateSubsection::Description(s));
+                                    } else {
+                                        description = Some(s);
+                                    }
                                 }
                                 "effects" => {
                                     if !self.enable_effects {
-                                        let eff_span = self.peek().span;
+                                        let eff_span = kw_tok_span;
                                         self.bag.push(
                                             Diagnostic::error(
                                                 "G::parse::effects-disabled",
@@ -1171,9 +1376,12 @@ impl<'a> Parser<'a> {
                                     } else {
                                         self.pos += 1;
                                         let colon_span = self.expect(&TokenKind::Colon)?;
+                                        // Gather into a local so duplicate `effects:`
+                                        // can be recovered intact (issue #109).
+                                        let mut local_effects: Vec<String> = Vec::new();
                                         loop {
                                             let (eff, _) = self.expect_ident(None)?;
-                                            effects.push(eff);
+                                            local_effects.push(eff);
                                             match &self.peek().kind {
                                                 TokenKind::Comma => {
                                                     self.pos += 1;
@@ -1182,7 +1390,9 @@ impl<'a> Parser<'a> {
                                             }
                                         }
                                         // Validate `none` exclusivity for blocks too.
-                                        if effects.contains(&"none".to_string()) && effects.len() > 1 {
+                                        if local_effects.contains(&"none".to_string())
+                                            && local_effects.len() > 1
+                                        {
                                             let span = Span::new(
                                                 self.file_id,
                                                 colon_span.start,
@@ -1197,21 +1407,75 @@ impl<'a> Parser<'a> {
                                                 span,
                                             );
                                         }
+                                        if effects_present {
+                                            let span = kw_tok_span;
+                                            self.bag.push(
+                                                Diagnostic {
+                                                    id: "G::parse::duplicate-subsection".into(),
+                                                    classification: Classification::Repairable,
+                                                    message: "duplicate `effects:` sub-section in block body".into(),
+                                                    span: SourceSpan::from_byte_span(
+                                                        self.file_label,
+                                                        span,
+                                                        self.line_index,
+                                                    ),
+                                                    related: Vec::new(),
+                                                    hints: vec![
+                                                        "remove the duplicate or merge contents into one `effects:`".into(),
+                                                    ],
+                                                },
+                                                span,
+                                            );
+                                            extra_subsections
+                                                .push(DuplicateSubsection::Effects(local_effects));
+                                        } else {
+                                            effects_present = true;
+                                            effects.extend(local_effects);
+                                        }
                                     }
                                 }
                                 "flow" => {
                                     self.pos += 1;
                                     self.expect(&TokenKind::Colon)?;
+                                    // Gather body into a local so a duplicate
+                                    // `flow:` can be recovered intact (issue #109).
+                                    let mut local_flow: Vec<FlowStmt> = Vec::new();
                                     // Body at indent 2.
                                     loop {
                                         match self.current_line_indent() {
                                             Some(2) => {
                                                 self.expect_line_start()?;
                                                 let stmt = self.parse_flow_stmt(2)?;
-                                                flow.push(stmt);
+                                                local_flow.push(stmt);
                                             }
                                             _ => break,
                                         }
+                                    }
+                                    if flow_present {
+                                        let span = kw_tok_span;
+                                        self.bag.push(
+                                            Diagnostic {
+                                                id: "G::parse::duplicate-subsection".into(),
+                                                classification: Classification::Repairable,
+                                                message: "duplicate `flow:` sub-section in block body".into(),
+                                                span: SourceSpan::from_byte_span(
+                                                    self.file_label,
+                                                    span,
+                                                    self.line_index,
+                                                ),
+                                                related: Vec::new(),
+                                                hints: vec![
+                                                    "remove the duplicate or merge contents into one `flow:`".into(),
+                                                ],
+                                            },
+                                            span,
+                                        );
+                                        extra_subsections.push(DuplicateSubsection::Flow(
+                                            local_flow,
+                                        ));
+                                    } else {
+                                        flow_present = true;
+                                        flow.extend(local_flow);
                                     }
                                 }
                                 _ => {
@@ -1261,7 +1525,7 @@ impl<'a> Parser<'a> {
                 flow,
                 return_type,
                 generated: false,
-                extra_subsections: Vec::new(),
+                extra_subsections,
             },
             span,
         ))
@@ -4210,6 +4474,234 @@ skill foo()
         for d in &dups {
             assert_eq!(d.classification, Classification::Repairable);
         }
+    }
+
+    // --- Issue #109 codex-pass-2 findings 4 & 5 ---
+    //
+    // `BlockDecl` and `ExportBlockDecl` carry the same `extra_subsections`
+    // field as `Skill`, and Analyze checks them, but the chunk-2 parser
+    // changes only landed for `parse_skill_body_line`. These tests pin the
+    // recovery contract for the other two declaration kinds.
+
+    fn parse_first_block_with_bag(src: &str) -> (crate::ast::BlockDecl, DiagBag) {
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let file = parse_with_diagnostics_opts(src, 0, "dup.glyph.md", &line_index, &mut bag, true)
+            .expect("parser must recover and return Some(file)");
+        let block = file
+            .decls
+            .into_iter()
+            .find_map(|d| match d {
+                Decl::Block(b) => Some(b.node),
+                _ => None,
+            })
+            .expect("expected a block decl");
+        (block, bag)
+    }
+
+    fn parse_first_export_block_with_bag(
+        src: &str,
+    ) -> (crate::ast::ExportBlockDecl, DiagBag) {
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let file = parse_with_diagnostics_opts(src, 0, "dup.glyph.md", &line_index, &mut bag, true)
+            .expect("parser must recover and return Some(file)");
+        let eb = file
+            .decls
+            .into_iter()
+            .find_map(|d| match d {
+                Decl::ExportBlock(e) => Some(e.node),
+                _ => None,
+            })
+            .expect("expected an export block decl");
+        (eb, bag)
+    }
+
+    /// Finding 5 — duplicate `description:` in a `block` is recovered into
+    /// `extra_subsections` and surfaces a single repairable
+    /// `G::parse::duplicate-subsection` diagnostic.
+    #[test]
+    fn block_two_descriptions_first_wins_second_in_extras() {
+        let src = "\
+block foo()
+    description: \"First.\"
+    description: \"Second.\"
+    flow:
+        \"Do something.\"
+";
+        let (block, bag) = parse_first_block_with_bag(src);
+        assert_eq!(
+            block.description.as_deref(),
+            Some("First."),
+            "first `description:` body must stay in the singleton (first-wins)"
+        );
+        assert_eq!(
+            block.extra_subsections.len(),
+            1,
+            "second body must land in extras, got {:?}",
+            block.extra_subsections
+        );
+        match &block.extra_subsections[0] {
+            DuplicateSubsection::Description(s) => assert_eq!(s, "Second."),
+            other => panic!("expected DuplicateSubsection::Description, got {:?}", other),
+        }
+        let dups = duplicate_subsection_diags(&bag);
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].classification, Classification::Repairable);
+    }
+
+    /// Finding 5 — duplicate `effects:` in a `block` is recovered.
+    #[test]
+    fn block_two_effects_first_wins_second_in_extras() {
+        let src = "\
+block foo()
+    effects: reads_files
+    effects: writes_files
+    flow:
+        \"Do something.\"
+";
+        let (block, bag) = parse_first_block_with_bag(src);
+        assert_eq!(
+            block.effects,
+            vec!["reads_files".to_string()],
+            "first `effects:` body must stay in the canonical Vec"
+        );
+        assert_eq!(block.extra_subsections.len(), 1);
+        match &block.extra_subsections[0] {
+            DuplicateSubsection::Effects(items) => {
+                assert_eq!(items, &vec!["writes_files".to_string()]);
+            }
+            other => panic!("expected DuplicateSubsection::Effects, got {:?}", other),
+        }
+        let dups = duplicate_subsection_diags(&bag);
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].classification, Classification::Repairable);
+    }
+
+    /// Finding 5 — duplicate `flow:` in a `block` is recovered. First body's
+    /// statements stay in `flow`; second body's statements land in extras.
+    #[test]
+    fn block_two_flows_first_wins_second_in_extras() {
+        let src = "\
+block foo()
+    flow:
+        \"first stmt\"
+    flow:
+        \"second stmt\"
+";
+        let (block, bag) = parse_first_block_with_bag(src);
+        assert_eq!(block.flow.len(), 1, "first body wins on `flow`");
+        match &block.flow[0] {
+            FlowStmt::InlineString(s) => assert_eq!(s, "first stmt"),
+            other => panic!("expected first body InlineString, got {:?}", other),
+        }
+        assert_eq!(block.extra_subsections.len(), 1);
+        match &block.extra_subsections[0] {
+            DuplicateSubsection::Flow(stmts) => {
+                assert_eq!(stmts.len(), 1);
+                match &stmts[0] {
+                    FlowStmt::InlineString(s) => assert_eq!(s, "second stmt"),
+                    other => panic!("expected second body InlineString, got {:?}", other),
+                }
+            }
+            other => panic!("expected DuplicateSubsection::Flow, got {:?}", other),
+        }
+        let dups = duplicate_subsection_diags(&bag);
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].classification, Classification::Repairable);
+    }
+
+    /// Finding 4 — duplicate `description:` in an `export block` is
+    /// recovered into `extra_subsections`.
+    #[test]
+    fn export_block_two_descriptions_first_wins_second_in_extras() {
+        let src = "\
+export block foo() -> Report
+    description: \"First.\"
+    description: \"Second.\"
+    flow:
+        \"Do something.\"
+        return <result>
+";
+        let (eb, bag) = parse_first_export_block_with_bag(src);
+        assert_eq!(
+            eb.description.as_deref(),
+            Some("First."),
+            "first `description:` body must stay in the singleton (first-wins)"
+        );
+        assert_eq!(
+            eb.extra_subsections.len(),
+            1,
+            "second body must land in extras, got {:?}",
+            eb.extra_subsections
+        );
+        match &eb.extra_subsections[0] {
+            DuplicateSubsection::Description(s) => assert_eq!(s, "Second."),
+            other => panic!("expected DuplicateSubsection::Description, got {:?}", other),
+        }
+        let dups = duplicate_subsection_diags(&bag);
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].classification, Classification::Repairable);
+    }
+
+    /// Finding 4 — duplicate `effects:` in an `export block` is recovered.
+    #[test]
+    fn export_block_two_effects_first_wins_second_in_extras() {
+        let src = "\
+export block foo() -> Report
+    effects: reads_files
+    effects: writes_files
+    flow:
+        \"Do something.\"
+        return <result>
+";
+        let (eb, bag) = parse_first_export_block_with_bag(src);
+        assert_eq!(eb.effects, vec!["reads_files".to_string()]);
+        assert_eq!(eb.extra_subsections.len(), 1);
+        match &eb.extra_subsections[0] {
+            DuplicateSubsection::Effects(items) => {
+                assert_eq!(items, &vec!["writes_files".to_string()]);
+            }
+            other => panic!("expected DuplicateSubsection::Effects, got {:?}", other),
+        }
+        let dups = duplicate_subsection_diags(&bag);
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].classification, Classification::Repairable);
+    }
+
+    /// Finding 4 — duplicate `flow:` in an `export block` is recovered.
+    /// First body's strings stay in `flow_strings`; second body's strings
+    /// land in extras.
+    #[test]
+    fn export_block_two_flows_first_wins_second_in_extras() {
+        let src = "\
+export block foo() -> Report
+    flow:
+        \"first stmt\"
+    flow:
+        \"second stmt\"
+        return <result>
+";
+        let (eb, bag) = parse_first_export_block_with_bag(src);
+        assert_eq!(
+            eb.flow_strings,
+            vec!["first stmt".to_string()],
+            "first body wins on `flow_strings`"
+        );
+        assert_eq!(eb.extra_subsections.len(), 1);
+        match &eb.extra_subsections[0] {
+            DuplicateSubsection::Flow(stmts) => {
+                assert_eq!(stmts.len(), 1);
+                match &stmts[0] {
+                    FlowStmt::InlineString(s) => assert_eq!(s, "second stmt"),
+                    other => panic!("expected second body InlineString, got {:?}", other),
+                }
+            }
+            other => panic!("expected DuplicateSubsection::Flow, got {:?}", other),
+        }
+        let dups = duplicate_subsection_diags(&bag);
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].classification, Classification::Repairable);
     }
 }
 

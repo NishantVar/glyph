@@ -5204,6 +5204,76 @@ skill the_skill()
         );
     }
 
+    /// Issue #109 codex pass-2 finding 5 — end-to-end through parse→analyze
+    /// for a `block` declaration. A source containing two `description:`
+    /// sub-sections under one `block` must produce BOTH the parse-tier
+    /// repairable `G::parse::duplicate-subsection` AND the analyze-tier
+    /// error `G::analyze::unmerged-duplicate-subsection` in the same bag,
+    /// proving the parser→analyze hand-off works for block declarations
+    /// (not just skills).
+    #[test]
+    fn pipeline_block_two_descriptions_emits_both_parse_and_analyze_diagnostics() {
+        let src = "\
+block foo()
+    description: \"First.\"
+    description: \"Second.\"
+    flow:
+        \"Do something.\"
+";
+        let bag = crate::check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+
+        assert!(
+            ids.contains(&"G::parse::duplicate-subsection"),
+            "expected parse-tier `G::parse::duplicate-subsection`, got {:?}",
+            ids
+        );
+        assert!(
+            ids.contains(&"G::analyze::unmerged-duplicate-subsection"),
+            "expected analyze-tier `G::analyze::unmerged-duplicate-subsection`, \
+             got {:?}",
+            ids
+        );
+        let analyze_diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::unmerged-duplicate-subsection")
+            .unwrap();
+        assert_eq!(analyze_diag.classification, Classification::Error);
+    }
+
+    /// Issue #109 codex pass-2 finding 4 — end-to-end through parse→analyze
+    /// for an `export block` declaration.
+    #[test]
+    fn pipeline_export_block_two_descriptions_emits_both_parse_and_analyze_diagnostics() {
+        let src = "\
+export block foo() -> Report
+    description: \"First.\"
+    description: \"Second.\"
+    flow:
+        \"Do something.\"
+        return <result>
+";
+        let bag = crate::check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+
+        assert!(
+            ids.contains(&"G::parse::duplicate-subsection"),
+            "expected parse-tier `G::parse::duplicate-subsection`, got {:?}",
+            ids
+        );
+        assert!(
+            ids.contains(&"G::analyze::unmerged-duplicate-subsection"),
+            "expected analyze-tier `G::analyze::unmerged-duplicate-subsection`, \
+             got {:?}",
+            ids
+        );
+        let analyze_diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::unmerged-duplicate-subsection")
+            .unwrap();
+        assert_eq!(analyze_diag.classification, Classification::Error);
+    }
+
     /// Test (b): a clean AST (every declaration's `extra_subsections` is
     /// empty) must NOT emit the invariant diagnostic. Other unrelated
     /// diagnostics may still fire — we only assert that

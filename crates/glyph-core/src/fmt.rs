@@ -618,9 +618,24 @@ fn emit_merged_descriptions(out: &mut String, matching: &[&Section]) {
             }
             if let Some(content) = inline_content_after_colon(line) {
                 let payload = strip_trailing_comment(content);
-                if let Some(s) = unwrap_string_literal(payload.trim()) {
-                    bodies.push(s);
+                if let Some(inner) = unwrap_string_literal(payload.trim()) {
+                    // Issue #109 codex pass-2 finding 6: decode escape
+                    // sequences before merging so the round-trip
+                    // `decode → concat → re-escape` is lossless.
+                    bodies.push(unescape_string_literal_inner(&inner));
                 }
+            }
+        }
+        // Issue #109 codex pass-2 finding 7: a `description:` is a
+        // single-line section, so anything in `lines[1..]` is non-content
+        // (whole-line `// comment` accumulated into the preceding section
+        // by `rewrite_decl_body`). Lift those whole-line comments into
+        // the boundary so they aren't silently dropped on merge.
+        for extra in section.lines.iter().skip(1) {
+            let trimmed = extra.trim_start();
+            if trimmed.starts_with("//") {
+                let cindent = leading_whitespace_of(extra).to_string();
+                comments.push((cindent, trimmed.to_string()));
             }
         }
     }
@@ -677,6 +692,15 @@ fn emit_merged_effects(out: &mut String, matching: &[&Section]) {
                         effects_acc.push(t.to_string());
                     }
                 }
+            }
+        }
+        // Issue #109 codex pass-2 finding 7: lift any whole-line `//`
+        // comments out of `lines[1..]` so the boundary is preserved.
+        for extra in section.lines.iter().skip(1) {
+            let trimmed = extra.trim_start();
+            if trimmed.starts_with("//") {
+                let cindent = leading_whitespace_of(extra).to_string();
+                comments.push((cindent, trimmed.to_string()));
             }
         }
     }
@@ -755,6 +779,81 @@ fn trailing_comment_after_keyword(line: &str) -> Option<String> {
 fn unwrap_string_literal(s: &str) -> Option<String> {
     let inner = s.strip_prefix('"').and_then(|x| x.strip_suffix('"'))?;
     Some(inner.to_string())
+}
+
+/// Decode the raw inner-source of a Glyph string literal, mirroring
+/// `tokenize.rs`'s "minimal escape handling: \" \\ \n \t" so a fmt-time
+/// round trip (decode → concat → re-escape via `escape_string_literal`)
+/// is byte-equal to what the tokenizer would produce. Issue #109 codex
+/// pass-2 finding 6: without this, the multi-section `description:` /
+/// `effects:` merge double-escaped `\"` and `\\` because
+/// `unwrap_string_literal` strips the outer quotes but leaves the
+/// inner escape sequences as raw `\X` byte pairs.
+///
+/// Unknown escapes (`\X` for X not in `"`, `\`, `n`, `t`) are preserved
+/// verbatim — same fallback as the tokenizer at `tokenize.rs` §"unknown
+/// escapes preserve the literal `\X` source bytes".
+fn unescape_string_literal_inner(inner: &str) -> String {
+    let mut out = String::with_capacity(inner.len());
+    let bytes = inner.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'\\' && i + 1 < bytes.len() {
+            match bytes[i + 1] {
+                b'"' => {
+                    out.push('"');
+                    i += 2;
+                    continue;
+                }
+                b'\\' => {
+                    out.push('\\');
+                    i += 2;
+                    continue;
+                }
+                b'n' => {
+                    out.push('\n');
+                    i += 2;
+                    continue;
+                }
+                b't' => {
+                    out.push('\t');
+                    i += 2;
+                    continue;
+                }
+                _ => {
+                    // Unknown escape: preserve literal backslash + char
+                    // bytes (matches tokenizer fallback). Push the `\` and
+                    // let the next iteration push the following byte.
+                    out.push('\\');
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+        // ASCII fast path; otherwise reconstruct the full UTF-8 char.
+        if b.is_ascii() {
+            out.push(b as char);
+            i += 1;
+        } else {
+            // Find the end of this UTF-8 codepoint.
+            let cont_len = if b & 0xE0 == 0xC0 {
+                2
+            } else if b & 0xF0 == 0xE0 {
+                3
+            } else if b & 0xF8 == 0xF0 {
+                4
+            } else {
+                1
+            };
+            let end = (i + cont_len).min(bytes.len());
+            // Safe: the source is a valid `&str` so the byte range is a
+            // valid UTF-8 codepoint boundary.
+            out.push_str(&inner[i..end]);
+            i = end;
+        }
+    }
+    out
 }
 
 /// Re-escape a description payload before re-emitting it as a Glyph string
@@ -2049,6 +2148,135 @@ skill the_skill()
         assert_eq!(
             context_headers, 1,
             "expected exactly one bare `context:` header after merge; output:\n{}",
+            result.output
+        );
+    }
+
+    // --- Issue #109 codex-pass-2 findings 6 & 7 ---
+
+    /// Codex finding 6 — multi-section `description:` merge must NOT
+    /// double-escape `\"` and `\\`. Pre-fix, `unwrap_string_literal` strips
+    /// quotes but leaves escape sequences as raw backslash + char; then
+    /// `escape_string_literal` re-escapes the backslashes, yielding e.g.
+    /// `\\\"` from `\"`. The fix is to mirror the tokenizer's escape
+    /// handling (`\"` → `"`, `\\` → `\`, `\n` → newline, `\t` → tab) when
+    /// extracting the inner payload, so the merge round-trip is lossless.
+    ///
+    /// Acceptance pins the semantic round-trip: re-parse the merged output
+    /// and assert the AST `description` value equals the concatenation of
+    /// the two original (already-decoded) bodies. This catches the actual
+    /// mangling — checking source bytes alone would miss it because the
+    /// post-merge source still parses, just to a wrong value.
+    #[test]
+    fn fmt_merges_two_descriptions_with_escapes_without_double_escape() {
+        let src = "\
+skill the_skill()
+    description: \"He said \\\"hi\\\"\"
+    description: \"and \\\\done\"
+    flow:
+        \"do work\"
+";
+        let result = fmt_source(src, false);
+        assert!(result.changed, "fmt should merge duplicates");
+
+        // Re-parse the merged output and pull the description AST value.
+        let mut bag = DiagBag::new();
+        let line_index = LineIndex::new(&result.output);
+        let reparsed = parse::parse_with_diagnostics_opts(
+            &result.output,
+            0,
+            "<reparse>",
+            &line_index,
+            &mut bag,
+            false,
+        )
+        .unwrap_or_else(|| {
+            panic!(
+                "fmt output failed to re-parse:\n{}\nbag:\n{:?}",
+                result.output,
+                bag.iter().map(|d| (&d.id, &d.message)).collect::<Vec<_>>()
+            )
+        });
+        let dup_count = bag
+            .iter()
+            .filter(|d| d.id == "G::parse::duplicate-subsection")
+            .count();
+        assert_eq!(dup_count, 0);
+
+        // Decoded bodies (what the parser already produced for the two
+        // duplicates): `He said "hi"` and `and \done`. After merging they
+        // should collapse into `He said "hi" and \done` — joined by space.
+        let merged_value = reparsed
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                crate::ast::Decl::Skill(s) => s.node.description.clone(),
+                _ => None,
+            })
+            .expect("merged skill must have a description");
+        assert_eq!(
+            merged_value,
+            "He said \"hi\" and \\done",
+            "description merge double-escaped or otherwise mangled content; got `{}`",
+            merged_value
+        );
+
+        // Idempotence: a second pass is a no-op.
+        let second = fmt_source(&result.output, false);
+        assert!(
+            !second.changed,
+            "fmt is not idempotent on description merge with escapes"
+        );
+        assert_eq!(second.output, result.output);
+    }
+
+    /// Codex finding 7 — when a duplicate inline (single-line) section is
+    /// merged, any whole-line `// comment` that appears between the anchor
+    /// and the duplicate header (or between the dup and following content)
+    /// must be preserved at the boundary. Pre-fix, the merge helpers only
+    /// captured trailing comments on the duplicate header line itself
+    /// (`trailing_comment_after_keyword`); whole-line comment-only lines
+    /// inside `section.lines[1..]` were silently dropped because the helper
+    /// rebuilds the canonical line and never re-emits the comment lines.
+    /// Acceptance: the comment line appears verbatim in the output near
+    /// the merged section.
+    #[test]
+    fn fmt_preserves_boundary_comment_between_two_descriptions() {
+        let src = "\
+skill the_skill()
+    description: \"first.\"
+    // boundary note
+    description: \"second.\"
+    flow:
+        \"do work\"
+";
+        let result = fmt_source(src, false);
+        assert!(result.changed, "fmt should merge duplicates");
+        assert!(
+            result.output.contains("// boundary note"),
+            "boundary `//` comment dropped during description merge; output:\n{}",
+            result.output
+        );
+    }
+
+    /// Codex finding 7 — same shape but for `effects:`. A whole-line
+    /// `// comment` between two duplicate `effects:` headers must be
+    /// preserved.
+    #[test]
+    fn fmt_preserves_boundary_comment_between_two_effects() {
+        let src = "\
+skill the_skill()
+    effects: reads_files
+    // boundary note
+    effects: writes_files
+    flow:
+        \"do work\"
+";
+        let result = fmt_source(src, true);
+        assert!(result.changed, "fmt should merge duplicates");
+        assert!(
+            result.output.contains("// boundary note"),
+            "boundary `//` comment dropped during effects merge; output:\n{}",
             result.output
         );
     }
