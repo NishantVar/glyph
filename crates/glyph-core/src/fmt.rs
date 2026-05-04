@@ -376,7 +376,6 @@ fn auto_import_stdlib(
                 all.push(n.clone());
             }
         }
-        all.sort();
         let new_line = format!(r#"import "@glyph/std" {{ {} }}"#, all.join(", "));
         for (i, line) in lines.iter().enumerate() {
             if i == idx {
@@ -1619,5 +1618,25 @@ skill main()
         let once = fmt_source(src, true).output;
         let twice = fmt_source(&once, true).output;
         assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn fmt_auto_import_appends_preserves_existing_order() {
+        let src = r#"import "@glyph/std" { subagent }
+
+skill main()
+    description: "Main."
+    flow:
+        send("hi")
+        subagent("x")
+"#;
+        let result = fmt_source(src, true);
+        // User authored `subagent` first; new `send` must be appended at the end,
+        // not alphabetically reordered before `subagent`.
+        assert!(result.output.contains(r#"import "@glyph/std" { subagent, send }"#),
+            "expected appended order, got: {}", result.output);
+        assert!(!result.output.contains(r#"{ send, subagent }"#),
+            "must not reorder existing names alphabetically");
+        assert!(result.changed);
     }
 }
