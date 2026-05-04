@@ -1,0 +1,71 @@
+// teach_glyph_constraints.glyph.md
+//
+// Bundles authoring constraints for Glyph source files as a single
+// constraint-only skill. Importers reference `glyph_authoring_constraints`
+// under their `constraints:` section to inherit the full ruleset.
+// Polarity is fixed inside the bundle; the polarity-neutral `export text`
+// constants below remain exported so a consumer can still apply a different
+// marker to an individual rule if needed.
+
+skill glyph_authoring_constraints()
+    description: "Bundle of authoring rules for any skill that writes or edits Glyph source files."
+
+    constraints:
+        // Hard rules — violating these breaks compilation.
+        must four_space_indentation
+        must avoid primitive_type_names_in_source
+        must avoid string_interpolation
+        must avoid hand_written_agent_prose
+        must one_skill_per_skill_file
+        must single_top_level_return
+        must defaults_on_export_block_params
+        must explicit_return_in_export_block
+        must avoid return_inside_branch_arms
+        must avoid slots_in_non_instruction_strings
+
+        // Soft rules — style and authoring discipline.
+        require novice_kernel_first
+        require descriptive_domain_types
+        require description_on_applies_blocks
+        require review_of_repair_output
+        avoid bare_text_in_flow_without_marker
+        avoid overusing_must
+        avoid deeply_nested_calls
+
+// ─── Hard rules ──────────────────────────────────────────────────────────────
+
+export const four_space_indentation = "Indent every body with exactly 4 spaces. Tabs are a hard error and there are no braces or `end` keywords."
+
+export const primitive_type_names_in_source = "Using `String`, `Int`, `Float`, `Bool`, or `None` as a type annotation in author-facing source. Use named domain types (`BranchName`, `Severity`, `Confirmation`) instead."
+
+export const string_interpolation = "Building strings with `${...}`, `+` concatenation, or any template syntax other than `{name}` parameter slots inside instruction-bearing strings."
+
+export const hand_written_agent_prose = "Writing the agent-facing Markdown prose by hand. The Expand pass produces the prose; the author writes structure and intent only."
+
+export const one_skill_per_skill_file = "Every skill file contains exactly one `skill` declaration. Library files contain zero. Two `skill` declarations in one file is a hard error."
+
+export const single_top_level_return = "Each `flow:` has exactly one `return`, and it is the last statement at the top level — never inside an `if`/`elif`/`else` branch arm."
+
+export const defaults_on_export_block_params = "Every parameter on an `export block` must have a default. A required-without-default parameter is a hard error with no LLM repair."
+
+export const explicit_return_in_export_block = "Every `export block` ends with an explicit `return` statement (use `return none` if there is no meaningful return value)."
+
+export const return_inside_branch_arms = "Placing `return` inside an `if`/`elif`/`else` branch arm. There is no early return in MVP — `return` is restricted to the top level of `flow:` and must be last."
+
+export const slots_in_non_instruction_strings = "Using `{name}` parameter slots in `description:` bodies, parameter defaults, or any string that is not instruction-bearing. Slots are legal only inside `flow:` instruction strings, string-valued constant bodies, constraint texts, and string arguments to stdlib calls."
+
+// ─── Soft rules ──────────────────────────────────────────────────────────────
+
+export const novice_kernel_first = "Reach for the smallest viable surface — `skill`, `require`/`avoid`, `flow:`, inline strings, calls, and `with`. Promote to `block`, named `text`, or types only when they pay for themselves."
+
+export const descriptive_domain_types = "When you do annotate a type, give it a domain name that tells an agent what role the value plays (`BranchName`, `Plan`, `Diagnosis`) — not a primitive-feeling label."
+
+export const description_on_applies_blocks = "Any block consulted via `BLOCKNAME.applies()` carries a `description:` — that description is the predicate the agent matches against current context. Missing description on an imported block is a hard error."
+
+export const review_of_repair_output = "After running the compiler, review the source diff. Repair may have inserted `generated text` / `generated block` definitions, hoisted markers into `constraints:`, or generated a missing `description:`. Promote anything you want to harden by renaming `generated …` to `text` / `block`."
+
+export const bare_text_in_flow_without_marker = "Writing a bare string-valued constant name in `flow:` without a marker. Wrap it with `context`/`require`/`avoid`/`must`, or convert it into a `block` if it really represents an instruction sequence."
+
+export const overusing_must = "Reaching for `must` / `must avoid` for everyday rules. Reserve hard markers for genuinely non-negotiable constraints; default to soft `require` / `avoid`."
+
+export const deeply_nested_calls = "Stacking nested calls (`apply(merge(base, overlay(ctx)))`). Nested calls are legal but read and visualize better as named intermediate bindings."

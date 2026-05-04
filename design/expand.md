@@ -46,7 +46,7 @@ Specifically, Step 2 receives:
 - for every `Branch` node: `{ condition_text, then_body, elif_branches, else_body, applies_descriptions? }` with every sub-body already resolved. The optional `applies_descriptions: {block_name → resolved_description}` side-map is populated by Step 1 whenever the Branch's own `condition_text` or any `elif_branches[*].condition_text` invokes the block trigger predicate `BLOCKNAME.applies()` (see `ir-and-semantics.md` §Block Trigger Predicate). Step 2 uses the side-map to choose the projection form: when every arm's condition is *purely* one or more `applies()` calls combined by `or` (or each `if`/`elif` arm is guarded by a single `applies()` call), Step 2 emits a "decide which applies" prose frame keyed by the resolved descriptions; for mixed conditions (e.g., `block_x.applies() and not is_dry_run`), Step 2 inlines the resolved description into the larger condition prose (e.g., "If the user wants a structured plan and this is not a dry run, ...");
 - for the `Return` expression: its resolved text plus a flag indicating it must fold into the final Step;
 - skill-level metadata: `name`, `description` (if present), `effects` (as a list), the ordered position of each node in `flow:`, and the parameter list (names, types, and defaults if declared — used for generating the `## Parameters` section, where parameters without defaults render with a `(required)` marker per `compiled-output.md`).
-- a **stable, file-local IR node ID** (e.g., `n0`, `n1`, …) on every node, assigned by Lower (`pipeline.md` Phase 4). The IDs are opaque, never appear in compiled output, and are not echoed back by Step 2 (the output contract in §3.3 is Markdown only). They exist so that Phase 6b's count + ordering checks (§4.1) and any internal diagnostic referring to "the IR node Step 2 failed to project" can name a specific node unambiguously across runs and across the parse-then-re-parse boundary inside Repair.
+- a **stable, file-local IR node ID** (e.g., `n0`, `n1`, …) on every node, assigned by Lower (`pipeline.md` Phase 4). The IDs are opaque, never appear in compiled output, and are not echoed back by Step 2 (the output contract in §3.4 is Markdown only). They exist so that Phase 6b's count + ordering checks (§4.1) and any internal diagnostic referring to "the IR node Step 2 failed to project" can name a specific node unambiguously across runs and across the parse-then-re-parse boundary inside Repair.
 
 **Whole-skill prompting, not per-node.** Step 2 is invoked **once per skill compilation**, with the full resolved IR visible in a single prompt. This is deliberate:
 
@@ -77,7 +77,26 @@ Step 2 picks per call based on what reads naturally. Multiple scoped constraints
 
 **Why this is Step 2's job.** Scoped constraints are call-site contextual: their wording depends on the surrounding step's prose, the strength/polarity, and the position in the flow. Mechanical folding produces awkward output. The whole-skill prompting model (§3.1) already gives Step 2 the visibility needed to weave gracefully.
 
-### 3.3 Output contract
+### 3.3 Pure-`applies()` Branch Projection Sub-Cases
+
+The "decide which applies" prose frame mentioned in §3.1 is not a single sentence — it is a small family of phrasings keyed to the IR shape of the `Branch`. Step 1 populates `applies_descriptions` whenever any arm condition is `BLOCKNAME.applies()`; Step 2 (or the deterministic emitter, since this projection is mechanical) selects the framing per the table below.
+
+A `Branch` qualifies for this projection when **every** `if`/`elif` arm's condition is purely one or more `applies()` calls combined by `or`. The presence of an `else` arm does not disqualify it. Any other condition shape (e.g., `block_x.applies() and not is_dry_run`) falls back to the mixed-condition path described in §3.1, which inlines the resolved description into the larger condition prose.
+
+| IR shape | Frame |
+|---|---|
+| Single arm: `if X.applies(): …` (no `elif`, no `else`) | `Decide whether <X's description> applies and, if so:` followed by lettered sub-steps for the arm body. |
+| Multiple `applies()` arms, no `else` | `Decide which of the following applies and follow only that path:` (verbatim, per `compiled-output.md` §Description-Driven Branch Projection) followed by lettered sub-steps, each prefixed `If <description>:`. |
+| Multiple `applies()` arms with `else` | Same opening sentence as above, with the `else` arm's lettered sub-step prefixed `Otherwise:` instead of `If <description>:`. |
+
+Two scenarios that look related but are governed by different rules:
+
+- **Two independent `if` statements** (e.g., `if a.applies(): … if b.applies(): …` written as separate flow statements) are **two separate `Branch` IR nodes**. Each projects to its own top-level numbered Step independently, with its own decision frame chosen from the table above. Both arms can fire because they are not in the same Branch — the "follow only that path" framing scopes within a single Branch, not across the flow.
+- **Branches nested inside arms** stop at one level (per §4.1 sub-step counting). A nested `Branch` inside an outer arm flattens into the parent sub-step's prose; it does not re-emit a decision frame of its own. In practice Repair §4.9 auto-extracts nested branches into `generated block` declarations, so the projection rules above typically apply only to top-level Branch nodes.
+
+Phase 6b validates the resulting structure via the same count + ordering checks in §4.1; the framing sentences themselves are not checked for verbatim match (a future structural check could be added if drift becomes a problem — see `todo.md` §Phase 6b Validation).
+
+### 3.4 Output contract
 
 Step 2 must return **Markdown only** — specifically, the body of the compiled file below the frontmatter. It must not return JSON, IR, explanations, or commentary. The expected shape is:
 
