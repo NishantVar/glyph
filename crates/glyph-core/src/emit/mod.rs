@@ -4,6 +4,10 @@
 //! inline strings as Steps, constraint markers as bulleted Constraints. The output
 //! shape is fixed by `design/compiled-output.md`.
 
+pub(crate) mod scaffold;
+pub(crate) mod merger;
+pub(crate) mod stub_fill;
+
 use crate::ir::{IrArena, IrBranch, IrNode, NodeId, Polarity};
 use std::collections::HashSet;
 
