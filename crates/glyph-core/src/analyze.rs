@@ -813,6 +813,64 @@ fn walk_return_calls_nominal_check(
     }
 }
 
+/// Issue #109 chunk 3 — Analyze invariant.
+///
+/// Walks every `Skill` / `BlockDecl` / `ExportBlockDecl` in `file.decls` and,
+/// for each declaration whose `extra_subsections` is non-empty, emits a
+/// single `G::analyze::unmerged-duplicate-subsection` diagnostic at error
+/// tier (one per declaration; the natural fix unit is "rerun glyph fmt on
+/// this file" — not a per-extras-entry edit).
+///
+/// Span attribution: the declaration node's own span. Naturally available,
+/// matches the per-decl emission cardinality.
+///
+/// Called from both `analyze_with_diagnostics` and `analyze_with_imports`
+/// (the two callers that walk the AST through the rest of Analyze) so the
+/// invariant is uniformly enforced regardless of compile path.
+fn check_unmerged_duplicate_subsections(
+    file: &SourceFile,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    for decl in &file.decls {
+        let (kind_label, name, span, extras_len) = match decl {
+            Decl::Skill(s) if !s.node.extra_subsections.is_empty() => (
+                "skill",
+                s.node.name.as_str(),
+                s.span,
+                s.node.extra_subsections.len(),
+            ),
+            Decl::Block(b) if !b.node.extra_subsections.is_empty() => (
+                "block",
+                b.node.name.as_str(),
+                b.span,
+                b.node.extra_subsections.len(),
+            ),
+            Decl::ExportBlock(b) if !b.node.extra_subsections.is_empty() => (
+                "export block",
+                b.node.name.as_str(),
+                b.span,
+                b.node.extra_subsections.len(),
+            ),
+            _ => continue,
+        };
+        let plural = if extras_len == 1 { "" } else { "s" };
+        bag.push(
+            Diagnostic::error(
+                "G::analyze::unmerged-duplicate-subsection",
+                format!(
+                    "{} `{}` carries {} unmerged duplicate sub-section{} — \
+                     run `glyph fmt` to merge them",
+                    kind_label, name, extras_len, plural
+                ),
+                SourceSpan::from_byte_span(file_label, span, line_index),
+            ),
+            span,
+        );
+    }
+}
+
 /// Run Phase 2 with diagnostic emission.
 ///
 /// Pushes any structured diagnostics onto `bag` and returns the AST unchanged.
@@ -826,6 +884,14 @@ pub fn analyze_with_diagnostics(
     bag: &mut DiagBag,
     registry: &mut crate::domain_registry::Registry,
 ) -> SourceFile {
+    // Issue #109 chunk 3 — Analyze invariant: every declaration's
+    // `extra_subsections` must be empty by the time Analyze runs. The parser
+    // captures duplicate sub-sections into `extra_subsections` and emits
+    // `G::parse::duplicate-subsection` (repairable). `glyph fmt` is then
+    // contracted to merge extras back into the singleton field. If fmt is
+    // skipped, Analyze must reject the AST so it never reaches Lower in a
+    // state where extras matter.
+    check_unmerged_duplicate_subsections(&file, file_label, line_index, bag);
     // Collect value-binding names for bare-name detection in flow. Post-#81,
     // `const` is the sole value-binding form; the variable name `text_names`
     // is retained to keep diagnostic IDs (`G::analyze::text-in-flow`) and
@@ -1470,6 +1536,11 @@ pub fn analyze_with_imports(
     registry: &mut crate::domain_registry::Registry,
     imported_block_return_types: &HashMap<String, Spanned<String>>,
 ) -> SourceFile {
+    // Issue #109 chunk 3 — Analyze invariant. Enforced on the import-aware
+    // path too so multi-file compiles get identical guarantees. See
+    // `check_unmerged_duplicate_subsections` doc-comment for rationale.
+    check_unmerged_duplicate_subsections(file, file_label, line_index, bag);
+
     // Collect local value-binding names (post-#81: `const` is the sole form;
     // the `local_text_names` variable name is kept for parity with the legacy
     // diagnostic vocabulary — see `analyze_with_diagnostics` notes).
@@ -4998,5 +5069,163 @@ skill main()
             .count();
         assert_eq!(import_kind_count, 1, "expected 1 Import-kind resolution");
         assert_eq!(block_kind_count, 1, "expected 1 Block/ExportBlock-kind resolution");
+    }
+}
+
+#[cfg(test)]
+mod unmerged_duplicate_subsection_tests {
+    //! Issue #109 chunk 3 — Analyze invariant.
+    //!
+    //! After Chunk 2, the parser recovers a duplicate sub-section into the
+    //! declaration's `extra_subsections` and emits the *parse-tier* repairable
+    //! `G::parse::duplicate-subsection`. `glyph fmt` is then expected to merge
+    //! the extras back into the singleton field. If `fmt` is skipped (or fed
+    //! an unrepaired AST programmatically), Lower would receive a node whose
+    //! "extras" channel still carries semantic content — a silent contract
+    //! violation.
+    //!
+    //! Analyze closes that hole: it walks every `Skill` / `BlockDecl` /
+    //! `ExportBlockDecl` and, if any has a non-empty `extra_subsections`,
+    //! emits `G::analyze::unmerged-duplicate-subsection` at error tier. The
+    //! pipeline-level `bag.has_error()` gate (lib.rs:110) then prevents Lower
+    //! from being called.
+    use super::*;
+    use crate::ast::{Decl, DuplicateSubsection, FlowStmt, Skill, SourceFile};
+    use crate::diagnostic::{Classification, DiagBag};
+    use crate::span::{LineIndex, Span, Spanned};
+
+    /// Build a minimal `Skill` AST node with a configurable `extra_subsections`
+    /// field. All other fields are filled with empty/default values matching
+    /// what `parse_skill` would produce for an empty body.
+    fn skill_with_extras(extras: Vec<DuplicateSubsection>) -> Spanned<Skill> {
+        Spanned {
+            node: Skill {
+                name: "the_skill".to_string(),
+                params: Vec::new(),
+                description: Some("present".to_string()),
+                flow: vec![FlowStmt::InlineString("do work".to_string())],
+                flow_present: true,
+                body_constraints: Vec::new(),
+                body_context: Vec::new(),
+                body_bare_names: Vec::new(),
+                effects: Vec::new(),
+                context_section: Vec::new(),
+                constraints_section: Vec::new(),
+                return_type: None,
+                extra_subsections: extras,
+            },
+            span: Span::new(0, 0, 10),
+        }
+    }
+
+    fn run_analyze(file: SourceFile) -> DiagBag {
+        let source = "dummy";
+        let li = LineIndex::new(source);
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        analyze_with_diagnostics(file, 0, "test.glyph.md", &li, &mut bag, &mut registry);
+        bag
+    }
+
+    /// Test (a): an AST whose `Skill` carries a non-empty `extra_subsections`
+    /// must fail Analyze with `G::analyze::unmerged-duplicate-subsection` at
+    /// `Classification::Error`.
+    #[test]
+    fn skill_with_unmerged_extras_emits_error_diagnostic() {
+        let skill = skill_with_extras(vec![DuplicateSubsection::Description(
+            "second body never merged by fmt".to_string(),
+        )]);
+        let file = SourceFile {
+            decls: vec![Decl::Skill(skill)],
+        };
+
+        let bag = run_analyze(file);
+
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::unmerged-duplicate-subsection")
+            .unwrap_or_else(|| {
+                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                panic!(
+                    "expected `G::analyze::unmerged-duplicate-subsection`, got: {:?}",
+                    ids
+                )
+            });
+        assert_eq!(
+            diag.classification,
+            Classification::Error,
+            "unmerged-duplicate-subsection must be Error tier"
+        );
+    }
+
+    /// Test (c): end-to-end through the real parse→analyze pipeline. A
+    /// source containing two `constraints:` sub-sections under one skill
+    /// must produce BOTH the parse-tier repairable
+    /// `G::parse::duplicate-subsection` AND the analyze-tier error
+    /// `G::analyze::unmerged-duplicate-subsection` in the same diagnostic
+    /// bag. This pins the contract that the two diagnostics co-exist (they
+    /// fire from different phases targeting different consumers — agent
+    /// repair loop vs. lower-side invariant).
+    #[test]
+    fn pipeline_two_constraints_emits_both_parse_and_analyze_diagnostics() {
+        let src = "\
+skill the_skill()
+    constraints:
+        require accuracy
+    constraints:
+        avoid stale_references
+    flow:
+        \"do work\"
+";
+        let bag = crate::check_source(src, 0, "test.glyph.md");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+
+        assert!(
+            ids.contains(&"G::parse::duplicate-subsection"),
+            "expected parse-tier `G::parse::duplicate-subsection`, got {:?}",
+            ids
+        );
+        assert!(
+            ids.contains(&"G::analyze::unmerged-duplicate-subsection"),
+            "expected analyze-tier `G::analyze::unmerged-duplicate-subsection`, \
+             got {:?}",
+            ids
+        );
+
+        let analyze_diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::unmerged-duplicate-subsection")
+            .unwrap();
+        assert_eq!(
+            analyze_diag.classification,
+            Classification::Error,
+            "analyze-tier diagnostic must be Error (the only fix path is fmt; \
+             only parse-tier carries Repairable)"
+        );
+    }
+
+    /// Test (b): a clean AST (every declaration's `extra_subsections` is
+    /// empty) must NOT emit the invariant diagnostic. Other unrelated
+    /// diagnostics may still fire — we only assert that
+    /// `G::analyze::unmerged-duplicate-subsection` is absent.
+    #[test]
+    fn clean_ast_emits_no_unmerged_diagnostic() {
+        let skill = skill_with_extras(Vec::new());
+        let file = SourceFile {
+            decls: vec![Decl::Skill(skill)],
+        };
+
+        let bag = run_analyze(file);
+
+        let dups: Vec<&str> = bag
+            .iter()
+            .map(|d| d.id.as_str())
+            .filter(|id| *id == "G::analyze::unmerged-duplicate-subsection")
+            .collect();
+        assert!(
+            dups.is_empty(),
+            "clean AST must not emit unmerged-duplicate-subsection; got {:?}",
+            dups
+        );
     }
 }

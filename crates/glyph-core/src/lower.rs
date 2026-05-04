@@ -344,6 +344,19 @@ pub fn lower_with_imports(
             _ => None,
         })
         .ok_or(LowerError::NoSkill)?;
+    // Issue #109 chunk 3 — Lower-side defensive guard. Analyze rejects any
+    // AST whose `Skill`/`BlockDecl`/`ExportBlockDecl` carries non-empty
+    // `extra_subsections` with `G::analyze::unmerged-duplicate-subsection`,
+    // and the pipeline gate (`bag.has_error()`) stops Lower being called.
+    // This `debug_assert!` is belt-and-suspenders: it trips if Lower is ever
+    // invoked directly on an unrepaired AST, instead of silently dropping
+    // the duplicate body's content.
+    debug_assert!(
+        skill.extra_subsections.is_empty(),
+        "lower invariant violated: skill `{}` carries non-empty extra_subsections — \
+         Analyze should have rejected it with G::analyze::unmerged-duplicate-subsection",
+        skill.name
+    );
 
     let mut arena = IrArena::new();
 
@@ -378,6 +391,14 @@ pub fn lower_with_imports(
     for d in &file.decls {
         if let Decl::Block(b) = d {
             let block = &b.node;
+            // Issue #109 chunk 3 — same Lower-side defensive guard as on
+            // Skill above. See its comment for context.
+            debug_assert!(
+                block.extra_subsections.is_empty(),
+                "lower invariant violated: block `{}` carries non-empty extra_subsections — \
+                 Analyze should have rejected it with G::analyze::unmerged-duplicate-subsection",
+                block.name
+            );
             let body_text = resolve_block_body_text(block, &texts)?;
             // Collect outgoing call targets from the block's flow. Issue #84
             // codex pass 2 — F2: `return foo()` is also an outgoing call
@@ -1484,5 +1505,58 @@ block diagnose() -> Diagnosis
             other => panic!("expected Description, got {:?}", other),
         }
         assert_eq!(oc.source, OutputSource::SynthesizedByAgent);
+    }
+}
+
+#[cfg(test)]
+mod unmerged_extras_invariant_tests {
+    //! Issue #109 chunk 3 — Lower-side defensive guard.
+    //!
+    //! Analyze rejects any AST whose declarations carry non-empty
+    //! `extra_subsections` with `G::analyze::unmerged-duplicate-subsection`
+    //! (Error). The pipeline-level `bag.has_error()` gate (lib.rs:110)
+    //! prevents Lower from being called in that case. This module pins the
+    //! belt-and-suspenders contract: if Lower is somehow invoked directly
+    //! with such an AST (skipping Analyze), the `debug_assert!` in `lower`
+    //! must trip rather than producing a silently-degraded IR.
+    //!
+    //! Released builds use `debug_assert!` so the cost is debug-only — the
+    //! invariant is genuinely upheld by Analyze in normal flow.
+    use super::*;
+    use crate::ast::{Decl, DuplicateSubsection, FlowStmt, Skill, SourceFile};
+    use crate::span::{Span, Spanned};
+
+    /// Test (d): if a `Skill` AST node reaches `lower` with a non-empty
+    /// `extra_subsections`, the defensive `debug_assert!` must panic. This
+    /// is a `#[should_panic]` test — it would FAIL the chunk if Lower ever
+    /// silently accepted unmerged extras.
+    #[test]
+    #[should_panic(expected = "extra_subsections")]
+    fn lower_panics_on_skill_with_unmerged_extras() {
+        let skill = Spanned {
+            node: Skill {
+                name: "the_skill".to_string(),
+                params: Vec::new(),
+                description: Some("present".to_string()),
+                flow: vec![FlowStmt::InlineString("do work".to_string())],
+                flow_present: true,
+                body_constraints: Vec::new(),
+                body_context: Vec::new(),
+                body_bare_names: Vec::new(),
+                effects: Vec::new(),
+                context_section: Vec::new(),
+                constraints_section: Vec::new(),
+                return_type: None,
+                extra_subsections: vec![DuplicateSubsection::Description(
+                    "unmerged".to_string(),
+                )],
+            },
+            span: Span::new(0, 0, 10),
+        };
+        let file = SourceFile {
+            decls: vec![Decl::Skill(skill)],
+        };
+        // Should panic via debug_assert! before producing an IrArena.
+        let _ = lower(&file);
     }
 }
