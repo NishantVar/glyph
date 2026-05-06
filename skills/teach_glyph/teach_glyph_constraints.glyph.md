@@ -3,7 +3,7 @@
 // Bundles authoring constraints for Glyph source files as a single
 // constraint-only skill. Importers reference `glyph_authoring_constraints`
 // under their `constraints:` section to inherit the full ruleset.
-// Polarity is fixed inside the bundle; the polarity-neutral `export text`
+// Polarity is fixed inside the bundle; the polarity-neutral `export const`
 // constants below remain exported so a consumer can still apply a different
 // marker to an individual rule if needed.
 
@@ -56,13 +56,13 @@ export const slots_in_non_instruction_strings = "Using `{name}` parameter slots 
 
 // ─── Soft rules ──────────────────────────────────────────────────────────────
 
-export const novice_kernel_first = "Reach for the smallest viable surface — `skill`, `require`/`avoid`, `flow:`, inline strings, calls, and `with`. Promote to `block`, named `text`, or types only when they pay for themselves."
+export const novice_kernel_first = "Reach for the smallest viable surface — `skill`, `require`/`avoid`, `flow:`, inline strings, calls, and `with`. Promote to `block`, named `const`, or types only when they pay for themselves."
 
 export const descriptive_domain_types = "When you do annotate a type, give it a domain name that tells an agent what role the value plays (`BranchName`, `Plan`, `Diagnosis`) — not a primitive-feeling label."
 
 export const description_on_applies_blocks = "Any block consulted via `BLOCKNAME.applies()` carries a `description:` — that description is the predicate the agent matches against current context. Missing description on an imported block is a hard error."
 
-export const review_of_repair_output = "After running the compiler, review the source diff. Repair may have inserted `generated text` / `generated block` definitions, hoisted markers into `constraints:`, or generated a missing `description:`. Promote anything you want to harden by renaming `generated …` to `text` / `block`."
+export const review_of_repair_output = "After running the compiler, review the source diff. Repair may have inserted `generated const` / `generated block` definitions, hoisted markers into `constraints:`, or generated a missing `description:`. Promote anything you want to harden by renaming `generated …` to `const` / `block`."
 
 export const bare_text_in_flow_without_marker = "Writing a bare string-valued constant name in `flow:` without a marker. Wrap it with `context`/`require`/`avoid`/`must`, or convert it into a `block` if it really represents an instruction sequence."
 

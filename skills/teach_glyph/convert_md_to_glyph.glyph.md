@@ -55,7 +55,7 @@ block extract_branches_into_procedures()
         "Recurse on each newly created block: scan its body for nested branches and apply the same extraction. Stop when no block contains conditional language."
 
 block map_context_section()
-    "Map each remaining top-level context bullet to a `context:` entry on the skill. Use inline strings at this stage; the factoring pass will promote them to `text` constants where appropriate."
+    "Map each remaining top-level context bullet to a `context:` entry on the skill. Use inline strings at this stage; the factoring pass will promote them to `const` constants where appropriate."
 
 block map_constraints_section()
     "Map each remaining top-level constraint bullet to a `constraints:` entry on the skill. Recover polarity from the bullet's leading verb (`Always` / `Must` / `Never` / `Avoid` / `Prefer` / `Consider`) and pick the matching marker (`require` / `must` / `must avoid` / `avoid`). Use inline strings; factoring will promote them later."
@@ -66,4 +66,4 @@ block recover_flow_from_steps()
         "If the final step describes what the skill produces, lift that into a top-level `return <\"description\">` statement at the end of `flow:` rather than restating it as another instruction."
 
 block write_initial_glyph_source(target_glyph)
-    "Write the assembled skill, blocks, and any extracted text constants to {target_glyph}. This is a verbose first draft — factoring and sorting will tidy it up next."
+    "Write the assembled skill, blocks, and any extracted const constants to {target_glyph}. This is a verbose first draft — factoring and sorting will tidy it up next."
