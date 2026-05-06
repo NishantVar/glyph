@@ -185,3 +185,36 @@ Principle: the author writes what the compiler can't know (procedure, constraint
 - Should `goal:` allow multiple entries, or exactly one string/bare const like `description:`?
 - Should blocks and export blocks support `goal:` and `output:`, or only skills at first?
 - Should output clauses support `optional`, or should optionality stay in prose until structural types exist?
+
+## Known Author-Visible Emitter Gaps
+
+### Branch-as-last-step drops `return <X>` suffix (P1 from issue #118 codex review)
+
+**Symptom for the author:** A skill or block whose `flow:` ends with a structural step (e.g. `if/elif/else`) followed by `return <X>` compiles with no "as your result" prose anywhere in the rendered Markdown — the author's output target is silently dropped.
+
+**Reproduction:**
+
+```glyph
+skill main()
+    description: "..."
+    flow:
+        if condition
+            "do A"
+        else
+            "do B"
+        return <current_branch>
+```
+
+The compiled `.md` shows the `if … then:` block but never folds `current_branch` into a final visible step. The four locked OC templates (`append_identifier_suffix`, `append_description_suffix`, `standalone_return_identifier`, `standalone_return_description`) never fire.
+
+**Root cause:** `crates/glyph-core/src/emit/scaffold.rs` (the `IrNode::Branch` arm of the main scaffold walker) ignores `is_last` and `skill_oc_form`. The `IrNode::InlineInstruction` arm and the `IrNode::Call` Tier-1 arm both honor these and route through the locked templates; the branch arm does not.
+
+**Recommended fix shape:** When the last visible step is `IrNode::Branch` and `skill_oc_form.is_some()`, emit the branch as today, then append one additional standalone return step using `templates::standalone_return_identifier(name)` or `templates::standalone_return_description(desc)`. This mirrors how the empty-resolved-body Tier-1 path already handles the case where there is no body to fold the suffix into. Folding the suffix into the last sub-step of the last branch arm is the alternative but it's awkward — different arms produce different terminal sub-steps and the suffix would need to fold into each independently; the design doc is silent on this, and the standalone-after-branch shape is the least surprising and most consistent with existing Tier-1 callees.
+
+**Audit candidates** (same gap likely recurs):
+
+- Tier-2 same-file procedure path (`### Procedure:` block, `projection_tier == 2`) when a branch is the final step inside the procedure body.
+- Tier-3 external-file path (`emit_procedure` in `emit/mod.rs`) — same question.
+- Block-level emission when an `IrNode::Block` is materialized as a procedure — does its emitter also gate on `is_last` for branches?
+
+**Test gap:** No fixture currently has `if/else/return <X>` as the closing pattern, which is why this regression has not been caught. A regression test exercising both `return <Identifier>` and `return <"description">` shapes with a terminal branch should accompany the fix.
