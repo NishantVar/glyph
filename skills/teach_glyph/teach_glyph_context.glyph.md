@@ -2,7 +2,7 @@
 //
 // Bundles the Glyph language reference as a single context-only skill.
 // Importers reference `glyph_language_context` under their `context:` section
-// to inject the full reference. The individual `text` constants below are
+// to inject the full reference. The individual `const` constants below are
 // the bundle's contents; they remain `export` so files that only need a
 // subset can still import them by name.
 
@@ -109,7 +109,7 @@ Top-level building blocks (column 0):
       bindings, explicit imports, same-file declarations, the standard
       library, and declared constraints/effects.
 
-- `text <name> = "..."` / `int <name> = 3` / `float <name> = 0.8`
+- `const <name> = "..."` / `const <name> = 3` / `const <name> = 0.8`
   (and their `export` forms) — named compile-time constants. No
   parameters, no body, no return type. RHS may be a literal or a static
   reference to another constant of the same kind. String content may be
@@ -127,10 +127,10 @@ Top-level building blocks (column 0):
 - The `@glyph/` prefix is reserved for compiler-shipped modules.
   `@glyph/std` is the standard library.
 
-- `generated text` / `generated block` — produced by the repair pass when
+- `generated const` / `generated block` — produced by the repair pass when
   the source uses an undefined name and the compiler can confidently
   materialize a definition. The author does not write these by hand;
-  review them and promote (rename to `text`/`block`) if they should be
+  review them and promote (rename to `const`/`block`) if they should be
   hand-authored.
 """
 
@@ -179,7 +179,7 @@ colon-terminated sub-sections (each at most once per body):
 
 - `description:` (singular) — one-line summary; goes to compiled YAML
   frontmatter. Body must be exactly one quoted string literal or a
-  bare-name reference to a same-file `text` / `export text`. No
+  bare-name reference to a same-file `const` / `export const`. No
   `{param}` slots inside `description:`. On a `skill`, omitting it
   triggers repair. On a `block`/`export block`, optional unless the
   block is consulted via `BLOCKNAME.applies()`.
@@ -198,7 +198,7 @@ colon-terminated sub-sections (each at most once per body):
     avoid            — soft negative (don't do this)
     must             — hard positive
     must avoid       — hard negative
-  Each marker carries either a bare-name reference (to a same-file text
+  Each marker carries either a bare-name reference (to a same-file const
   constant or generated definition) or an inline string. Two surface
   styles are valid: marker-plus-concept (`avoid unrelated_edits`, with a
   polarity-neutral concept name) and compound name (`avoid_unrelated_edits`,
@@ -228,7 +228,7 @@ the conditional Step prose.
 
 A bare string in a body is always a Step. It is never context or
 background. For background, use `context:` or `description:`. For named
-string constants, use `text`.
+string constants, use `const`.
 """
 
 export const calls_and_control_flow = """
@@ -345,7 +345,7 @@ Identifiers
   dot-property access on bound values.
 
 Reserved keywords (cannot be used as identifiers):
-  skill, block, export, import, text, int, float, flow, call, if, elif,
+  skill, block, export, import, const, flow, call, if, elif,
   else, return, true, false, none, effects, constraints, inputs, outputs,
   when_to_use, description, as, generated, input, output, must, require,
   avoid, context, and, or, not.
@@ -362,7 +362,7 @@ Bare-name resolution order
 3. a local binding,
 4. an imported name (selectively-imported `@glyph/std` entries enter
    the namespace at this level — they require an explicit import),
-5. a repair-generated definition (`generated text` / `generated block`).
+5. a repair-generated definition (`generated const` / `generated block`).
 
 A parenthesized form (`foo()` or `foo(x)`) is always a callable. A bare
 `foo` is never a call. If a bare name in `flow:` is undefined, the
@@ -431,8 +431,7 @@ A library file is just a `.glyph.md` with no `skill`. It contains
 
 Preferences are ordinary constants
 - There is no `pref(...)` call form, no `reads_prefs` effect, no ambient
-  lookup. A preference is just an `export text` (or `export int` /
-  `export float`).
+  lookup. A preference is just an `export const`.
 - The compiler infers the value kind from the literal. Default values
   are mandatory on every constant declaration in a library.
 - A consumer imports normally:
@@ -513,7 +512,7 @@ Common compile errors and their fixes:
 - `empty-flow`: `flow:` header present but body has zero statements →
   remove the header (constraint-only skill) or add a statement.
 - `no-exports-in-library`: library file has zero `export` declarations
-  → add at least one `export block` or `export text`.
+  → add at least one `export block` or `export const`.
 - `const-in-flow`: a string-valued constant name appears bare in
   `flow:` without a marker → wrap with `context`/`require`/`avoid`/
   `must`, or convert to `block`.
@@ -556,8 +555,8 @@ Minimal skill (novice kernel):
             "Update outdated or incorrect sections."
             "Verify all cross-references and links are valid."
 
-    text accuracy = "Ensure all documentation accurately reflects the current code."
-    text stale_references = "Avoid leaving references to removed or renamed symbols."
+    const accuracy = "Ensure all documentation accurately reflects the current code."
+    const stale_references = "Avoid leaving references to removed or renamed symbols."
 
 With branching, blocks, and `.applies()`:
 
@@ -596,8 +595,8 @@ With branching, blocks, and `.applies()`:
 Multi-file skill with library and preferences:
 
     // prefs.glyph.md
-    export text preserve_existing_patterns = "Prefer the repository's existing patterns and helpers."
-    export text safety_first = "Never execute destructive operations without explicit confirmation."
+    export const preserve_existing_patterns = "Prefer the repository's existing patterns and helpers."
+    export const safety_first = "Never execute destructive operations without explicit confirmation."
 
     // repo_tools.glyph.md
     export block inspect_repo(scope = ".") -> RepoContext
@@ -648,16 +647,14 @@ Top-level declarations:
     skill <name>(<params>) [-> Type]
     block <name>(<params>) [-> Type]
     export block <name>(<params>) -> Type     # default required on every param; explicit return required
-    text <name>  = "..."  | bare-name | qualified-name
-    int <name>   = <int>  | bare-name | qualified-name
-    float <name> = <float>| bare-name | qualified-name
-    export text/int/float (same RHS forms; default required)
+    const <name> = "..." | <int> | <float> | bare-name | qualified-name
+    export const (same RHS forms; default required)
     import "<path>" as <alias>                 # whole-module
     import "<path>" { name, name as alias }    # selective
     import "@glyph/std" { subagent, send }     # stdlib
 
 Sub-section headers (inside skill / block / export block body):
-    description:   one-line string or text-name reference
+    description:   one-line string or const-name reference
     effects:       list / inline list (gated by --enable-effects)
     context:       bare names, inline strings, or `context "..."` markers
     constraints:   require / avoid / must / must avoid markers
@@ -675,7 +672,7 @@ Flow statement forms:
     receiver.method(args)            # UFCS desugars to method(receiver, args)
     Alias.callee(args)               # qualified call
     call(args) with "modifier"       # site modifier
-    bare_name                        # name reference (resolves to text/block/import/binding)
+    bare_name                        # name reference (resolves to const/block/import/binding)
     "inline instruction"
     context <name|"string">          # context marker
     require / avoid / must … <name|"string">   # constraint marker

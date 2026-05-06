@@ -74,14 +74,14 @@ The grammar's `queries/` directory ships:
 
 - `highlights.scm` — colors for keywords, identifiers, strings,
   constraint markers, etc.
-- `locals.scm` — parameter and text-binding scope tracking.
+- `locals.scm` — parameter and const-binding scope tracking.
 - `injections.scm` — empty (Glyph files contain no other languages).
 
 ## Verify
 
 Open any file under `crates/glyph-cli/tests/corpus/valid/`. You
 should see colored declaration keywords (`skill`, `block`,
-`text`), distinct coloring for constraint markers (`require`,
+`const`), distinct coloring for constraint markers (`require`,
 `avoid`, `must`, `must avoid`) versus the `context` marker, and
 highlighted interpolation slots inside instruction strings.
 
