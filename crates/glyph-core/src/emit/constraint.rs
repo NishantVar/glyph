@@ -11,6 +11,17 @@ pub const SOFT_REQUIRE: &str = "{Text}.";
 pub const SOFT_AVOID: &str = "Avoid {text}.";
 
 pub fn render(strength: Strength, polarity: Polarity, text: &str) -> String {
+    // Mixed-corpus tolerance: when the author has supplied a fully-formed
+    // prohibition (`"Avoid ..."` or `"Do not ..."`), emit it verbatim instead of
+    // wrapping it in another avoid template, which would produce double-
+    // prohibition outputs like `Avoid avoid leaving...` or
+    // `Avoid do not make changes...`. Tracked in `design/todo_bugs.md` §Emitter
+    // (issue #141): a future Phase 5 lint will enforce a single canonical
+    // const-text shape and let this branch be removed.
+    if matches!(polarity, Polarity::Avoid) && is_already_prohibition(text) {
+        let trimmed = text.trim().trim_end_matches('.');
+        return format!("{}.", trimmed);
+    }
     let normalized = normalize(text);
     match (strength, polarity) {
         (Strength::Hard, Polarity::Require) => HARD_REQUIRE.replace("{text}", &normalized),
@@ -20,6 +31,13 @@ pub fn render(strength: Strength, polarity: Polarity, text: &str) -> String {
         }
         (Strength::Soft, Polarity::Avoid) => SOFT_AVOID.replace("{text}", &normalized),
     }
+}
+
+/// True when `text` is already a fully-formed prohibition (case-insensitively
+/// starts with `"Avoid "` or `"Do not "`).
+fn is_already_prohibition(text: &str) -> bool {
+    let lower = text.trim().to_lowercase();
+    lower.starts_with("avoid ") || lower.starts_with("do not ")
 }
 
 fn normalize(text: &str) -> String {
@@ -102,6 +120,62 @@ mod tests {
         assert_eq!(
             render(Strength::Soft, Polarity::Require, "tests pass."),
             "Tests pass."
+        );
+    }
+
+    #[test]
+    fn soft_avoid_passes_through_already_prefixed_text() {
+        // Authored prohibitions emit verbatim — never doubled like
+        // "Avoid avoid leaving..." or "Avoid do not make changes...".
+        assert_eq!(
+            render(
+                Strength::Soft,
+                Polarity::Avoid,
+                "Avoid leaving references to removed or renamed symbols."
+            ),
+            "Avoid leaving references to removed or renamed symbols."
+        );
+        assert_eq!(
+            render(
+                Strength::Soft,
+                Polarity::Avoid,
+                "Do not make changes unrelated to the task."
+            ),
+            "Do not make changes unrelated to the task."
+        );
+    }
+
+    #[test]
+    fn hard_avoid_passes_through_already_prefixed_text() {
+        // Hard avoid normally renders as "You must never <text>."; for
+        // author-supplied prohibitions we honour the authored phrasing.
+        assert_eq!(
+            render(
+                Strength::Hard,
+                Polarity::Avoid,
+                "Do not make changes outside the requested scope."
+            ),
+            "Do not make changes outside the requested scope."
+        );
+    }
+
+    #[test]
+    fn avoid_pass_through_is_case_insensitive() {
+        assert_eq!(
+            render(Strength::Soft, Polarity::Avoid, "avoid foo."),
+            "avoid foo."
+        );
+        assert_eq!(
+            render(Strength::Soft, Polarity::Avoid, "DO NOT bar."),
+            "DO NOT bar."
+        );
+    }
+
+    #[test]
+    fn avoid_pass_through_normalizes_trailing_period() {
+        assert_eq!(
+            render(Strength::Soft, Polarity::Avoid, "Avoid X"),
+            "Avoid X."
         );
     }
 }
