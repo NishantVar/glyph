@@ -132,7 +132,7 @@ Each repairable diagnostic has a specific fix pattern. The agent applies these t
 
 **No-overwrite rule.** Repair never silently overwrites, deletes, or renames an existing declaration — generated or otherwise — to make room for a generated one. If the LLM proposes a `generated const` or `generated block` whose name collides with any existing top-level declaration in the file, the compile hard-fails with `G::analyze::name-collision`. The author resolves the collision manually: rename one of the conflicting declarations, or explicitly delete the stale `generated` declaration themselves. Repair is also forbidden from mutating any existing declaration with the conflicting name.
 
-**Formatting hygiene for repair output.** The agent's repair output must already be formatted: 4-space indentation only (no tabs), `generated const` and `generated block` declarations appended after all non-generated top-level declarations, no double blank lines. `glyph fmt` is not re-invoked between repair iterations (see §Workflow State Machine), so the LLM's rewrite must satisfy the formatting rules itself.
+**Formatting hygiene for repair output.** The agent's repair output should aim for clean form: 4-space indentation only (no tabs), `generated const` and `generated block` declarations appended after all non-generated top-level declarations, no double blank lines. `glyph fmt` is re-invoked at the start of every repair iteration (see §Workflow State Machine), so it will normalize whitespace, deduplicate imports, insert missing stdlib imports, and apply the other deterministic auto-fixes on the LLM's output before the next compile. The LLM does not need to be perfect, but should not rely on fmt to fix semantic mistakes.
 
 #### Parse-phase repairables
 

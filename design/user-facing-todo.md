@@ -196,6 +196,20 @@ Landing typed parameters requires:
 
 Until then, authors must omit type annotations on parameters even though the language guide treats them as part of MVP.
 
+### Calls and unmarked bare names in `context:` / `constraints:`
+
+The `context:` and `constraints:` sub-section parsers accept bare-name references and inline strings, but bail silently on call shapes (`name()`) and — in `constraints:` — on bare names without a polarity marker. The bail returns `Parse(Eof)` with no AST and no diagnostic. After PR #140 narrowed the post-parse `<`-scan, no fallback diagnostic surfaces either, so the failure is effectively invisible.
+
+Land structured diagnostics for these positions:
+
+- `G::parse::call-in-context-section` — `name()` under `context:`. Hint: `context:` accepts bare const names, inline strings, or `context`-prefixed markers; calls are not legal here.
+- `G::parse::call-in-constraints-section` — `name()` under `constraints:`. Hint: `constraints:` accepts marker-prefixed bare names (`require <name>`, `avoid <name>`, `must <name>`, `must avoid <name>`) or inline strings; calls are not legal here.
+- `G::parse::bare-name-in-constraints-section` — unmarked bare name under `constraints:`. Hint: prefix with a polarity marker (`require` / `avoid` / `must` / `must avoid`).
+
+Each diagnostic should point at the offending span and its hint should suggest the rewrite the author most likely meant. The fix is parser-local; no AST or analyzer changes.
+
+Until then, authors hitting silent compile failures in these sections should check whether they accidentally wrote a call (`name()`) or an unmarked bare name in `constraints:`.
+
 ## Open Questions
 
 - Should the source keyword be singular `output:` or plural `outputs:`? Prefer `output:` unless multi-output values become real.
