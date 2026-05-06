@@ -3,6 +3,10 @@
     "graphify": {
       "command": "python3",
       "args": ["-m", "graphify.serve", "/Users/nishantvarshney/genesis/glyph/graphify-out/graph.json"]
+    },
+    "ast-grep": {
+      "command": "ast-grep-mcp-server",
+      "args": ["--root", "."]
     }
   }
 }

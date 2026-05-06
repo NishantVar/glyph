@@ -43,6 +43,7 @@ This folder is the working source of truth for Glyph system design. The reposito
 
 ### Meta
 - [todo.md](todo.md) — deferred design items, open questions, and post-MVP feature tracking
+- [user-facing-todo.md](user-facing-todo.md) — post-MVP author-facing language ideas, including `goal:` and richer `output:` contracts
 
 ### MVP
 - [build-foundation.md](build-foundation.md) — **Rust implementation foundation**: two-crate workspace, hand-rolled parser, span/arena types, sync-only architecture, error/diagnostic channels, CLI contract, agent workflow, dependency inventory
