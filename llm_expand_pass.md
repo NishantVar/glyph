@@ -1,8 +1,10 @@
 # LLM Expand Pass — Responsibilities
 
+> **Architecture context:** The deterministic emitter (per `design/expand.md` §3 and `design/compiled-output.md`) produces a Markdown *scaffold* with typed spans. This document specifies what the LLM does **inside those spans**. The LLM never produces deterministic structure — it only fills span content. Span kinds (`ParamDescription`, `DescriptionReturnFold`, `BranchCondition`, `CallBodyShape`) and the per-kind contract are summarized in `design/expand.md` §3.5; the IR fields the LLM consumes are tracked in `design/todo.md` §Expand — LLM Span Fill.
+
 This file enumerates **only** what the LLM is responsible for in Glyph's Expand pass (Step 2). Everything else in the compiled output is produced by the deterministic emitter and the LLM must not regenerate, paraphrase, or restructure it. The LLM's role is to fill specific text spans inside an already-scaffolded Markdown document.
 
-For the architectural framing (Safety Sandwich, retry policy, validation gate), see `design/expand.md`. For the deterministic emitter's contract, see `design/expand.md` §3 and `design/compiled-output.md`.
+For the architectural framing (Safety Sandwich, retry policy, validation gate), see `design/expand.md`. For the deterministic emitter's contract, see `design/expand.md` §3 and §3.5, and `design/compiled-output.md`.
 
 Format below: **"If the LLM sees X, it'll do Y."** Each item is a span-level instruction the consuming model must follow when handed a scaffolded compiled file with marked spans to fill.
 

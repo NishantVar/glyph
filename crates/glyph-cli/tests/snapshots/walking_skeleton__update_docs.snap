@@ -19,4 +19,4 @@ description: Update repository documentation to match current code.
 ### Constraints
 
 - Ensure all documentation accurately reflects the current code.
-- Do not leave references to removed or renamed symbols.
+- Avoid leaving references to removed or renamed symbols.

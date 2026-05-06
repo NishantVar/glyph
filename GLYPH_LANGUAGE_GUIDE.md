@@ -382,6 +382,27 @@ Body-level and flow-top-level markers are **hoisted** into the declaration's `co
 
 `must` should be reserved for genuinely hard constraints. Strong wording (`must`, `never`) inferred from name prefixes also signals hard strength.
 
+#### Canonical form for constraint text
+
+Constraint text is rendered through a locked four-form template:
+
+| Strength × Polarity | Template |
+|---|---|
+| `must` (hard require) | `You must <text>.` |
+| `must avoid` (hard avoid) | `You must never <text>.` |
+| `require` (soft require) | `<Text>.` |
+| `avoid` (soft avoid) | `Avoid <text>.` |
+
+Write the text as a **noun phrase or imperative clause**: lowercase first word, no trailing period. The compiler applies defensive normalization for capitalization and trailing periods, but downstream the text is slotted into the template literally — non-canonical text produces grammatical mismatches.
+
+Examples:
+
+- `avoid: leaving references to removed symbols` → `Avoid leaving references to removed symbols.`
+- `require: tests pass before merging` → `Tests pass before merging.`
+- `must avoid: editing files outside the declared scope` → `You must never editing files outside the declared scope.` *(grammatical mismatch — author should rewrite as `edit files outside the declared scope`)*
+
+A future Repair pass may auto-canonicalize non-conforming text; today, this is the author's responsibility.
+
 ### 7.3 `context:` and context markers
 
 Context is informational background — facts the agent should understand while executing. It does **not** direct action and does **not** carry strength/polarity.

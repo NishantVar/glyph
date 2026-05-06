@@ -159,6 +159,14 @@ pub struct IrCall {
     /// same reason as `IrSkill::return_type`.
     #[serde(skip)]
     pub return_type: Option<TypeTag>,
+    /// Issue #85: the callee block's `output_contract` form, hoisted onto the
+    /// Call so expand- and emit-time gates don't need an arena lookup keyed by
+    /// block name. Populated at lower time for same-file callees and during
+    /// the import fix-up step in `compile_source_with_resolved_imports` for
+    /// cross-file Tier-1 callees. `None` for stdlib calls and for callees
+    /// without a `return <…>` contract.
+    #[serde(skip)]
+    pub callee_output_contract: Option<OutputTargetForm>,
 }
 
 #[derive(Clone, Debug, Serialize)]

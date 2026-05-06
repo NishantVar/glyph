@@ -5,8 +5,8 @@ This document is the single authoritative reference for the Expand pass, with sp
 Expand has two sub-steps:
 
 - **Step 1 (deterministic resolution)** — mechanical resolution of bare names, inline strings, and parameter metadata into the IR. Parameters are preserved as `{param}` slots, not substituted. No LLM. Fully specified in `pipeline.md` Phase 6 and `compiled-output.md`.
-- **Step 2 (LLM reshaping)** — turns the resolved IR into agent-facing prose. This document focuses here.
-- **Phase 6b (structural validation)** — deterministic check that Step 2's output faithfully projects the input IR. Runs between Step 2 and Phase 7 (Emit).
+- **Step 2 (scaffold-with-spans + LLM span fill)** — the deterministic emitter walks the resolved IR and produces a typed Markdown *scaffold* with named spans; an LLM (when wired) fills the spans. Today's stub filler is the only filler shipped; the LLM-side contract is enumerated in `llm_expand_pass.md`. This document focuses here.
+- **Phase 6b (structural validation)** — deterministic check that the merged scaffold + span fills faithfully project the input IR. Runs between Step 2 and Phase 7 (Emit). For scaffolded portions, most 6b checks are satisfied by construction; 6b retains them as defense in depth (see §4).
 
 The ordering Step 1 → Step 2 → 6b is the closing half of the **Safety Sandwich** (`foundations.md` #18): every LLM pass is framed by deterministic work on both sides. Step 1 hands the LLM a fully-resolved IR; Phase 6b checks that the LLM's Markdown still matches the IR structurally before Emit gets it.
 
@@ -14,7 +14,12 @@ The ordering Step 1 → Step 2 → 6b is the closing half of the **Safety Sandwi
 
 Step 2 exists to turn structured IR content into readable agent instructions. After Step 1, every node already carries resolved content (bare names inlined, parameter references preserved as `{param}` slots). If Emit ran directly on the Step 1 output, the result would be correct but stilted — a sequence of short declarative sentences with no shaping, no application of `with` modifiers, no constraint wording calibrated to strength and polarity keywords, and no return folding. Step 2 is the pass that makes the output *useful*, not just *correct*.
 
-Step 2 is also where `with` modifiers are applied. The modifier is the only call-site specialization mechanism in MVP (`pipeline.md` Phase 6), and its application is an LLM task by design: the modifier is natural language, the body it reshapes is natural language, and the output must be natural language. Step 2 is the single place in the pipeline where this reshaping happens.
+Step 2 is split into two layers:
+
+1. **Deterministic emitter (always runs).** Walks the resolved IR and produces a *scaffold-with-spans* — a `Scaffold { chunks: Vec<Chunk> }` value where every chunk is either a literal Markdown string or a typed `Span` placeholder. The scaffold owns all deterministic structure: section headers, list numbering, constraint rendering, return-fold suffixes (Identifier form), pure-`applies()` Branch projection, and the external-file Step template.
+2. **Span fill (LLM when wired; stub today).** Each `SpanKind` carries the IR context the filler needs (see §3.5 Deterministic Emitter Responsibilities and `llm_expand_pass.md` for the per-kind contract). The merger substitutes fills into the scaffold to produce the final Markdown. The scaffold is **internal** — it is not exposed via `--emit-ir`.
+
+Step 2 is also where `with` modifiers are applied. The modifier is the only call-site specialization mechanism in MVP (`pipeline.md` Phase 6), and its application is an LLM task by design: the modifier is natural language, the body it reshapes is natural language, and the output must be natural language. The deterministic emitter exposes the modifier through a `CallBodyShape` span; the LLM weaves it into the Step's prose.
 
 ## 2. Non-Goals
 
@@ -48,15 +53,17 @@ Specifically, Step 2 receives:
 - skill-level metadata: `name`, `description` (if present), `effects` (as a list), the ordered position of each node in `flow:`, and the parameter list (names, types, and defaults if declared — used for generating the `## Parameters` section, where parameters without defaults render with a `(required)` marker per `compiled-output.md`).
 - a **stable, file-local IR node ID** (e.g., `n0`, `n1`, …) on every node, assigned by Lower (`pipeline.md` Phase 4). The IDs are opaque, never appear in compiled output, and are not echoed back by Step 2 (the output contract in §3.4 is Markdown only). They exist so that Phase 6b's count + ordering checks (§4.1) and any internal diagnostic referring to "the IR node Step 2 failed to project" can name a specific node unambiguously across runs and across the parse-then-re-parse boundary inside Repair.
 
-**Whole-skill prompting, not per-node.** Step 2 is invoked **once per skill compilation**, with the full resolved IR visible in a single prompt. This is deliberate:
+**Scaffold-with-spans, not whole-document prompting.** The deterministic emitter walks the resolved IR exactly once per compile and emits a `Scaffold` whose `Span` chunks are the only LLM-visible surface. The LLM is invoked **per span**, not per skill: each span carries the IR context the filler needs (resolved body text, site modifier, condition expression, applies-descriptions side-map, parameter metadata) in its `SpanPayload`. Sibling-node context is provided by reading neighboring literal chunks of the scaffold when required by a span kind.
 
-- Constraint wording depends on the rest of the skill (a soft constraint reads differently alongside a hard constraint than alongside another soft one).
-- `with`-reshaped prose should flow with surrounding steps.
-- Return folding requires the LLM to see the final step in context so the closing sentence reads naturally.
+This is deliberate:
 
-Step 1's output is fully visible to Step 2. In fact, the resolved body text *is* the primary thing Step 2 reshapes. Sibling-node context is provided by the whole-skill prompt; the LLM sees what comes before and after every node.
+- Most of the compiled file is structurally fixed (section headers, list numbering, constraint wording, return-fold suffixes for the Identifier form, pure-`applies()` Branch projection). The deterministic emitter owns that structure; the LLM never produces it.
+- The LLM is load-bearing only where natural-language judgement is needed — `with` modifier weaving, `Description`-form return folds, mixed-condition Branch headers, parameter descriptions. Each of these has a dedicated `SpanKind` (see §3.5).
+- Span-level retry is feasible: a failed `BranchCondition` span can be re-prompted in isolation without re-flowing the rest of the skill (see §5.3).
 
-The prompt given to the LLM is structured, not free-form. It contains: the resolved IR block, the target output template (`## Instructions` with its two sub-sections), the formatting rules from `compiled-output.md` §Formatting Rules, and instructions describing exactly which nodes need reshaping and which pass through.
+Step 1's output is the primary thing Step 2 reshapes — the resolved body text flows into the `CallBodyShape` span unchanged. The deterministic emitter is responsible for placing the span in the correct list-item slot; the LLM is responsible only for the prose inside.
+
+The scaffold is not exposed via `--emit-ir` and is not stable across compiler versions; it is an internal value between the deterministic emitter and the fill site (see `pipeline.md` Phase 6 and the in-tree `glyph-core::emit` module inventory).
 
 ### 3.2 Scoped Constraint Inlining
 
@@ -139,7 +146,33 @@ The output must preserve the following structural invariants:
 7. **No authoring artifacts.** No `generated` markers, no `with` modifier text, no import paths, no IR field names. `{param}` references for declared parameters are the only authoring-adjacent syntax that survives. Local binding references are fully resolved into prose.
 8. **Standard Markdown only.** Headings, numbered lists, bulleted lists, inline emphasis. No HTML, no tables, no code blocks inside steps.
 
-The frontmatter (`name`, `description`, `effects`) is **not** produced by Step 2. It is assembled deterministically by Phase 7 (Emit) from skill-level IR metadata. The `## Parameters` section is assembled by Step 2: it generates a brief description for each parameter from the parameter's name, type, usage context, and default value. Step 2 also produces the `## Instructions` section body.
+The frontmatter (`name`, `description`, `effects`) is **not** produced by Step 2. It is assembled deterministically by Phase 7 (Emit) from skill-level IR metadata. The `## Parameters` section is assembled by Step 2: the deterministic emitter scaffolds each bullet (`- **name** (default: …)` / `(required)` trailer) and emits a `ParamDescription` span where the LLM (when wired) fills the description. Step 2 also produces the `## Instructions` section body.
+
+### 3.5 Deterministic Emitter Responsibilities
+
+The deterministic emitter owns all structure that does not require natural-language judgement. The LLM, when wired, fills only the typed spans listed below. Today's stub filler preserves observable behavior for span kinds where the deterministic fallback reads acceptably (see `llm_expand_pass.md` for the per-kind LLM contract).
+
+**Owned by the deterministic emitter (no span emitted):**
+
+- Section shape: `## Parameters`, `## Instructions`, and the H3 sub-sections `### Context`, `### Steps`, `### Constraints`, `### Procedure: <name>`.
+- Numbered Step list, lettered sub-step list (with letter reset per Branch arm), and bulleted `### Constraints` list.
+- Constraint rendering — the four-form lock (`hard avoid`, `soft avoid`, `hard require`, `soft require`) per `compiled-output.md` §Constraint Rendering.
+- `OutputContract.Identifier` return fold — the locked suffix `, and return that as your result.` (or the standalone form `Return <name> as your result.` for return-only skills/procedures), with `<name>` snake_case → space-separated by the shared `kebab_case` / `snake_to_words` helpers.
+- Pure-`applies()` Branch projection — all three sub-cases from §3.3 (single-arm `Decide whether <desc> applies and, if so:`; multi-arm `Decide which of the following applies and follow only that path:` with `If <description>:` arm headers; `Otherwise:` else-arm header).
+- External-file Call Step template — `Load and follow the procedure in \`{procedure_path}\`.`.
+- `## Parameters` bullet scaffolding — bold name and `(default: …)` / `(required)` trailer.
+- Procedure section ordering (by first reference from `### Steps`) and procedure-name kebab-casing.
+
+**Filled by spans (LLM when wired; stub today):**
+
+| `SpanKind` | What the LLM fills | Stub behavior today | Cross-reference |
+|---|---|---|---|
+| `ParamDescription` | A brief description of the parameter from its name, type, default, and usage context. | Empty string — bullet renders as `- **name** (required)` / `(default: …)`. | `llm_expand_pass.md` §1.5 |
+| `DescriptionReturnFold` | A Step-shaped paraphrase of the `OutputContract.Description` text, folded into the final Step. | Verbatim description text slotted into the locked Description-suffix wrapper. | `llm_expand_pass.md` §1.3 |
+| `BranchCondition` | Natural-language prose for a mixed-condition `if`/`elif` arm header (e.g., `block_x.applies() and not is_dry_run` → `If the user wants a structured plan and this is not a dry run:`). | Verbatim condition expression slotted into `If <expr>:`. | `llm_expand_pass.md` §1.4 |
+| `CallBodyShape` | Step prose that weaves the `with` modifier, scoped constraints, and local-binding cross-references into the resolved body. | Verbatim resolved body — modifier and scoped constraints currently ignored. | `llm_expand_pass.md` §1.1, §1.2 |
+
+The scaffold-with-spans IR (`Scaffold`, `Chunk`, `SpanRef`, `SpanKind`, `SpanPayload`) is internal to the `glyph-core::emit` module. It is not exposed via `--emit-ir` and is not stable across compiler versions.
 
 ## 4. Phase 6b: Validation Gate
 
@@ -255,7 +288,9 @@ All 6b diagnostics are classified `error`, not `repairable`. Phase 3 Repair oper
 
 ## 5. Failure Policy
 
-Step 2 is not infallible. There is **no deterministic fallback emitter**: the `with` modifier is the construct that makes a mechanical projection structurally low-quality (its weaving into prose has no good deterministic phrasing — see `pipeline.md` §Phase 6 and the discussion in `foundations.md` #18 of where the LLM is load-bearing). Maintaining a second emitter that is always uglier than the primary path would erode trust in the abstraction every time it triggered. Step 2 either succeeds (after at most two retries per failure mode, see §5.5) or hard-fails; the user re-runs.
+Step 2 is not infallible. The deterministic emitter cannot fail — its output is a function of the IR — so the failure surface is the span-fill layer. Per-span retry is the unit of failure handling: when a span fill is rejected by the merger or by Phase 6b, the deterministic structure is preserved and only the failing span IDs are retried in isolation. Step 2 either succeeds (after at most two retries per failure mode, see §5.5) or hard-fails; the user re-runs.
+
+There is **no deterministic fallback for span content** that requires natural-language judgement: the `with` modifier is the construct that makes a mechanical projection structurally low-quality (its weaving into prose has no good deterministic phrasing — see `pipeline.md` §Phase 6 and the discussion in `foundations.md` #18 of where the LLM is load-bearing). Maintaining a second filler that is always uglier than the primary path would erode trust in the abstraction every time it triggered. Span kinds whose stub fill reads acceptably today (`BranchCondition` verbatim slotting, `DescriptionReturnFold` verbatim slotting) are documented as such in §3.5; they are not architectural fallbacks — they are explicit, span-scoped behaviors the stub filler exposes until the LLM pass lands.
 
 ### 5.1 Transient Failure (network or 5xx)
 
@@ -276,7 +311,7 @@ If both retries also fail, emit the specific 6b structural diagnostic that fired
 
 ### 5.3 Phase 6b Validation Failure (structural rejection)
 
-Up to **two retries** with the same info-rich feedback model as §5.2 — explicitly **revise-with-feedback**, not clean-slate regeneration. Each retry reads the previous attempt's `foo.md` and fixes the specific 6b violations rather than re-projecting the IR from scratch. Each retry's prompt includes:
+Up to **two retries per failing span** with the same info-rich feedback model as §5.2 — explicitly **revise-with-feedback**, not clean-slate regeneration. The deterministic scaffold is preserved; only the spans whose fills produced the 6b violation are retried. Each retry reads the previous attempt's span fill and fixes the specific 6b violations rather than re-projecting the IR from scratch. Each retry's prompt includes:
 
 1. **The original prompt.**
 2. **The model's previous failed output** — verbatim.
@@ -301,7 +336,7 @@ Semantic wrongness — output that passes 6b but reshapes prose in a way the aut
 |---|---|
 | Transient (network/5xx) | 3 retries with exponential backoff |
 | Malformed output | 2 retries with info-rich feedback (original prompt + previous failed output + violation report + edit directive) |
-| Phase 6b validation failure | 2 retries with info-rich feedback (original prompt + previous failed output + 6b violation report by IR node ID + edit directive) |
+| Phase 6b validation failure | 2 retries **per failing span** with info-rich feedback (original prompt + previous failed span fill + 6b violation report by IR node ID + edit directive). The deterministic structure is preserved across retries. |
 
 These numbers are compiler-config values, not hardcoded constants.
 

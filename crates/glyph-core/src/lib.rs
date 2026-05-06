@@ -28,7 +28,9 @@ pub mod validate_output;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::ast::{Decl, ImportKind};
+use crate::ast::{Decl, ImportKind, ReturnExpr};
+use crate::ir::OutputTargetForm;
+use crate::output_target::OutputTargetExpr;
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::ir::IrNode;
 use crate::span::{LineIndex, Span};
@@ -436,6 +438,13 @@ pub struct ExportedNames {
     /// `G::analyze::missing-required-arg` when a positional argument for a
     /// required parameter is omitted in a cross-file call.
     pub block_params: HashMap<String, Vec<ast::Param>>,
+    /// Issue #85: per-exported-block lowered `OutputTargetForm`, keyed by the
+    /// block's name. Populated from `ExportBlockDecl::terminal_return` so the
+    /// consumer can hoist the form onto the cross-file `IrCall` during the
+    /// import fix-up step in `compile_source_with_resolved_imports`. This is
+    /// the cross-file counterpart of `lower::block_callee_output_form` /
+    /// `export_block_callee_output_form` for same-file callees.
+    pub block_output_contracts: HashMap<String, OutputTargetForm>,
 }
 
 /// Extract the exported names from a parsed source file.
@@ -447,6 +456,7 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
         privates: HashSet::new(),
         block_return_types: HashMap::new(),
         block_params: HashMap::new(),
+        block_output_contracts: HashMap::new(),
     };
     for decl in &file.decls {
         match decl {
@@ -470,6 +480,19 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
                 exports
                     .block_params
                     .insert(b.node.name.clone(), b.node.params.clone());
+                if let Some(form) = b.node.terminal_return.as_ref().and_then(|expr| match expr {
+                    ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id)) => {
+                        Some(OutputTargetForm::Identifier(id.name.clone()))
+                    }
+                    ReturnExpr::OutputTarget(OutputTargetExpr::Description(d)) => {
+                        Some(OutputTargetForm::Description(d.content.clone()))
+                    }
+                    _ => None,
+                }) {
+                    exports
+                        .block_output_contracts
+                        .insert(b.node.name.clone(), form);
+                }
             }
             Decl::Block(b) => {
                 exports.privates.insert(b.node.name.clone());
@@ -1217,12 +1240,22 @@ fn emit_library_procedures(path: &Path, enable_effects: bool) -> Vec<(String, St
                 .collect();
 
             let desc = eb.node.description.as_deref().unwrap_or("");
+            let output_form = match &eb.node.terminal_return {
+                Some(ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id))) => {
+                    Some(OutputTargetForm::Identifier(id.name.clone()))
+                }
+                Some(ReturnExpr::OutputTarget(OutputTargetExpr::Description(d))) => {
+                    Some(OutputTargetForm::Description(d.content.clone()))
+                }
+                _ => None,
+            };
             let markdown = emit::emit_procedure(
                 &eb.node.name,
                 desc,
                 &eb.node.effects,
                 &params,
                 &eb.node.flow_strings,
+                output_form.as_ref(),
                 enable_effects,
             );
 
@@ -1309,6 +1342,11 @@ struct ResolvedImports {
     /// `G::analyze::missing-required-arg` enforcement at cross-file call
     /// sites — see `analyze_with_imports`.
     block_params: HashMap<String, Vec<ast::Param>>,
+    /// Issue #85: aliased imported-block output-contract forms, keyed by the
+    /// consumer-side local name. Hoisted onto cross-file Tier-1 `IrCall`
+    /// nodes so expand- and emit-time gates can read the callee's OC without
+    /// an arena lookup.
+    block_output_contracts: HashMap<String, OutputTargetForm>,
 }
 
 /// Build the full resolved import data for a consumer file.
@@ -1327,6 +1365,7 @@ fn build_resolved_imports(
         block_descriptions: HashMap::new(),
         block_return_types: HashMap::new(),
         block_params: HashMap::new(),
+        block_output_contracts: HashMap::new(),
     };
 
     let source = match std::fs::read_to_string(consumer) {
@@ -1387,6 +1426,15 @@ fn build_resolved_imports(
                             if let Some(params) = exports.block_params.get(&imp_name.name.node) {
                                 result.block_params.insert(local.to_string(), params.clone());
                             }
+                            // Issue #85: re-key the exporter-side
+                            // output-contract form under the consumer-side
+                            // local name so the cross-file Tier-1 fix-up
+                            // hoists it onto the IrCall.
+                            if let Some(form) = exports.block_output_contracts.get(&imp_name.name.node) {
+                                result
+                                    .block_output_contracts
+                                    .insert(local.to_string(), form.clone());
+                            }
                         }
                     }
                 }
@@ -1416,7 +1464,13 @@ fn build_resolved_imports(
                         // PRD #103 / Slice 2 (#105): mirror the alias prefix
                         // on parameter lists.
                         if let Some(params) = exports.block_params.get(name) {
-                            result.block_params.insert(qualified, params.clone());
+                            result.block_params.insert(qualified.clone(), params.clone());
+                        }
+                        // Issue #85: mirror the alias prefix on output-contract
+                        // forms so cross-file Tier-1 inline calls hoist the
+                        // imported callee's OC onto the IrCall.
+                        if let Some(form) = exports.block_output_contracts.get(name) {
+                            result.block_output_contracts.insert(qualified, form.clone());
                         }
                     }
                 }
@@ -1571,6 +1625,25 @@ fn compile_source_with_resolved_imports(
                     c.procedure_path = Some(proc_path.clone());
                 } else if let Some(body) = resolved_imports.block_bodies.get(&c.target) {
                     c.resolved_body = Some(body.clone());
+                } else if resolved_imports.block_output_contracts.contains_key(&c.target) {
+                    // Return-only imported helper: the producer's body is
+                    // empty (only `return <…>`), so it isn't in
+                    // `block_bodies`. Materialize an empty resolved_body so
+                    // the Tier-1 inline path treats it as inlinable rather
+                    // than leaving `projection_tier = None`, which panics in
+                    // the scaffold walk. The empty-body guard added in the
+                    // emit pass produces a standalone return step.
+                    c.resolved_body = Some(String::new());
+                }
+            }
+            // Issue #85: hoist the imported callee's OC form onto the Call so
+            // expand- and emit-time gates can read it without crossing the
+            // import boundary again. Same-file callees are populated at lower
+            // time in `lower::*_callee_output_form`; this is the cross-file
+            // counterpart.
+            if c.callee_output_contract.is_none() {
+                if let Some(form) = resolved_imports.block_output_contracts.get(&c.target) {
+                    c.callee_output_contract = Some(form.clone());
                 }
             }
         }
@@ -3206,12 +3279,12 @@ skill main()
                     markdown
                 );
                 assert!(
-                    markdown.contains("When the user wants fast processing."),
+                    markdown.contains("If When the user wants fast processing:"),
                     "expected fast_mode description in output:\n{}",
                     markdown
                 );
                 assert!(
-                    markdown.contains("When the user wants thorough processing."),
+                    markdown.contains("If When the user wants thorough processing:"),
                     "expected slow_mode description in output:\n{}",
                     markdown
                 );

@@ -165,6 +165,19 @@ Build-phase diagnostics cover project-level orchestration concerns rather than a
 
 Phase 6b structural validation, implemented in the `glyph validate-output` subcommand. These are **compiler-scope** diagnostics — deterministic checks that Step 2's Markdown output faithfully projects the input IR. All 27 are classification `error`. The canonical specification lives in `expand.md` §4.2; the workflow integration is in `agent-skill.md` §`glyph validate-output`.
 
+**By-construction satisfaction.** With the scaffold-with-spans architecture (`expand.md` §3.5), the deterministic emitter owns all section structure and list cardinality. The diagnostics in the table below marked **(by construction)** cannot fire for output produced by the scaffold path — the structure that they would catch is emitted by the deterministic emitter, not the LLM. 6b retains them as **defense in depth**: they remain enforced for hand-written or regenerated output (e.g., a Step 2 retry that reads and rewrites `foo.md` directly rather than re-filling spans), and they continue to fire for any future migration where the LLM is given a wider surface than scaffolded spans.
+
+By-construction-satisfied for scaffolded portions:
+
+- `extra-h2`, `missing-instructions`, `extra-h3`
+- `step-count-mismatch`, `step-order-mismatch`
+- `constraint-count-mismatch`, `context-count-mismatch`
+- `params-section-mismatch`, `params-section-missing`, `params-section-spurious`
+- `frontmatter-returned`
+- `procedure-count-mismatch`, `procedure-name-mismatch`
+- `procedure-step-count-mismatch`, `procedure-ref-missing`, `procedure-ref-dangling`
+- `procedure-duplicate`, `procedure-order`
+
 | ID | Classification | Trigger |
 |---|---|---|
 | `G::expand::extra-h2` | error | Step 2 emitted an H2 other than `## Instructions` |

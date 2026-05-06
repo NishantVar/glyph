@@ -107,7 +107,9 @@ tests/corpus/
 
 Each file compiles end-to-end without diagnostics (or with only warnings). Snapshot = compiled `.md` output.
 
-The compiler produces **mechanical expansion** — resolved body text from Step 1, without LLM prose reshaping. `with` modifiers are recorded in the IR (`.ir.json`) but not applied to the `.md`. Call bodies are expanded using their resolved text. This is structurally correct output; the agent's optional Step 2 post-processing refines prose quality.
+The compiler produces **scaffolded expansion** — the deterministic emitter (`expand.md` §3.5) walks the resolved IR and produces the final Markdown directly for the scaffold-owned portions, with the stub filler supplying span content. `with` modifiers are recorded in the IR (`.ir.json`) and surfaced through the `CallBodyShape` span (today's stub ignores the modifier). Call bodies are expanded using their resolved text. The agent's optional Step 2 post-processing refines prose quality for span content only.
+
+**Snapshot byte-stability.** Compiled-output snapshot tests are byte-stable for scaffolded portions: section headers, list numbering, the locked four-form constraint template, the `Identifier`-form return-fold suffix, pure-`applies()` Branch projection, the external-file Call Step template, and the `## Parameters` skeleton are all deterministic. The corpus may grow to cover the four-form constraint template explicitly so each (strength, polarity) tuple has at least one fixture. Span-filled portions remain byte-stable only as long as the stub filler is the only filler; once the LLM filler is wired, span content stops being byte-stable across runs (see `expand.md` §7).
 
 | File | What it tests |
 |------|---------------|

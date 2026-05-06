@@ -58,3 +58,37 @@ the symptom, the impact, and the proposed fix.
   comment entirely. Narrow edge case (rare in agent-skill descriptions) but a
   real correctness bug. Fix: track backslash run length and treat the quote as
   closing when the run length is even.
+
+## Emitter (issue #118 follow-ups, codex pass-N P2/P3)
+
+- **`emit_ir.rs` loses `callee_output_contract` for imported Tier-1 callees.**
+  `crates/glyph-core/src/emit_ir.rs:269-271` derives the call's
+  `callee_output_contract` field by looking up a same-file `IrBlock` in the
+  arena. After fix(#85) the resolved `IrCall.callee_output_contract` is
+  populated for imported Tier-1 callees during the cross-file fix-up step, but
+  `emit_ir` doesn't read it — so `--emit-ir` JSON emits `null` for the field
+  even when the call actually has a resolved output contract. Compiled `.md`
+  is unaffected (the emit-time gate reads the field directly off `IrCall`),
+  but downstream IR-JSON consumers (LSP, `validate-output`) lose the
+  return-contract metadata and can't reliably run imported output-target
+  leak checks or return-fold logic. **Fix:** in `emit_ir.rs:269-271`, prefer
+  `c.callee_output_contract.clone()` when it's `Some`, and only fall back to
+  the arena lookup when it's `None` (same-file callees that haven't been
+  hoisted yet — though after lower they always are). Add a regression test
+  asserting the field is non-null in the IR JSON for an imported Tier-1
+  callee with `-> <identifier>`.
+
+- **`emit/constraint.rs::normalize` lowercases acronyms at the leading
+  character.** `crates/glyph-core/src/emit/constraint.rs:25-36` lowercases the
+  first uppercase character of every hard constraint and every soft `avoid`
+  body before rendering. This corrupts intentionally-capitalized leading
+  tokens (acronyms, product names): `avoid: HTTP requests without retries`
+  renders as `Avoid hTTP requests without retries.` instead of
+  `Avoid HTTP requests without retries.` Same applies to `must` and
+  `must avoid`. **Fix:** only lowercase the leading character when the
+  token is a single uppercase letter followed by lowercase (i.e. a normal
+  capitalized English word), or simpler: strip the leading-character
+  transformation entirely and trust author casing. Add a corpus test with
+  an acronym-leading constraint body. Pre-existing — separate from the
+  scaffold-with-spans branch but worth fixing as part of the locked-template
+  hardening pass.
