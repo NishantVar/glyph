@@ -182,10 +182,10 @@ If the agent's conflict assessment is malformed (can't parse its own output as t
 ## Phase 6 Step 2: Prose Reshaping
 
 After `glyph compile` exits 0, the compiler has written:
-- `foo.md` — mechanical Markdown (Phase 7 output). Frontmatter is final. `## Parameters` contains the parameter list skeleton (names, types, and either a default value or a `(required)` marker per parameter) but descriptions are placeholder prose. `## Instructions` contains mechanically expanded prose.
+- `foo.md` — Markdown produced by the deterministic emitter (Phase 7 output). Frontmatter is final. Section structure, list numbering, constraint rendering (the locked four-form template), pure-`applies()` Branch projection, the external-file Call Step template, and the `Identifier`-form return-fold suffix are final. `## Parameters` contains the parameter list skeleton (names, types, and either a default value or a `(required)` marker per parameter); descriptions are placeholder prose to be filled. Where the agent is responsible for prose, the deterministic emitter has marked typed spans with `SpanKind` ∈ `{ParamDescription, DescriptionReturnFold, BranchCondition, CallBodyShape}` (see `expand.md` §3.5).
 - `foo.ir.json` — the full resolved IR (post-Step-1) as JSON.
 
-The agent's job: **rewrite the `## Parameters` descriptions and the `## Instructions` section** of `foo.md` using the IR as a guide, producing human-quality prose. The frontmatter is **not touched** — it is already final from the compiler. For `## Parameters`, Step 2 generates a brief description for each parameter from the parameter's name, type, usage context, and default value (if any); it must not add, remove, or rename parameters (the parameter list skeleton is compiler-owned).
+The agent's job is **scoped to filling spans** — not regenerating Markdown. The agent rewrites span content **in place** on `foo.md`, producing human-quality prose for the LLM-owned slots while preserving every literal chunk emitted by the deterministic emitter. The full per-span contract is enumerated in `llm_expand_pass.md`. The frontmatter, section headers, list numbering, and the locked-template wording (constraints, return-fold suffixes, external-file Step, pure-`applies()` Branch headers) are **not touched** — they are deterministic. For `## Parameters`, the agent fills the `ParamDescription` span for each parameter from the parameter's name, type, usage context, and default value (if any); it must not add, remove, or rename parameters (the parameter list skeleton is compiler-owned).
 
 ### What the agent rewrites
 
@@ -195,20 +195,13 @@ The agent reads `foo.ir.json` and rewrites the `## Instructions` section to:
 
 2. **Apply `with` modifiers.** The `site_modifier` field on Call nodes contains emphasis text. Weave it into the Step prose naturally. The modifier string must **not** appear verbatim in the output — it shapes the wording, it doesn't get quoted.
 
-3. **Reword constraints by strength and polarity.** Use these patterns:
+3. **Constraints are deterministic — not the agent's job.** The locked four-form template (`compiled-output.md` §Constraint Rendering, mirrored in `GLYPH_LANGUAGE_GUIDE.md` §7.2 canonical form) is rendered by the compiler. The agent does **not** reword constraints, regenerate the `### Constraints` section, or paraphrase strength/polarity wording.
 
-   | Strength | Polarity | Wording pattern |
-   |---|---|---|
-   | `hard` | `require` | "You **must** [action]. This is non-negotiable." |
-   | `hard` | `avoid` | "**Never** [action] under any circumstances." |
-   | `soft` | `require` | "Prefer to [action] when possible." |
-   | `soft` | `avoid` | "Avoid [action] unless necessary." |
+4. **Project mixed-condition Branch arm headers (`BranchCondition` span only).** Pure-`applies()` Branches and the `Otherwise:` arm header are emitted deterministically per `expand.md` §3.3. The agent fills only the headers for arms whose condition is a code-shaped expression that mixes `applies()` calls with other operators — e.g., `block_x.applies() and not is_dry_run` → `If the user wants a structured plan and this is not a dry run:`. Letters reset per arm (`a.`, `b.`, `c.`) and are emitted by the deterministic emitter.
 
-4. **Project conditionals.** A `Branch` node becomes a single numbered Step with lettered sub-steps per arm. Condition headers use `If <condition>:` and `Otherwise:`. Letters reset per arm (`a.`, `b.`, `c.`).
+5. **Fold `Description`-form returns (`DescriptionReturnFold` span).** When the `OutputContract.form` is `Description("…")`, the agent paraphrases the description into a Step-shaped sentence inside the locked Description-suffix wrapper. The `Identifier` form (`return <name>`) is folded deterministically — the agent does not touch it.
 
-5. **Fold returns.** The `Return` node folds into the final Step's closing sentence. E.g., "…and return that as your result."
-
-6. **Render procedure references.** For `same_file_procedure` projection Call nodes, the Step says "(follow the <name> procedure below)" and the `### Procedure: <name>` section contains the callee's expanded flow. For `external_file` projection, the Step says "load and follow the procedure in `<path>`."
+6. **Render procedure references.** For `same_file_procedure` projection Call nodes, the Step prose says "(follow the <name> procedure below)" and the `### Procedure: <name>` section contains the callee's expanded flow. For `external_file` projection, the Step prose is the locked template `Load and follow the procedure in \`{procedure_path}\`.` — emitted deterministically; the agent does not touch it.
 
 7. **Preserve `{param}` references exactly.** Parameter slots like `{scope}` pass through unchanged. Don't invent new ones. Don't drop existing ones.
 

@@ -56,10 +56,12 @@ Constraint {
 }
 ```
 
-**Strength** (advisory — affects compiled prose framing, not enforced at runtime; target agent compliance is not guaranteed):
+**Strength** (selects the locked rendering template; target agent compliance is not enforced at runtime):
 
 - `soft` — should be followed; default strength.
 - `hard` — must always be followed; strongest contract.
+
+The `(strength, polarity)` tuple selects exactly one of the four locked rendering templates. The canonical templates and the canonical-form rules for the body text live in `compiled-output.md` §Constraint Rendering and `GLYPH_LANGUAGE_GUIDE.md` §7.2. The deterministic emitter performs the lookup; the LLM never produces constraint prose.
 
 **Polarity:**
 

@@ -244,6 +244,7 @@ mod tests {
             projection_tier: None,
             procedure_path: None,
             return_type: None,
+            callee_output_contract: None,
         }));
         arena.set_root_skill(skill_id);
         let err = validate(&arena).unwrap_err();
@@ -276,6 +277,7 @@ mod tests {
             projection_tier: None,
             procedure_path: None,
             return_type: None,
+            callee_output_contract: None,
         }));
         // Block "foo" that calls itself (direct recursion).
         arena.push(IrNode::Block(IrBlock {
@@ -352,6 +354,7 @@ mod tests {
             projection_tier: None,
             procedure_path: None,
             return_type: None,
+            callee_output_contract: None,
         }));
         // Block "foo" calls "bar".
         arena.push(IrNode::Block(IrBlock {

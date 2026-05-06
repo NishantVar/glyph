@@ -126,24 +126,24 @@ parameter placeholder, re-introduce it in the output prose — silent dropping
 is forbidden.
 """
 
-const invented_param_refs = "Writing a parameter placeholder for any name not declared in the skill's InputContract."
+const invented_param_refs = "writing a parameter placeholder for any name not declared in the skill's InputContract"
 
-const extra_or_reordered_content = "Adding, merging, splitting, or reordering Steps, sub-steps, constraints, sections, or commentary relative to the IR's flow order."
+const extra_or_reordered_content = "adding, merging, splitting, or reordering Steps, sub-steps, constraints, sections, or commentary relative to the IR's flow order"
 
-const leaked_modifier_text = "Quoting a `with` modifier string verbatim in the output — modifiers must be consumed by being woven into prose, never echoed."
+const leaked_modifier_text = "quoting a `with` modifier string verbatim in the output — modifiers must be consumed by being woven into prose, never echoed"
 
-const surviving_local_refs = "Leaving any local_ref placeholder token unresolved in the compiled output."
+const surviving_local_refs = "leaving any local_ref placeholder token unresolved in the compiled output"
 
-const leaked_output_target_tokens = "Letting an output-target token, its surrounding angle brackets, or its verbatim quoted text survive in the compiled Markdown."
+const leaked_output_target_tokens = "letting an output-target token, its surrounding angle brackets, or its verbatim quoted text survive in the compiled Markdown"
 
-const authoring_artifacts = "Letting `generated` markers, import paths, IR field names, IR node IDs, or raw condition expressions appear in the output."
+const authoring_artifacts = "letting `generated` markers, import paths, IR field names, IR node IDs, or raw condition expressions appear in the output"
 
-const concise_step_prose = "Each non-conditional Step and each Branch sub-step is at most three sentences, typically one or two."
+const concise_step_prose = "each non-conditional Step and each Branch sub-step is at most three sentences, typically one or two"
 
-const concise_constraint_prose = "Each `### Constraints` bullet is a single sentence."
+const concise_constraint_prose = "each `### Constraints` bullet is a single sentence"
 
-const single_clause_param_description = "A parameter description is a single short clause that complements the deterministic name/type/default fragment, not a paragraph."
+const single_clause_param_description = "a parameter description is a single short clause that complements the deterministic name/type/default fragment, not a paragraph"
 
-const html_tables_or_code_blocks = "Using HTML, tables, or fenced code blocks inside a Step's body — inline emphasis is fine, but structural Markdown is the deterministic emitter's job."
+const html_tables_or_code_blocks = "using HTML, tables, or fenced code blocks inside a Step's body — inline emphasis is fine, but structural Markdown is the deterministic emitter's job"
 
-const frontmatter_or_commentary = "Emitting YAML frontmatter, JSON, IR, or commentary in the output channel — the output is Markdown text only."
+const frontmatter_or_commentary = "emitting YAML frontmatter, JSON, IR, or commentary in the output channel — the output is Markdown text only"

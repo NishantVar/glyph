@@ -252,18 +252,23 @@ All mechanical substitutions happen first, before any LLM is involved:
 
 After Step 1, every IR node has resolved content — bare names and inline strings are concrete, `{param}` references for declared parameters remain as named slots, and `{name}` references to local bindings are tagged as `local_ref` for Step 2 to resolve into prose. An unresolved bare name after this step is a compile error. A `{name}` slot whose name does not resolve to either a declared parameter or a local binding in scope is also a compile error. The result is a **resolved IR** that could theoretically be emitted as-is (it would be correct but stilted).
 
-#### Step 2: LLM reshaping (only where needed)
+#### Step 2: Deterministic emitter + LLM span fill (when wired)
 
-The LLM receives the resolved IR nodes and produces natural-language prose. It does not see raw parameters or unresolved names — only concrete content. Its job is to turn structured data into readable agent instructions.
+Step 2 is split into two layers (see `expand.md` §1 and §3.5):
 
-- **Call-node expansion.** Each resolved `Call` node becomes a full prose instruction sentence. The LLM receives the resolved body text (with `{param}` references preserved as named slots and `local_ref` slots tagged for resolution) and the call's context (what role it plays, what comes before and after). The LLM must preserve `{param}` references in its output and resolve `local_ref` slots into natural-language cross-references (e.g., `{diagnosis}` → "the diagnosis from your earlier analysis").
-- **`with` modifier application.** If a call carries a `site_modifier`, the LLM uses it as a reshaping prompt applied to the resolved body text. The modifier steers tone, emphasis, and detail — it does not introduce new parameters or change the call's semantics. The modifier is consumed and does not appear in output. Parameter references in the body text are preserved through the reshaping.
-- **Constraint rewording.** Each `Constraint` node gets wording shaped by its strength and polarity. `Constraint(strength: soft, polarity: avoid)` renders as a prohibition; `Constraint(strength: hard, polarity: require)` renders with strongest possible wording; `Constraint(strength: soft, polarity: require)` renders with standard wording.
-- **Conditional projection.** Each `if`/`elif`/`else` chain becomes a single numbered Step with lettered sub-steps per arm. Each arm is introduced by a condition header, and each Step-projecting node inside the arm becomes a lettered sub-step (`a.`, `b.`, `c.`, resetting per arm). Nested branches flatten into prose within their parent sub-step (see `compiled-output.md` §Constraint Rendering).
-- **Return folding.** The `return` expression becomes the closing sentence of the final numbered step.
-- **Description generation.** `description:` should always be present after Repair (Phase 3 generates it if the author omitted it). If Repair fails to converge (e.g., `G::analyze::missing-description` persists after 3 iterations), the build hard-fails via `G::repair::no-convergence` — the missing description never reaches Expand. There is no separate `G::validate::missing-description` diagnostic; the Repair convergence check is the safety net.
+1. **Deterministic emitter (always runs).** Walks the resolved IR and produces a typed Markdown *scaffold* — `Scaffold { chunks: Vec<Chunk> }` where every chunk is either a literal Markdown string or a typed `Span` placeholder. The scaffold owns all deterministic structure: section headers, list numbering, the locked four-form constraint template, the `Identifier`-form return-fold suffix, pure-`applies()` Branch projection (all three sub-cases per `compiled-output.md` §Description-Driven Branch Projection), and the external-file Call Step template (`Load and follow the procedure in \`{procedure_path}\`.`).
+2. **Span fill (LLM when wired; stub today).** Each `SpanKind` (`ParamDescription`, `DescriptionReturnFold`, `BranchCondition`, `CallBodyShape`) carries the IR context the filler needs. The full per-span LLM contract is enumerated in `llm_expand_pass.md`. The merger substitutes fills into the scaffold to produce the final Markdown.
 
-Not every node needs the LLM. After Step 1, nodes that are already complete prose (inline strings, resolved `const` references) skip Step 2 entirely. The LLM only touches nodes that need reshaping: call expansions, `with`-modified calls, constraint rewording, conditional flattening, return folding, and parameter description generation for the `## Parameters` section.
+What the LLM (when wired) produces, by `SpanKind`:
+
+- **`CallBodyShape`** — Step prose that weaves the resolved body text, the `site_modifier` (the `with "…"` clause), scoped constraints, and local-binding cross-references. The literal modifier string and `{name}` tokens for local refs must not survive.
+- **`BranchCondition`** — natural-language prose for a mixed-condition `if`/`elif` arm header (e.g., `block_x.applies() and not is_dry_run` → `If the user wants a structured plan and this is not a dry run:`). Pure-`applies()` Branches and `Otherwise:` headers are emitted deterministically.
+- **`DescriptionReturnFold`** — a Step-shaped paraphrase of `OutputContract.Description("…")` text inside the locked Description-suffix wrapper. The `Identifier` form is folded deterministically.
+- **`ParamDescription`** — a brief description of each parameter, slotted into the deterministically-scaffolded `## Parameters` bullet.
+
+**Conditional LLM invocation.** Skills with no spans bypass the LLM entirely — the deterministic emitter produces complete, byte-stable Markdown for those skills. The LLM is invoked per span, not per skill; failed spans retry in isolation (`expand.md` §5.3) without re-flowing the deterministic structure.
+
+**Description generation.** `description:` should always be present after Repair (Phase 3 generates it if the author omitted it). If Repair fails to converge (e.g., `G::analyze::missing-description` persists after 3 iterations), the build hard-fails via `G::repair::no-convergence` — the missing description never reaches Expand. There is no separate `G::validate::missing-description` diagnostic; the Repair convergence check is the safety net.
 
 ### How `with` works: the modifier as a reshaping prompt
 

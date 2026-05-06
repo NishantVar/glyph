@@ -17,6 +17,21 @@ Locked implementation decisions for the Glyph MVP compiler. These gate the first
 
 **Rationale:** The Safety Sandwich architecture divides the pipeline into deterministic and LLM-assisted phases. For MVP, the compiler owns only the deterministic phases. The two-crate split (binary + library) is the minimum structure — it lets integration tests call the library directly and keeps the binary thin.
 
+### Emit module inventory (`glyph-core::emit`)
+
+The deterministic emitter is split into focused modules per `expand.md` §3.5:
+
+| Module | Role |
+|---|---|
+| `emit::scaffold` | Walks the resolved IR and builds the `Scaffold { chunks: Vec<Chunk> }` value. Owns section/list scaffolding, return-fold suffix selection, and the standalone-return path for return-only skills/procedures. |
+| `emit::merger` | Substitutes span fills into the scaffold to produce the final Markdown string. Validates that every emitted span has a fill and rejects unknown span IDs. |
+| `emit::stub_fill` | Today's deterministic span filler. Replaced or per-`SpanKind` overridden when the LLM Expand pass lands. |
+| `emit::constraint` | Locked four-form constraint renderer (`hard avoid`, `soft avoid`, `hard require`, `soft require`) per `compiled-output.md` §Constraint Rendering. |
+| `emit::branch` | Pure-`applies()` Branch projection — three sub-cases (single-arm, multi-arm, multi-arm with `else`) — and the mixed-condition `BranchCondition` span emission. |
+| `emit::templates` | Locked text helpers shared across the emitter and `validate_output`: `append_identifier_suffix`, `append_description_suffix`, `standalone_return_identifier`, `standalone_return_description`, `external_file_step`, `kebab_case`. |
+
+The `Scaffold`, `Chunk`, `SpanRef`, `SpanKind`, and `SpanPayload` types are internal to `emit::scaffold` and are **not** exposed via `--emit-ir` or any public API surface.
+
 ## A2 — Parser
 
 **Decision: Hand-rolled recursive descent parser on a hand-rolled tokenizer.**

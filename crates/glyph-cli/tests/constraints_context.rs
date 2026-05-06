@@ -126,14 +126,14 @@ fn body_level_avoid_hoists_to_constraints_section() {
     assert_eq!(result.status.code(), Some(0));
 
     let md = std::fs::read_to_string(&out).expect("compiled .md file is missing");
-    // Avoid polarity should render as "Do not ..." phrasing.
+    // Avoid polarity should render as "Avoid ..." phrasing (Soft/Avoid form).
     assert!(
         md.contains("### Constraints"),
         "expected ### Constraints section; got:\n{}",
         md
     );
     assert!(
-        md.contains("Do not leave references to removed or renamed symbols."),
+        md.contains("Avoid leaving references to removed or renamed symbols."),
         "expected avoid-polarity constraint phrasing; got:\n{}",
         md
     );

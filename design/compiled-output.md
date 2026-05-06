@@ -239,11 +239,15 @@ effects: [reads_files]
 
 **File output path:** Procedure files are placed in a subdirectory named after the source file. The procedure filename is the **kebab-case** form of the export block's `snake_case` identifier (each `_` → `-`, no other transformation). E.g., `review_tools.glyph.md` containing `export block review_code(...)` produces `review_tools/review-code.md`. The `.glyph` infix from the source filename is dropped for compiled artifacts: source files are `*.glyph.md`, compiled outputs (top-level skills and procedure files alike) are `*.md`. The same kebab-case rule governs both the on-disk filename and the H3 heading inside same-file procedure sections (see §Same-File Procedure Sections), so a given block always renders under a single canonical name regardless of projection tier.
 
-**Referencing from Steps:** The referencing Step includes a file path — e.g., "load and follow the procedure in `review_tools/review-code.md`." When inside a conditional branch, the load instruction is part of the conditional Step prose:
+**Referencing from Steps (locked template):** The Step prose for an `external_file` Call is the locked template `Load and follow the procedure in \`{procedure_path}\`.`. The `{procedure_path}` is substituted from `IrCall.procedure_path`. The deterministic emitter renders this verbatim; there is no LLM involvement for the top-level case. When inside a conditional branch arm, the same locked template is emitted as a sub-step within the arm's prose:
 
 ```md
-2. If the files have security concerns, load and follow the procedure in
-   `review_tools/review-code.md`, focusing on security vulnerabilities.
+2. Load and follow the procedure in `review_tools/review-code.md`.
+```
+
+```md
+3. If the files have security concerns:
+   a. Load and follow the procedure in `review_tools/review-code.md`.
 ```
 
 **`with` modifier interaction:** The `with` modifier shapes the referencing Step's prose (e.g., "focusing on security vulnerabilities"), not the external procedure file. The procedure file is compiled independently and stays generic. The consuming agent applies the Step's emphasis while following the procedure.
@@ -254,8 +258,18 @@ effects: [reads_files]
 
 ### Constraint Rendering
 
-- **Strength** affects wording and prominence. `hard` renders as strongest non-negotiable rules; `soft` renders as standard rules. Strength is advisory prose framing — not enforced; target agent compliance is not guaranteed.
-- **Polarity** affects phrasing. `polarity: require` renders as a positive obligation; `polarity: avoid` renders as a prohibition.
+Constraint text is rendered through a **locked four-form template** by the deterministic emitter. The (strength, polarity) tuple selects exactly one of the four forms; the LLM never produces constraint prose. The canonical authoring form for the body text is specified in `GLYPH_LANGUAGE_GUIDE.md` §7.2 (lowercase first word, no trailing period; the compiler applies defensive normalization for capitalization and trailing periods).
+
+| Strength × Polarity | Template |
+|---|---|
+| `must` (hard require) | `You must <text>.` |
+| `must avoid` (hard avoid) | `You must never <text>.` |
+| `require` (soft require) | `<Text>.` |
+| `avoid` (soft avoid) | `Avoid <text>.` |
+
+The template lookup is implemented in the deterministic emitter (`glyph-core::emit::constraint`); there is no fallback rendering and no advisory framing — non-canonical body text produces grammatical mismatches that the author is responsible for fixing. A future Repair pass may auto-canonicalize non-conforming text; today, that is the author's responsibility.
+
+Strength is advisory prose framing — the wording surfaces non-negotiability for `hard` forms and standard obligation for `soft` forms — but compliance by the consuming agent is not enforced by the compiler.
 - **Conditional logic** (`if` in source) projects to a **single numbered Step** with **lettered sub-steps per arm**. Each arm is introduced by a condition header (`If <condition>:`, or `Otherwise:` for `else`), and each Step-projecting node inside the arm becomes a lettered sub-step (`a.`, `b.`, `c.`). Letters **reset per arm**. This preserves the structure of conditional instructions without using code-like syntax. Example:
 
   ```md
@@ -306,13 +320,27 @@ Parameters are **not** resolved at compile time. Steps and Constraints may refer
 
 ### Return Folding
 
-`return <expr>` in `flow:` folds into the final numbered Step. The Step's prose ends with a sentence that names or summarizes what the skill returns.
+`return <expr>` in `flow:` folds into the final numbered Step. The deterministic emitter appends the locked return-fold suffix; the body before the comma is whatever the prior emitter or LLM produced for the final Step.
+
+**Locked return-fold suffixes:**
+
+| `OutputContract.form` | Suffix template |
+|---|---|
+| `Identifier(name)` (from `return <name>`) | `, and return that as your result.` |
+| `Description(text)` (from `return <"…">`) | `, and return <description> as your result.` where `<description>` is the LLM's Step-shaped paraphrase of `text` (the `DescriptionReturnFold` span). |
+
+When the skill or procedure has an `output_contract` but no visible step body (return-only), the deterministic emitter emits a standalone Step instead of appending a comma-prefixed suffix to a non-existent body:
+
+| `OutputContract.form` | Standalone template |
+|---|---|
+| `Identifier(name)` | `Return <name as snake-to-words> as your result.` |
+| `Description(text)` | `Return <description> as your result.` |
 
 Example: `return summarize_changes()` as the last flow item becomes a Step like "Summarize what was changed and why, and return that as your result."
 
-For output target identifiers, `return <current_branch>` folds into natural output prose such as "Produce current branch as the final output." The literal `<current_branch>` token must never appear in compiled Markdown; Phase 6b rejects leaks with `G::expand::output-target-leak`.
+For `Identifier` form, `return <current_branch>` for a return-only skill becomes "Return current branch as your result." The literal `<current_branch>` token must never appear in compiled Markdown; Phase 6b rejects leaks with `G::expand::output-target-leak`.
 
-For descriptive output targets, `return <"root cause analysis including affected files and severity">` folds into natural output prose that paraphrases the description as the synthesis target — e.g., "Produce a root cause analysis including affected files and severity as the final output." Step 2 paraphrases the description into a Step-shaped sentence; it does not paste the verbatim string. The literal `<"…">` token, the surrounding angle brackets, and the bare quoted description must never appear in compiled Markdown; Phase 6b rejects leaks with the same `G::expand::output-target-leak` diagnostic that covers the identifier form (the diagnostic's textual scan is form-agnostic — it flags both `<name>` and `<"…">` literals).
+For `Description` form, `return <"root cause analysis including affected files and severity">` folds into a Step-shaped paraphrase produced by the LLM (today's stub uses the verbatim description text), e.g., "..., and return a root cause analysis including affected files and severity as your result." The literal `<"…">` token, the surrounding angle brackets, and the bare quoted description must never appear in compiled Markdown; Phase 6b rejects leaks with the same `G::expand::output-target-leak` diagnostic that covers the identifier form (the diagnostic's textual scan is form-agnostic — it flags both `<name>` and `<"…">` literals).
 
 **Agent-typed returns.** When the return expression has type `Agent` (e.g., `return researcher`), the return-folded prose says the agent handle itself is the result — e.g., "Your result is the researcher agent spawned above — the caller may continue sending it instructions." The compiler does **not** interpret `return <agent>` as "return the agent's output." If the author wants the agent's findings, they should use an explicit inline string: `return "Report the researcher's findings as your result."` See `stdlib.md` §Agent Value Lifecycle for the full rule.
 

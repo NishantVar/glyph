@@ -3,5 +3,5 @@ skill enforce_style()
     require consistency
     avoid magic_numbers
 
-const consistency = "Follow the project's established coding patterns and conventions."
-const magic_numbers = "Using unexplained numeric literals in source code."
+const consistency = "follow the project's established coding patterns and conventions"
+const magic_numbers = "using unexplained numeric literals in source code"

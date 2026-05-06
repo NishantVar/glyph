@@ -141,6 +141,45 @@ fn resolve_context_entry(
     }
 }
 
+/// Extract the `OutputTargetForm` from a `ReturnExpr::OutputTarget`,
+/// returning `None` for any other return shape. Used to populate
+/// `IrCall::callee_output_contract` so expand- and emit-time gates can read
+/// the callee's OC without an arena lookup keyed by block name.
+fn output_form_from_return_expr(expr: &ReturnExpr) -> Option<OutputTargetForm> {
+    match expr {
+        ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id)) => {
+            Some(OutputTargetForm::Identifier(id.name.clone()))
+        }
+        ReturnExpr::OutputTarget(OutputTargetExpr::Description(d)) => {
+            Some(OutputTargetForm::Description(d.content.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// Walk a private block's flow looking for the terminal
+/// `Return(OutputTarget(...))` and, if found, return its lowered form. Mirrors
+/// the scan in `lower_output_contract_for_flow` but produces the form
+/// directly instead of pushing an `IrOutputContract` node.
+fn block_callee_output_form(block: &BlockDecl) -> Option<OutputTargetForm> {
+    for stmt in &block.flow {
+        if let FlowStmt::Return(expr) = stmt {
+            if let Some(form) = output_form_from_return_expr(expr) {
+                return Some(form);
+            }
+        }
+    }
+    None
+}
+
+/// Like `block_callee_output_form` but for `ExportBlockDecl`, which carries
+/// the terminal return separately from `flow_strings`.
+fn export_block_callee_output_form(eb: &ExportBlockDecl) -> Option<OutputTargetForm> {
+    eb.terminal_return
+        .as_ref()
+        .and_then(output_form_from_return_expr)
+}
+
 /// Issue #85: scan a decl's flow for a top-level
 /// `FlowStmt::Return(ReturnExpr::OutputTarget(...))` and, if found, push the
 /// matching `IrOutputContract` node into the arena. Returns its `NodeId` so
@@ -253,6 +292,14 @@ fn lower_flow_body(
                             .and_then(|b| b.return_type.as_ref())
                     })
                     .map(|s| name_to_typetag(s.node.as_str()));
+                let callee_output_contract = blocks
+                    .get(target.node.as_str())
+                    .and_then(|b| block_callee_output_form(b))
+                    .or_else(|| {
+                        export_blocks
+                            .get(target.node.as_str())
+                            .and_then(|eb| export_block_callee_output_form(eb))
+                    });
                 let next = NodeId(arena.len() as u32);
                 let id = arena.push(IrNode::Call(IrCall {
                     node_id: next,
@@ -263,6 +310,7 @@ fn lower_flow_body(
                     projection_tier: None,
                     procedure_path: None,
                     return_type,
+                    callee_output_contract,
                 }));
                 ids.push(id);
             }
@@ -555,6 +603,14 @@ pub fn lower_with_imports(
                             .and_then(|b| b.return_type.as_ref())
                     })
                     .map(|s| name_to_typetag(s.node.as_str()));
+                let callee_output_contract = blocks
+                    .get(target.node.as_str())
+                    .and_then(|b| block_callee_output_form(b))
+                    .or_else(|| {
+                        export_blocks
+                            .get(target.node.as_str())
+                            .and_then(|eb| export_block_callee_output_form(eb))
+                    });
                 let next = NodeId(arena.len() as u32);
                 let id = arena.push(IrNode::Call(IrCall {
                     node_id: next,
@@ -565,6 +621,7 @@ pub fn lower_with_imports(
                     projection_tier: None,
                     procedure_path: None,
                     return_type,
+                    callee_output_contract,
                 }));
                 step_ids.push(id);
             }

@@ -31,6 +31,8 @@ The repair pass must not:
 - make a private `block` importable unless diagnostics clearly establish that the author intended an `export block`;
 - produce compiled agent instructions directly.
 
+**Forward reference — constraint canonical-form rewrite.** A future Repair extension may rewrite non-canonical-form `avoid:` / `require:` / `must:` / `must avoid:` text into the canonical form expected by the locked four-form template (`compiled-output.md` §Constraint Rendering, `GLYPH_LANGUAGE_GUIDE.md` §7.2 — lowercase first word, no trailing period, noun-phrase or imperative-clause shape). Out of scope for the current emitter work; tracked in `todo.md`.
+
 ## 3. Input / Output Contract
 
 ### Input
