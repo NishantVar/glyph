@@ -211,6 +211,18 @@ import "./prefs.glyph.md" { preserve_existing_patterns, validation_strictness }
 import "./repo_tools.glyph.md" { inspect_repo as inspect, has_test_suite }
 ```
 
+For long lists, the brace body may span multiple lines. A trailing comma is allowed:
+
+```glyph
+import "./glyph_authoring_passes.glyph.md" {
+    factor_long_instructions_and_texts,
+    sort_declarations,
+    compile_and_iterate,
+}
+```
+
+Items themselves stay on a single line — `name as alias` does not split across lines. Indentation inside the braces is for readability only; the parser does not validate it.
+
 Rules:
 
 - Path is always quoted. Relative paths only (`./...`, `../...`); base directory is the importing file's directory.

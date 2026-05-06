@@ -508,6 +508,20 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Advance `self.pos` past consecutive `LineStart` tokens.
+    ///
+    /// Used by callers that delimit a construct with a brace pair and treat
+    /// inner whitespace as non-significant. Today the only caller is the
+    /// selective-import branch of `parse_import` (issue #117). Items inside
+    /// such a construct remain atomic; the helper is called only between
+    /// items, never inside one. Safe at EOF: `peek()` returns the EOF
+    /// sentinel (not `LineStart`), so the loop terminates.
+    fn skip_line_starts(&mut self) {
+        while matches!(self.peek().kind, TokenKind::LineStart { .. }) {
+            self.pos += 1;
+        }
+    }
+
     fn expect_ident(&mut self, expected: Option<&str>) -> Result<(String, Span), ParseError> {
         let tok = self.peek().clone();
         match tok.kind {
@@ -916,8 +930,15 @@ impl<'a> Parser<'a> {
 
         let kind = match &self.peek().kind {
             TokenKind::Lbrace => {
-                // Selective import: `{ name1, name2 as alias2 }`
+                // Selective import: `{ name1, name2 as alias2 }`.
+                //
+                // Whitespace inside `{ … }` is non-significant: line breaks and
+                // indentation between import items are allowed; the brace pair is
+                // the sole delimiter (`design/language-surface.md` §3.5). Items
+                // (`name`, optional `as <alias>`) must stay on a single line —
+                // `skip_line_starts` is intentionally NOT called inside an item.
                 self.pos += 1; // consume `{`
+                self.skip_line_starts();
                 let mut names = Vec::new();
                 if !matches!(self.peek().kind, TokenKind::Rbrace) {
                     loop {
@@ -933,11 +954,15 @@ impl<'a> Parser<'a> {
                         } else {
                             None
                         };
-                        names.push(ImportName { name: Spanned::new(name, name_span), alias });
+                        names.push(ImportName {
+                            name: Spanned::new(name, name_span),
+                            alias,
+                        });
                         match &self.peek().kind {
                             TokenKind::Comma => {
                                 self.pos += 1;
-                                // Allow trailing comma before `}`.
+                                self.skip_line_starts();
+                                // Trailing comma before `}` (same- or different-line).
                                 if matches!(self.peek().kind, TokenKind::Rbrace) {
                                     break;
                                 }
@@ -946,7 +971,18 @@ impl<'a> Parser<'a> {
                         }
                     }
                 }
-                self.expect(&TokenKind::Rbrace)?;
+                self.skip_line_starts();
+                // Replaces the prior `self.expect(&TokenKind::Rbrace)?` with a
+                // peek-and-match that emits a clearer diagnostic when the user
+                // forgets a separator (e.g. two names on adjacent lines, no comma).
+                if matches!(self.peek().kind, TokenKind::Rbrace) {
+                    self.pos += 1;
+                } else {
+                    return Err(ParseError::Unexpected {
+                        span: self.peek().span,
+                        message: "expected ',' or '}' after import name".into(),
+                    });
+                }
                 ImportKind::Selective(names)
             }
             TokenKind::Ident(kw) if kw == "as" => {
@@ -5290,3 +5326,159 @@ block foo()
     }
 }
 
+#[cfg(test)]
+mod import_decl_tests {
+    //! Issue #116 / #117 — selective-import brace list may span multiple lines.
+    //!
+    //! Verifies: the helper `Parser::skip_line_starts` is called at three
+    //! positions inside the `TokenKind::Lbrace` arm of `parse_import`
+    //! (after `{`, after each `,`, before the closing `}` check), and that
+    //! items (`name`, optional `as <alias>`) remain atomic. Tests drive
+    //! external parser behavior via `parse(...)` — they do not assert on
+    //! token positions, byte ranges, or helper call counts.
+
+    use super::*;
+    use crate::ast::{Decl, ImportDecl, ImportKind};
+
+    /// Parse `src` and return the first decl as an `ImportDecl`. Panics if
+    /// the source fails to parse or the first decl isn't an import.
+    fn parse_first_import(src: &str) -> ImportDecl {
+        let (file, _) = parse(src, 0).expect("source should parse");
+        match file.decls.into_iter().next().expect("expected one decl") {
+            Decl::Import(spanned) => spanned.node,
+            other => panic!("expected Decl::Import, got {:?}", other),
+        }
+    }
+
+    /// Project a selective `ImportDecl` to `(path, [(name, alias), …])` so
+    /// equivalence between single-line and multi-line forms can be asserted
+    /// without coupling to outer-span byte ranges or future fields on
+    /// `ImportName`.
+    fn extract(d: ImportDecl) -> (String, Vec<(String, Option<String>)>) {
+        let names = match d.kind {
+            ImportKind::Selective(ns) => ns.into_iter().map(|n| (n.name.node, n.alias)).collect(),
+            other => panic!("expected ImportKind::Selective, got {:?}", other),
+        };
+        (d.path, names)
+    }
+
+    #[test]
+    fn multi_line_with_trailing_comma_equals_single_line() {
+        let multi = "import \"./x.glyph.md\" {\n    a,\n    b,\n    c,\n}\n";
+        let single = "import \"./x.glyph.md\" { a, b, c }\n";
+        assert_eq!(
+            extract(parse_first_import(multi)),
+            extract(parse_first_import(single)),
+        );
+    }
+
+    #[test]
+    fn multi_line_without_trailing_comma_parses() {
+        let src = "import \"./x.glyph.md\" {\n    a,\n    b,\n    c\n}\n";
+        let (path, names) = extract(parse_first_import(src));
+        assert_eq!(path, "./x.glyph.md");
+        let bare: Vec<&str> = names.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(bare, vec!["a", "b", "c"]);
+        assert!(names.iter().all(|(_, alias)| alias.is_none()));
+    }
+
+    #[test]
+    fn multi_line_mixed_layout_parses() {
+        // Some names on the header line, more on subsequent lines, `}` on
+        // its own line. Asserts the parser does not require a uniform layout.
+        let src = "import \"./x.glyph.md\" { a, b,\n    c,\n    d,\n}\n";
+        let (_, names) = extract(parse_first_import(src));
+        let bare: Vec<&str> = names.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(bare, vec!["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn multi_line_aliases_across_lines_parse() {
+        // Items themselves stay on a single line; line breaks between items
+        // are exercised. Both aliases survive.
+        let src = "import \"./x.glyph.md\" {\n    foo as f,\n    bar as b,\n}\n";
+        let (_, names) = extract(parse_first_import(src));
+        assert_eq!(names.len(), 2);
+        assert_eq!(names[0].0, "foo");
+        assert_eq!(names[0].1.as_deref(), Some("f"));
+        assert_eq!(names[1].0, "bar");
+        assert_eq!(names[1].1.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn multi_line_missing_comma_between_names_diagnostic() {
+        // `b` on a new line without a comma after `a`. The diagnostic must
+        // mention both `,` and `}` and pin the span to the `b` token, not
+        // to a `LineStart`.
+        let src = "import \"./x.glyph.md\" { a\n    b\n}\n";
+        let err = parse(src, 0).err().expect("expected ParseError");
+        match err {
+            ParseError::Unexpected { ref message, span } => {
+                assert!(
+                    message.contains(',') && message.contains('}'),
+                    "message should mention both `,` and `}}`, got: {:?}",
+                    message
+                );
+                // Span must sit on the `b` token. Extract it from the source.
+                let snippet = &src[span.start as usize..span.end as usize];
+                assert_eq!(snippet, "b", "span should cover `b`, got {:?}", snippet);
+            }
+            other => panic!("expected ParseError::Unexpected, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn multi_line_with_comments_parses() {
+        // A comment-only line between names + a trailing `// …` after a name.
+        // Both should be invisible to the parser by the time it sees the
+        // brace list, so the import parses cleanly.
+        let src = "\
+import \"./x.glyph.md\" {
+    // explanatory note
+    a, // why we need a
+    b,
+}
+";
+        let (_, names) = extract(parse_first_import(src));
+        let bare: Vec<&str> = names.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(bare, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn multi_line_import_does_not_cascade_to_arrow_or_output_target() {
+        // Reduced inline fixture (do NOT reference any authoring file):
+        //   * multi-line selective import (the previously breaking shape)
+        //   * later `-> Path` return-type annotation (legit; would mis-fire
+        //     `G::parse::operator-in-expression` if parse_import bails)
+        //   * later `<output_target>` site (legit; would mis-fire
+        //     `G::parse::output-target-outside-return` pre-PR-#140)
+        //
+        // After the fix, parse_import succeeds, both Arrow and `<` tokens
+        // are consumed legitimately, and neither cascade triggers.
+        let src = "\
+import \"./other.glyph.md\" {
+    foo,
+    bar,
+}
+
+skill main() -> Path
+    flow:
+        return <output_target>
+";
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let _ = parse_with_diagnostics(src, 0, "t.glyph.md", &line_index, &mut bag);
+        let ids: Vec<String> = bag.iter().map(|d| d.id.clone()).collect();
+        assert!(
+            !ids.iter().any(|s| s == "G::parse::operator-in-expression"),
+            "must not fire operator-in-expression after multi-line-import fix; got: {:?}",
+            ids
+        );
+        assert!(
+            !ids.iter()
+                .any(|s| s == "G::parse::output-target-outside-return"),
+            "must not fire output-target-outside-return after multi-line-import fix; got: {:?}",
+            ids
+        );
+    }
+}
