@@ -92,3 +92,36 @@ the symptom, the impact, and the proposed fix.
   an acronym-leading constraint body. Pre-existing — separate from the
   scaffold-with-spans branch but worth fixing as part of the locked-template
   hardening pass.
+
+- **Mixed avoid-polarity const text shapes in the authored corpus.** The
+  authored corpus uses three different conventions for `avoid`-polarity
+  constraint bodies: gerund-form
+  (`"Letting an output-target token..."`,
+  `"Adding, merging, splitting..."` — used in `expand.glyph.md` and the
+  cli test corpus), already-`Avoid`-prefixed
+  (`"Avoid leaving references to removed or renamed symbols."` in
+  `GLYPH_LANGUAGE_GUIDE.md:1015` and
+  `skills/teach_glyph/teach_glyph_context.glyph.md:559`), and
+  already-`Do not`-prefixed
+  (`"Do not make changes unrelated to the task."` in
+  `crates/glyph-cli/tests/corpus/valid/imports/prefs.glyph.md:2`;
+  `"Do not make changes outside the requested scope."` prescribed for the
+  Repair pass in `design/repair.md:156`). Wrapping the prefixed bodies in
+  the locked `Avoid {text}.` / `You must never {text}.` templates
+  produces double-prohibition outputs like `Avoid avoid leaving...` or
+  `Avoid do not make changes...`. As a temporary tolerance,
+  `crates/glyph-core/src/emit/constraint.rs::render` pass-through-emits a
+  `(Strength::Soft, Polarity::Avoid)` body that already starts with
+  `"Avoid "` or `"Do not "` (case-insensitive). The pass-through is
+  deliberately limited to soft avoid — hard avoid (`must avoid`) falls
+  through to the locked `You must never {text}.` template so the hard
+  strength wording isn't silently downgraded, even if that means
+  cosmetically doubled output (e.g. `You must never do not make
+  changes...`) on the (currently empty) intersection of `must avoid` and
+  prefixed const text. **Fix:** add a Phase 5
+  (semantic-validation) lint that fires on non-canonical avoid const
+  bodies (gerund-only is the natural canonical shape since it composes
+  uniformly through the locked templates), migrate the four
+  corpus/doc files above to that shape, then drop the
+  `is_already_prohibition` branch in `render` along with its tests.
+  Tracked in issue #141.
