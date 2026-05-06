@@ -21,11 +21,11 @@ The compiler never calls an LLM. The agent never runs deterministic compilation 
 
 The skill encodes this state machine. The agent follows it top-to-bottom.
 
-**`glyph fmt` runs exactly once, at the top of the workflow, before the first `glyph compile`.** It does **not** re-run between LLM repair iterations. The Phase 3b repair prompt is responsible for producing already-formatted source — correct 4-space indentation, generated declarations appended after all non-generated top-level declarations, no tab characters. Re-running fmt mid-loop is wasted work.
+**`glyph fmt` runs as the first step of the Phase 3 repair loop when the compiler exits with code 2.** It handles all deterministic auto-fixes (§Phase 3a). If `glyph fmt` changes the file, the agent re-invokes `glyph compile` before deciding whether to proceed to Phase 3b (LLM repair). This ensures that no LLM call is wasted on a diagnostic that a deterministic rewrite can solve.
 
 ## Phase 3a — Deterministic auto-fixes (`glyph fmt`)
 
-`glyph fmt` runs exactly once at the top of the workflow, before the first `glyph compile`. It performs these deterministic source rewrites without any LLM call:
+When `glyph compile` exits 2 (repairable), the agent first runs `glyph fmt <path>`. It performs these deterministic source rewrites without any LLM call:
 
 - Tab → 4-space, mixed-indentation fix (`G::parse::tab-indent`, `G::parse::mixed-indent`)
 - Legacy `-> None` strip (`G::parse::none-as-return-type`)
@@ -38,16 +38,10 @@ The skill encodes this state machine. The agent follows it top-to-bottom.
 - Effects auto-insert (#112, `G::analyze::missing-effects`, gated on `--enable-effects`)
 - Placeholder return rewrite (#113, `G::analyze::placeholder-string-return`)
 
-All fixes are idempotent and comment-preserving. After fmt, the agent runs `glyph compile`. If exit 2 still, the agent enters Phase 3b (LLM repair pass) — which now handles only the remaining semantic repairs that require generation (undefined names, undefined calls, ambiguous roles, missing-return, missing-description, applies-on-undescribed-block, nested-branch).
+All fixes are idempotent and comment-preserving. After fmt, if the file was changed, the agent re-runs `glyph compile`. If the exit code is still 2, the agent enters Phase 3b (LLM repair pass) — which now handles only the remaining semantic repairs that require generation (undefined names, undefined calls, ambiguous roles, missing-return, missing-description, applies-on-undescribed-block, nested-branch).
 
 ```
                     ┌──────────────────────────────┐
-                    │  glyph fmt <path>             │
-                    │  (Phase 3a: deterministic      │
-                    │   auto-fixes)                  │
-                    └──────────────┬───────────────┘
-                                   │
-                    ┌──────────────▼───────────────┐
                     │  glyph compile <path>         │
              ┌──────│  --format json --emit-ir      │
              │      └──────────────┬───────────────┘
@@ -66,23 +60,25 @@ All fixes are idempotent and comment-preserving. After fmt, the agent runs `glyp
                                   │  fail)                  ▼
                                   │                  Read foo.ir.json
                                   ▼                  Read foo.md
-                           Agent fixes source               │
-                           using diagnostics                ▼
-                                  │                  Step 2: Reshape
+                         ┌──────────────────┐               │
+                         │  glyph fmt <path> │               ▼
+                         └────────┬─────────┘        Step 2: Reshape
                                   │                  foo.md using IR
-                                  │                  (agent LLM work)
-                                  │                         │
-                                  │                         ▼
-                                  │               glyph validate-output
-                                  │                foo.ir.json foo.md
-                                  │                    │          │
-                                  │               exit 0      exit 1
-                                  │               (pass)    (fail, retry < 2)
-                                  │                  │          │
-                                  └──► loop back     ▼          ▼
-                                       to compile   DONE    Revise foo.md
-                                                            using diagnostics,
-                                                            retry Step 2
+                         ┌────────▼─────────┐        (agent LLM work)
+                         │ changed? ────────┼──yes──┐       │
+                         └────────┬─────────┘       │       ▼
+                                  no                │  glyph validate-output
+                                  │                 │   foo.ir.json foo.md
+                                  ▼                 │       │          │
+                           Agent fixes source       │  exit 0      exit 1
+                           using diagnostics        │  (pass)    (fail, retry < 2)
+                           (Phase 3b: LLM)          │     │          │
+                                  │                 │     ▼          ▼
+                                  │                 │    DONE    Revise foo.md
+                                  │                 │            using diagnostics,
+                                  │                 │            retry Step 2
+                                  └──► loop back ◄──┘
+                                       to compile
 ```
 
 ### Exit Code Contract
