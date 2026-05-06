@@ -22,3 +22,37 @@ A graphify knowledge graph is pre-built at `graphify-out/graph.json` and exposed
 - `god_nodes` — highest-connectivity entry points (start here when unfamiliar with the codebase)
 
 Only read source files when you need exact implementation details (e.g. to write a fix).
+
+## Agent Conventions for glyph
+
+### Bounded reads (default)
+- Never read a file sequentially unless explicitly required. Default to
+  structural skeletons via `ast-grep` or `documentSymbol`: signatures only,
+  bodies opt-in.
+- Never read a file over 200 lines entirely. Request signatures first; pull
+  function bodies only for the symbols you intend to modify.
+
+### Escape hatch
+- If the AST view is insufficient (broken state, complex imperative algorithm),
+  invoke a raw read capped at 300 lines per request.
+
+### Bounded edits
+- Apply edits via `ast-grep` replace patterns or LSP workspace edits with
+  exact text-to-be-removed. Raw unified diffs and whole-file replacements
+  are prohibited.
+- If the original text isn't found, the harness rejects the edit
+  automatically.
+
+### Verification scales with blast radius
+- Trivial / single-file private logic:  cargo fmt + cargo check + targeted
+  cargo-nextest on the modified module.
+- Public API or cross-crate change:     workspace cargo check +
+  workspace cargo nextest.
+- Touches `unsafe` or security-sensitive code: human-in-the-loop approval
+  required before edit; MIRI run before merge.
+
+### Discovery order
+1. Graphify   — owning concept, crate, module, design boundary
+2. SCIP / LSP — symbol resolution, definitions, references, types
+3. ast-grep   — structural match for the exact node to edit
+4. Edit → cargo fmt → cargo check → cargo nextest

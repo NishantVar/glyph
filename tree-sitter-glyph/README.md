@@ -10,7 +10,7 @@ Glyph source files. The grammar covers the full M2 language as
 specified in [`design/tree-sitter-grammar.md`](../design/tree-sitter-grammar.md):
 
 - Top-level declarations: `skill`, `block`, `export block`,
-  `text`, `int`, `float`, `generated text`, `generated block`,
+  `const`, `generated const`, `generated block`,
   `import` (whole-module + selective).
 - Sub-sections: `description:`, `context:`, `constraints:`,
   `flow:` (and the implicit single-string body shorthand for
@@ -98,7 +98,7 @@ skill update_docs(scope = ".")
     flow:
         "Audit the docs."
 
-text completeness = "..."
+const completeness = "..."
 
 --------------------------------------------------------------------------------
 
