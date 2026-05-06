@@ -1,12 +1,48 @@
 // teach_glyph.glyph.md
 //
 // Skill that teaches a coding agent how to author Glyph source files.
-// Context texts live in teach_glyph_context.glyph.md;
-// constraint texts live in teach_glyph_constraints.glyph.md.
+// Pulls in the Glyph language reference and the authoring rules from
+// sibling library files; each entry is imported by name and listed
+// under `context:` (bare) or `constraints:` (with polarity).
 
-import "./teach_glyph_context.glyph.md" { glyph_language_context }
+import "./teach_glyph_context.glyph.md" {
+    glyph_overview,
+    file_kinds,
+    layout_rules,
+    declarations,
+    parameters,
+    sub_sections,
+    calls_and_control_flow,
+    values,
+    names_and_types,
+    stdlib,
+    library_files_and_prefs,
+    compiled_output,
+    pitfalls,
+    worked_examples,
+    quick_reference,
+}
 
-import "./teach_glyph_constraints.glyph.md" { glyph_authoring_constraints }
+import "./teach_glyph_constraints.glyph.md" {
+    four_space_indentation,
+    primitive_type_names_in_source,
+    string_interpolation,
+    hand_written_agent_prose,
+    one_skill_per_skill_file,
+    single_top_level_return,
+    defaults_on_export_block_params,
+    explicit_return_in_export_block,
+    return_inside_branch_arms,
+    slots_in_non_instruction_strings,
+    novice_kernel_first,
+    descriptive_domain_types,
+    description_on_applies_blocks,
+    review_of_repair_output,
+    bare_text_in_flow_without_marker,
+    overusing_must,
+    deeply_nested_calls,
+}
+
 import "./glyph_authoring_passes.glyph.md" {
     factor_long_instructions_and_texts,
     sort_declarations,
@@ -17,10 +53,40 @@ skill teach_glyph(target)
     description: "Author or edit a Glyph source file (.glyph.md) at `target` for a task described by the user."
 
     context:
-        glyph_language_context()
+        glyph_overview
+        file_kinds
+        layout_rules
+        declarations
+        parameters
+        sub_sections
+        calls_and_control_flow
+        values
+        names_and_types
+        stdlib
+        library_files_and_prefs
+        compiled_output
+        pitfalls
+        worked_examples
+        quick_reference
 
     constraints:
-        glyph_authoring_constraints()
+        must four_space_indentation
+        must avoid primitive_type_names_in_source
+        must avoid string_interpolation
+        must avoid hand_written_agent_prose
+        must one_skill_per_skill_file
+        must single_top_level_return
+        must defaults_on_export_block_params
+        must explicit_return_in_export_block
+        must avoid return_inside_branch_arms
+        must avoid slots_in_non_instruction_strings
+        require novice_kernel_first
+        require descriptive_domain_types
+        require description_on_applies_blocks
+        require review_of_repair_output
+        avoid bare_text_in_flow_without_marker
+        avoid overusing_must
+        avoid deeply_nested_calls
 
     flow:
         gather_intent(target)

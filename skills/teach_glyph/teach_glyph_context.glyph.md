@@ -1,30 +1,10 @@
 // teach_glyph_context.glyph.md
 //
-// Bundles the Glyph language reference as a single context-only skill.
-// Importers reference `glyph_language_context` under their `context:` section
-// to inject the full reference. The individual `const` constants below are
-// the bundle's contents; they remain `export` so files that only need a
-// subset can still import them by name.
-
-skill glyph_language_context()
-    description: "Bundle of Glyph language reference material to inject as context into any skill that authors or edits Glyph source."
-
-    context:
-        glyph_overview
-        file_kinds
-        layout_rules
-        declarations
-        parameters
-        sub_sections
-        calls_and_control_flow
-        values
-        names_and_types
-        stdlib
-        library_files_and_prefs
-        compiled_output
-        pitfalls
-        worked_examples
-        quick_reference
+// Library file. Bundles the Glyph language reference as a flat list of
+// `export const` text constants. Importers select the subset they need
+// (or all of them) and list each name under their own `context:` section.
+// There is no wrapper skill — this file produces no compiled `.md` of its
+// own.
 
 export const glyph_overview = """
 Glyph is a small DSL for authoring agent skills. The author writes a
@@ -71,6 +51,8 @@ Rules:
 """
 
 export const layout_rules = """
+Formatting rules for Glyph source files:
+
 - 4-space indentation, significant. No tabs (hard error). No braces, no
   `end` keywords.
 - No trailing colon on top-level declarations. Write `skill name()` not

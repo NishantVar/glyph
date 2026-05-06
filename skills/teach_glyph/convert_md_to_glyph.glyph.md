@@ -1,21 +1,91 @@
 // convert_md_to_glyph.glyph.md
 //
 // Skill that reverse-maps a compiled Glyph output (`.md`) back into Glyph
-// source (`.glyph.md`). Reuses the language reference and authoring
-// constraints bundled by the teach_glyph context and constraints skills.
+// source (`.glyph.md`). Pulls the language reference and authoring rules
+// from sibling library files by per-const import.
 
-import "./teach_glyph_context.glyph.md" { glyph_language_context }
-import "./teach_glyph_constraints.glyph.md" { glyph_authoring_constraints }
-import "./glyph_authoring_passes.glyph.md" {factor_long_instructions_and_texts, sort_declarations, compile_and_iterate}
+import "./teach_glyph_context.glyph.md" {
+    glyph_overview,
+    file_kinds,
+    layout_rules,
+    declarations,
+    parameters,
+    sub_sections,
+    calls_and_control_flow,
+    values,
+    names_and_types,
+    stdlib,
+    library_files_and_prefs,
+    compiled_output,
+    pitfalls,
+    worked_examples,
+    quick_reference,
+}
+
+import "./teach_glyph_constraints.glyph.md" {
+    four_space_indentation,
+    primitive_type_names_in_source,
+    string_interpolation,
+    hand_written_agent_prose,
+    one_skill_per_skill_file,
+    single_top_level_return,
+    defaults_on_export_block_params,
+    explicit_return_in_export_block,
+    return_inside_branch_arms,
+    slots_in_non_instruction_strings,
+    novice_kernel_first,
+    descriptive_domain_types,
+    description_on_applies_blocks,
+    review_of_repair_output,
+    bare_text_in_flow_without_marker,
+    overusing_must,
+    deeply_nested_calls,
+}
+
+import "./glyph_authoring_passes.glyph.md" {
+    factor_long_instructions_and_texts,
+    sort_declarations,
+    compile_and_iterate,
+}
 
 skill convert_md_to_glyph(source_md, target_glyph)
     description: "Convert an existing compiled-form skill at `source_md` into a Glyph source file at `target_glyph`."
 
     context:
-        glyph_language_context()
+        glyph_overview
+        file_kinds
+        layout_rules
+        declarations
+        parameters
+        sub_sections
+        calls_and_control_flow
+        values
+        names_and_types
+        stdlib
+        library_files_and_prefs
+        compiled_output
+        pitfalls
+        worked_examples
+        quick_reference
 
     constraints:
-        glyph_authoring_constraints()
+        must four_space_indentation
+        must avoid primitive_type_names_in_source
+        must avoid string_interpolation
+        must avoid hand_written_agent_prose
+        must one_skill_per_skill_file
+        must single_top_level_return
+        must defaults_on_export_block_params
+        must explicit_return_in_export_block
+        must avoid return_inside_branch_arms
+        must avoid slots_in_non_instruction_strings
+        require novice_kernel_first
+        require descriptive_domain_types
+        require description_on_applies_blocks
+        require review_of_repair_output
+        avoid bare_text_in_flow_without_marker
+        avoid overusing_must
+        avoid deeply_nested_calls
 
     flow:
         parse_compiled_skill(source_md)
@@ -34,11 +104,6 @@ skill convert_md_to_glyph(source_md, target_glyph)
 // Conversion-procedure blocks — each block is one logical phase of reverse-
 // mapping a compiled-form .md skill back into Glyph source.
 // ─────────────────────────────────────────────────────────────────────────────
-
-block find_something() -> Description
-    flow:
-        "check the files"
-        return <"description of what's found">
 
 block parse_compiled_skill(source_md)
     "Read the file at {source_md}. Split the YAML frontmatter from the Markdown body. Within the body, locate the `## Parameters`, `### Context`, `### Steps`, and `### Constraints` sub-sections — note which are present and which are absent."
