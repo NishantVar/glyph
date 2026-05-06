@@ -178,6 +178,24 @@ If all of the above were adopted, the section responsibilities would be:
 
 Principle: the author writes what the compiler can't know (procedure, constraints, intent). The compiler generates what it can derive (description, output contract, effects, scene structure, resource scopes).
 
+## Deferred Parser Support
+
+Items where the language guide / design already commits to a syntax but the MVP parser does not yet accept it. These are implementation gaps, not open design questions.
+
+### Typed parameters
+
+`GLYPH_LANGUAGE_GUIDE.md` §"Type annotations" and `design/types.md` describe parameter type annotations of the form `name: DomainType` (e.g. `skill implement_feature(scope: PathSpec, risk: RiskLevel = "medium")`). The MVP parser's `parse_param_list` (`crates/glyph-core/src/parse.rs`) only accepts `name [= "default"]` — it stops at the `:`, leaving the parser to fail on the next `expect(Rparen)`.
+
+When the failing source also contains a descriptive return (`return <"…">`), the post-parse `<`-scan formerly masked the real cause by emitting `G::parse::output-target-outside-return` against the unconsumed `<` — pointing the author at the wrong line entirely. The scan is now gated on the parser's failure offset: only `<` tokens at-or-before the failure are reported (which preserves the structured diagnostic for stray-`<` cases like `< bar` at statement start, where the `<` itself *is* the failure cause); tokens past the failure are unreached and suppressed. With typed-param parsing still missing, the parameter-list failure surfaces as a generic `Parse(Eof)` instead of a misdirected output-target diagnostic.
+
+Landing typed parameters requires:
+
+- Extending `parse_param_list` to optionally consume `: <Ident>` between the name and any default.
+- Adding `type_annot: Option<Spanned<String>>` to the `Param` AST node (and forwarding through `IrParam` if the IR consumers want it; today `analyze.rs::emit_nominal_mismatch` is already a placeholder waiting for typed annotations to land).
+- Regression tests covering `name: Type`, `name: Type = "default"`, and the negative `name:` (missing type ident).
+
+Until then, authors must omit type annotations on parameters even though the language guide treats them as part of MVP.
+
 ## Open Questions
 
 - Should the source keyword be singular `output:` or plural `outputs:`? Prefer `output:` unless multi-output values become real.
