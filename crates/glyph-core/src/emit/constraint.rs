@@ -11,14 +11,22 @@ pub const SOFT_REQUIRE: &str = "{Text}.";
 pub const SOFT_AVOID: &str = "Avoid {text}.";
 
 pub fn render(strength: Strength, polarity: Polarity, text: &str) -> String {
-    // Mixed-corpus tolerance: when the author has supplied a fully-formed
-    // prohibition (`"Avoid ..."` or `"Do not ..."`), emit it verbatim instead of
-    // wrapping it in another avoid template, which would produce double-
-    // prohibition outputs like `Avoid avoid leaving...` or
-    // `Avoid do not make changes...`. Tracked in `design/todo_bugs.md` §Emitter
-    // (issue #141): a future Phase 5 lint will enforce a single canonical
-    // const-text shape and let this branch be removed.
-    if matches!(polarity, Polarity::Avoid) && is_already_prohibition(text) {
+    // Mixed-corpus tolerance for soft `avoid` only: when the author has
+    // supplied a fully-formed prohibition (`"Avoid ..."` or `"Do not ..."`),
+    // emit it verbatim instead of wrapping it in another `Avoid {text}.`
+    // template, which would produce double-prohibition outputs like
+    // `Avoid avoid leaving...` or `Avoid do not make changes...`.
+    //
+    // Hard avoid intentionally falls through to the locked
+    // `You must never {text}.` template — silently dropping the hard
+    // strength wording would be worse than the cosmetic ugliness of a
+    // doubled prohibition there. Tracked in `design/todo_bugs.md` §Emitter
+    // (issue #141): the Phase 5 lint will enforce a canonical const-text
+    // shape and let this branch be removed.
+    if matches!(strength, Strength::Soft)
+        && matches!(polarity, Polarity::Avoid)
+        && is_already_prohibition(text)
+    {
         let trimmed = text.trim().trim_end_matches('.');
         return format!("{}.", trimmed);
     }
@@ -146,16 +154,22 @@ mod tests {
     }
 
     #[test]
-    fn hard_avoid_passes_through_already_prefixed_text() {
-        // Hard avoid normally renders as "You must never <text>."; for
-        // author-supplied prohibitions we honour the authored phrasing.
-        assert_eq!(
-            render(
-                Strength::Hard,
-                Polarity::Avoid,
-                "Do not make changes outside the requested scope."
-            ),
-            "Do not make changes outside the requested scope."
+    fn hard_avoid_does_not_pass_through_prefixed_text() {
+        // The pass-through is intentionally limited to soft avoid; hard avoid
+        // must preserve the "You must never ..." strength wording even when the
+        // authored const text is already prohibition-prefixed. The Phase 5
+        // const-shape lint (issue #141) will reject such authoring upstream of
+        // Emit. We assert the strength-marker prefix rather than the exact
+        // (cosmetically-doubled) wording, which is documented in
+        // `design/todo_bugs.md` §Emitter.
+        let out = render(
+            Strength::Hard,
+            Polarity::Avoid,
+            "Do not make changes outside the requested scope.",
+        );
+        assert!(
+            out.starts_with("You must never "),
+            "expected hard-strength wording to be preserved; got {out:?}"
         );
     }
 

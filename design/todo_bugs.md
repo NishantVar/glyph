@@ -110,9 +110,15 @@ the symptom, the impact, and the proposed fix.
   the locked `Avoid {text}.` / `You must never {text}.` templates
   produces double-prohibition outputs like `Avoid avoid leaving...` or
   `Avoid do not make changes...`. As a temporary tolerance,
-  `crates/glyph-core/src/emit/constraint.rs::render` pass-through-emits any
-  `Polarity::Avoid` body that already starts with `"Avoid "` or
-  `"Do not "` (case-insensitive). **Fix:** add a Phase 5
+  `crates/glyph-core/src/emit/constraint.rs::render` pass-through-emits a
+  `(Strength::Soft, Polarity::Avoid)` body that already starts with
+  `"Avoid "` or `"Do not "` (case-insensitive). The pass-through is
+  deliberately limited to soft avoid — hard avoid (`must avoid`) falls
+  through to the locked `You must never {text}.` template so the hard
+  strength wording isn't silently downgraded, even if that means
+  cosmetically doubled output (e.g. `You must never do not make
+  changes...`) on the (currently empty) intersection of `must avoid` and
+  prefixed const text. **Fix:** add a Phase 5
   (semantic-validation) lint that fires on non-canonical avoid const
   bodies (gerund-only is the natural canonical shape since it composes
   uniformly through the locked templates), migrate the four
