@@ -260,20 +260,48 @@ pub fn parse_with_diagnostics_opts(
     // Post-parse output-target scan. Any `<` token that was not consumed as
     // part of a return-position output target candidate is outside the only
     // MVP-legal slot (`return <name>` as the terminal flow statement).
+    //
+    // When `parse_file` returns `Err`, only `<` tokens at-or-before the
+    // failure offset are diagnostic-worthy. Tokens past the failure point
+    // were never reached by the parser, so a diagnostic against them
+    // mis-attributes the cause — e.g. a parse failure on an unsupported
+    // typed parameter (`:` in a parameter list) would otherwise surface as
+    // `G::parse::output-target-outside-return` against a `<` that appears
+    // much later in the source. The `Arrow` scan above runs unconditionally
+    // because stray `->` is a Repairable hint useful even when the
+    // surrounding parse failed; the `<` diagnostic is an error on a
+    // non-recoverable position and must not mis-fire on unreached tokens.
+    let failure_cutoff: Option<u32> = match &parsed_result {
+        Ok(_) => None,
+        Err(ParseError::Unexpected { span, .. }) => Some(span.start),
+        // Tokenize-level failures don't carry a usable position; suppress
+        // the scan entirely rather than guess.
+        Err(_) => Some(u32::MIN),
+    };
     for tok in tokens.iter() {
-        if matches!(tok.kind, TokenKind::LAngle)
-            && !consumed_output_targets.contains(&tok.span.start)
-        {
-            let span = tok.span;
-            bag.push(
-                Diagnostic::error(
-                    "G::parse::output-target-outside-return",
-                    "output targets are only allowed as the terminal `return <name>` expression",
-                    SourceSpan::from_byte_span(file_label, span, line_index),
-                ),
-                span,
-            );
+        if !matches!(tok.kind, TokenKind::LAngle) {
+            continue;
         }
+        if consumed_output_targets.contains(&tok.span.start) {
+            continue;
+        }
+        if let Some(cutoff) = failure_cutoff {
+            // The token at the failure offset itself is the most likely
+            // cause (e.g. `< bar` at statement start); preserve it. Tokens
+            // past the failure are unreached.
+            if tok.span.start > cutoff {
+                continue;
+            }
+        }
+        let span = tok.span;
+        bag.push(
+            Diagnostic::error(
+                "G::parse::output-target-outside-return",
+                "output targets are only allowed as the terminal `return <name>` expression",
+                SourceSpan::from_byte_span(file_label, span, line_index),
+            ),
+            span,
+        );
     }
 
     let file = match parsed_result {
@@ -4175,6 +4203,54 @@ skill foo()
             ids.iter()
                 .any(|id| id == "G::parse::output-target-outside-return"),
             "expected output-target-outside-return diagnostic, got {ids:?}"
+        );
+    }
+
+    /// Regression: when the parser fails for unrelated reasons (here,
+    /// unsupported `: TypeName` annotations on parameters — see
+    /// `design/user-facing-todo.md` §"Deferred Parser Support"), the
+    /// post-parse `<`-scan must NOT mis-attribute the failure to the
+    /// descriptive return's `<`. The author's real problem is the typed
+    /// parameter; emitting `output-target-outside-return` here would point
+    /// them at the wrong line and stall debugging. The scan is gated on
+    /// `parse_file` success; the surfaced error is a generic parse failure
+    /// (or whatever future structured diagnostic covers typed params), not
+    /// this misdirection.
+    #[test]
+    fn parse_failure_on_typed_param_does_not_misfire_output_target_outside_return() {
+        let src = "\
+skill foo(a: Path)
+    description: \"test\"
+    flow:
+        \"do x\"
+        return <\"the result\">
+";
+        let ids = diagnostic_ids(src);
+        assert!(
+            !ids.iter()
+                .any(|id| id == "G::parse::output-target-outside-return"),
+            "post-parse `<`-scan must not fire on parse failure; got {ids:?}"
+        );
+    }
+
+    /// Positive companion: when the parse failure IS at a stray `<`
+    /// (statement-leading `<`, value-level `<` in an expression, etc.),
+    /// the post-parse scan must still surface
+    /// `G::parse::output-target-outside-return`. The narrower gate from
+    /// the regression above only suppresses `<` tokens past the failure
+    /// offset; tokens at-or-before the failure remain diagnostic-worthy.
+    #[test]
+    fn parse_failure_at_stray_langle_still_fires_output_target_outside_return() {
+        let src = "\
+skill foo()
+    flow:
+        < bar
+";
+        let ids = diagnostic_ids(src);
+        assert!(
+            ids.iter()
+                .any(|id| id == "G::parse::output-target-outside-return"),
+            "stray `<` must still surface structured diagnostic; got {ids:?}"
         );
     }
 
