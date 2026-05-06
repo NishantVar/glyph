@@ -314,6 +314,7 @@ import "./coding_agent_safety.glyph.md" {
 - Whole-module import requires `as <alias>`. No bare module imports.
 - Whole-module import exposes: the file's `skill` entrypoint, all `export block` declarations, and all exported value-binding declarations (`export const`). Private `const` and private `block` stay hidden.
 - Selective import uses `{ name, name as alias, ... }`. Trailing comma allowed. Only explicitly exported declarations may be named.
+- Whitespace inside `{ … }` is non-significant: line breaks and indentation between import items are allowed; the brace pair is the sole delimiter. Items (`name`, optional `as <alias>`) must stay on a single line.
 - A single import statement is either whole-module or selective, not both.
 - Circular imports are rejected in the MVP.
 - MVP imports are path-based. Package names, registries, and versioned imports are deferred.
