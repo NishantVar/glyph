@@ -1,85 +1,95 @@
 # Glyph
 
-A human-readable, visualizable DSL for authoring reusable agent skills that compiles into explicit, task-specific instructions for general-purpose agents, especially current coding agents.
+<p align="center">
+  <img src="assets/Glyph%20Bottom%20Bar%20README.png" alt="Glyph — A compiler for agent behavior" width="800" />
+</p>
 
-## The Problem
+<p align="center">
+  <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust" />
+  <img src="https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square" />
+  <img src="https://img.shields.io/badge/status-early%20design-blue?style=flat-square" />
+</p>
 
-Agent skills today are written as long, unstructured prompt text. They're hard to read, hard to reason about, hard to reuse, and impossible to visualize. As skills grow in complexity, prompt-based authoring breaks down.
-
-## The Idea
-
-**Write skills like code. Compile them for agents.**
-
-Glyph separates the authoring form (optimized for humans) from the execution form (optimized for agents). You write structured, readable skill definitions. A compiler turns them into flatter, more explicit, agent-optimized instructions.
-
-This is not a prompt template system. It's a language with a compiler.
-Glyph is a language for skill definition and compilation, not a runtime for long-lived agent orchestration.
+Glyph is a small language for authoring agent skills. You write structured source — parameters, constraints, control flow — and the compiler turns it into flat, explicit Markdown that agents can follow. The source form is for humans. The compiled output is for agents.
 
 ## Example
 
-```
-skill implement_feature(scope, framework, risk="medium") -> result
+```glyph
+import "./prefs.glyph.md" { house_style }
+
+// const: named value (string, int, or float). Reusable across the file.
+const tone = """
+Be concise. Write for engineers. Use past tense.
+"""
+
+// block: private helper callable from this file.
+block format_entry(change, style = "brief") -> Entry
+    flow:
+        "Read the full context of {change}."
+        return write_entry(change, style)
+
+// skill: public entrypoint. One per file.
+// Parameters without defaults are required at runtime.
+// -> ReturnType uses domain types — no String/Int, name the role instead.
+skill write_changelog(scope = ".", version) -> Changelog
+    description: "Generate a changelog entry for a new version."
+
+    context: 
+	    tone
+
+    // require/avoid: soft (strong guidance). must/must avoid: hard (absolute).
     constraints:
-        must avoid_unrelated_edits
-        must preserve_existing_patterns
-        must validate_before_success
+        require house_style
+        avoid marketing_language
+        must "Never include changes not present in the diff."
 
     flow:
-        ctx = inspect_repo(scope)
-        plan = make_plan(ctx)
-        apply_changes(plan)
-        validate(plan, risk)
-        return summarize(plan)
+        changes = read_diff(scope)
+        entry   = format_entry(changes)                               // block: normal call
+        "Confirm the entry covers all changes in {version}."          // {x} = runtime slot, not interpolation
+        if changes == "breaking":
+            format_entry(changes) with "highlight breaking changes first"  // with: specializes this call site
+        return write_file(entry)
 ```
 
-## Key Properties
+## The Five Primitives
 
-1. **Human-readable like code** -- Skills look like small structured programs, not prose. Hierarchy, flow, and constraints are obvious at a glance.
+Every construct in Glyph decomposes into one or more of five semantic primitives:
 
-2. **Skill-oriented** -- The unit of abstraction is a skill, not a model call. Skills have parameters, sub-blocks, control flow, constraints, validation, and output contracts.
-
-3. **Separate authoring from execution** -- The source is for humans. The compiled output is for agents. The compiler inlines, resolves defaults, removes irrelevant branches, expands constraints, and generates target-specific instructions.
-
-4. **Visualizable** -- Skills can be viewed as code, as a graph/workflow, or as compiled agent output. Structured flows are easier to scan than walls of text.
-
-5. **Small syntax** -- A limited set of primitives (`skill`, `block`, `call`, `if`, `require`/`prefer`/`avoid`/`must`, `return`) keeps things expressive yet constrained.
-
-6. **Hybrid compilation** -- Deterministic parsing, validation, and normalization combined with LLM-assisted semantic expansion where needed. Compiles through an intermediate representation (IR).
-
-7. **Modular and testable** -- Skills can compose from smaller blocks. Structure encourages breaking skills into pieces that can be tested individually -- running a block against sample inputs, verifying its compiled output, or validating constraints in isolation. Not everything will be modular, but the language makes it possible where it matters.
-
-8. **Agent reliability first** -- The compiled output prioritizes concrete, followable instructions over elegance. Repetitive and explicit beats concise and ambiguous.
-
-## Architecture (Planned)
-
-```
-Source (.glyph.md)
-  -> 1. Parse      (deterministic)
-  -> 2. Analyze    (deterministic)
-  -> 3. Repair     [LLM, bounded loop]
-  -> 4. Lower      (deterministic)
-  -> 5. Validate   (deterministic)
-  -> 6. Expand     [LLM, per-invocation]
-  -> 7. Emit       (deterministic)
-Output (.md)
-```
-
-A 7-phase hybrid compiler with a "Safety Sandwich" pattern -- deterministic passes bound the two LLM-assisted passes (Repair and Expand) to maintain reliability. See [design/pipeline.md](design/pipeline.md) for the canonical reference.
-
-## How It Differs
-
-| System | Focus | Glyph's difference |
+| Primitive | What it means | Where you see it |
 |---|---|---|
-| DSPy | Optimizing LLM pipelines via signatures/modules | Glyph targets skill *authoring* and *visualization*, not pipeline optimization |
-| LangGraph | Stateful graph execution for multi-step agents | Glyph is a *language* that compiles to instructions, not a runtime |
-| Prompt templates (Jinja/Handlebars) | String interpolation for prompts | Glyph has real structure: control flow, constraints, typed parameters |
-| LMQL/Guidance/SGLang | Constrained generation at inference time | Glyph operates at the skill-definition layer, not the generation layer |
-| CrewAI/AutoGen | Multi-agent orchestration | Glyph centers skill authoring and compilation first; coordination may exist around it later, but orchestration is not the primary abstraction |
+| **Instruction** | Tell the agent to do something | Calls, inline strings, and blocks in `flow:` |
+| **Constraint** | Bound the agent's behavior | `require`, `avoid`, `must`, `must avoid` markers |
+| **Context** | Frame the agent's understanding | `context:` entries — informational, not directives |
+| **Interface** | Define a callable's contract | Parameters, return type, `description:`, `effects:` |
+| **Binding** | Introduce an addressable name | Declarations, local assignments, imports |
 
-## Status
+## Things to Know
 
-Early research and design phase. The `research/` directory contains the founding design vision and exploration of the design space across syntax, IR, compiler architecture, visualization, and 15+ existing systems.
+- **Constraint strength has two levels.** `require`/`avoid` are soft — strong guidance. `must`/`must avoid` are hard — absolute rules. Reserve `must` for things that genuinely cannot be violated.
+
+- **Return types are domain types, not primitives.** Write `-> Entry`, `-> Plan`, `-> BranchName`. There is no `String` or `Int` in the author-facing surface. If the value is really a plain string, name the role it plays.
+
+- **`{name}` in strings is a runtime slot, not interpolation.** The name must be a declared parameter or local binding — you cannot invent a slot name that isn't in scope. Parameter slots survive into the compiled `## Parameters` section for the agent to fill at invocation time. Local binding references are rewritten into natural-language cross-references in the compiled prose.
+
+- **`with` applies a modifier to a single call site.** `validate(plan) with "focus on security"` tells the expand pass to apply that modifier when expanding this invocation into prose — think of it as instructing the LLM to run the call with that extra lens. The callee's contract is unchanged; `with` affects only the wording of that one step in compiled output.
+
+- **`context:` is not an instruction.** It is background framing the agent should understand while executing — not a directive and not a step. Instructions go in `flow:` as strings or calls.
+
+- **`description:` is the routing key.** Agents read it to decide when to invoke the skill. Write it as a trigger condition, not a summary. Blocks support `description:`, `context:`, `constraints:`, and `flow:` too — the same sub-sections as a skill.
+
+- **Undefined names are auto-materialized.** If a name appears as a call (`foo()`) with no definition, the repair pass creates a `generated block`. If it appears in a constraint or context position (`require preserve_patterns`), the repair pass creates a `generated const` with a string definition. You can leave stubs and let the compiler fill them in — or define them yourself.
+
+- **Output targets use angle brackets.** `return <current_branch>` means "the agent must produce a value called current_branch from the prose." `return <"root cause including severity">` is the descriptive form. Both are distinct from returning an existing binding — use them when the producer is prose or judgement, not a callable.
+
+- **Identifiers are case-normalized.** `make_plan`, `makePlan`, and `MakePlan` all resolve to the same name. Convention is `snake_case` for values and `PascalCase` for types — but the compiler treats them as equivalent.
+
+- **One skill per file.** A file with a `skill` declaration is a skill file. A file with only `block`/`const`/`export ...` declarations is a library file. Two skills in one file is an error.
+
+- **`export block` has strict rules.** Must end with an explicit `return`. Must be self-contained — behavior depends only on declared inputs, imports, and same-file declarations. No hidden context.
+
+- **The compiler writes the prose.** You describe structure and intent. The compiler expands it into explicit, agent-followable instructions under `## Parameters`, `### Steps`, `### Constraints`. Don't try to write that layer by hand.
 
 ## License
 
-TBD
+Apache 2.0 — see [LICENSE](LICENSE).
