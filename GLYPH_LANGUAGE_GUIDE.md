@@ -269,7 +269,24 @@ Type annotations on parameters use **domain types only** — `name: Plan`, `name
 
 Type annotations are optional in MVP; the compiler infers or ignores them (see §10 Types).
 
-### 6.1 Parameter slots `{name}` in instruction strings
+### 6.1 Per-Parameter Descriptions
+
+Annotate any parameter slot with a description using `<"...">`. The description appears as that parameter's text in the compiled `## Parameters` section, replacing the auto-generated description (if any).
+
+The four forms:
+
+```
+x = <"description only — no default value">
+x = "foo" <"default with description">
+x: T = <"typed, no default, with description">
+x: T = "foo" <"typed, with default and description">
+```
+
+Block-strings (`<"""...""">`) are also accepted for multi-line descriptions; they render as a multi-line bullet in the compiled output (see [compiled-output.md](design/compiled-output.md) §`## Parameters`).
+
+A per-param description **wins** over any type-level description provided by `type Foo = <"...">` (see §X — `type` decls land in S2; forward ref, not yet documented). When neither is present, the compiled bullet shows just the name + (optional) type + default-or-required marker.
+
+### 6.2 Parameter slots `{name}` in instruction strings
 
 You may reference a parameter or a local binding inside an instruction string using `{name}`:
 
@@ -687,7 +704,7 @@ Reach for `<name>` / `<"…">` only when the producer is the prose itself.
 - Block: `"""..."""` — multiline, common leading indentation stripped (Python `textwrap.dedent`).
 - Escapes: `\"` and `\\` only. No `\n`, `\t`, no Unicode escapes.
 - **No interpolation, no concatenation.** No `${...}`. No `+` operator on strings.
-- The only template-like feature is `{name}` parameter slots inside instruction-bearing strings (§6.1).
+- The only template-like feature is `{name}` parameter slots inside instruction-bearing strings (§6.2).
 
 ### 9.2 Integers and floats
 
