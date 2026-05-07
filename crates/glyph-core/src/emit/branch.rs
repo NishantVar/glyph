@@ -1,4 +1,4 @@
-//! Branch projection: three pure-`applies()` sub-cases + mixed-condition
+//! Branch projection: pure-predicate sub-cases + mixed-condition
 //! fallback. See `design/expand.md` §3.3.
 
 use crate::emit::scaffold::{Scaffold, SpanId, SpanKind, SpanPayload, SpanRef};
@@ -169,7 +169,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn pure_applies_single_arm() {
+    fn pure_predicate_single_arm_applies_form() {
         let br = IrBranch {
             node_id: NodeId(0),
             condition: "needs_review.applies()".into(),
@@ -193,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn pure_applies_multi_arm() {
+    fn pure_predicate_multi_arm_applies_form() {
         let br = IrBranch {
             node_id: NodeId(0),
             condition: "a.applies()".into(),
