@@ -333,6 +333,7 @@ mod tests {
             else_body: None,
             resolved_predicates: None,
             predicate_shape: crate::ir::BranchPredicateShape::default(),
+            classification: None,
         }));
         arena.set_root_skill(NodeId(0));
         let err = validate(&arena).unwrap_err();

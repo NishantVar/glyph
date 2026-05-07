@@ -231,6 +231,12 @@ pub struct IrBranch {
     /// populated by Tasks 2.5/2.6.
     #[serde(skip)]
     pub predicate_shape: BranchPredicateShape,
+    /// Classification computed by Analyze. None on freshly-loaded IR JSON
+    /// (validate-output path); Some(_) on every branch produced by the live
+    /// compile pipeline. Consumers (Expand, emit) read this directly without
+    /// re-classifying.
+    #[serde(skip)]
+    pub classification: Option<crate::condition::ConditionClassification>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -241,6 +247,12 @@ pub struct IrElifBranch {
     /// populated by Tasks 2.5/2.6.
     #[serde(skip)]
     pub predicate_shape: BranchPredicateShape,
+    /// Classification computed by Analyze. None on freshly-loaded IR JSON
+    /// (validate-output path); Some(_) on every branch produced by the live
+    /// compile pipeline. Consumers (Expand, emit) read this directly without
+    /// re-classifying.
+    #[serde(skip)]
+    pub classification: Option<crate::condition::ConditionClassification>,
 }
 
 /// Issue #86: tagged form distinguishing identifier vs descriptive output
@@ -407,8 +419,44 @@ mod tests {
             else_body: None,
             resolved_predicates: None,
             predicate_shape: BranchPredicateShape::default(),
+            classification: None,
         };
         assert!(br.resolved_predicates.is_none());
+    }
+
+    #[test]
+    fn ir_branch_classification_does_not_appear_in_json() {
+        use crate::condition::{
+            ClassifiedConditionToken, ConditionClassification, ConditionTokenKind,
+        };
+        use crate::ir::{BranchPredicateShape, IrBranch, NodeId};
+        let mut br = IrBranch {
+            node_id: NodeId(0),
+            condition: "x".into(),
+            then_body: vec![],
+            elif_branches: vec![],
+            else_body: None,
+            resolved_predicates: None,
+            predicate_shape: BranchPredicateShape::default(),
+            classification: None,
+        };
+        br.classification = Some(ConditionClassification {
+            tokens: vec![ClassifiedConditionToken {
+                text: "x".to_string(),
+                kind: ConditionTokenKind::Boolean,
+                is_comparison_operand: false,
+            }],
+            has_boolean_token: true,
+            has_predicate_token: false,
+            has_compositional_operator: false,
+            has_comparison_operator: false,
+            has_numeric_bare_condition: false,
+        });
+        let json = serde_json::to_string(&br).unwrap();
+        assert!(
+            !json.contains("classification"),
+            "classification leaked into JSON: {json}"
+        );
     }
 
     #[test]

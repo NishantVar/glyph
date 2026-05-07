@@ -370,6 +370,7 @@ fn lower_flow_body(
                         predicate_shape: predicate_shape_from(
                             elif.condition_classification.as_ref(),
                         ),
+                        classification: None,
                     });
                 }
                 let ir_else = if let Some(eb) = else_body {
@@ -387,6 +388,7 @@ fn lower_flow_body(
                     else_body: ir_else,
                     resolved_predicates: None,
                     predicate_shape: predicate_shape_from(condition_classification.as_ref()),
+                    classification: None,
                 });
                 ids.push(branch_id);
             }
@@ -833,6 +835,7 @@ pub fn lower_with_imports(
                         predicate_shape: predicate_shape_from(
                             elif.condition_classification.as_ref(),
                         ),
+                        classification: None,
                     });
                 }
                 let ir_else = if let Some(eb) = else_body {
@@ -856,6 +859,7 @@ pub fn lower_with_imports(
                     else_body: ir_else,
                     resolved_predicates: None,
                     predicate_shape: predicate_shape_from(condition_classification.as_ref()),
+                    classification: None,
                 });
                 step_ids.push(branch_id);
             }

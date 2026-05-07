@@ -248,6 +248,7 @@ mod tests {
                 has_predicate_token: true,
                 has_compositional_operator: false,
             },
+            classification: None,
         };
         assert!(is_pure_predicate(&br));
         assert!(br.elif_branches.is_empty());
@@ -268,6 +269,7 @@ mod tests {
                     has_predicate_token: true,
                     has_compositional_operator: false,
                 },
+                classification: None,
             }],
             else_body: None,
             resolved_predicates: None,
@@ -276,6 +278,7 @@ mod tests {
                 has_predicate_token: true,
                 has_compositional_operator: false,
             },
+            classification: None,
         };
         assert!(is_pure_predicate(&br));
     }
@@ -290,6 +293,7 @@ mod tests {
             else_body: None,
             resolved_predicates: None,
             predicate_shape: BranchPredicateShape::default(),
+            classification: None,
         };
         assert!(!is_pure_predicate(&br));
     }
@@ -358,6 +362,7 @@ mod tests {
                 has_predicate_token: true,
                 has_compositional_operator: false,
             },
+            classification: None,
         };
         assert!(is_pure_predicate(&br));
     }
@@ -376,6 +381,7 @@ mod tests {
                 has_predicate_token: true,
                 has_compositional_operator: false,
             },
+            classification: None,
         };
         assert!(is_pure_predicate(&br));
     }
@@ -394,6 +400,7 @@ mod tests {
                 has_predicate_token: true,
                 has_compositional_operator: true,
             },
+            classification: None,
         };
         assert!(!is_pure_predicate(&br));
     }
