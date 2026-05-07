@@ -164,6 +164,80 @@ skill foo()
     );
 }
 
+fn fixture_path(name: &str, ext: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join(format!("{}.{}", name, ext))
+}
+
+fn snapshot_test(fixture_name: &str) {
+    let src_path = fixture_path(fixture_name, "glyph");
+    let produced_path = fixture_path(fixture_name, "md");
+    let expected_path = fixture_path(fixture_name, "expected.md");
+
+    // Remove any stale produced .md so we know compile wrote a fresh one.
+    let _ = std::fs::remove_file(&produced_path);
+
+    let expected_raw = std::fs::read_to_string(&expected_path)
+        .unwrap_or_else(|e| panic!("failed reading {}: {}", expected_path.display(), e));
+
+    // Strip leading HTML comment lines (used for human annotations, e.g. in predicate_mixed).
+    // We strip whole lines from the raw bytes so trailing newlines are preserved exactly.
+    let expected: &str = {
+        let mut s = expected_raw.as_str();
+        while let Some(rest) = s.strip_prefix("<!--") {
+            // skip to end of this comment line
+            if let Some(pos) = rest.find('\n') {
+                s = &rest[pos + 1..];
+            } else {
+                s = "";
+                break;
+            }
+        }
+        s
+    };
+
+    let result = run_compile(src_path);
+    assert!(
+        result.status.success(),
+        "compile failed for {}:\nstdout:\n{}\nstderr:\n{}",
+        fixture_name,
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+
+    let actual_md = std::fs::read_to_string(&produced_path)
+        .unwrap_or_else(|e| panic!("produced .md not found for {}: {}", fixture_name, e));
+
+    assert_eq!(
+        actual_md,
+        expected,
+        "snapshot mismatch for {}",
+        fixture_name
+    );
+}
+
+#[test]
+fn fixture_predicate_const_single_arm() {
+    snapshot_test("predicate_const_single_arm");
+}
+
+#[test]
+fn fixture_predicate_const_multi_arm() {
+    snapshot_test("predicate_const_multi_arm");
+}
+
+#[test]
+fn fixture_predicate_mixed() {
+    snapshot_test("predicate_mixed");
+}
+
+#[test]
+fn fixture_predicate_inline_literal() {
+    snapshot_test("predicate_inline_literal");
+}
+
 #[test]
 fn mixed_predicate_const_with_not_emits_branch_condition_span() {
     let src = r#"

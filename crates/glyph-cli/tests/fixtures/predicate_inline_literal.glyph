@@ -1,0 +1,8 @@
+block skip_compile()
+    "Skip compilation and continue without changes."
+
+skill predicate_inline_literal()
+    description: "Demonstrate inline literal predicate form."
+    flow:
+        if "the user has explicitly opted out of compile-on-save"
+            skip_compile()
