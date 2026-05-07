@@ -2994,7 +2994,7 @@ fn check_nested_branches(
 // Condition classifier
 // ---------------------------------------------------------------------------
 
-use crate::condition::{ConditionClassification, ConditionTokenKind};
+use crate::condition::{tokenize_condition, ConditionClassification, ConditionTokenKind};
 
 const COMPOSITIONAL_OPERATORS: &[&str] = &["not", "and"];
 
@@ -3339,50 +3339,6 @@ pub fn classify_condition<'a>(
     }
 }
 
-fn tokenize_condition(s: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut iter = s.chars().peekable();
-    let mut buf = String::new();
-    while let Some(&c) = iter.peek() {
-        match c {
-            '"' => {
-                if !buf.is_empty() {
-                    out.push(std::mem::take(&mut buf));
-                }
-                let mut lit = String::from('"');
-                iter.next();
-                while let Some(&inner) = iter.peek() {
-                    iter.next();
-                    lit.push(inner);
-                    if inner == '"' {
-                        break;
-                    }
-                }
-                out.push(lit);
-            }
-            ' ' | '\t' => {
-                if !buf.is_empty() {
-                    out.push(std::mem::take(&mut buf));
-                }
-                iter.next();
-            }
-            // Note: '(' and ')' are NOT split as separate tokens.
-            // `my_block.applies()` must remain a single token so that
-            // `classify_token` can match the `.applies()` suffix.
-            // Standalone `(` / `)` only appear as operator tokens when they
-            // are separated from other tokens by whitespace (the ' '|'\t' arm
-            // above handles the split, and `classify_token` maps them to Operator).
-            _ => {
-                buf.push(c);
-                iter.next();
-            }
-        }
-    }
-    if !buf.is_empty() {
-        out.push(buf);
-    }
-    out
-}
 
 fn classify_token<'a>(
     tok: &str,

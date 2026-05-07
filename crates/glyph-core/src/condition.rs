@@ -30,6 +30,56 @@ impl ConditionClassification {
     }
 }
 
+/// Split a condition string into tokens, treating `"..."` as a single token
+/// so quoted literals with internal spaces are not fragmented.
+///
+/// Note: '(' and ')' are NOT split as separate tokens.
+/// `my_block.applies()` must remain a single token so that `classify_token`
+/// can match the `.applies()` suffix.  Standalone `(` / `)` only appear as
+/// operator tokens when they are separated from other tokens by whitespace
+/// (the whitespace arm handles the split, and `classify_token` maps them to
+/// Operator).
+///
+/// // TODO: escaped quotes are not supported (`"a\"b"` truncates at the backslash-quote).
+pub fn tokenize_condition(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut iter = s.chars().peekable();
+    let mut buf = String::new();
+    while let Some(&c) = iter.peek() {
+        match c {
+            '"' => {
+                if !buf.is_empty() {
+                    out.push(std::mem::take(&mut buf));
+                }
+                let mut lit = String::from('"');
+                iter.next();
+                while let Some(&inner) = iter.peek() {
+                    iter.next();
+                    lit.push(inner);
+                    if inner == '"' {
+                        break;
+                    }
+                }
+                out.push(lit);
+            }
+            ' ' | '\t' => {
+                if !buf.is_empty() {
+                    out.push(std::mem::take(&mut buf));
+                }
+                iter.next();
+            }
+            _ => {
+                buf.push(c);
+                iter.next();
+            }
+        }
+    }
+    if !buf.is_empty() {
+        out.push(buf);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -59,7 +59,7 @@ fn is_ident(s: &str) -> bool {
 
 // For PredicateApplies form, `resolved_predicates` is keyed by the bare
 // block name (without `.applies()`). For other forms, key is the token text.
-fn lookup_key_for_token(token: &str, kind: ConditionTokenKind) -> &str {
+pub(crate) fn lookup_key_for_token(token: &str, kind: ConditionTokenKind) -> &str {
     match kind {
         ConditionTokenKind::PredicateApplies => token.strip_suffix(".applies()").unwrap_or(token),
         _ => token,

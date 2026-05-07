@@ -2,12 +2,12 @@
 //! when the LLM Expand pass lands, per-kind overrides will replace some
 //! arms (see `obsidian/plans/expand-emitter-design-2026-05-04.md`).
 
-use super::branch::extract_predicate_token;
+use super::branch::{extract_predicate_token, lookup_key_for_token};
 use super::scaffold::{Chunk, Scaffold, SpanId, SpanKind};
 use super::templates::{
     ensure_determiner, DESCRIPTION_RETURN_SUFFIX_PREFIX, DESCRIPTION_RETURN_SUFFIX_TAIL,
 };
-use crate::condition::ConditionTokenKind;
+use crate::condition::{tokenize_condition, ConditionTokenKind};
 use std::collections::{BTreeMap, HashMap};
 
 pub fn fill(scaffold: &Scaffold) -> HashMap<SpanId, String> {
@@ -66,8 +66,8 @@ fn substitute_predicate_tokens(raw: &str, rp: &BTreeMap<String, String>) -> Stri
                     rp.get(&key).cloned().unwrap_or(key)
                 }
                 Some((stem, ConditionTokenKind::PredicateApplies)) => {
-                    let lookup = stem.strip_suffix(".applies()").unwrap_or(&stem);
-                    rp.get(lookup).cloned().unwrap_or(stem)
+                    let lookup = lookup_key_for_token(&stem, ConditionTokenKind::PredicateApplies);
+                    rp.get(lookup).cloned().unwrap_or_else(|| lookup.to_string())
                 }
                 _ => tok,
             }
@@ -76,41 +76,3 @@ fn substitute_predicate_tokens(raw: &str, rp: &BTreeMap<String, String>) -> Stri
     parts.join(" ")
 }
 
-/// Split a condition string into tokens, treating `"..."` as a single token
-/// (so quoted literals with spaces are not fragmented).
-fn tokenize_condition(s: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut chars = s.chars().peekable();
-    loop {
-        // Skip leading whitespace
-        while chars.peek().map_or(false, |c| c.is_whitespace()) {
-            chars.next();
-        }
-        match chars.peek() {
-            None => break,
-            Some('"') => {
-                // Consume the opening quote and everything up to the closing quote.
-                let mut tok = String::from('"');
-                chars.next(); // consume `"`
-                for c in chars.by_ref() {
-                    tok.push(c);
-                    if c == '"' {
-                        break;
-                    }
-                }
-                tokens.push(tok);
-            }
-            _ => {
-                // Consume until whitespace.
-                let mut tok = String::new();
-                while chars.peek().map_or(false, |c| !c.is_whitespace()) {
-                    tok.push(chars.next().unwrap());
-                }
-                if !tok.is_empty() {
-                    tokens.push(tok);
-                }
-            }
-        }
-    }
-    tokens
-}

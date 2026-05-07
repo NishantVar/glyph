@@ -200,4 +200,11 @@ skill foo()
         "expected stripped literal in mixed condition; compiled md = {}",
         md
     );
+    // If substitution failed, the raw const name `big` would appear immediately
+    // after the "If " opener — verify it was replaced by its resolved prose.
+    assert!(
+        !md.contains("If big"),
+        "raw `big` token should have been substituted; got:\n{}",
+        md
+    );
 }

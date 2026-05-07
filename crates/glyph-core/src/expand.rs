@@ -189,6 +189,10 @@ pub fn expand_step1_with_imported_descriptions(
                 // (lower.rs / parse.rs) so consumers (analyze, expand, emit)
                 // don't each have to redo this work.
                 let cond_stripped = cond.trim_end_matches(':').trim();
+                // `split_whitespace` mangles `"quoted literal"` tokens, but only `PredicateConst`
+                // needs lookup here — `PredicateLiteral` is emitted directly by stub_fill (quotes
+                // stripped at render time), so split-mangled literal fragments harmlessly fall
+                // through `extract_predicate_token` and the `matches!` guard.
                 for raw_tok in cond_stripped.split_whitespace() {
                     // Strip trailing punctuation so bare tokens like `big` are
                     // recognised even if adjacent to a comma or similar.
