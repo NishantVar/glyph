@@ -878,7 +878,7 @@ fn check_unmerged_duplicate_subsections(
 /// `file_label` and `line_index` follow the same contract as the parser entry
 /// point (`design/diagnostics.md` §Span Semantics).
 pub fn analyze_with_diagnostics(
-    file: SourceFile,
+    mut file: SourceFile,
     file_id: u32,
     file_label: &str,
     line_index: &LineIndex,
@@ -1161,6 +1161,9 @@ pub fn analyze_with_diagnostics(
             );
         }
     }
+
+    // Task 2.4: annotate every Branch/ElifBranch with a ConditionClassification.
+    annotate_file_branches(&mut file);
 
     file
 }
@@ -2061,7 +2064,10 @@ pub fn analyze_with_imports(
         }
     }
 
-    file.clone()
+    // Task 2.4: annotate every Branch/ElifBranch with a ConditionClassification.
+    let mut annotated = file.clone();
+    annotate_file_branches(&mut annotated);
+    annotated
 }
 
 /// Like `analyze_skill` but also tracks which imported names are used.
@@ -2983,6 +2989,132 @@ use crate::condition::{ConditionClassification, ConditionTokenKind};
 
 const COMPOSITIONAL_OPERATORS: &[&str] = &["not", "and"];
 
+// ---------------------------------------------------------------------------
+// Branch annotation walker (Task 2.4)
+// ---------------------------------------------------------------------------
+
+/// Recursively annotate every `FlowStmt::Branch` (and their `elif` arms) in
+/// `flow` with a `ConditionClassification`.
+///
+/// `texts` must already contain the file-level const bindings.
+/// `params_with_string_default` and `bindings` should be built from the
+/// enclosing skill's signature / flow.  For the MVP they may be empty — the
+/// classifier still handles the `"big"` → `PredicateConst` case via `texts`.
+fn annotate_branch_classifications<'a>(
+    flow: &mut Vec<FlowStmt>,
+    texts: &HashMap<&'a str, (String, crate::kind_infer::TypeTag)>,
+    params_with_string_default: &HashSet<&'a str>,
+    bindings: &HashSet<&'a str>,
+    block_decls: &HashMap<&'a str, &'a BlockDecl>,
+) {
+    for stmt in flow.iter_mut() {
+        if let FlowStmt::Branch {
+            condition,
+            condition_classification,
+            then_body,
+            elif_branches,
+            else_body,
+        } = stmt
+        {
+            *condition_classification = Some(classify_condition(
+                condition,
+                texts,
+                params_with_string_default,
+                bindings,
+                block_decls,
+            ));
+            for elif in elif_branches.iter_mut() {
+                elif.condition_classification = Some(classify_condition(
+                    &elif.condition,
+                    texts,
+                    params_with_string_default,
+                    bindings,
+                    block_decls,
+                ));
+                annotate_branch_classifications(
+                    &mut elif.body,
+                    texts,
+                    params_with_string_default,
+                    bindings,
+                    block_decls,
+                );
+            }
+            annotate_branch_classifications(
+                then_body,
+                texts,
+                params_with_string_default,
+                bindings,
+                block_decls,
+            );
+            if let Some(eb) = else_body {
+                annotate_branch_classifications(
+                    eb,
+                    texts,
+                    params_with_string_default,
+                    bindings,
+                    block_decls,
+                );
+            }
+        }
+    }
+}
+
+/// Annotate every `Branch` node in each `Skill`'s flow inside a `SourceFile`.
+///
+/// Called once at the end of `analyze_with_diagnostics` (and `analyze_with_imports`)
+/// after all semantic diagnostics have been emitted.
+fn annotate_file_branches(file: &mut SourceFile) {
+    // Build the texts map with owned keys so the borrow of `file.decls` ends
+    // before the mutable iteration below begins.
+    let owned_texts: HashMap<String, (String, crate::kind_infer::TypeTag)> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            crate::ast::Decl::Const(c) => {
+                let name = c.node.name.clone();
+                let (body, literal) = match &c.node.value {
+                    crate::ast::ConstValue::String(s) => {
+                        (s.clone(), crate::kind_infer::Literal::String(s.clone()))
+                    }
+                    crate::ast::ConstValue::Int(s) => {
+                        (s.clone(), crate::kind_infer::Literal::Number(s.clone()))
+                    }
+                    crate::ast::ConstValue::Float(s) => {
+                        (s.clone(), crate::kind_infer::Literal::Number(s.clone()))
+                    }
+                    crate::ast::ConstValue::Bool(s) => {
+                        (s.clone(), crate::kind_infer::Literal::Bool(s.clone()))
+                    }
+                };
+                let tag = crate::kind_infer::infer_primitive(&literal);
+                Some((name, (body, tag)))
+            }
+            _ => None,
+        })
+        .collect();
+    // Convert to `&str`-keyed map for `classify_condition`'s parameter type.
+    let texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = owned_texts
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.clone()))
+        .collect();
+
+    let empty_params: HashSet<&str> = HashSet::new();
+    let empty_bindings: HashSet<&str> = HashSet::new();
+    let empty_block_decls: HashMap<&str, &BlockDecl> = HashMap::new();
+
+    for decl in file.decls.iter_mut() {
+        if let crate::ast::Decl::Skill(spanned) = decl {
+            annotate_branch_classifications(
+                &mut spanned.node.flow,
+                &texts,
+                &empty_params,
+                &empty_bindings,
+                &empty_block_decls,
+            );
+        }
+    }
+}
+
 pub fn classify_condition<'a>(
     condition: &str,
     texts: &HashMap<&'a str, (String, crate::kind_infer::TypeTag)>,
@@ -2995,10 +3127,19 @@ pub fn classify_condition<'a>(
     let mut has_predicate = false;
     let mut has_composition = false;
 
-    let trimmed = condition.trim();
+    // The parser stores conditions with a trailing ` :` (e.g., `"big :"` for
+    // `if big:`).  Strip it before tokenizing so downstream classifiers don't
+    // see `:` as an unknown/Boolean token.
+    let trimmed = condition.trim().trim_end_matches(':').trim_end();
 
     for tok in tokenize_condition(trimmed) {
-        let kind = classify_token(&tok, texts, params_with_string_default, bindings, block_decls);
+        let kind = classify_token(
+            &tok,
+            texts,
+            params_with_string_default,
+            bindings,
+            block_decls,
+        );
         match kind {
             ConditionTokenKind::Boolean => has_boolean = true,
             ConditionTokenKind::PredicateApplies
@@ -5873,6 +6014,42 @@ skill main()
             signals.referenced_names
         );
     }
+
+    #[test]
+    fn analyze_annotates_branch_with_condition_classification() {
+        let src = r#"
+const big = "a big change"
+
+skill foo()
+    description: "test"
+    flow:
+        if big:
+            "stop"
+"#;
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let file =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
+
+        let skill = match &file.decls[1] {
+            crate::ast::Decl::Skill(s) => &s.node,
+            _ => panic!("expected skill"),
+        };
+        let branch = match &skill.flow[0] {
+            crate::ast::FlowStmt::Branch {
+                condition_classification,
+                ..
+            } => condition_classification,
+            _ => panic!("expected branch"),
+        };
+        let c = branch.as_ref().expect("classification should be populated");
+        assert!(c.is_pure_predicate());
+        assert_eq!(
+            c.tokens,
+            vec![crate::condition::ConditionTokenKind::PredicateConst]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -6273,7 +6450,13 @@ mod classify_condition_tests {
     fn classifies_string_kinded_const_as_predicate_const() {
         let blocks = empty_blocks();
         let mut texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = HashMap::new();
-        texts.insert("complex_change", ("the change is complex".into(), crate::kind_infer::TypeTag::String));
+        texts.insert(
+            "complex_change",
+            (
+                "the change is complex".into(),
+                crate::kind_infer::TypeTag::String,
+            ),
+        );
         let params: HashSet<&str> = HashSet::new();
         let bindings: HashSet<&str> = HashSet::new();
         let c = classify_condition("complex_change", &texts, &params, &bindings, &blocks);
@@ -6296,7 +6479,10 @@ mod classify_condition_tests {
     fn classifies_bool_kinded_const_as_boolean() {
         let blocks = empty_blocks();
         let mut texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = HashMap::new();
-        texts.insert("is_dry_run", ("true".into(), crate::kind_infer::TypeTag::Bool));
+        texts.insert(
+            "is_dry_run",
+            ("true".into(), crate::kind_infer::TypeTag::Bool),
+        );
         let params: HashSet<&str> = HashSet::new();
         let bindings: HashSet<&str> = HashSet::new();
         let c = classify_condition("is_dry_run", &texts, &params, &bindings, &blocks);
@@ -6308,7 +6494,13 @@ mod classify_condition_tests {
     fn mixed_predicate_const_with_not_is_not_pure() {
         let blocks = empty_blocks();
         let mut texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = HashMap::new();
-        texts.insert("complex_change", ("the change is complex".into(), crate::kind_infer::TypeTag::String));
+        texts.insert(
+            "complex_change",
+            (
+                "the change is complex".into(),
+                crate::kind_infer::TypeTag::String,
+            ),
+        );
         let params: HashSet<&str> = HashSet::new();
         let bindings: HashSet<&str> = HashSet::new();
         let c = classify_condition("not complex_change", &texts, &params, &bindings, &blocks);
