@@ -127,8 +127,14 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
             };
 
             // Emit bullet header and span, then description+metadata.
-            let has_desc = p.description.is_some();
-            let desc_text = p.description.as_deref().unwrap_or("");
+            // Effective description: per-param wins, else type-level (from registry), else none.
+            let effective_desc: Option<String> = p.description.clone().or_else(|| {
+                p.type_annotation
+                    .as_ref()
+                    .and_then(|t| arena.type_registry.descriptions.get(t).cloned())
+            });
+            let has_desc = effective_desc.is_some();
+            let desc_text = effective_desc.as_deref().unwrap_or("");
             let is_multiline = has_desc && (desc_text.contains('\n') || desc_text.len() > 120);
 
             if is_multiline {
@@ -147,7 +153,7 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                         param_name: Some(p.name.clone()),
                         param_type: p.type_annotation.clone(),
                         param_default: p.default.clone(),
-                        description_text: p.description.clone(),
+                        description_text: effective_desc.clone(),
                         ..SpanPayload::default()
                     },
                 });
@@ -170,7 +176,7 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                         param_name: Some(p.name.clone()),
                         param_type: p.type_annotation.clone(),
                         param_default: p.default.clone(),
-                        description_text: p.description.clone(),
+                        description_text: effective_desc.clone(),
                         ..SpanPayload::default()
                     },
                 });
@@ -189,7 +195,7 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                         param_name: Some(p.name.clone()),
                         param_type: p.type_annotation.clone(),
                         param_default: p.default.clone(),
-                        description_text: p.description.clone(),
+                        description_text: effective_desc.clone(),
                         ..SpanPayload::default()
                     },
                 });
