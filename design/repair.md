@@ -576,7 +576,29 @@ This makes downstream builds (CI, other contributors) reproducible by constructi
 
 **Step 2 (Expand) non-determinism is separate.** Expand Step 2's LLM reshaping is also non-deterministic but is bounded by Phase 6b's role-preservation gate (`expand.md` §4). There is no deterministic fallback emitter for Step 2 — it either passes 6b (after at most two retries) or hard-fails (`expand.md` §5). The cache strategy at `pipeline.md:522` allows reusing Step 2 output when source has not changed.
 
-## 12. Open Questions
+## 12. Type Description Coherence Check (Deferred)
+
+**DEFERRED — not yet implemented.** This section captures the contract for a future Repair extension; no compiler code exists for it today. Tracked alongside other Repair backlog items in `todo.md`.
+
+When a compilation unit contains both a `type Foo = <"...">` declaration and any downstream usage of `Foo` — a typed parameter, a typed default, or a typed return — the type-level description is the source of truth for what `Foo` means. Per-slot overrides (per-param or per-return descriptions) are expected to *specialize* that anchor, not *contradict* it. The Repair coherence check asks an LLM whether each pairing is a clean specialization or a meaningful conflict.
+
+**Three diagnostic IDs to register:**
+
+| ID | Trigger | LLM judges |
+|---|---|---|
+| `G::repair::type-description-conflict` | `type Foo = <"X">` exists AND a param has `: Foo = <"Y">` | Does `Y` *specialize* `X`, or does it *contradict* it? Specializations are fine; contradictions are flagged. |
+| `G::repair::default-violates-type-description` | `type Foo = <"X">` exists AND a param has `: Foo = literal` | Does the literal value satisfy `X`? E.g., `type RiskLevel = <"one of: low, medium, high">` + `risk: RiskLevel = "extreme"` is flagged. |
+| `G::repair::return-description-conflict` | `type Foo = <"X">` exists AND a `-> Foo` block has `return <"Y">` | Does `Y` describe a value consistent with `X`? Same specialization-vs-contradiction posture. |
+
+**Tier.** All three are `repairable` warnings. The LLM proposes a fix — rewrite the override to be a clean specialization, change the default, or rewrite the type-level description if the type drifted — and the author can accept or hand-edit. Once accepted, the check is idempotent: the same pairing is not re-flagged on the next compile.
+
+**Scoped to anchored types.** The check only runs when a `type Foo` declaration exists in the same compilation unit. Without an anchor, multiple per-slot descriptions of the same nominal type are independent — there is no source of truth to compare against, and Repair leaves them alone. This keeps the check from firing on legitimate ad-hoc per-param refinements.
+
+**Author escape hatch.** A line comment `// glyph-allow: type-description-conflict` placed on the param's line suppresses the check for that slot. The same suppression token form (`// glyph-allow: <short-id>`) covers the default and return variants — `// glyph-allow: default-violates-type-description` and `// glyph-allow: return-description-conflict` respectively. Use sparingly, for genuine intentional divergences where the override deliberately departs from the anchor's description.
+
+**Why warning, not error.** Per the same reasoning as §4.10 — picking which side of a tension wins is a semantic judgment the author should make. The coherence check surfaces the conflict and proposes a rewrite, but does not silently drop or rewrite either side without confirmation.
+
+## 13. Open Questions
 
 - **Diagnostic taxonomy.** The diagnostic shape and classification tiers are defined in [diagnostics.md](diagnostics.md). The full catalog of individual diagnostics will be built out as the compiler is implemented.
 - **Security and trust.** Prevent repair from adding imports, effects, exports, or generated const values that broaden behavior beyond the author's apparent intent.
