@@ -426,15 +426,35 @@ mod tests {
 
     #[test]
     fn ir_branch_classification_does_not_appear_in_json() {
+        // Covers both `IrBranch.classification` and `IrElifBranch.classification`:
+        // the parent's JSON serialization recursively serializes `elif_branches`,
+        // so populating an elif's classification with `Some(_)` makes the
+        // substring assertion below transitively guard the elif side too.
         use crate::condition::{
             ClassifiedConditionToken, ConditionClassification, ConditionTokenKind,
         };
-        use crate::ir::{BranchPredicateShape, IrBranch, NodeId};
+        use crate::ir::{BranchPredicateShape, IrBranch, IrElifBranch, NodeId};
         let mut br = IrBranch {
             node_id: NodeId(0),
             condition: "x".into(),
             then_body: vec![],
-            elif_branches: vec![],
+            elif_branches: vec![IrElifBranch {
+                condition: "y".into(),
+                body: vec![],
+                predicate_shape: BranchPredicateShape::default(),
+                classification: Some(ConditionClassification {
+                    tokens: vec![ClassifiedConditionToken {
+                        text: "y".to_string(),
+                        kind: ConditionTokenKind::PredicateApplies,
+                        is_comparison_operand: false,
+                    }],
+                    has_boolean_token: false,
+                    has_predicate_token: true,
+                    has_compositional_operator: true,
+                    has_comparison_operator: true,
+                    has_numeric_bare_condition: true,
+                }),
+            }],
             else_body: None,
             resolved_predicates: None,
             predicate_shape: BranchPredicateShape::default(),
