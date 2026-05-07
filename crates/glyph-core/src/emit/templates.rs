@@ -30,15 +30,12 @@ pub fn ensure_determiner(description: &str) -> String {
     /// an object without an article.
     const LEADING_NO_PREPEND: &[&str] = &[
         // articles
-        "the", "a", "an",
-        // demonstratives
-        "this", "that", "these", "those",
-        // possessives
+        "the", "a", "an", // demonstratives
+        "this", "that", "these", "those", // possessives
         "my", "your", "our", "their", "his", "her", "its", "whose",
         // quantifiers / determiners
-        "no", "every", "each", "some", "any", "all", "both", "several", "many", "much",
-        "more", "most", "less", "fewer",
-        // numerals
+        "no", "every", "each", "some", "any", "all", "both", "several", "many", "much", "more",
+        "most", "less", "fewer", // numerals
         "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
         // wh-words and other clause leaders that take `return X` directly
         "what", "whether", "why", "how", "who", "whom", "which", "where", "when", "if",
@@ -48,10 +45,7 @@ pub fn ensure_determiner(description: &str) -> String {
         return description.to_string();
     }
     let first_lc = first.to_ascii_lowercase();
-    let starts_with_digit = first
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_digit());
+    let starts_with_digit = first.chars().next().is_some_and(|c| c.is_ascii_digit());
     if starts_with_digit || LEADING_NO_PREPEND.iter().any(|d| *d == first_lc) {
         description.to_string()
     } else {
@@ -163,14 +157,8 @@ mod tests {
         assert_eq!(ensure_determiner("the test summary"), "the test summary");
         assert_eq!(ensure_determiner("a list of files"), "a list of files");
         assert_eq!(ensure_determiner("an inventory"), "an inventory");
-        assert_eq!(
-            ensure_determiner("your final answer"),
-            "your final answer"
-        );
-        assert_eq!(
-            ensure_determiner("two paths joined"),
-            "two paths joined"
-        );
+        assert_eq!(ensure_determiner("your final answer"), "your final answer");
+        assert_eq!(ensure_determiner("two paths joined"), "two paths joined");
     }
 
     /// Regression: descriptive returns that introduce a clause (wh-words,
@@ -223,10 +211,7 @@ mod tests {
     #[test]
     fn append_description_suffix_inserts_determiner() {
         assert_eq!(
-            append_description_suffix(
-                "Run the compiler.",
-                "path to the produced .glyph file"
-            ),
+            append_description_suffix("Run the compiler.", "path to the produced .glyph file"),
             "Run the compiler, and return the path to the produced .glyph file as your result."
         );
     }

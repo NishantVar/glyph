@@ -13,7 +13,9 @@ use crate::span::{LineIndex, Span};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TokenKind {
     /// Marks a logical line's start. Carries the indent level (in 4-space units).
-    LineStart { indent: u32 },
+    LineStart {
+        indent: u32,
+    },
     Ident(String),
     /// Quoted string literal — contents (without surrounding quotes), value already unescaped.
     StringLit(String),
@@ -62,15 +64,28 @@ pub struct Token {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TokenizeError {
-    TabIndent { byte_offset: u32 },
-    MixedIndent { byte_offset: u32 },
-    BadIndent { byte_offset: u32 },
-    UnterminatedString { byte_offset: u32 },
-    UnexpectedChar { byte_offset: u32, ch: char },
+    TabIndent {
+        byte_offset: u32,
+    },
+    MixedIndent {
+        byte_offset: u32,
+    },
+    BadIndent {
+        byte_offset: u32,
+    },
+    UnterminatedString {
+        byte_offset: u32,
+    },
+    UnexpectedChar {
+        byte_offset: u32,
+        ch: char,
+    },
     /// Multi-digit integer (or float integer part) starting with `0` —
     /// rejected per `design/values-and-names.md` §Integers ("Leading zeros
     /// are not allowed."). `0` alone and `0.X` floats remain valid.
-    LeadingZeroNumeric { byte_offset: u32 },
+    LeadingZeroNumeric {
+        byte_offset: u32,
+    },
 }
 
 pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), TokenizeError> {
@@ -114,10 +129,14 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
             }
         }
         if saw_space_then_tab {
-            return Err(TokenizeError::MixedIndent { byte_offset: line_start as u32 });
+            return Err(TokenizeError::MixedIndent {
+                byte_offset: line_start as u32,
+            });
         }
         if saw_tab {
-            return Err(TokenizeError::TabIndent { byte_offset: line_start as u32 });
+            return Err(TokenizeError::TabIndent {
+                byte_offset: line_start as u32,
+            });
         }
         // The content of the line starts at byte index `k`.
         // Strip a trailing line comment for this line (`//` outside strings).
@@ -132,7 +151,9 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
 
         // Indent must be a multiple of 4.
         if space_count % 4 != 0 {
-            return Err(TokenizeError::BadIndent { byte_offset: line_start as u32 });
+            return Err(TokenizeError::BadIndent {
+                byte_offset: line_start as u32,
+            });
         }
         let indent = space_count / 4;
         tokens.push(Token {
@@ -251,7 +272,11 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
                             new_j += 1;
                         }
                         line_end = new_j;
-                        next_line_pos = if new_j < bytes.len() { new_j + 1 } else { new_j };
+                        next_line_pos = if new_j < bytes.len() {
+                            new_j + 1
+                        } else {
+                            new_j
+                        };
                         content_end = strip_trailing_comment(bytes, p, line_end);
                     }
                     continue;
@@ -289,7 +314,9 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
                     }
                 }
                 if !closed {
-                    return Err(TokenizeError::UnterminatedString { byte_offset: start as u32 });
+                    return Err(TokenizeError::UnterminatedString {
+                        byte_offset: start as u32,
+                    });
                 }
                 let value = String::from_utf8(buf).expect("source is valid UTF-8");
                 tokens.push(Token {
@@ -311,7 +338,9 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
                 // integer parts (`01.5`); the fractional part of a float
                 // (`1.05`) is unaffected.
                 if p - start > 1 && bytes[start] == b'0' {
-                    return Err(TokenizeError::LeadingZeroNumeric { byte_offset: start as u32 });
+                    return Err(TokenizeError::LeadingZeroNumeric {
+                        byte_offset: start as u32,
+                    });
                 }
                 if p < content_end
                     && bytes[p] == b'.'
@@ -360,7 +389,10 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
     }
 
     let eof_span = Span::new(file_id, bytes.len() as u32, bytes.len() as u32);
-    tokens.push(Token { kind: TokenKind::Eof, span: eof_span });
+    tokens.push(Token {
+        kind: TokenKind::Eof,
+        span: eof_span,
+    });
 
     Ok((tokens, line_index))
 }
@@ -402,7 +434,9 @@ fn scan_triple_string(bytes: &[u8], start: usize) -> Result<(String, usize), Tok
             return Ok((value, p));
         }
         if p >= bytes.len() {
-            return Err(TokenizeError::UnterminatedString { byte_offset: start as u32 });
+            return Err(TokenizeError::UnterminatedString {
+                byte_offset: start as u32,
+            });
         }
         let c = bytes[p];
         if c == b'\\' && p + 1 < bytes.len() {
@@ -457,7 +491,11 @@ fn dedent_block_string(s: &str) -> String {
         common = Some(match common {
             None => indent,
             Some(prev) => {
-                let n = prev.bytes().zip(indent.bytes()).take_while(|(a, b)| a == b).count();
+                let n = prev
+                    .bytes()
+                    .zip(indent.bytes())
+                    .take_while(|(a, b)| a == b)
+                    .count();
                 &prev[..n]
             }
         });

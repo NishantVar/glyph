@@ -74,7 +74,7 @@ pub fn validate_output(ir_json: &str, md: &str) -> Vec<Violation> {
     check_section_shape(&md_struct, skill, &mut violations);
 
     // Context count
-    check_context_count(&md_struct, skill, &mut violations);
+    check_context_count(md, skill, &mut violations);
 
     // Step count and order
     check_step_count(&md_struct, skill, &mut violations);
@@ -406,10 +406,7 @@ fn collect_output_contract_tokens(value: &Value, tokens: &mut Vec<String>) {
                             // source token requires re-applying those escapes
                             // so the leak check matches the literal source
                             // form that may appear in compiled markdown.
-                            tokens.push(format!(
-                                "<\"{}\">",
-                                escape_for_source_token(desc)
-                            ));
+                            tokens.push(format!("<\"{}\">", escape_for_source_token(desc)));
                         }
                     }
                     // Pre-#86 JSON without `form` discriminator — fall back to old shape.
@@ -520,13 +517,13 @@ fn check_section_shape(md_struct: &MdStructure, skill: &Value, violations: &mut 
 // Check: context-count-mismatch
 // ---------------------------------------------------------------------------
 
-fn check_context_count(md_struct: &MdStructure, skill: &Value, violations: &mut Vec<Violation>) {
+fn check_context_count(md: &str, skill: &Value, violations: &mut Vec<Violation>) {
     let ir_context_count = skill
         .get("context")
         .and_then(|c| c.as_array())
         .map_or(0, |a| a.len());
 
-    let md_context_count = find_h3_items(md_struct, "Context");
+    let md_context_count = count_top_level_context_bullets(md);
 
     if ir_context_count != md_context_count {
         violations.push(Violation::new(
@@ -537,6 +534,35 @@ fn check_context_count(md_struct: &MdStructure, skill: &Value, violations: &mut 
             ),
         ));
     }
+}
+
+/// Count column-0 `- ` bullets inside the `### Context` H3 block.
+///
+/// Path B from `glyph-context-projection-design-2026-05-07.md`: raw
+/// line-scan over the original Markdown, preserving indentation. The
+/// `MdStructure` parser trims before bullet detection (see
+/// `parse_md_structure` line 194), so nested `  - …` bullets cannot
+/// be distinguished from top-level ones via that path. Each context
+/// entry's body is allowed to contain its own indented bullets, so we
+/// must count only literal `- ` at column 0 between `### Context` and
+/// the next `###` / `##` heading.
+fn count_top_level_context_bullets(md: &str) -> usize {
+    let mut in_context = false;
+    let mut count = 0usize;
+    for line in md.lines() {
+        if let Some(rest) = line.strip_prefix("### ") {
+            in_context = rest.trim() == "Context";
+            continue;
+        }
+        if line.starts_with("## ") || line.starts_with("### ") {
+            in_context = false;
+            continue;
+        }
+        if in_context && line.starts_with("- ") {
+            count += 1;
+        }
+    }
+    count
 }
 
 // ---------------------------------------------------------------------------
@@ -1974,6 +2000,44 @@ mod tests {
         assert!(violations
             .iter()
             .any(|v| v.id == "G::expand::context-count-mismatch"));
+    }
+
+    // --- context-count-mismatch: nested bullets in body don't inflate count ---
+    #[test]
+    fn context_count_ignores_indented_body_bullets() {
+        let ir = serde_json::json!({
+            "ir_version": 1,
+            "compiler": "glyph 0.1.0",
+            "source_file": "test.glyph",
+            "skill": {
+                "node_id": "n0",
+                "kind": "skill",
+                "name": "test_skill",
+                "description": "A test skill.",
+                "params": [],
+                "effects": [],
+                "context": [
+                    { "node_id": "n2", "kind": "context", "text": "A.", "name": "alpha" },
+                    { "node_id": "n3", "kind": "context", "text": "B." }
+                ],
+                "constraints": [],
+                "flow": [
+                    { "node_id": "n1", "kind": "inline_instruction", "text": "Do something.", "role": "step" }
+                ]
+            }
+        }).to_string();
+
+        // 2 top-level bullets in `### Context`, but the first body has 3 indented
+        // bullets inside it. Counting must not include the indented ones.
+        let md = "## Instructions\n\n### Context\n\n- **alpha**\n\n  A body paragraph.\n\n  - body bullet one\n  - body bullet two\n  - body bullet three\n\n- B.\n\n### Steps\n\n1. Do something.\n";
+        let violations = validate_output(&ir, md);
+        assert!(
+            !violations
+                .iter()
+                .any(|v| v.id == "G::expand::context-count-mismatch"),
+            "indented body bullets must not inflate context count: {:?}",
+            violations
+        );
     }
 
     // --- step-order-mismatch ---

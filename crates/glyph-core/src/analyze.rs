@@ -1232,9 +1232,7 @@ pub fn collect_same_file_resolutions(file: &SourceFile, file_path: &PathBuf) -> 
                 if imp.node.path == "@glyph/std" {
                     if let ast::ImportKind::Selective(names) = &imp.node.kind {
                         for imp_name in names {
-                            if imp_name.name.node == "subagent"
-                                || imp_name.name.node == "send"
-                            {
+                            if imp_name.name.node == "subagent" || imp_name.name.node == "send" {
                                 let local = imp_name
                                     .alias
                                     .clone()
@@ -1268,11 +1266,30 @@ pub fn collect_same_file_resolutions(file: &SourceFile, file_path: &PathBuf) -> 
                     &mut out,
                 );
                 for marker in &skill.body_constraints {
-                    record_text_use(&marker.name.node, marker.name.span, &text_defs, file_path, &mut out);
+                    record_text_use(
+                        &marker.name.node,
+                        marker.name.span,
+                        &text_defs,
+                        file_path,
+                        &mut out,
+                    );
                 }
-                for entry in skill.body_context.iter().chain(skill.context_section.iter()) {
+                for entry in skill
+                    .body_context
+                    .iter()
+                    .chain(skill.context_section.iter())
+                {
                     if let ContextEntry::NameRef(name) = entry {
-                        record_context_name_use(&name.node, name.span, &text_defs, &block_defs, &export_block_defs, &skill_defs, file_path, &mut out);
+                        record_context_name_use(
+                            &name.node,
+                            name.span,
+                            &text_defs,
+                            &block_defs,
+                            &export_block_defs,
+                            &skill_defs,
+                            file_path,
+                            &mut out,
+                        );
                     }
                 }
                 // body_bare_names are plain Strings without span info; skip for resolution.
@@ -1303,9 +1320,7 @@ pub fn collect_same_file_resolutions(file: &SourceFile, file_path: &PathBuf) -> 
                 if imp.node.path == "@glyph/std" {
                     if let ast::ImportKind::Selective(names) = &imp.node.kind {
                         for imp_name in names {
-                            if imp_name.name.node == "subagent"
-                                || imp_name.name.node == "send"
-                            {
+                            if imp_name.name.node == "subagent" || imp_name.name.node == "send" {
                                 out.push(Resolution {
                                     use_span: imp_name.name.span,
                                     def_span: Span::new(0, 0, 0),
@@ -1363,7 +1378,11 @@ pub fn collect_cross_file_resolutions(
                 for marker in &skill.body_constraints {
                     record_cross_file_text_use(&marker.name, targets, &mut out);
                 }
-                for entry in skill.body_context.iter().chain(skill.context_section.iter()) {
+                for entry in skill
+                    .body_context
+                    .iter()
+                    .chain(skill.context_section.iter())
+                {
                     if let ContextEntry::NameRef(name) = entry {
                         record_cross_file_any_use(name, targets, &mut out);
                     }
@@ -1434,13 +1453,33 @@ fn record_context_name_use(
     out: &mut Vec<Resolution>,
 ) {
     if let Some(def_span) = text_defs.get(name) {
-        out.push(Resolution { use_span, def_span: *def_span, def_file: file_path.clone(), kind: ResolutionKind::Text });
+        out.push(Resolution {
+            use_span,
+            def_span: *def_span,
+            def_file: file_path.clone(),
+            kind: ResolutionKind::Text,
+        });
     } else if let Some(def_span) = block_defs.get(name) {
-        out.push(Resolution { use_span, def_span: *def_span, def_file: file_path.clone(), kind: ResolutionKind::Block });
+        out.push(Resolution {
+            use_span,
+            def_span: *def_span,
+            def_file: file_path.clone(),
+            kind: ResolutionKind::Block,
+        });
     } else if let Some(def_span) = export_block_defs.get(name) {
-        out.push(Resolution { use_span, def_span: *def_span, def_file: file_path.clone(), kind: ResolutionKind::ExportBlock });
+        out.push(Resolution {
+            use_span,
+            def_span: *def_span,
+            def_file: file_path.clone(),
+            kind: ResolutionKind::ExportBlock,
+        });
     } else if let Some(def_span) = skill_defs.get(name) {
-        out.push(Resolution { use_span, def_span: *def_span, def_file: file_path.clone(), kind: ResolutionKind::Skill });
+        out.push(Resolution {
+            use_span,
+            def_span: *def_span,
+            def_file: file_path.clone(),
+            kind: ResolutionKind::Skill,
+        });
     }
 }
 
@@ -1456,10 +1495,23 @@ fn walk_flow_for_resolutions(
     for stmt in stmts {
         match stmt {
             FlowStmt::Call { target, .. } => {
-                record_call_target(target, file_path, block_defs, export_block_defs, stdlib_names, out);
+                record_call_target(
+                    target,
+                    file_path,
+                    block_defs,
+                    export_block_defs,
+                    stdlib_names,
+                    out,
+                );
             }
             FlowStmt::ConstraintMarker(marker) => {
-                record_text_use(&marker.name.node, marker.name.span, text_defs, file_path, out);
+                record_text_use(
+                    &marker.name.node,
+                    marker.name.span,
+                    text_defs,
+                    file_path,
+                    out,
+                );
             }
             FlowStmt::ContextMarker(entry) => {
                 if let ContextEntry::NameRef(name) = entry {
@@ -1470,18 +1522,54 @@ fn walk_flow_for_resolutions(
                 record_text_use(&name.node, name.span, text_defs, file_path, out);
             }
             FlowStmt::Return(ReturnExpr::Call { target, .. }) => {
-                record_call_target(target, file_path, block_defs, export_block_defs, stdlib_names, out);
+                record_call_target(
+                    target,
+                    file_path,
+                    block_defs,
+                    export_block_defs,
+                    stdlib_names,
+                    out,
+                );
             }
             FlowStmt::Return(ReturnExpr::Name(name)) => {
                 record_text_use(&name.node, name.span, text_defs, file_path, out);
             }
-            FlowStmt::Branch { then_body, elif_branches, else_body, .. } => {
-                walk_flow_for_resolutions(then_body, file_path, text_defs, block_defs, export_block_defs, stdlib_names, out);
+            FlowStmt::Branch {
+                then_body,
+                elif_branches,
+                else_body,
+                ..
+            } => {
+                walk_flow_for_resolutions(
+                    then_body,
+                    file_path,
+                    text_defs,
+                    block_defs,
+                    export_block_defs,
+                    stdlib_names,
+                    out,
+                );
                 for elif in elif_branches {
-                    walk_flow_for_resolutions(&elif.body, file_path, text_defs, block_defs, export_block_defs, stdlib_names, out);
+                    walk_flow_for_resolutions(
+                        &elif.body,
+                        file_path,
+                        text_defs,
+                        block_defs,
+                        export_block_defs,
+                        stdlib_names,
+                        out,
+                    );
                 }
                 if let Some(eb) = else_body {
-                    walk_flow_for_resolutions(eb, file_path, text_defs, block_defs, export_block_defs, stdlib_names, out);
+                    walk_flow_for_resolutions(
+                        eb,
+                        file_path,
+                        text_defs,
+                        block_defs,
+                        export_block_defs,
+                        stdlib_names,
+                        out,
+                    );
                 }
             }
             FlowStmt::InlineString(_) | FlowStmt::Return(_) => {
@@ -1553,7 +1641,12 @@ fn walk_flow_for_cross_file(
             FlowStmt::Return(ReturnExpr::Name(name)) => {
                 record_cross_file_text_use(name, targets, out);
             }
-            FlowStmt::Branch { then_body, elif_branches, else_body, .. } => {
+            FlowStmt::Branch {
+                then_body,
+                elif_branches,
+                else_body,
+                ..
+            } => {
                 walk_flow_for_cross_file(then_body, targets, out);
                 for elif in elif_branches {
                     walk_flow_for_cross_file(&elif.body, targets, out);
@@ -1720,13 +1813,15 @@ pub fn analyze_with_imports(
     }
 
     let mut context_skill_names: HashSet<&str> = local_context_skill_names;
-    let imported_context_skill_refs: Vec<String> = imported_context_skills.iter().cloned().collect();
+    let imported_context_skill_refs: Vec<String> =
+        imported_context_skills.iter().cloned().collect();
     for s in &imported_context_skill_refs {
         context_skill_names.insert(s.as_str());
     }
 
     let mut constraint_skill_names: HashSet<&str> = local_constraint_skill_names;
-    let imported_constraint_skill_refs: Vec<String> = imported_constraint_skills.iter().cloned().collect();
+    let imported_constraint_skill_refs: Vec<String> =
+        imported_constraint_skills.iter().cloned().collect();
     for s in &imported_constraint_skill_refs {
         constraint_skill_names.insert(s.as_str());
     }
@@ -2258,9 +2353,10 @@ fn analyze_skill(
                                 ),
                                 span: SourceSpan::from_byte_span(file_label, span, line_index),
                                 related: Vec::new(),
-                                hints: vec![
-                                    format!("declare `block {}()` or check the name for typos", target.node),
-                                ],
+                                hints: vec![format!(
+                                    "declare `block {}()` or check the name for typos",
+                                    target.node
+                                )],
                             },
                             span,
                         );
@@ -2323,7 +2419,10 @@ fn analyze_skill(
                     bag.push(
                         Diagnostic::error(
                             "G::analyze::undefined-name",
-                            format!("`{}` is not a declared `const` in this file", marker.name.node),
+                            format!(
+                                "`{}` is not a declared `const` in this file",
+                                marker.name.node
+                            ),
                             SourceSpan::from_byte_span(file_label, span, line_index),
                         ),
                         span,
@@ -2365,17 +2464,16 @@ fn analyze_skill(
                 // wired `validate_call_args`, so `return helper()` against
                 // a callee with a required parameter compiled silently.
                 if let crate::ast::ReturnExpr::Call { target, args } = expr {
-                    let params: Option<&[crate::ast::Param]> = if let Some(c) =
-                        block_decls.get(target.node.as_str())
-                    {
-                        Some(&c.params)
-                    } else if let Some(c) = export_block_decls.get(target.node.as_str()) {
-                        Some(&c.params)
-                    } else {
-                        imported_block_params
-                            .get(target.node.as_str())
-                            .map(|v| v.as_slice())
-                    };
+                    let params: Option<&[crate::ast::Param]> =
+                        if let Some(c) = block_decls.get(target.node.as_str()) {
+                            Some(&c.params)
+                        } else if let Some(c) = export_block_decls.get(target.node.as_str()) {
+                            Some(&c.params)
+                        } else {
+                            imported_block_params
+                                .get(target.node.as_str())
+                                .map(|v| v.as_slice())
+                        };
                     if let Some(params) = params {
                         for d in validate_call_args(
                             &target.node,
@@ -2556,12 +2654,28 @@ fn analyze_skill(
 
     // Check body-level context name refs.
     for entry in &skill.body_context {
-        check_context_entry_name(entry, text_names, context_skill_names, spanned.span, file_label, line_index, bag);
+        check_context_entry_name(
+            entry,
+            text_names,
+            context_skill_names,
+            spanned.span,
+            file_label,
+            line_index,
+            bag,
+        );
     }
 
     // Check context: section name refs.
     for entry in &skill.context_section {
-        check_context_entry_name(entry, text_names, context_skill_names, spanned.span, file_label, line_index, bag);
+        check_context_entry_name(
+            entry,
+            text_names,
+            context_skill_names,
+            spanned.span,
+            file_label,
+            line_index,
+            bag,
+        );
     }
 
     // Check constraints: section skill refs.
@@ -3017,9 +3131,10 @@ fn check_branch_body_names(
                                 ),
                                 span: SourceSpan::from_byte_span(file_label, span, line_index),
                                 related: Vec::new(),
-                                hints: vec![
-                                    format!("declare `block {}()` or check the name for typos", target.node),
-                                ],
+                                hints: vec![format!(
+                                    "declare `block {}()` or check the name for typos",
+                                    target.node
+                                )],
                             },
                             span,
                         );
@@ -3042,7 +3157,10 @@ fn check_branch_body_names(
                     bag.push(
                         Diagnostic::error(
                             "G::analyze::undefined-name",
-                            format!("`{}` is not a declared `const` in this file", marker.name.node),
+                            format!(
+                                "`{}` is not a declared `const` in this file",
+                                marker.name.node
+                            ),
                             SourceSpan::from_byte_span(file_label, span, line_index),
                         ),
                         span,
@@ -3050,7 +3168,15 @@ fn check_branch_body_names(
                 }
             }
             FlowStmt::ContextMarker(entry) => {
-                check_context_entry_name(entry, text_names, context_skill_names, span, file_label, line_index, bag);
+                check_context_entry_name(
+                    entry,
+                    text_names,
+                    context_skill_names,
+                    span,
+                    file_label,
+                    line_index,
+                    bag,
+                );
             }
             // Issue #84 codex pass 4 — AC-pass4-5: a `return some_callee()`
             // nested inside an `if`/`elif`/`else` body must run the same
@@ -3321,10 +3447,18 @@ pub fn fmt_signals(file: &SourceFile) -> FmtSignals {
 
     for decl in &file.decls {
         match decl {
-            Decl::Const(c) => { bound.insert(c.node.name.clone()); }
-            Decl::Block(b) => { bound.insert(b.node.name.clone()); }
-            Decl::ExportBlock(b) => { bound.insert(b.node.name.clone()); }
-            Decl::Skill(s) => { bound.insert(s.node.name.clone()); }
+            Decl::Const(c) => {
+                bound.insert(c.node.name.clone());
+            }
+            Decl::Block(b) => {
+                bound.insert(b.node.name.clone());
+            }
+            Decl::ExportBlock(b) => {
+                bound.insert(b.node.name.clone());
+            }
+            Decl::Skill(s) => {
+                bound.insert(s.node.name.clone());
+            }
             Decl::Import(imp) => match &imp.node.kind {
                 ast::ImportKind::Selective(names) => {
                     for n in names {
@@ -3359,11 +3493,17 @@ pub fn fmt_signals(file: &SourceFile) -> FmtSignals {
 fn collect_refs_from_decl(decl: &Decl, out: &mut HashSet<String>) {
     match decl {
         Decl::Skill(s) => {
-            for stmt in &s.node.flow { collect_refs_from_flow_stmt(stmt, out); }
-            for n in &s.node.body_bare_names { out.insert(n.clone()); }
+            for stmt in &s.node.flow {
+                collect_refs_from_flow_stmt(stmt, out);
+            }
+            for n in &s.node.body_bare_names {
+                out.insert(n.clone());
+            }
         }
         Decl::Block(b) => {
-            for stmt in &b.node.flow { collect_refs_from_flow_stmt(stmt, out); }
+            for stmt in &b.node.flow {
+                collect_refs_from_flow_stmt(stmt, out);
+            }
         }
         Decl::ExportBlock(b) => {
             if let Some(expr) = &b.node.terminal_return {
@@ -3376,28 +3516,45 @@ fn collect_refs_from_decl(decl: &Decl, out: &mut HashSet<String>) {
 
 fn collect_refs_from_flow_stmt(stmt: &FlowStmt, out: &mut HashSet<String>) {
     match stmt {
-        FlowStmt::Call { target, .. } => { out.insert(target.node.clone()); }
+        FlowStmt::Call { target, .. } => {
+            out.insert(target.node.clone());
+        }
         FlowStmt::Return(expr) => collect_refs_from_return_expr(expr, out),
-        FlowStmt::Branch { then_body, elif_branches, else_body, .. } => {
-            for s in then_body { collect_refs_from_flow_stmt(s, out); }
+        FlowStmt::Branch {
+            then_body,
+            elif_branches,
+            else_body,
+            ..
+        } => {
+            for s in then_body {
+                collect_refs_from_flow_stmt(s, out);
+            }
             for eb in elif_branches {
-                for s in &eb.body { collect_refs_from_flow_stmt(s, out); }
+                for s in &eb.body {
+                    collect_refs_from_flow_stmt(s, out);
+                }
             }
             if let Some(eb) = else_body {
-                for s in eb { collect_refs_from_flow_stmt(s, out); }
+                for s in eb {
+                    collect_refs_from_flow_stmt(s, out);
+                }
             }
         }
-        FlowStmt::BareName(n) => { out.insert(n.node.clone()); }
-        FlowStmt::InlineString(_)
-        | FlowStmt::ConstraintMarker(_)
-        | FlowStmt::ContextMarker(_) => {}
+        FlowStmt::BareName(n) => {
+            out.insert(n.node.clone());
+        }
+        FlowStmt::InlineString(_) | FlowStmt::ConstraintMarker(_) | FlowStmt::ContextMarker(_) => {}
     }
 }
 
 fn collect_refs_from_return_expr(expr: &ReturnExpr, out: &mut HashSet<String>) {
     match expr {
-        ReturnExpr::Call { target, .. } => { out.insert(target.node.clone()); }
-        ReturnExpr::Name(n) => { out.insert(n.node.clone()); }
+        ReturnExpr::Call { target, .. } => {
+            out.insert(target.node.clone());
+        }
+        ReturnExpr::Name(n) => {
+            out.insert(n.node.clone());
+        }
         ReturnExpr::None | ReturnExpr::Inline(_) | ReturnExpr::OutputTarget(_) => {}
     }
 }
@@ -3426,23 +3583,44 @@ fn infer_effects_for_flow(flow: &[FlowStmt]) -> Vec<String> {
         match stmt {
             FlowStmt::Call { target, .. } => {
                 if let Some(eff) = stdlib_block_effects(target.node.as_str()) {
-                    for e in eff { effects.insert((*e).to_string()); }
+                    for e in eff {
+                        effects.insert((*e).to_string());
+                    }
                 }
             }
             FlowStmt::Return(ReturnExpr::Call { target, .. }) => {
                 if let Some(eff) = stdlib_block_effects(target.node.as_str()) {
-                    for e in eff { effects.insert((*e).to_string()); }
+                    for e in eff {
+                        effects.insert((*e).to_string());
+                    }
                 }
             }
-            FlowStmt::Branch { then_body, elif_branches, else_body, .. } => {
-                for s in then_body { walk(s, effects); }
-                for eb in elif_branches { for s in &eb.body { walk(s, effects); } }
-                if let Some(eb) = else_body { for s in eb { walk(s, effects); } }
+            FlowStmt::Branch {
+                then_body,
+                elif_branches,
+                else_body,
+                ..
+            } => {
+                for s in then_body {
+                    walk(s, effects);
+                }
+                for eb in elif_branches {
+                    for s in &eb.body {
+                        walk(s, effects);
+                    }
+                }
+                if let Some(eb) = else_body {
+                    for s in eb {
+                        walk(s, effects);
+                    }
+                }
             }
             _ => {}
         }
     }
-    for stmt in flow { walk(stmt, &mut effects); }
+    for stmt in flow {
+        walk(stmt, &mut effects);
+    }
     effects.into_iter().collect()
 }
 
@@ -3491,12 +3669,11 @@ skill diagnose() -> Confirmation
             "expected placeholder-string-return for descriptive form, got {ids:?}"
         );
         assert_eq!(bag.exit_code(), 2, "diagnostic must be repairable-tier");
-        let hints: Vec<String> = bag
-            .iter()
-            .flat_map(|d| d.hints.iter().cloned())
-            .collect();
+        let hints: Vec<String> = bag.iter().flat_map(|d| d.hints.iter().cloned()).collect();
         assert!(
-            hints.iter().any(|h| h.contains("<\"root cause and severity\">")),
+            hints
+                .iter()
+                .any(|h| h.contains("<\"root cause and severity\">")),
             "hint should suggest descriptive output-target form, got {hints:?}"
         );
     }
@@ -3707,7 +3884,14 @@ skill current() -> BranchName
         // missing-effects fires whenever there are inferred effects and no declared effects.
         let mut bag_on = DiagBag::new();
         let mut registry_on = crate::domain_registry::Registry::new();
-        analyze_with_diagnostics(file.clone(), 0, "test.glyph", &li, &mut bag_on, &mut registry_on);
+        analyze_with_diagnostics(
+            file.clone(),
+            0,
+            "test.glyph",
+            &li,
+            &mut bag_on,
+            &mut registry_on,
+        );
         let ids_on: Vec<&str> = bag_on.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids_on.contains(&"G::analyze::missing-effects"),
@@ -3772,14 +3956,8 @@ skill current() -> BranchName
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
         let entry = registry
             .lookup("Report")
             .expect("`Report` must be registered");
@@ -3800,14 +3978,8 @@ skill current() -> BranchName
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
         let entry = registry
             .lookup("Report")
             .expect("`Report` must be registered");
@@ -3823,14 +3995,8 @@ skill current() -> BranchName
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
         let entry = registry
             .lookup("Report")
             .expect("`Report` must be registered from private block");
@@ -3878,14 +4044,8 @@ skill current() -> BranchName
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
         let entry = registry
             .lookup("Report")
             .expect("`Report` must be registered");
@@ -3913,14 +4073,8 @@ skill current() -> BranchName
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
         // Lookup hits via either spelling.
         let via_capital = registry
             .lookup("Report")
@@ -3947,14 +4101,8 @@ skill current() -> BranchName
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
         // Existing #83 behavior preserved: warning fires.
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
@@ -3996,9 +4144,14 @@ block validate_plan()
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
         let path = PathBuf::from("test.glyph");
-        let (_file, res) = analyze_with_resolutions(file, 0, "test.glyph", &path, &line_index, &mut bag, false);
+        let (_file, res) =
+            analyze_with_resolutions(file, 0, "test.glyph", &path, &line_index, &mut bag, false);
         let block_res = res.iter().find(|r| r.kind == ResolutionKind::Block);
-        assert!(block_res.is_some(), "expected a Block resolution, got: {:?}", res);
+        assert!(
+            block_res.is_some(),
+            "expected a Block resolution, got: {:?}",
+            res
+        );
         let r = block_res.unwrap();
         let use_text = &src[r.use_span.start as usize..r.use_span.end as usize];
         assert_eq!(use_text, "validate_plan");
@@ -4021,9 +4174,14 @@ const accuracy = "Be accurate."
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
         let path = PathBuf::from("t.glyph");
-        let (_, res) = analyze_with_resolutions(file, 0, "t.glyph", &path, &line_index, &mut bag, false);
+        let (_, res) =
+            analyze_with_resolutions(file, 0, "t.glyph", &path, &line_index, &mut bag, false);
         let text_res = res.iter().find(|r| r.kind == ResolutionKind::Text);
-        assert!(text_res.is_some(), "expected a Text resolution, got: {:?}", res);
+        assert!(
+            text_res.is_some(),
+            "expected a Text resolution, got: {:?}",
+            res
+        );
         let r = text_res.unwrap();
         let use_text = &src[r.use_span.start as usize..r.use_span.end as usize];
         assert_eq!(use_text, "accuracy");
@@ -4040,7 +4198,8 @@ const accuracy = "Be accurate."
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
         let path = PathBuf::from("t.glyph");
-        let (_, res) = analyze_with_resolutions(file, 0, "t.glyph", &path, &line_index, &mut bag, false);
+        let (_, res) =
+            analyze_with_resolutions(file, 0, "t.glyph", &path, &line_index, &mut bag, false);
         assert!(
             !res.iter().any(|r| r.kind == ResolutionKind::Block),
             "unresolved call should produce no Block resolution, got: {:?}",
@@ -4058,14 +4217,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
         assert!(
             registry.lookup("Foo").is_none(),
             "registry must be empty when no `-> DomainType` annotations exist"
@@ -4105,14 +4258,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let diags = collision_diags(&bag);
         assert_eq!(
@@ -4166,14 +4313,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let diags = collision_diags(&bag);
         assert_eq!(
@@ -4200,14 +4341,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let diags = collision_diags(&bag);
         assert_eq!(
@@ -4230,14 +4365,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let diags = collision_diags(&bag);
         assert_eq!(
@@ -4273,14 +4402,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let diags = collision_diags(&bag);
         assert_eq!(
@@ -4312,14 +4435,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let diags = collision_diags(&bag);
         assert!(
@@ -4338,14 +4455,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         // #83 banned-warning still fires.
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
@@ -4373,14 +4484,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let diags = collision_diags(&bag);
         assert!(
@@ -4439,14 +4544,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let diags = collision_diags(&bag);
         assert_eq!(
@@ -4643,14 +4742,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let mismatches = nominal_mismatches(&bag);
         assert_eq!(
@@ -4720,14 +4813,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let mismatches = nominal_mismatches(&bag);
         assert!(
@@ -4748,14 +4835,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let mismatches = nominal_mismatches(&bag);
         assert!(
@@ -4778,14 +4859,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let mismatches = nominal_mismatches(&bag);
         assert!(
@@ -4806,14 +4881,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let mismatches = nominal_mismatches(&bag);
         assert!(
@@ -4836,14 +4905,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let mismatches = nominal_mismatches(&bag);
         assert_eq!(
@@ -4933,14 +4996,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let mismatches = nominal_mismatches(&bag);
         assert_eq!(mismatches.len(), 1);
@@ -4992,14 +5049,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let mismatches = nominal_mismatches(&bag);
         assert_eq!(
@@ -5041,14 +5092,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         // No domain-type registration → no name-collision sweep match.
         let collisions = collision_diags(&bag);
@@ -5087,14 +5132,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let mismatches = nominal_mismatches(&bag);
         assert_eq!(
@@ -5190,14 +5229,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let mismatches = nominal_mismatches(&bag);
         assert_eq!(
@@ -5238,14 +5271,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let collisions = collision_diags(&bag);
         assert_eq!(
@@ -5281,14 +5308,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let collisions = collision_diags(&bag);
         assert_eq!(
@@ -5388,14 +5409,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let diags = undefined_call_diags(&bag);
         assert_eq!(
@@ -5466,14 +5481,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let diags = undefined_call_diags(&bag);
         assert_eq!(
@@ -5498,14 +5507,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let diags = undefined_call_diags(&bag);
         assert_eq!(
@@ -5526,14 +5529,8 @@ const accuracy = "Be accurate."
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        let _ = analyze_with_diagnostics(
-            file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &mut registry,
-        );
+        let _ =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
 
         let diags = undefined_call_diags(&bag);
         assert_eq!(
@@ -5569,9 +5566,17 @@ skill main()
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
         let path = PathBuf::from("t.glyph");
-        let (_, res) = analyze_with_resolutions(file, 0, "t.glyph", &path, &line_index, &mut bag, false);
-        let stdlib_count = res.iter().filter(|r| r.kind == ResolutionKind::Stdlib).count();
-        assert_eq!(stdlib_count, 2, "expected 2 Stdlib resolutions, got: {:?}", res);
+        let (_, res) =
+            analyze_with_resolutions(file, 0, "t.glyph", &path, &line_index, &mut bag, false);
+        let stdlib_count = res
+            .iter()
+            .filter(|r| r.kind == ResolutionKind::Stdlib)
+            .count();
+        assert_eq!(
+            stdlib_count, 2,
+            "expected 2 Stdlib resolutions, got: {:?}",
+            res
+        );
     }
 
     #[test]
@@ -5602,18 +5607,29 @@ skill main()
 
         let res = collect_cross_file_resolutions(&file, &targets);
         // Two cross-file resolutions: the import-line name token + the call.
-        assert_eq!(res.len(), 2, "expected 2 cross-file resolutions, got: {:?}", res);
+        assert_eq!(
+            res.len(),
+            2,
+            "expected 2 cross-file resolutions, got: {:?}",
+            res
+        );
         // Both should point at the dep file.
         for r in &res {
             assert_eq!(r.def_file, dep_path);
         }
-        let import_kind_count = res.iter().filter(|r| r.kind == ResolutionKind::Import).count();
+        let import_kind_count = res
+            .iter()
+            .filter(|r| r.kind == ResolutionKind::Import)
+            .count();
         let block_kind_count = res
             .iter()
             .filter(|r| matches!(r.kind, ResolutionKind::Block | ResolutionKind::ExportBlock))
             .count();
         assert_eq!(import_kind_count, 1, "expected 1 Import-kind resolution");
-        assert_eq!(block_kind_count, 1, "expected 1 Block/ExportBlock-kind resolution");
+        assert_eq!(
+            block_kind_count, 1,
+            "expected 1 Block/ExportBlock-kind resolution"
+        );
     }
 
     #[test]
@@ -5632,10 +5648,14 @@ skill main()
 
         assert!(signals.referenced_names.contains("send"));
         assert!(signals.referenced_names.contains("subagent"));
-        assert!(signals.unresolved_names.contains("subagent"),
-            "subagent is not imported and not local — should be unresolved");
-        assert!(!signals.unresolved_names.contains("send"),
-            "send is imported, should not be unresolved");
+        assert!(
+            signals.unresolved_names.contains("subagent"),
+            "subagent is not imported and not local — should be unresolved"
+        );
+        assert!(
+            !signals.unresolved_names.contains("send"),
+            "send is imported, should not be unresolved"
+        );
     }
 
     #[test]
@@ -5650,11 +5670,14 @@ skill main()
         let (file, _) = crate::parse::parse(src, 0).expect("parse");
         let signals = crate::analyze::fmt_signals(&file);
 
-        let effects = signals.inferred_effects.get("main")
+        let effects = signals
+            .inferred_effects
+            .get("main")
             .expect("main should have inferred effects");
         assert!(
             effects.iter().any(|e| e == "spawns_agent"),
-            "expected spawns_agent in inferred effects, got {:?}", effects
+            "expected spawns_agent in inferred effects, got {:?}",
+            effects
         );
     }
 
@@ -5672,14 +5695,21 @@ skill main()
         let line_index = crate::span::LineIndex::new(src);
         let mut bag = crate::diagnostic::DiagBag::new();
         let file = crate::parse::parse_with_diagnostics_opts(
-            src, 0, "test.glyph", &line_index, &mut bag, true,
+            src,
+            0,
+            "test.glyph",
+            &line_index,
+            &mut bag,
+            true,
         )
         .expect("parse with effects enabled");
         let signals = crate::analyze::fmt_signals(&file);
 
         // Either the key is absent or its value is empty — either way the
         // inferred_effects map must not contain a non-empty entry for "main".
-        let is_empty_or_absent = signals.inferred_effects.get("main")
+        let is_empty_or_absent = signals
+            .inferred_effects
+            .get("main")
             .map_or(true, |v| v.is_empty());
         assert!(
             is_empty_or_absent,
@@ -5945,13 +5975,13 @@ export block foo() -> Report
 }
 
 // PRD #103 / Slice 1 (#104): pure-validator unit tests for
-    // `validate_call_args`. Table-driven over (params × args) per the
-    // acceptance criteria — exercises the validator in isolation, not
-    // the wiring into the analyze pipeline.
+// `validate_call_args`. Table-driven over (params × args) per the
+// acceptance criteria — exercises the validator in isolation, not
+// the wiring into the analyze pipeline.
 
-    #[cfg(test)]
-    mod validate_call_tests {
-        use super::*;
+#[cfg(test)]
+mod validate_call_tests {
+    use super::*;
 
     fn p(name: &str, default: Option<&str>) -> ast::Param {
         ast::Param {
@@ -5965,14 +5995,7 @@ export block foo() -> Report
     fn validate_call_args_emits_diagnostic_for_missing_required() {
         let li = LineIndex::new("");
         let params = vec![p("x", None)];
-        let diags = validate_call_args(
-            "bar",
-            &params,
-            &[],
-            Span::new(0, 0, 1),
-            "test.glyph",
-            &li,
-        );
+        let diags = validate_call_args("bar", &params, &[], Span::new(0, 0, 1), "test.glyph", &li);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].id, "G::analyze::missing-required-arg");
         assert_eq!(diags[0].classification, Classification::Error);
@@ -6039,8 +6062,16 @@ export block foo() -> Report
         );
         let msgs = missing_arg_names(&diags);
         assert_eq!(msgs.len(), 2, "expected 2 diagnostics, got {:?}", msgs);
-        assert!(msgs.iter().any(|m| m.contains("`a`")), "missing `a`: {:?}", msgs);
-        assert!(msgs.iter().any(|m| m.contains("`c`")), "missing `c`: {:?}", msgs);
+        assert!(
+            msgs.iter().any(|m| m.contains("`a`")),
+            "missing `a`: {:?}",
+            msgs
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("`c`")),
+            "missing `c`: {:?}",
+            msgs
+        );
     }
 
     #[test]
@@ -6056,7 +6087,11 @@ export block foo() -> Report
         );
         let msgs = missing_arg_names(&diags);
         assert_eq!(msgs.len(), 1, "expected 1 diagnostic, got {:?}", msgs);
-        assert!(msgs[0].contains("`c`"), "expected missing `c`, got {:?}", msgs[0]);
+        assert!(
+            msgs[0].contains("`c`"),
+            "expected missing `c`, got {:?}",
+            msgs[0]
+        );
     }
 
     #[test]
@@ -6076,6 +6111,10 @@ export block foo() -> Report
         );
         let msgs = missing_arg_names(&diags);
         assert_eq!(msgs.len(), 1, "expected 1 diagnostic, got {:?}", msgs);
-        assert!(msgs[0].contains("`c`"), "expected missing `c`, got {:?}", msgs[0]);
+        assert!(
+            msgs[0].contains("`c`"),
+            "expected missing `c`, got {:?}",
+            msgs[0]
+        );
     }
 }

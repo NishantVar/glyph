@@ -1,5 +1,6 @@
 ---
 source: crates/glyph-cli/tests/multi_file_acceptance.rs
+assertion_line: 113
 expression: md
 ---
 ---
@@ -15,7 +16,10 @@ description: Debug and fix a bug in the codebase with minimal, targeted changes.
 
 ### Context
 
-- This codebase follows standard project conventions and has a test suite.
+- **codebase-assumptions**
+
+  This codebase follows standard project conventions and has a test suite.
+
 - The bug is assumed to be reproducible locally.
 
 ### Steps

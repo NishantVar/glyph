@@ -96,8 +96,14 @@ impl SourceSpan {
         };
         Self {
             file: file.into(),
-            start: LineCol { line: s_line, col: s_col },
-            end: LineCol { line: e_line, col: e_col },
+            start: LineCol {
+                line: s_line,
+                col: s_col,
+            },
+            end: LineCol {
+                line: e_line,
+                col: e_col,
+            },
         }
     }
 }
@@ -154,7 +160,9 @@ struct DiagEntry {
 
 impl DiagBag {
     pub fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 
     /// True iff there are zero diagnostics (regardless of classification).
@@ -164,7 +172,10 @@ impl DiagBag {
 
     /// Push a diagnostic together with its originating byte span.
     pub fn push(&mut self, diag: Diagnostic, byte_span: Span) {
-        self.entries.push(DiagEntry { diag, byte_start: byte_span.start });
+        self.entries.push(DiagEntry {
+            diag,
+            byte_start: byte_span.start,
+        });
     }
 
     /// All diagnostics in insertion order (no sort).
@@ -360,10 +371,10 @@ mod tests {
         assert_eq!(
             order,
             vec![
-                ("a.glyph", "G::a::a"),  // byte 5, id a
-                ("a.glyph", "G::a::z"),  // byte 5, id z
-                ("a.glyph", "G::a::a"),  // byte 10
-                ("b.glyph", "G::a::z"),  // file b last
+                ("a.glyph", "G::a::a"), // byte 5, id a
+                ("a.glyph", "G::a::z"), // byte 5, id z
+                ("a.glyph", "G::a::a"), // byte 10
+                ("b.glyph", "G::a::z"), // file b last
             ]
         );
     }
