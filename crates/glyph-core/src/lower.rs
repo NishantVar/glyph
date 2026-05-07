@@ -358,13 +358,21 @@ fn lower_flow_body(
 }
 
 pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
-    lower_with_imports(file, &BTreeMap::new())
+    lower_with_imports(file, &BTreeMap::new(), &BTreeMap::new())
 }
 
 /// Lower with additional imported text values available for constraint/context resolution.
+///
+/// Phase B.7: `imported_type_descriptions` carries cross-file `export type`
+/// descriptions, re-keyed by the consumer-side local (post-alias / post-prefix)
+/// name. Folded into the `TypeRegistry` after same-file `type` decls so that
+/// same-file decls take precedence on name collision (matches the analogous
+/// `local-const-overwrites-imported-text` rule for cross-file `const`
+/// shadowing earlier in this function).
 pub fn lower_with_imports(
     file: &SourceFile,
     imported_texts: &BTreeMap<String, String>,
+    imported_type_descriptions: &BTreeMap<String, String>,
 ) -> Result<IrArena, LowerError> {
     // Collect imported text values into a name → value map. Local bindings
     // are merged in below from `collect_consts` (the sole local source of
@@ -410,9 +418,10 @@ pub fn lower_with_imports(
         }
     }
 
-    // Build the TypeRegistry from same-file `type` decls. Cross-file imports
-    // are folded in via Phase B.7; for now, only same-file decls populate.
-    // TODO(B.7): fold imported `export type` decls into the registry.
+    // Build the TypeRegistry from same-file `type` decls, then fold in
+    // imported `export type` decls. Same-file decls take precedence on name
+    // collision (matches the `local-const-overwrites-imported-text` rule
+    // above for cross-file `const` shadowing).
     let mut type_registry = crate::ir::TypeRegistry::default();
     for d in &file.decls {
         if let Decl::TypeDecl(t) = d {
@@ -421,6 +430,12 @@ pub fn lower_with_imports(
                 t.node.description.node.clone(),
             );
         }
+    }
+    for (name, desc) in imported_type_descriptions {
+        type_registry
+            .descriptions
+            .entry(name.clone())
+            .or_insert_with(|| desc.clone());
     }
 
     // Find the skill declaration (exactly one in walking skeleton).
@@ -1418,7 +1433,7 @@ skill demo()
         let file = parse_file(src);
         let mut imported = BTreeMap::new();
         imported.insert("greeting".to_string(), "imported".to_string());
-        let arena = lower_with_imports(&file, &imported).expect("should lower");
+        let arena = lower_with_imports(&file, &imported, &BTreeMap::new()).expect("should lower");
         let mut found_local = false;
         let mut found_imported = false;
         for n in arena.nodes() {

@@ -445,6 +445,10 @@ pub struct ExportedNames {
     /// the cross-file counterpart of `lower::block_callee_output_form` /
     /// `export_block_callee_output_form` for same-file callees.
     pub block_output_contracts: HashMap<String, OutputTargetForm>,
+    /// Phase B.7: per-exported `type` decl description text, keyed by the type's
+    /// name. Consumer files fold these into their `TypeRegistry` for cross-file
+    /// type-level description lookup at emit time. Same-file decls take precedence.
+    pub types: HashMap<String, String>,
 }
 
 /// Extract the exported names from a parsed source file.
@@ -457,6 +461,7 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
         block_return_types: HashMap::new(),
         block_params: HashMap::new(),
         block_output_contracts: HashMap::new(),
+        types: HashMap::new(),
     };
     for decl in &file.decls {
         match decl {
@@ -501,7 +506,15 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
                 exports.skills.insert(s.node.name.clone());
             }
             Decl::Import(_) => {}
-            Decl::TypeDecl(_) => {} // TODO: handled in Task B.4+
+            Decl::TypeDecl(t) => {
+                if t.node.exported {
+                    exports
+                        .types
+                        .insert(t.node.name.clone(), t.node.description.node.clone());
+                } else {
+                    exports.privates.insert(t.node.name.clone());
+                }
+            }
         }
     }
     exports
@@ -720,6 +733,12 @@ fn check_one_file(
     // Collect imported names for cross-file resolution.
     let mut imported_texts: HashSet<String> = HashSet::new();
     let mut imported_blocks: HashSet<String> = HashSet::new();
+    // Phase B.7: imported `export type` names (consumer-local spelling).
+    // Used to mark `param.type_annotation` references as "used" so the
+    // `G::analyze::unused-import` check passes. Not threaded into
+    // `analyze_with_imports` — the analyzer doesn't yet validate type
+    // annotations; that comes in a later phase.
+    let mut imported_types: HashSet<String> = HashSet::new();
     let mut seen_import_paths: HashMap<PathBuf, Span> = HashMap::new();
     let mut used_import_names: HashSet<String> = HashSet::new();
     let mut all_import_names: Vec<(String, Span)> = Vec::new();
@@ -863,6 +882,12 @@ fn check_one_file(
                                 imported_block_params
                                     .insert(local.to_string(), params.clone());
                             }
+                        } else if dep_exports.types.contains_key(&imp_name.name.node) {
+                            // Phase B.7: a selectively imported `export type`
+                            // name. Recorded so the `unused-import` post-pass
+                            // can recognise param `type_annotation` references
+                            // as a use.
+                            imported_types.insert(local.to_string());
                         } else {
                             bags.entry(key.clone()).or_default().push(
                                 Diagnostic::error(
@@ -899,6 +924,32 @@ fn check_one_file(
                             imported_block_params.insert(qualified, params.clone());
                         }
                     }
+                    // Phase B.7: prefix imported `export type` names under
+                    // `alias.name` so the unused-import post-pass recognises
+                    // whole-module-style param `type_annotation` references.
+                    for t in dep_exports.types.keys() {
+                        imported_types.insert(format!("{}.{}", alias, t));
+                    }
+                }
+            }
+        }
+    }
+
+    // Phase B.7: a param `type_annotation` referencing an imported type
+    // counts as a "use" of that import so `G::analyze::unused-import` does
+    // not fire. Done before `analyze_with_imports` so the check runs against
+    // a fully populated `used_import_names`.
+    for decl in &file.decls {
+        let params: &[ast::Param] = match decl {
+            Decl::Skill(s) => &s.node.params,
+            Decl::Block(b) => &b.node.params,
+            Decl::ExportBlock(b) => &b.node.params,
+            _ => continue,
+        };
+        for p in params {
+            if let Some(ta) = &p.type_annotation {
+                if imported_types.contains(&ta.node) {
+                    used_import_names.insert(ta.node.clone());
                 }
             }
         }
@@ -1348,6 +1399,12 @@ struct ResolvedImports {
     /// nodes so expand- and emit-time gates can read the callee's OC without
     /// an arena lookup.
     block_output_contracts: HashMap<String, OutputTargetForm>,
+    /// Phase B.7: imported `export type` description text, re-keyed by the
+    /// consumer-side local (post-alias / post-prefix) name. Folded into the
+    /// consumer's `TypeRegistry` during lowering. Stored as `BTreeMap` so it
+    /// can be passed by reference to `lower_with_imports` without a clone
+    /// (matches `text_values` for the same reason).
+    type_descriptions: std::collections::BTreeMap<String, String>,
 }
 
 /// Build the full resolved import data for a consumer file.
@@ -1367,6 +1424,7 @@ fn build_resolved_imports(
         block_return_types: HashMap::new(),
         block_params: HashMap::new(),
         block_output_contracts: HashMap::new(),
+        type_descriptions: std::collections::BTreeMap::new(),
     };
 
     let source = match std::fs::read_to_string(consumer) {
@@ -1402,6 +1460,15 @@ fn build_resolved_imports(
                             if let Some(val) = file_text_values.get(&(resolved.clone(), imp_name.name.node.clone())) {
                                 result.text_values.insert(local.to_string(), val.clone());
                             }
+                        }
+                        if let Some(desc) = exports.types.get(&imp_name.name.node) {
+                            // Phase B.7: re-key the producer-side `export type`
+                            // description under the consumer-local name so the
+                            // consumer's `TypeRegistry` resolves it by the
+                            // spelling the consumer actually wrote.
+                            result
+                                .type_descriptions
+                                .insert(local.to_string(), desc.clone());
                         }
                         if exports.blocks.contains(&imp_name.name.node) {
                             result.block_names.insert(local.to_string());
@@ -1474,6 +1541,13 @@ fn build_resolved_imports(
                             result.block_output_contracts.insert(qualified, form.clone());
                         }
                     }
+                    // Phase B.7: prefix imported `export type` descriptions
+                    // under `alias.name` so the consumer's `TypeRegistry`
+                    // resolves whole-module-style call-site spellings.
+                    for (name, desc) in &exports.types {
+                        let qualified = format!("{}.{}", alias, name);
+                        result.type_descriptions.insert(qualified, desc.clone());
+                    }
                 }
             }
         }
@@ -1539,7 +1613,11 @@ fn compile_file_with_resolved_imports(
     resolved_imports: &ResolvedImports,
     enable_effects: bool,
 ) -> Result<CompileOutcome, CompileError> {
-    if imported_procedure_paths.is_empty() && resolved_imports.text_names.is_empty() && resolved_imports.block_names.is_empty() {
+    // Fast-path single-file compile when there are no imports at all.
+    // Phase B.7: also check `type_descriptions` so a types-only consumer
+    // (no imported texts/blocks/procedure-paths) still routes through the
+    // resolved-imports path that folds imported types into the TypeRegistry.
+    if imported_procedure_paths.is_empty() && resolved_imports.text_names.is_empty() && resolved_imports.block_names.is_empty() && resolved_imports.type_descriptions.is_empty() {
         return compile_file_with_effects(path, enable_effects);
     }
 
@@ -1615,7 +1693,10 @@ fn compile_source_with_resolved_imports(
     }
 
     // Lower with imported text values available for constraint/context resolution.
-    let mut arena = lower::lower_with_imports(&file, &resolved_imports.text_values).map_err(CompileError::Lower)?;
+    // Phase B.7: also pass imported `export type` descriptions so they can be
+    // folded into the `TypeRegistry` for cross-file type-level description
+    // lookup at emit time.
+    let mut arena = lower::lower_with_imports(&file, &resolved_imports.text_values, &resolved_imports.type_descriptions).map_err(CompileError::Lower)?;
 
     // Tag imported block calls with resolved body text or Tier 3 procedure paths.
     for node in arena.nodes_mut() {
