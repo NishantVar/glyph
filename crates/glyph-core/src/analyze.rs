@@ -3475,7 +3475,7 @@ fn check_flow_numeric_conditions(
                     empty_bindings,
                     empty_block_decls,
                 );
-                if c.has_numeric_token {
+                if c.has_numeric_bare_condition {
                     bag.push(
                         Diagnostic {
                             id: "G::analyze::condition-non-boolean-non-predicate".into(),
@@ -3500,7 +3500,7 @@ fn check_flow_numeric_conditions(
                         empty_bindings,
                         empty_block_decls,
                     );
-                    if ec.has_numeric_token {
+                    if ec.has_numeric_bare_condition {
                         bag.push(
                             Diagnostic {
                                 id: "G::analyze::condition-non-boolean-non-predicate".into(),
@@ -3639,7 +3639,11 @@ pub fn classify_condition<'a>(
                 }
             }
         }
-        tokens.push(kind);
+        tokens.push(crate::condition::ClassifiedConditionToken {
+            text: tok.to_string(),
+            kind,
+            is_comparison_operand: false, // Task 6 replaces this whole function
+        });
     }
 
     ConditionClassification {
@@ -3647,7 +3651,8 @@ pub fn classify_condition<'a>(
         has_boolean_token: has_boolean,
         has_predicate_token: has_predicate,
         has_compositional_operator: has_composition,
-        has_numeric_token: has_numeric,
+        has_comparison_operator: false, // Task 6 introduces position-aware tracking
+        has_numeric_bare_condition: has_numeric,
     }
 }
 
@@ -6499,8 +6504,9 @@ skill foo()
         };
         let c = branch.as_ref().expect("classification should be populated");
         assert!(c.is_pure_predicate());
+        let kinds: Vec<_> = c.tokens.iter().map(|t| t.kind).collect();
         assert_eq!(
-            c.tokens,
+            kinds,
             vec![crate::condition::ConditionTokenKind::PredicateConst]
         );
     }
@@ -7196,7 +7202,8 @@ mod classify_condition_tests {
         let params: HashSet<&str> = HashSet::new();
         let bindings: HashSet<&str> = HashSet::new();
         let c = classify_condition("my_block.applies()", &texts, &params, &bindings, &blocks);
-        assert_eq!(c.tokens, vec![K::PredicateApplies]);
+        let kinds: Vec<_> = c.tokens.iter().map(|t| t.kind).collect();
+        assert_eq!(kinds, vec![K::PredicateApplies]);
         assert!(c.is_pure_predicate());
     }
 
@@ -7214,7 +7221,8 @@ mod classify_condition_tests {
         let params: HashSet<&str> = HashSet::new();
         let bindings: HashSet<&str> = HashSet::new();
         let c = classify_condition("complex_change", &texts, &params, &bindings, &blocks);
-        assert_eq!(c.tokens, vec![K::PredicateConst]);
+        let kinds: Vec<_> = c.tokens.iter().map(|t| t.kind).collect();
+        assert_eq!(kinds, vec![K::PredicateConst]);
         assert!(c.is_pure_predicate());
     }
 
@@ -7225,7 +7233,8 @@ mod classify_condition_tests {
         let params: HashSet<&str> = HashSet::new();
         let bindings: HashSet<&str> = HashSet::new();
         let c = classify_condition("\"the user opted in\"", &texts, &params, &bindings, &blocks);
-        assert_eq!(c.tokens, vec![K::PredicateLiteral]);
+        let kinds: Vec<_> = c.tokens.iter().map(|t| t.kind).collect();
+        assert_eq!(kinds, vec![K::PredicateLiteral]);
         assert!(c.is_pure_predicate());
     }
 
@@ -7240,7 +7249,8 @@ mod classify_condition_tests {
         let params: HashSet<&str> = HashSet::new();
         let bindings: HashSet<&str> = HashSet::new();
         let c = classify_condition("is_dry_run", &texts, &params, &bindings, &blocks);
-        assert_eq!(c.tokens, vec![K::Boolean]);
+        let kinds: Vec<_> = c.tokens.iter().map(|t| t.kind).collect();
+        assert_eq!(kinds, vec![K::Boolean]);
         assert!(!c.is_pure_predicate());
     }
 
