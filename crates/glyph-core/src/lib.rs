@@ -1067,7 +1067,16 @@ pub struct BuildResult {
     /// Per-file outcomes, keyed by the source path.
     pub outcomes: Vec<(PathBuf, FileOutcome)>,
     /// Overall exit code for the build (0 = all ok, 1 = any failure/skip).
+    ///
+    /// Retained for backwards compatibility. The CLI ignores this field and
+    /// computes its own exit code by aggregating per-file `DiagBag`s plus
+    /// `io_errors` (see `compute_pipeline_exit_code` in glyph-cli).
     pub exit_code: u8,
+    /// Filesystem write failures encountered while emitting `.md` or
+    /// `.ir.json` outputs. Empty on success. Populated by
+    /// `compile_directory_with_options`; the CLI surfaces these as exit 3
+    /// with priority over diagnostic-derived exit codes.
+    pub io_errors: Vec<IoFailure>,
 }
 
 /// Per-file outcome in a multi-file build.
@@ -1079,6 +1088,98 @@ pub enum FileOutcome {
     Failed { diagnostics: DiagBag },
     /// File was skipped because a transitive dependency failed.
     Skipped { failed_dep: PathBuf },
+}
+
+/// A filesystem write failure surfaced by the build pipeline.
+#[derive(Debug)]
+pub struct IoFailure {
+    /// Path the pipeline tried to write.
+    pub path: PathBuf,
+    /// Which output kind failed.
+    pub kind: IoFailureKind,
+    /// Display-only error message; owned, no lifetime ties to `std::io::Error`.
+    pub error: String,
+}
+
+/// Kind of output whose write failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IoFailureKind {
+    /// `.md` (compiled output, including Tier-3 procedure files).
+    Md,
+    /// `.ir.json` sidecar (only emitted under `--emit-ir`).
+    IrJson,
+}
+
+/// DFS-walk the import graph from a single entry file and return the canonical
+/// paths of every reachable `.glyph` file (entry inclusive), sorted for
+/// determinism.
+///
+/// Used by the CLI to seed the directory pipeline from a single-file entry,
+/// matching the DAG-closure contract in `design/cli.md:17`.
+///
+/// Behaviour:
+/// - If `entry` does not canonicalize (e.g. missing file), returns
+///   `vec![entry.to_path_buf()]` so the pipeline can surface the proper
+///   missing-file diagnostic.
+/// - Skips `@glyph/...` stdlib imports (compiler-embedded, not on disk).
+/// - Read errors on transitive files are silently skipped (the pipeline will
+///   re-encounter and diagnose them).
+/// - Parse failures during walking are tolerated — the throw-away `DiagBag`
+///   here is discarded; the pipeline re-parses each file with its own bag.
+/// - The visited-set guarantees termination on cycles. No cycle diagnostic is
+///   emitted from the walker (see spec non-goals).
+///
+/// `enable_effects` is threaded into the parse so an `effects:` sub-section in
+/// any closure file does not halt parse mid-way under `--enable-effects`.
+pub fn compute_import_closure(entry: &Path, enable_effects: bool) -> Vec<PathBuf> {
+    let canonical_entry = match entry.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return vec![entry.to_path_buf()],
+    };
+
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut stack: Vec<PathBuf> = vec![canonical_entry];
+
+    while let Some(current) = stack.pop() {
+        if !visited.insert(current.clone()) {
+            continue;
+        }
+        out.push(current.clone());
+
+        let source = match std::fs::read_to_string(&current) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let label = current.display().to_string();
+        let line_index = LineIndex::new(&source);
+        let mut throwaway = DiagBag::new();
+        let parsed = parse::parse_with_diagnostics_opts(
+            &source,
+            0,
+            &label,
+            &line_index,
+            &mut throwaway,
+            enable_effects,
+        );
+
+        if let Some(file) = parsed {
+            for decl in &file.decls {
+                if let Decl::Import(import_spanned) = decl {
+                    if import_spanned.node.path.starts_with("@glyph/") {
+                        continue;
+                    }
+                    if let Some(resolved) = resolve_import_path(&current, &import_spanned.node.path)
+                    {
+                        stack.push(resolved);
+                    }
+                }
+            }
+        }
+    }
+
+    out.sort();
+    out
 }
 
 /// Compile all `.glyph` files in `sources` (already collected and sorted).
@@ -1099,6 +1200,7 @@ pub fn compile_directory_with_options(
         return BuildResult {
             outcomes: Vec::new(),
             exit_code: 0,
+            io_errors: Vec::new(),
         };
     }
 
@@ -1215,6 +1317,7 @@ pub fn compile_directory_with_options(
     let mut failed_files: HashSet<PathBuf> = HashSet::new();
     let mut outcomes: Vec<(PathBuf, FileOutcome)> = Vec::new();
     let mut any_failure = false;
+    let mut io_errors: Vec<IoFailure> = Vec::new();
 
     for file in &topo_order {
         // Check if any dependency failed.
@@ -1272,7 +1375,14 @@ pub fn compile_directory_with_options(
                         emit_ir::serialize_ir_json(&arena, source_file, enable_effects)
                     {
                         let ir_path = ir_json_output_path(file);
-                        atomic_write(&ir_path, &ir_json).ok();
+                        if let Err(e) = atomic_write(&ir_path, &ir_json) {
+                            io_errors.push(IoFailure {
+                                path: ir_path,
+                                kind: IoFailureKind::IrJson,
+                                error: e.to_string(),
+                            });
+                            any_failure = true;
+                        }
                     }
                 }
                 outcomes.push((file.clone(), FileOutcome::Compiled { diagnostics }));
@@ -1303,6 +1413,21 @@ pub fn compile_directory_with_options(
                     },
                 ));
             }
+            Err(CompileError::Write { path, source }) => {
+                io_errors.push(IoFailure {
+                    path: PathBuf::from(path),
+                    kind: IoFailureKind::Md,
+                    error: source.to_string(),
+                });
+                failed_files.insert(file.clone());
+                any_failure = true;
+                outcomes.push((
+                    file.clone(),
+                    FileOutcome::Failed {
+                        diagnostics: DiagBag::new(),
+                    },
+                ));
+            }
             Err(_e) => {
                 failed_files.insert(file.clone());
                 any_failure = true;
@@ -1316,6 +1441,7 @@ pub fn compile_directory_with_options(
     BuildResult {
         outcomes,
         exit_code,
+        io_errors,
     }
 }
 
@@ -5648,6 +5774,99 @@ skill main()
                 .map(|d| d.id.clone())
                 .collect::<Vec<_>>(),
             "check_file_partition + merge should equal check_file_with_effects"
+        );
+    }
+}
+
+#[cfg(test)]
+mod compute_import_closure_tests {
+    use super::*;
+
+    fn write_file(path: &Path, content: &str) {
+        std::fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn diamond_returns_three_canonical_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.glyph");
+        let b = dir.path().join("b.glyph");
+        let c = dir.path().join("c.glyph");
+        write_file(
+            &a,
+            "import \"./b.glyph\" { x }\n\
+             import \"./c.glyph\" { y }\n\
+             export const z = \"z\"\n",
+        );
+        write_file(
+            &b,
+            "import \"./c.glyph\" { y }\n\
+             export const x = \"x\"\n",
+        );
+        write_file(&c, "export const y = \"y\"\n");
+
+        let closure = compute_import_closure(&a, false);
+        let mut expected = vec![
+            std::fs::canonicalize(&a).unwrap(),
+            std::fs::canonicalize(&b).unwrap(),
+            std::fs::canonicalize(&c).unwrap(),
+        ];
+        expected.sort();
+        assert_eq!(closure, expected);
+    }
+
+    #[test]
+    fn stdlib_only_returns_just_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.glyph");
+        write_file(
+            &a,
+            "import \"@glyph/std\" { describe }\n\
+             export const z = \"z\"\n",
+        );
+        let closure = compute_import_closure(&a, false);
+        assert_eq!(closure, vec![std::fs::canonicalize(&a).unwrap()]);
+    }
+
+    #[test]
+    fn self_cycle_terminates() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.glyph");
+        write_file(
+            &a,
+            "import \"./a.glyph\" { x }\n\
+             export const x = \"x\"\n",
+        );
+        let closure = compute_import_closure(&a, false);
+        assert_eq!(closure, vec![std::fs::canonicalize(&a).unwrap()]);
+    }
+
+    #[test]
+    fn missing_entry_returns_input_path_unchanged() {
+        let closure = compute_import_closure(Path::new("/nonexistent/missing.glyph"), false);
+        assert_eq!(closure, vec![PathBuf::from("/nonexistent/missing.glyph")]);
+    }
+
+    /// Effects-aware parsing: when `enable_effects=false` and the entry file
+    /// uses an `effects:` sub-section, parse halts at the disabled-effects
+    /// diagnostic. The closure walker still returns at least the entry; the
+    /// pipeline is responsible for surfacing the parse error.
+    #[test]
+    fn effects_disabled_still_returns_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.glyph");
+        write_file(
+            &a,
+            "skill demo()\n\
+             \x20\x20\x20\x20description: \"d\"\n\
+             \x20\x20\x20\x20effects:\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20io.write\n",
+        );
+        let closure = compute_import_closure(&a, false);
+        assert!(
+            closure.contains(&std::fs::canonicalize(&a).unwrap()),
+            "closure must include the entry even when parse halts at effects-disabled: got {:?}",
+            closure
         );
     }
 }
