@@ -2071,6 +2071,11 @@ pub fn analyze_with_imports(
     // Task 2.4: annotate every Branch/ElifBranch with a ConditionClassification.
     let mut annotated = file.clone();
     annotate_file_branches(&mut annotated);
+
+    // Task 3.1: emit G::analyze::condition-non-boolean-non-predicate for
+    // numeric-kinded tokens in condition position.
+    validate_file_numeric_conditions(&annotated, file_label, line_index, bag);
+
     annotated
 }
 
@@ -3151,11 +3156,18 @@ fn validate_flow_numeric_conditions(
                 );
                 if c.has_numeric_token {
                     bag.push(
-                        Diagnostic::error(
-                            "G::analyze::condition-non-boolean-non-predicate",
-                            "condition contains a numeric value; `if` conditions must be boolean or predicate",
-                            SourceSpan::from_byte_span(file_label, span, line_index),
-                        ),
+                        Diagnostic {
+                            id: "G::analyze::condition-non-boolean-non-predicate".into(),
+                            classification: Classification::Error,
+                            message: "condition expression must be boolean or a string predicate"
+                                .into(),
+                            span: SourceSpan::from_byte_span(file_label, span, line_index),
+                            related: Vec::new(),
+                            hints: vec![
+                                "Bind to a boolean (e.g., a Bool-returning call), use a string predicate const, or compare with ==. Glyph does not implicitly truth-test integers."
+                                    .into(),
+                            ],
+                        },
                         span,
                     );
                 }
@@ -3169,11 +3181,19 @@ fn validate_flow_numeric_conditions(
                     );
                     if ec.has_numeric_token {
                         bag.push(
-                            Diagnostic::error(
-                                "G::analyze::condition-non-boolean-non-predicate",
-                                "condition contains a numeric value; `if` conditions must be boolean or predicate",
-                                SourceSpan::from_byte_span(file_label, span, line_index),
-                            ),
+                            Diagnostic {
+                                id: "G::analyze::condition-non-boolean-non-predicate".into(),
+                                classification: Classification::Error,
+                                message:
+                                    "condition expression must be boolean or a string predicate"
+                                        .into(),
+                                span: SourceSpan::from_byte_span(file_label, span, line_index),
+                                related: Vec::new(),
+                                hints: vec![
+                                    "Bind to a boolean (e.g., a Bool-returning call), use a string predicate const, or compare with ==. Glyph does not implicitly truth-test integers."
+                                        .into(),
+                                ],
+                            },
                             span,
                         );
                     }
