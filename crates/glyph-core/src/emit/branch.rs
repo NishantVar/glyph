@@ -110,6 +110,7 @@ fn emit_mixed_condition(
         payload: SpanPayload {
             condition_expression: Some(br.condition.clone()),
             resolved_predicates: br.resolved_predicates.clone(),
+            predicate_shape: br.predicate_shape.clone(),
             ..SpanPayload::default()
         },
     });
@@ -126,6 +127,7 @@ fn emit_mixed_condition(
             payload: SpanPayload {
                 condition_expression: Some(elif.condition.clone()),
                 resolved_predicates: br.resolved_predicates.clone(),
+                predicate_shape: elif.predicate_shape.clone(),
                 ..SpanPayload::default()
             },
         });

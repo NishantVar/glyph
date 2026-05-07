@@ -2841,7 +2841,12 @@ mod tests {
                                 "condition": "fork_with_summary.applies()",
                                 "body": [
                                     { "node_id": "n4", "kind": "inline_instruction", "text": "Fork with summary.", "role": "step" }
-                                ]
+                                ],
+                                "predicate_shape": {
+                                    "has_boolean_token": false,
+                                    "has_predicate_token": false,
+                                    "has_compositional_operator": false
+                                }
                             }
                         ],
                         "else_body": null,
@@ -2907,7 +2912,12 @@ mod tests {
                                 "condition": "fork_with_summary.applies()",
                                 "body": [
                                     { "node_id": "n4", "kind": "inline_instruction", "text": "Fork with summary.", "role": "step" }
-                                ]
+                                ],
+                                "predicate_shape": {
+                                    "has_boolean_token": false,
+                                    "has_predicate_token": false,
+                                    "has_compositional_operator": false
+                                }
                             }
                         ],
                         "else_body": null,

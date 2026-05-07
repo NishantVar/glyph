@@ -3,7 +3,7 @@
 //! See `obsidian/plans/expand-emitter-design-2026-05-04.md`.
 
 use super::templates;
-use crate::ir::{IrArena, IrNode, NodeId, OutputTargetForm};
+use crate::ir::{BranchPredicateShape, IrArena, IrNode, NodeId, OutputTargetForm};
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 
@@ -122,6 +122,7 @@ pub struct SpanPayload {
     pub description_text: Option<String>,
     pub condition_expression: Option<String>,
     pub resolved_predicates: Option<BTreeMap<String, String>>,
+    pub predicate_shape: BranchPredicateShape,
     pub param_name: Option<String>,
     pub param_type: Option<String>,
     pub param_default: Option<String>,

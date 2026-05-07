@@ -405,6 +405,16 @@ fn serialize_elif(elif: &IrElifBranch, arena: &IrArena) -> Value {
         .collect();
     m.insert("body".into(), Value::Array(body));
 
+    // predicate_shape (mirror of serialize_branch)
+    m.insert(
+        "predicate_shape".into(),
+        serde_json::json!({
+            "has_boolean_token": elif.predicate_shape.has_boolean_token,
+            "has_predicate_token": elif.predicate_shape.has_predicate_token,
+            "has_compositional_operator": elif.predicate_shape.has_compositional_operator,
+        }),
+    );
+
     Value::Object(m)
 }
 
