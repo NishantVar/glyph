@@ -6,6 +6,7 @@
 
 pub mod analyze;
 pub mod ast;
+pub mod condition;
 pub mod diagnostic;
 pub mod domain_registry;
 pub mod emit;
