@@ -1,0 +1,72 @@
+// review.glyph — Glyph post-expand prose review
+//
+// Independently invokable LLM review skill. Loaded by /glyph:compile
+// after expand_and_validate has emitted the final compiled .md
+// artifacts. One invocation cross-reads a single emitted .md against
+// its source IR for grammar errors, internal contradictions, and IR
+// items missing from the prose, and either rewrites the .md in place
+// (simple-only) or surfaces a contradiction report verbatim.
+
+skill review(md_path, resolved_ir) -> ReviewReport
+    description: "Use during a /glyph:compile run after expand_and_validate has produced the final compiled .md artifacts. Read the .md plus its source IR, classify every finding as simple or contradiction, rewrite the .md in place when only simple findings are present, and emit a structured JSON review report covering rewrites, contradictions, and any residual warnings."
+
+    require classify_every_finding
+    must use_only_two_severity_values
+    must preserve_deterministic_structure_during_rewrite
+    must parameter_slots_survive_verbatim
+    must avoid rewriting_when_contradiction_present
+    must avoid modifying_glyph_source_or_ir
+    must avoid restructuring_sections_or_steps
+    must avoid inventing_undeclared_parameter_slots
+
+    context:
+        runs_after_expand_and_validate
+        invocation_shape_is_one_md_with_resolved_ir
+        md_is_the_agent_facing_artifact
+        ir_is_the_ground_truth_for_missed_item_checks
+        caller_owns_retry_budget_and_revalidation
+
+    flow:
+        cross_read_md_against_ir()
+        classify_each_finding()
+        rewrite_md_when_only_simple_findings()
+        emit_review_report_json()
+        return <"the structured JSON review report">
+
+block cross_read_md_against_ir()
+    "Read the compiled Markdown at md_path and the resolved IR at resolved_ir. For every Step, Constraint, Context entry, Parameter, and OutputContract in the IR, locate its surfaced counterpart in the Markdown's `## Parameters`, `### Context`, `### Steps`, and `### Constraints` sections, and note any IR item that is absent from the prose. Independently scan the prose for grammar errors, awkward phrasing, and internal contradictions between sentences. Independently scan the prose for contradictions against the IR — for example, a constraint whose polarity is reversed, or a step whose intent is flipped."
+
+block classify_each_finding()
+    "For each finding produced by the cross-read, assign a severity of `simple` or `contradiction`. Grammar errors, spelling errors, awkward phrasing, and minor missing-from-prose items (for example, a Context entry not surfaced) are `simple`. Any contradiction within the prose, or any contradiction between the prose and the IR (reversed polarity, flipped intent, missing constraint that materially changes meaning), is `contradiction`."
+
+block rewrite_md_when_only_simple_findings()
+    "If every finding is severity `simple`, rewrite the Markdown in place at md_path with each fix applied: correct grammar inline, smooth awkward phrasing, and surface any missing-from-prose item by inserting a sentence into the appropriate Step, Context bullet, or Constraint bullet. If any finding is severity `contradiction`, do not rewrite — leave md_path untouched on disk."
+
+block emit_review_report_json()
+    "Emit one JSON object of the form `{ outcome: \"rewritten\" | \"contradiction\" | \"no_findings\", change_summary: [{ location: \"...\", before: \"...\", after: \"...\", reason: \"...\" }, ...], contradictions: [{ location: \"...\", finding: \"...\", ir_evidence: \"...\" }, ...], residual_simple: [{ location: \"...\", finding: \"...\" }, ...] }`. The `change_summary` array is non-empty only when `outcome` is `rewritten`. The `contradictions` array is non-empty only when `outcome` is `contradiction`. The `residual_simple` array carries simple findings the rewrite intentionally did not address."
+
+const classify_every_finding = "Classify every finding produced by the cross-read pass with a severity. A finding without a severity fails validation."
+
+const use_only_two_severity_values = "Use exactly one of `simple` or `contradiction` as the severity of each finding. Any other value fails validation."
+
+const preserve_deterministic_structure_during_rewrite = "Preserve every deterministic structure the emitter laid down: YAML frontmatter, section headings, numbered Step ordering, sub-step lettering, `### Context` bullets, `### Constraints` bullets, the `## Parameters` bullet structure, and the `If <condition>:` and `Otherwise:` arm structure. Edit only the prose inside Step bodies, sub-step bodies, parameter descriptions, Context bullets, and Constraint bullets."
+
+const parameter_slots_survive_verbatim = "Preserve every `{param}` token whose name matches a declared InputContract parameter verbatim into the output. Silent dropping is forbidden."
+
+const rewriting_when_contradiction_present = "rewrite the Markdown when any finding is severity `contradiction`. Contradictions require author attention; the pipeline hard-fails on them and the rewrite is intentionally suppressed."
+
+const modifying_glyph_source_or_ir = "modify the Glyph source file or the IR JSON sidecar. The review pass writes only to md_path."
+
+const restructuring_sections_or_steps = "add, merge, split, or reorder Steps, sub-steps, sections, constraints, or parameters during a rewrite. Edits are span-scoped within existing prose."
+
+const inventing_undeclared_parameter_slots = "introduce a `{name}` token for any name that is not declared in the skill's InputContract. Inventing parameter references is forbidden."
+
+const runs_after_expand_and_validate = "The review pass runs after expand_and_validate has emitted the final compiled .md artifacts and they have passed `glyph validate-output`. The review pass is a prose-level audit independent of the structural validator."
+
+const invocation_shape_is_one_md_with_resolved_ir = "The LLM receives one compiled Markdown file plus the resolved IR side-map for the same source in a single prompt, and returns one structured JSON review report. When the report indicates a rewrite, the LLM also writes the updated Markdown back to md_path."
+
+const md_is_the_agent_facing_artifact = "The compiled Markdown at md_path is the artifact a consuming coding agent will read at runtime. Prose-level defects degrade the consuming agent's behavior even when the IR is structurally correct."
+
+const ir_is_the_ground_truth_for_missed_item_checks = "The IR is the compiler's ground truth for what the source declared. A missing-from-prose finding is an IR node that has no surfaced counterpart in the Markdown. Use IR node identity, not lexical similarity, when deciding whether an item is surfaced."
+
+const caller_owns_retry_budget_and_revalidation = "The /glyph:compile pipeline owns the retry budget and any post-rewrite re-run of `glyph validate-output`. The review skill performs one cross-read, one classification, and one optional rewrite per invocation."

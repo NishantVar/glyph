@@ -8,6 +8,10 @@
 skill glyph()
     description: "Entry point for the Glyph toolkit. Use when the user wants to author, compile, decompile, or learn the Glyph DSL. Routes the request to the matching `/glyph:*` slash command."
 
+    context:
+        toolkit_slash_commands
+        toolkit_internal_skills
+
     flow:
         if route_to_teach.applies()
             route_to_teach()
@@ -32,3 +36,7 @@ block route_to_decompile()
 
 block ask_which_glyph_capability()
     "Ask the user which Glyph capability they need: `teach` (author or learn the DSL), `compile` (build a `.glyph` into agent-facing Markdown), or `decompile` (reverse a `.md` skill back into `.glyph`). Once they answer, re-enter the matching branch."
+
+const toolkit_slash_commands = "User-facing slash commands: `/glyph:teach` (author or edit a `.glyph` source file), `/glyph:compile` (run a `.glyph` file or directory through the full pipeline), `/glyph:decompile` (reverse-engineer an existing `.md` skill back into `.glyph`)."
+
+const toolkit_internal_skills = "Internal skills loaded by `/glyph:compile` when the pipeline reaches their stage: `repair` (Phase 3b LLM source-rewrite, loaded when the compiler exits 2 with repairable diagnostics), `semantic_validation` (Phase 3c LLM validation, loaded after the compiler reaches exit 0; currently runs the constraint-conflict scan), and `expand` (Phase 4 LLM span-fill, loaded to fill the marked prose spans in the scaffolded compiled `.md` against its resolved IR side-map)."

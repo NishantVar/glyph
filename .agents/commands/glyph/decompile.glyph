@@ -95,6 +95,7 @@ skill decompile(source_md, target)
         map_constraints_section()
         recover_flow_from_steps()
         write_initial_glyph_source(target)
+        append_unmapped_section(target)
         factor_long_instructions_and_texts()
         sort_declarations()
         compile_and_iterate(target)
@@ -132,3 +133,9 @@ block recover_flow_from_steps()
 
 block write_initial_glyph_source(target)
     "Write the assembled skill, blocks, and any extracted const constants to {target}. This is a verbose first draft — factoring and sorting will tidy it up next."
+
+block append_unmapped_section(target)
+    flow:
+        "Review the original compiled skill against everything mapped so far. Identify content that was not captured by any Glyph construct — non-standard Markdown sections, metadata keys outside `name`/`description`/`effects`, free-form prose with no structural home, or patterns the Glyph language cannot express."
+        "If any unmapped content exists, append it verbatim to the end of {target} under a `// UNMAPPED` header comment, with each item on its own `// ` prefixed line."
+        "Report each unmapped item to the user as an error: name the original content and state why it has no Glyph equivalent."
