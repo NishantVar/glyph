@@ -22,7 +22,11 @@ pub fn fill(scaffold: &Scaffold) -> HashMap<SpanId, String> {
                     format!("{DESCRIPTION_RETURN_SUFFIX_PREFIX}{phrase}{DESCRIPTION_RETURN_SUFFIX_TAIL}\n")
                 }
                 SpanKind::BranchCondition => {
-                    let raw = span.payload.condition_expression.clone().unwrap_or_default();
+                    let raw = span
+                        .payload
+                        .condition_expression
+                        .clone()
+                        .unwrap_or_default();
                     if let Some(rp) = &span.payload.resolved_predicates {
                         substitute_predicate_tokens(&raw, rp)
                     } else {
@@ -67,7 +71,9 @@ fn substitute_predicate_tokens(raw: &str, rp: &BTreeMap<String, String>) -> Stri
                 }
                 Some((stem, ConditionTokenKind::PredicateApplies)) => {
                     let lookup = lookup_key_for_token(&stem, ConditionTokenKind::PredicateApplies);
-                    rp.get(lookup).cloned().unwrap_or_else(|| lookup.to_string())
+                    rp.get(lookup)
+                        .cloned()
+                        .unwrap_or_else(|| lookup.to_string())
                 }
                 _ => tok,
             }
@@ -75,4 +81,3 @@ fn substitute_predicate_tokens(raw: &str, rp: &BTreeMap<String, String>) -> Stri
         .collect();
     parts.join(" ")
 }
-

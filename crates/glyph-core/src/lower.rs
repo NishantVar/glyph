@@ -365,7 +365,9 @@ fn lower_flow_body(
                     ir_elifs.push(IrElifBranch {
                         condition: elif.condition.clone(),
                         body: elif_ids,
-                        predicate_shape: predicate_shape_from(elif.condition_classification.as_ref()),
+                        predicate_shape: predicate_shape_from(
+                            elif.condition_classification.as_ref(),
+                        ),
                     });
                 }
                 let ir_else = if let Some(eb) = else_body {
@@ -740,7 +742,9 @@ pub fn lower_with_imports(
                     ir_elifs.push(IrElifBranch {
                         condition: elif.condition.clone(),
                         body: elif_ids,
-                        predicate_shape: predicate_shape_from(elif.condition_classification.as_ref()),
+                        predicate_shape: predicate_shape_from(
+                            elif.condition_classification.as_ref(),
+                        ),
                     });
                 }
                 let ir_else = if let Some(eb) = else_body {
@@ -1751,7 +1755,8 @@ mod predicate_shape_lower_tests {
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
         let mut registry = Registry::new();
-        let analyzed = analyze_with_diagnostics(file, 0, "test", &line_index, &mut bag, &mut registry);
+        let analyzed =
+            analyze_with_diagnostics(file, 0, "test", &line_index, &mut bag, &mut registry);
         lower(&analyzed).expect("source should lower")
     }
 

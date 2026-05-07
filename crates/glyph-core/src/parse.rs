@@ -5546,15 +5546,11 @@ skill test_predicate_parse()
                 // The parser includes the trailing ` :` in the condition string.
                 // This is the current behavior being pinned — Phase 4 must account for it.
                 assert_eq!(
-                    condition,
-                    "\"the user opted in\" :",
+                    condition, "\"the user opted in\" :",
                     "expected condition to include trailing colon (current parser behavior)"
                 );
             }
-            other => panic!(
-                "expected FlowStmt::Branch, got {:?}",
-                other
-            ),
+            other => panic!("expected FlowStmt::Branch, got {:?}", other),
         }
     }
 
@@ -5573,15 +5569,11 @@ skill test_predicate_not_parse()
         match flow.first().expect("expected at least one flow stmt") {
             FlowStmt::Branch { condition, .. } => {
                 assert_eq!(
-                    condition,
-                    "not \"the user opted in\" :",
+                    condition, "not \"the user opted in\" :",
                     "expected negated condition with trailing colon (current parser behavior)"
                 );
             }
-            other => panic!(
-                "expected FlowStmt::Branch, got {:?}",
-                other
-            ),
+            other => panic!("expected FlowStmt::Branch, got {:?}", other),
         }
     }
 }

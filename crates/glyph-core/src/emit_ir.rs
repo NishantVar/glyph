@@ -1150,7 +1150,10 @@ skill foo()
         assert_eq!(branch["kind"], "branch");
         assert_eq!(branch["predicate_shape"]["has_predicate_token"], true);
         assert_eq!(branch["predicate_shape"]["has_boolean_token"], false);
-        assert_eq!(branch["predicate_shape"]["has_compositional_operator"], false);
+        assert_eq!(
+            branch["predicate_shape"]["has_compositional_operator"],
+            false
+        );
         let elif = &branch["elif_branches"][0];
         assert_eq!(elif["predicate_shape"]["has_predicate_token"], true);
         assert_eq!(elif["predicate_shape"]["has_boolean_token"], false);

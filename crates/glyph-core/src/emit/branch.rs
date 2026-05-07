@@ -87,8 +87,12 @@ pub fn emit_to_scaffold(
 fn emit_pure_predicate(s: &mut Scaffold, arena: &IrArena, br: &IrBranch, step_num: usize) {
     let single_arm = br.elif_branches.is_empty() && br.else_body.is_none();
     if single_arm {
-        let (token, kind) = extract_predicate_token(&br.condition)
-            .unwrap_or_else(|| (br.condition.trim().to_string(), ConditionTokenKind::PredicateConst));
+        let (token, kind) = extract_predicate_token(&br.condition).unwrap_or_else(|| {
+            (
+                br.condition.trim().to_string(),
+                ConditionTokenKind::PredicateConst,
+            )
+        });
         let desc = resolve_predicate_prose(&token, kind, br);
         let desc = strip_trailing_period(&desc);
         s.push_literal(format!(
@@ -113,7 +117,9 @@ fn resolve_predicate_prose(token: &str, kind: ConditionTokenKind, br: &IrBranch)
         ConditionTokenKind::PredicateLiteral => token.to_string(),
         // extract_predicate_token only returns predicate kinds; Boolean/Numeric/Operator
         // are filtered out before this function is reached.
-        ConditionTokenKind::Boolean | ConditionTokenKind::Numeric | ConditionTokenKind::Operator => {
+        ConditionTokenKind::Boolean
+        | ConditionTokenKind::Numeric
+        | ConditionTokenKind::Operator => {
             unreachable!("non-predicate token reached resolve_predicate_prose")
         }
         ConditionTokenKind::PredicateApplies | ConditionTokenKind::PredicateConst => {
@@ -134,8 +140,12 @@ fn emit_predicate_arm_header_and_body(
     condition: &str,
     body: &[NodeId],
 ) {
-    let (token, kind) = extract_predicate_token(condition)
-        .unwrap_or_else(|| (condition.trim().to_string(), ConditionTokenKind::PredicateConst));
+    let (token, kind) = extract_predicate_token(condition).unwrap_or_else(|| {
+        (
+            condition.trim().to_string(),
+            ConditionTokenKind::PredicateConst,
+        )
+    });
     let desc = resolve_predicate_prose(&token, kind, br);
     let desc = strip_trailing_period(&desc);
     s.push_literal(format!("   If {desc}:\n"));

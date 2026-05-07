@@ -388,7 +388,11 @@ mod tests {
             else_body: None,
             condition_classification: None,
         };
-        if let FlowStmt::Branch { condition_classification, .. } = br {
+        if let FlowStmt::Branch {
+            condition_classification,
+            ..
+        } = br
+        {
             assert!(condition_classification.is_none());
         } else {
             panic!("expected Branch");

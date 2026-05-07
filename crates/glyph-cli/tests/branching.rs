@@ -155,8 +155,7 @@ skill foo()
         String::from_utf8_lossy(&result.stderr)
     );
 
-    let md = std::fs::read_to_string(dir.path().join("foo.md"))
-        .expect("foo.md should be produced");
+    let md = std::fs::read_to_string(dir.path().join("foo.md")).expect("foo.md should be produced");
     assert!(
         md.contains("Decide whether the change requires regenerating multi-line prose, beyond a localised wording or value swap applies and, if so:"),
         "expected single-arm opener with const prose; got:\n{}",
@@ -215,8 +214,7 @@ fn snapshot_test(fixture_name: &str) {
         .unwrap_or_else(|e| panic!("produced .md not found for {}: {}", fixture_name, e));
 
     assert_eq!(
-        actual_md,
-        expected,
+        actual_md, expected,
         "snapshot mismatch for {}",
         fixture_name
     );
@@ -264,8 +262,7 @@ skill foo()
         String::from_utf8_lossy(&result.stderr)
     );
 
-    let md = std::fs::read_to_string(dir.path().join("foo.md"))
-        .expect("foo.md should be produced");
+    let md = std::fs::read_to_string(dir.path().join("foo.md")).expect("foo.md should be produced");
     // After substitution, the BranchCondition span should replace the `big`
     // const token with its resolved body and strip quotes from the inline literal.
     assert!(

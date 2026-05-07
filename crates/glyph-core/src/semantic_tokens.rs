@@ -485,8 +485,24 @@ fn classify_ast(
     let const_names = collect_const_decl_names(ast);
     for decl in &ast.decls {
         match decl {
-            Decl::Skill(s) => classify_skill(s, block_names, &const_names, source, file_id, line_index, out),
-            Decl::Block(b) => classify_block(b, block_names, &const_names, source, file_id, line_index, out),
+            Decl::Skill(s) => classify_skill(
+                s,
+                block_names,
+                &const_names,
+                source,
+                file_id,
+                line_index,
+                out,
+            ),
+            Decl::Block(b) => classify_block(
+                b,
+                block_names,
+                &const_names,
+                source,
+                file_id,
+                line_index,
+                out,
+            ),
             Decl::ExportBlock(eb) => classify_export_block(eb, source, file_id, line_index, out),
             Decl::Const(c) => classify_const(c, source, file_id, line_index, out),
             Decl::Import(i) => classify_import(i, source, file_id, line_index, out),
@@ -519,7 +535,15 @@ fn classify_skill(
     // body_bare_names are plain Strings without span info (M2 upgrade pending);
     // skip semantic token emission for them.
     for stmt in &spanned.node.flow {
-        classify_flow_stmt(stmt, block_names, const_names, source, file_id, line_index, out);
+        classify_flow_stmt(
+            stmt,
+            block_names,
+            const_names,
+            source,
+            file_id,
+            line_index,
+            out,
+        );
     }
 }
 
@@ -543,7 +567,15 @@ fn classify_block(
     }
     classify_params(&spanned.node.params, line_index, out);
     for stmt in &spanned.node.flow {
-        classify_flow_stmt(stmt, block_names, const_names, source, file_id, line_index, out);
+        classify_flow_stmt(
+            stmt,
+            block_names,
+            const_names,
+            source,
+            file_id,
+            line_index,
+            out,
+        );
     }
 }
 
@@ -790,7 +822,15 @@ fn classify_flow_stmt(
                 out,
             );
             for s in then_body {
-                classify_flow_stmt(s, block_names, const_names, source, file_id, line_index, out);
+                classify_flow_stmt(
+                    s,
+                    block_names,
+                    const_names,
+                    source,
+                    file_id,
+                    line_index,
+                    out,
+                );
             }
             for elif in elif_branches {
                 // Emit GlyphPredicate tokens for predicate-form `elif` conditions.
@@ -804,12 +844,28 @@ fn classify_flow_stmt(
                     out,
                 );
                 for s in &elif.body {
-                    classify_flow_stmt(s, block_names, const_names, source, file_id, line_index, out);
+                    classify_flow_stmt(
+                        s,
+                        block_names,
+                        const_names,
+                        source,
+                        file_id,
+                        line_index,
+                        out,
+                    );
                 }
             }
             if let Some(eb) = else_body {
                 for s in eb {
-                    classify_flow_stmt(s, block_names, const_names, source, file_id, line_index, out);
+                    classify_flow_stmt(
+                        s,
+                        block_names,
+                        const_names,
+                        source,
+                        file_id,
+                        line_index,
+                        out,
+                    );
                 }
             }
         }
@@ -880,8 +936,8 @@ fn emit_predicate_tokens(
             continue;
         }
         let preceded_ok = search_pos == 0 || !is_ident_continue(bytes[search_pos - 1]);
-        let followed_ok = search_pos + kw_len >= src_len
-            || !is_ident_continue(bytes[search_pos + kw_len]);
+        let followed_ok =
+            search_pos + kw_len >= src_len || !is_ident_continue(bytes[search_pos + kw_len]);
         if !preceded_ok || !followed_ok {
             search_pos += 1;
             continue;

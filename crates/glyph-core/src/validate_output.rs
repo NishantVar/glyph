@@ -1574,8 +1574,7 @@ fn check_resolved_predicates_in_flow(flow: &[Value], md: &str, violations: &mut 
                             | ConditionTokenKind::PredicateConst => {
                                 if let Some(desc_map) = resolved_predicates {
                                     let key = lookup_key_for_token(&tok, kind);
-                                    if let Some(prose) =
-                                        desc_map.get(key).and_then(|v| v.as_str())
+                                    if let Some(prose) = desc_map.get(key).and_then(|v| v.as_str())
                                     {
                                         if !md.contains(prose) {
                                             violations.push(Violation::new(
@@ -3113,7 +3112,9 @@ mod tests {
         let md = "## Instructions\n\n### Steps\n\n1. If something else:\n   a. Stop.\n";
         let violations = validate_output(ir, md);
         assert!(
-            violations.iter().any(|v| v.id == "G::expand::predicate-prose-missing"),
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::predicate-prose-missing"),
             "expected G::expand::predicate-prose-missing; got: {:?}",
             violations
         );
@@ -3132,7 +3133,9 @@ mod tests {
         let md = "## Instructions\n\n### Steps\n\n1. If the change is big:\n   a. Stop.\n2. If something else:\n   a. Continue.\n";
         let violations = validate_output(ir, md);
         assert!(
-            violations.iter().any(|v| v.id == "G::expand::predicate-prose-missing"),
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::predicate-prose-missing"),
             "expected G::expand::predicate-prose-missing for elif arm; got: {:?}",
             violations
         );
@@ -3147,7 +3150,9 @@ mod tests {
         let md = "## Instructions\n\n### Steps\n\n1. If they declined:\n   a. Skip.\n";
         let violations = validate_output(ir, md);
         assert!(
-            violations.iter().any(|v| v.id == "G::expand::predicate-prose-missing"),
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::predicate-prose-missing"),
             "expected G::expand::predicate-prose-missing; got: {:?}",
             violations
         );

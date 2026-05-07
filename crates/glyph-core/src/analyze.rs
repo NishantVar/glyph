@@ -3073,9 +3073,7 @@ fn annotate_branch_classifications<'a>(
 /// shape that `classify_condition` / `annotate_branch_classifications`
 /// consume; that conversion must happen in the caller's scope so the `&str`
 /// references stay tied to a binding the caller owns.
-fn build_const_texts(
-    file: &SourceFile,
-) -> HashMap<String, (String, crate::kind_infer::TypeTag)> {
+fn build_const_texts(file: &SourceFile) -> HashMap<String, (String, crate::kind_infer::TypeTag)> {
     file.decls
         .iter()
         .filter_map(|d| match d {
@@ -3338,7 +3336,6 @@ pub fn classify_condition<'a>(
         has_numeric_token: has_numeric,
     }
 }
-
 
 fn classify_token<'a>(
     tok: &str,
@@ -6205,8 +6202,10 @@ skill foo()
 "#;
         let ids = check_ids(src);
         assert!(
-            ids.iter().any(|s| s == "G::analyze::condition-non-boolean-non-predicate"),
-            "got: {:?}", ids
+            ids.iter()
+                .any(|s| s == "G::analyze::condition-non-boolean-non-predicate"),
+            "got: {:?}",
+            ids
         );
     }
 
@@ -6221,8 +6220,10 @@ skill foo()
 "#;
         let ids = check_ids(src);
         assert!(
-            ids.iter().any(|s| s == "G::analyze::condition-non-boolean-non-predicate"),
-            "got: {:?}", ids
+            ids.iter()
+                .any(|s| s == "G::analyze::condition-non-boolean-non-predicate"),
+            "got: {:?}",
+            ids
         );
     }
 
@@ -6239,8 +6240,10 @@ skill foo()
 "#;
         let ids = check_ids(src);
         assert!(
-            !ids.iter().any(|s| s == "G::analyze::condition-non-boolean-non-predicate"),
-            "string const should be a valid predicate, got: {:?}", ids
+            !ids.iter()
+                .any(|s| s == "G::analyze::condition-non-boolean-non-predicate"),
+            "string const should be a valid predicate, got: {:?}",
+            ids
         );
     }
 }
