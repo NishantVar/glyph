@@ -659,6 +659,61 @@ mod tests {
     }
 
     #[test]
+    fn classify_eq_with_nested_parens_marks_full_group() {
+        let (file, imports, types) = ctx_inputs(&[]);
+        let ctx = ConditionContext::for_decl(&file, &imports, &types, &[], &[]);
+        let c = classify_condition("risk == ((\"high\"))", &ctx);
+        // All parens AND the inner string must be operands.
+        for t in &c.tokens {
+            if matches!(t.text.as_str(), "(" | ")" | "\"high\"") {
+                assert!(t.is_comparison_operand, "{} should be an operand", t.text);
+            }
+        }
+        // Inner string is an operand, so it must NOT count toward has_predicate_token.
+        assert!(!c.has_predicate_token);
+    }
+
+    #[test]
+    fn classify_multiple_eq_marks_all_operands() {
+        let (file, imports, types) = ctx_inputs(&[]);
+        let ctx = ConditionContext::for_decl(&file, &imports, &types, &[], &[]);
+        let c = classify_condition("a == 1 and b == 2", &ctx);
+
+        // Both `==` are present; both pairs of operands must be marked.
+        let operand_texts: Vec<&str> = c
+            .tokens
+            .iter()
+            .filter(|t| t.is_comparison_operand)
+            .map(|t| t.text.as_str())
+            .collect();
+        assert!(
+            operand_texts.contains(&"a"),
+            "a should be operand: {:?}",
+            operand_texts
+        );
+        assert!(
+            operand_texts.contains(&"1"),
+            "1 should be operand: {:?}",
+            operand_texts
+        );
+        assert!(
+            operand_texts.contains(&"b"),
+            "b should be operand: {:?}",
+            operand_texts
+        );
+        assert!(
+            operand_texts.contains(&"2"),
+            "2 should be operand: {:?}",
+            operand_texts
+        );
+
+        // The `and` is a compositional operator → not pure.
+        assert!(!c.is_pure_predicate());
+        assert!(c.has_compositional_operator);
+        assert!(c.has_comparison_operator);
+    }
+
+    #[test]
     fn classify_param_with_string_default_is_predicate_const() {
         let (file, imports, types) = ctx_inputs(&[]);
         let mut ctx = ConditionContext::for_decl(&file, &imports, &types, &[], &[]);
