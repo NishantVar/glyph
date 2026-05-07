@@ -442,6 +442,8 @@ pub fn lower_with_imports(
         .map(|p| IrParam {
             name: p.name.clone(),
             default: p.default.clone(),
+            description: p.description.as_ref().map(|s| s.node.clone()),
+            type_annotation: p.type_annotation.as_ref().map(|s| s.node.clone()),
         })
         .collect();
     let skill_return_type: Option<TypeTag> = skill

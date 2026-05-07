@@ -441,6 +441,8 @@ mod tests {
             params: vec![IrParam {
                 name: "branch".into(),
                 default: None,
+                description: None,
+                type_annotation: None,
             }],
             steps: vec![],
             context: vec![],

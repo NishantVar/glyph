@@ -75,6 +75,10 @@ pub struct IrParam {
     /// Pre-rendered default value (e.g., `"."` including quotes for strings).
     /// `None` indicates a runtime-required skill parameter.
     pub default: Option<String>,
+    /// Lowered from `Param.description` (span dropped — emitter only needs content).
+    pub description: Option<String>,
+    /// Lowered from `Param.type_annotation` (span dropped — emitter only needs content).
+    pub type_annotation: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
