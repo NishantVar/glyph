@@ -186,14 +186,25 @@ pub struct ExportBlockDecl {
     pub extra_subsections: Vec<DuplicateSubsection>,
 }
 
-/// A header parameter on `skill`, `block`, or `export block`.
+/// Single parameter on a `skill`, `block`, or `export block` header.
 ///
-/// Slice 4 supports the two MVP forms `name` (no default) and `name = "default"`.
-/// Type annotations are deferred. Defaults are constrained to literal forms in
-/// MVP — currently only string literals are accepted (see `language-surface.md`
-/// §3.10). The original literal text of the default — *with surrounding quotes
-/// preserved* for string defaults — is what eventually lands in the
-/// `## Parameters` section, so we store the rendered form here.
+/// Slice-4 surface forms (post-#119, post-A.1):
+/// - `name` — bare ident, no annotation, no default
+/// - `name: Type` — typed param (issue #119; syntactically reserved only,
+///   no resolution yet — see `type_annotation` field)
+/// - `name = "default"` — string-literal default
+/// - `name = <"description">` — per-param description (issue #119+ Phase A)
+/// - any combination of the above (e.g. `name: Type = "default" <"desc">`)
+///
+/// Defaults are constrained to literal forms in MVP — currently only string
+/// literals are accepted (see `language-surface.md` §3.10). The `default`
+/// field stores the **rendered** form (with surrounding quotes preserved for
+/// string defaults) because that string is what eventually lands in the
+/// `## Parameters` compiled-output section.
+///
+/// `type_annotation` is reserved for future type-system work (no semantic
+/// resolution today). `description` is the prose authored alongside the
+/// param at the call site (Phase A wires it into the compiled output).
 #[derive(Clone, Debug)]
 pub struct Param {
     pub name: String,
@@ -212,6 +223,12 @@ pub struct Param {
     /// authors can write the documented `name: Type` form without tripping
     /// the parser. See `design/types.md` and `design/language-surface.md`.
     pub type_annotation: Option<Spanned<String>>,
+    /// Per-param description authored as `<"…">` after the `=` slot
+    /// (or as `= <"…">` standalone). The `Spanned` wrapper carries the
+    /// full descriptive form's span (including the angle brackets).
+    /// Wired into the AST in Phase A.2 (parser); Phase A.1 only adds
+    /// the field with `None` at every construction site.
+    pub description: Option<Spanned<String>>,
     /// Span covering the parameter (header position, used for diagnostic
     /// reporting in slice 4).
     pub span: Span,

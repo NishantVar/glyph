@@ -5958,6 +5958,7 @@ export block foo() -> Report
             name: name.to_string(),
             default: default.map(|s| s.to_string()),
             type_annotation: None,
+            description: None,
             span: Span::new(0, 0, 1),
         }
     }

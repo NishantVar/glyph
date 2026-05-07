@@ -1949,6 +1949,7 @@ impl<'a> Parser<'a> {
                 name: pname,
                 default,
                 type_annotation,
+                description: None,
                 span,
             });
             match &self.peek().kind {
