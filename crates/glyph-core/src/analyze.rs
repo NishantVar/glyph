@@ -1165,6 +1165,10 @@ pub fn analyze_with_diagnostics(
     // Task 2.4: annotate every Branch/ElifBranch with a ConditionClassification.
     annotate_file_branches(&mut file);
 
+    // Task 3.1: emit G::analyze::condition-non-boolean-non-predicate for
+    // numeric-kinded tokens in condition position.
+    validate_file_numeric_conditions(&file, file_label, line_index, bag);
+
     file
 }
 
@@ -3115,6 +3119,140 @@ fn annotate_file_branches(file: &mut SourceFile) {
     }
 }
 
+/// Walk every `Branch`/`ElifBranch` condition in `flow` and push
+/// `G::analyze::condition-non-boolean-non-predicate` for any condition that
+/// contains a `Numeric`-kinded token.
+fn validate_flow_numeric_conditions(
+    flow: &[FlowStmt],
+    span: crate::span::Span,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+    texts: &HashMap<&str, (String, crate::kind_infer::TypeTag)>,
+) {
+    let empty_params: HashSet<&str> = HashSet::new();
+    let empty_bindings: HashSet<&str> = HashSet::new();
+    let empty_block_decls: HashMap<&str, &BlockDecl> = HashMap::new();
+    for stmt in flow {
+        match stmt {
+            FlowStmt::Branch {
+                condition,
+                then_body,
+                elif_branches,
+                else_body,
+                ..
+            } => {
+                let c = classify_condition(
+                    condition,
+                    texts,
+                    &empty_params,
+                    &empty_bindings,
+                    &empty_block_decls,
+                );
+                if c.has_numeric_token {
+                    bag.push(
+                        Diagnostic::error(
+                            "G::analyze::condition-non-boolean-non-predicate",
+                            "condition contains a numeric value; `if` conditions must be boolean or predicate",
+                            SourceSpan::from_byte_span(file_label, span, line_index),
+                        ),
+                        span,
+                    );
+                }
+                for elif in elif_branches {
+                    let ec = classify_condition(
+                        &elif.condition,
+                        texts,
+                        &empty_params,
+                        &empty_bindings,
+                        &empty_block_decls,
+                    );
+                    if ec.has_numeric_token {
+                        bag.push(
+                            Diagnostic::error(
+                                "G::analyze::condition-non-boolean-non-predicate",
+                                "condition contains a numeric value; `if` conditions must be boolean or predicate",
+                                SourceSpan::from_byte_span(file_label, span, line_index),
+                            ),
+                            span,
+                        );
+                    }
+                    validate_flow_numeric_conditions(
+                        &elif.body,
+                        span,
+                        file_label,
+                        line_index,
+                        bag,
+                        texts,
+                    );
+                }
+                validate_flow_numeric_conditions(then_body, span, file_label, line_index, bag, texts);
+                if let Some(eb) = else_body {
+                    validate_flow_numeric_conditions(eb, span, file_label, line_index, bag, texts);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Emit `G::analyze::condition-non-boolean-non-predicate` for every skill in
+/// `file` that has a numeric-kinded token in a branch condition.
+///
+/// Called once at the end of `analyze_with_diagnostics` after
+/// `annotate_file_branches` so the classifier results are already populated.
+fn validate_file_numeric_conditions(
+    file: &SourceFile,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    // Build the same texts map used by annotate_file_branches.
+    let owned_texts: HashMap<String, (String, crate::kind_infer::TypeTag)> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            crate::ast::Decl::Const(c) => {
+                let name = c.node.name.clone();
+                let (body, literal) = match &c.node.value {
+                    crate::ast::ConstValue::String(s) => {
+                        (s.clone(), crate::kind_infer::Literal::String(s.clone()))
+                    }
+                    crate::ast::ConstValue::Int(s) => {
+                        (s.clone(), crate::kind_infer::Literal::Number(s.clone()))
+                    }
+                    crate::ast::ConstValue::Float(s) => {
+                        (s.clone(), crate::kind_infer::Literal::Number(s.clone()))
+                    }
+                    crate::ast::ConstValue::Bool(s) => {
+                        (s.clone(), crate::kind_infer::Literal::Bool(s.clone()))
+                    }
+                };
+                let tag = crate::kind_infer::infer_primitive(&literal);
+                Some((name, (body, tag)))
+            }
+            _ => None,
+        })
+        .collect();
+    let texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = owned_texts
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.clone()))
+        .collect();
+
+    for decl in &file.decls {
+        if let crate::ast::Decl::Skill(spanned) = decl {
+            validate_flow_numeric_conditions(
+                &spanned.node.flow,
+                spanned.span,
+                file_label,
+                line_index,
+                bag,
+                &texts,
+            );
+        }
+    }
+}
+
 pub fn classify_condition<'a>(
     condition: &str,
     texts: &HashMap<&'a str, (String, crate::kind_infer::TypeTag)>,
@@ -3126,6 +3264,7 @@ pub fn classify_condition<'a>(
     let mut has_boolean = false;
     let mut has_predicate = false;
     let mut has_composition = false;
+    let mut has_numeric = false;
 
     // The parser stores conditions with a trailing ` :` (e.g., `"big :"` for
     // `if big:`).  Strip it before tokenizing so downstream classifiers don't
@@ -3142,6 +3281,7 @@ pub fn classify_condition<'a>(
         );
         match kind {
             ConditionTokenKind::Boolean => has_boolean = true,
+            ConditionTokenKind::Numeric => has_numeric = true,
             ConditionTokenKind::PredicateApplies
             | ConditionTokenKind::PredicateConst
             | ConditionTokenKind::PredicateLiteral => has_predicate = true,
@@ -3159,6 +3299,7 @@ pub fn classify_condition<'a>(
         has_boolean_token: has_boolean,
         has_predicate_token: has_predicate,
         has_compositional_operator: has_composition,
+        has_numeric_token: has_numeric,
     }
 }
 
@@ -3226,10 +3367,17 @@ fn classify_token<'a>(
         // `check_applies_in_condition`, not here.
         return ConditionTokenKind::PredicateApplies;
     }
+    // Numeric literal: integer or float token.
+    if tok.parse::<i64>().is_ok() || tok.parse::<f64>().is_ok() {
+        return ConditionTokenKind::Numeric;
+    }
     if let Some((_body, tag)) = texts.get(tok) {
         return match tag {
             crate::kind_infer::TypeTag::String => ConditionTokenKind::PredicateConst,
             crate::kind_infer::TypeTag::Bool => ConditionTokenKind::Boolean,
+            crate::kind_infer::TypeTag::Int | crate::kind_infer::TypeTag::Float => {
+                ConditionTokenKind::Numeric
+            }
             _ => ConditionTokenKind::Boolean,
         };
     }
@@ -6048,6 +6196,58 @@ skill foo()
         assert_eq!(
             c.tokens,
             vec![crate::condition::ConditionTokenKind::PredicateConst]
+        );
+    }
+
+    #[test]
+    fn int_const_in_condition_position_fires_kind_mismatch() {
+        let src = r#"
+const max = 3
+
+skill foo()
+    description: "test"
+    flow:
+        if max:
+            "stop"
+"#;
+        let ids = check_ids(src);
+        assert!(
+            ids.iter().any(|s| s == "G::analyze::condition-non-boolean-non-predicate"),
+            "got: {:?}", ids
+        );
+    }
+
+    #[test]
+    fn float_literal_in_condition_position_fires_kind_mismatch() {
+        let src = r#"
+skill foo()
+    description: "test"
+    flow:
+        if 3.14:
+            "stop"
+"#;
+        let ids = check_ids(src);
+        assert!(
+            ids.iter().any(|s| s == "G::analyze::condition-non-boolean-non-predicate"),
+            "got: {:?}", ids
+        );
+    }
+
+    #[test]
+    fn string_const_in_condition_position_does_not_fire_kind_mismatch() {
+        let src = r#"
+const big = "a big change"
+
+skill foo()
+    description: "test"
+    flow:
+        if big:
+            "stop"
+"#;
+        let ids = check_ids(src);
+        assert!(
+            !ids.iter().any(|s| s == "G::analyze::condition-non-boolean-non-predicate"),
+            "string const should be a valid predicate, got: {:?}", ids
         );
     }
 }

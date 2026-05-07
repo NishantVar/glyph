@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum ConditionTokenKind {
     Boolean,
+    Numeric,
     PredicateApplies,
     PredicateConst,
     PredicateLiteral,
@@ -19,13 +20,12 @@ pub struct ConditionClassification {
     pub has_boolean_token: bool,
     pub has_predicate_token: bool,
     pub has_compositional_operator: bool,
+    pub has_numeric_token: bool,
 }
 
 impl ConditionClassification {
     pub fn is_pure_predicate(&self) -> bool {
-        self.has_predicate_token
-            && !self.has_boolean_token
-            && !self.has_compositional_operator
+        self.has_predicate_token && !self.has_boolean_token && !self.has_compositional_operator
     }
 }
 
@@ -40,6 +40,7 @@ mod tests {
             has_boolean_token: false,
             has_predicate_token: true,
             has_compositional_operator: false,
+            has_numeric_token: false,
         };
         assert!(c.is_pure_predicate());
     }
@@ -55,6 +56,7 @@ mod tests {
             has_boolean_token: true,
             has_predicate_token: true,
             has_compositional_operator: true,
+            has_numeric_token: false,
         };
         assert!(!c.is_pure_predicate());
     }
@@ -70,6 +72,7 @@ mod tests {
             has_boolean_token: false,
             has_predicate_token: true,
             has_compositional_operator: true,
+            has_numeric_token: false,
         };
         assert!(!c.is_pure_predicate());
     }
