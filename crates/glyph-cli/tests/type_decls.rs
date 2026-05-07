@@ -230,11 +230,13 @@ fn return_row6_expr_with_type_no_decl_omits_description() {
 
 #[test]
 fn return_row7_return_only_body_uses_standalone_sentence() {
-    // Row 7 routes to row 5/6 shape, but the callee is return-only so the
-    // sentence is emitted standalone (no leading body to fold into).
+    // Row 7: return-only body with `return expr` (no markers). Routes to the
+    // matching `return expr` shape — row 5 here because the fixture has a
+    // `type Diagnosis` decl in scope. Emitted standalone since there is no
+    // leading body to fold into.
     let md = compile_and_read("return_row7_return_only_body.glyph");
     assert!(
-        md.contains("1. Produce `diagnosis` (`Diagnosis`): root cause and severity."),
+        md.contains("1. Return a `Diagnosis`: root cause and severity."),
         "row 7 standalone sentence should appear:\n{md}"
     );
     assert!(

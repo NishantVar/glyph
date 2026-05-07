@@ -2,7 +2,7 @@ type Diagnosis = <"root cause and severity">
 
 block analyze() -> Diagnosis
     flow:
-        return <diagnosis>
+        return diagnosis
 
 skill diagnose()
     description: "Diagnose an issue."

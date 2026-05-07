@@ -440,12 +440,16 @@ fn sweep_name_collisions(
     // file level, paired with the span we want pinned in the `related`
     // field of the collision diagnostic.
     //
-    // `type Foo` decls are deliberately omitted from this sweep: the spec
-    // (`typed-params-with-descriptions §8.4`) endorses the canonical
-    // `type Foo = <"...">` + `-> Foo` pattern, so a type decl whose name
-    // matches an in-scope domain type is the *intended* shape, not a
-    // collision. The `type Foo` × `block Foo` / `const Foo` / etc. shadowing
-    // case is covered by the universal-namespace check in `analyze_imports`.
+    // `type Foo` decls are deliberately omitted from this sweep. A previous
+    // version iterated over them and fired `name-collision` whenever a
+    // `type Foo` matched a domain-registry entry seeded by `-> Foo`
+    // annotations — that is a false positive for the canonical
+    // `type Foo = <"...">` + `-> Foo` pattern endorsed by the spec
+    // (`typed-params-with-descriptions §282`). Legitimate `type Foo` vs
+    // `const Foo` / `block Foo` / parameter `Foo` collisions (spec §100)
+    // are not currently caught anywhere; that is a pre-existing gap parked
+    // for a follow-up universal-namespace pass and is independent of this
+    // omission.
     let mut params: Vec<(&str, Span)> = Vec::new();
     let mut consts: Vec<(&str, Span)> = Vec::new();
     for decl in &file.decls {
