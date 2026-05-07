@@ -19,7 +19,6 @@ use codespan_reporting::diagnostic::{Diagnostic as CrDiag, Label, Severity};
 use codespan_reporting::files::SimpleFiles;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 use glyph_core::diagnostic::{Classification, DiagBag, Diagnostic};
-use glyph_core::CompileOutcome;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -376,71 +375,14 @@ fn run_compile(
         return run_compile_directory(path, format, emit_ir, strict, enable_effects);
     }
 
-    // Single-file compile (existing behavior).
-    let source = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("glyph: cannot read `{}`: {}", path.display(), e);
-            return ExitCode::from(3);
-        }
-    };
-
-    let label = path.display().to_string();
-    let outcome = match glyph_core::compile_source_with_effects(&source, 0, &label, enable_effects)
-    {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("glyph: compile failed: {:?}", e);
-            return ExitCode::from(1);
-        }
-    };
-
-    match outcome {
-        CompileOutcome::Compiled {
-            markdown,
-            diagnostics,
-            arena,
-        } => {
-            let code = diagnostics.exit_code();
-            // In strict mode, repairable diagnostics (exit 2) become hard
-            // errors (exit 1) and no `.md` output is written.
-            if strict && code == 2 {
-                emit_diagnostics(&diagnostics, &label, &source, format);
-                return ExitCode::from(1);
-            }
-            let out_path = compiled_output_path(&path);
-            if let Err(e) = glyph_core::atomic_write(&out_path, &markdown) {
-                eprintln!("glyph: cannot write `{}`: {}", out_path.display(), e);
-                return ExitCode::from(3);
-            }
-            if emit_ir {
-                let source_file = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                if let Some(ir_json) =
-                    glyph_core::emit_ir::serialize_ir_json(&arena, source_file, enable_effects)
-                {
-                    let ir_path = ir_json_output_path(&path);
-                    if let Err(e) = glyph_core::atomic_write(&ir_path, &ir_json) {
-                        eprintln!("glyph: cannot write `{}`: {}", ir_path.display(), e);
-                        return ExitCode::from(3);
-                    }
-                }
-            }
-            emit_diagnostics(&diagnostics, &label, &source, format);
-            ExitCode::from(code)
-        }
-        CompileOutcome::Diagnostics(bag) => {
-            let code = bag.exit_code();
-            emit_diagnostics(&bag, &label, &source, format);
-            if strict && code == 2 {
-                return ExitCode::from(1);
-            }
-            ExitCode::from(code)
-        }
-    }
+    // Single-file compile: walk the import closure, then dispatch through the
+    // shared pipeline runner so the analyzer sees imported names.
+    let files = glyph_core::compute_import_closure(&path, enable_effects);
+    run_pipeline_on_files(&files, format, emit_ir, strict, enable_effects)
 }
 
-/// Directory-mode compile: collect all `.glyph` files, build DAG, compile
-/// in topological order with partial failure.
+/// Directory-mode compile: collect all `.glyph` files, then dispatch through
+/// the shared pipeline runner.
 fn run_compile_directory(
     path: PathBuf,
     format: OutputFormat,
@@ -452,12 +394,92 @@ fn run_compile_directory(
         Ok(v) => v,
         Err(code) => return code,
     };
+    run_pipeline_on_files(&files, format, emit_ir, strict, enable_effects)
+}
 
+/// Compute the CLI exit code from a build result, restoring the
+/// `1 > 2 > 0` diagnostic precedence (lost when reading
+/// `BuildResult.exit_code`, which only carries 0/1) and gating IO failures
+/// with priority over diagnostic codes.
+///
+/// Precedence: `3` (any IO failure) > `1` (any error or skipped) > `2`
+/// (any repairable, downgraded to `1` under `--strict`) > `0`.
+fn compute_pipeline_exit_code(result: &glyph_core::BuildResult, strict: bool) -> u8 {
+    if !result.io_errors.is_empty() {
+        return 3;
+    }
+
+    let mut has_error = false;
+    let mut has_repairable = false;
+    let mut any_skipped = false;
+    for (_, outcome) in &result.outcomes {
+        match outcome {
+            glyph_core::FileOutcome::Compiled { diagnostics } => {
+                if diagnostics.has_error() {
+                    has_error = true;
+                }
+                if diagnostics.has_repairable() {
+                    has_repairable = true;
+                }
+            }
+            glyph_core::FileOutcome::Failed { diagnostics } => {
+                if diagnostics.has_error() {
+                    has_error = true;
+                }
+                if diagnostics.has_repairable() {
+                    has_repairable = true;
+                }
+                // The pipeline emits `Failed { diagnostics: empty }` when a
+                // `CompileError` (e.g. the parse-no-AST defensive branch)
+                // propagates without surfacing a structured diagnostic ID.
+                // Treat that as a hard error so real compile failures don't
+                // silently downgrade to exit 0; otherwise exit 2 must remain
+                // reachable when `Failed` carries only repairables (the
+                // pipeline marks `Ok(Diagnostics)` outcomes as `Failed`).
+                if diagnostics.is_empty() {
+                    has_error = true;
+                }
+            }
+            glyph_core::FileOutcome::Skipped { .. } => {
+                any_skipped = true;
+            }
+        }
+    }
+
+    let mut code = if has_error {
+        1
+    } else if has_repairable {
+        2
+    } else {
+        0
+    };
+    // A skipped dependent is partial-failure regardless of what its siblings
+    // reported. Without this, repairable + skipped would yield 2 (treating the
+    // skipped file as a non-event) and mask the failure under non-strict.
+    if any_skipped {
+        code = 1;
+    }
+    if strict && code == 2 {
+        code = 1;
+    }
+    code
+}
+
+/// Compile a pre-collected list of `.glyph` files through
+/// `compile_directory_with_options` and translate the build result into a CLI
+/// exit code. Shared by single-file and directory modes.
+fn run_pipeline_on_files(
+    files: &[PathBuf],
+    format: OutputFormat,
+    emit_ir: bool,
+    strict: bool,
+    enable_effects: bool,
+) -> ExitCode {
     if files.is_empty() {
         return ExitCode::from(0);
     }
 
-    let result = glyph_core::compile_directory_with_options(&files, emit_ir, enable_effects);
+    let result = glyph_core::compile_directory_with_options(files, emit_ir, enable_effects);
 
     // Emit diagnostics and stderr notes for each file outcome.
     for (file_path, outcome) in &result.outcomes {
@@ -504,11 +526,14 @@ fn run_compile_directory(
         }
     }
 
-    let code = result.exit_code;
-    if strict && code == 2 {
-        return ExitCode::from(1);
+    if !result.io_errors.is_empty() {
+        for io in &result.io_errors {
+            eprintln!("glyph: cannot write `{}`: {}", io.path.display(), io.error);
+        }
+        return ExitCode::from(3);
     }
-    ExitCode::from(code)
+
+    ExitCode::from(compute_pipeline_exit_code(&result, strict))
 }
 
 fn emit_diagnostics(bag: &DiagBag, file_label: &str, source: &str, format: OutputFormat) {
@@ -606,22 +631,190 @@ fn locate_byte(source: &str, line: u32, col: u32) -> usize {
     source.len().saturating_sub(1)
 }
 
-/// Map `foo.glyph` → `foo.ir.json` next to the source file.
-fn ir_json_output_path(input: &std::path::Path) -> PathBuf {
-    let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let file_name = input.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    let stem = file_name
-        .strip_suffix(".glyph")
-        .unwrap_or_else(|| file_name.strip_suffix(".md").unwrap_or(file_name));
-    parent.join(format!("{}.ir.json", stem))
-}
+#[cfg(test)]
+mod exit_code_tests {
+    use super::*;
+    use glyph_core::diagnostic::{Classification, DiagBag, Diagnostic, LineCol, SourceSpan};
+    use glyph_core::span::Span;
+    use glyph_core::{BuildResult, FileOutcome, IoFailure, IoFailureKind};
+    use std::path::PathBuf;
 
-/// Map `foo.glyph` → `foo.md` next to the source file.
-fn compiled_output_path(input: &std::path::Path) -> PathBuf {
-    let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let file_name = input.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    let stem = file_name
-        .strip_suffix(".glyph")
-        .unwrap_or_else(|| file_name.strip_suffix(".md").unwrap_or(file_name));
-    parent.join(format!("{}.md", stem))
+    /// Build a single-diagnostic bag with the requested classification.
+    /// `DiagBag::push` requires `(Diagnostic, Span)` — see
+    /// `crates/glyph-core/src/diagnostic.rs:174`.
+    fn bag_with(class: Classification) -> DiagBag {
+        let mut b = DiagBag::new();
+        let byte_span = Span::new(0, 0, 1);
+        let source_span = SourceSpan {
+            file: "test.glyph".into(),
+            start: LineCol { line: 1, col: 1 },
+            end: LineCol { line: 1, col: 1 },
+        };
+        b.push(
+            Diagnostic {
+                id: "G::test::dummy".into(),
+                classification: class,
+                message: "test".into(),
+                span: source_span,
+                related: Vec::new(),
+                hints: Vec::new(),
+            },
+            byte_span,
+        );
+        b
+    }
+
+    fn build_result(
+        outcomes: Vec<(PathBuf, FileOutcome)>,
+        io_errors: Vec<IoFailure>,
+    ) -> BuildResult {
+        BuildResult {
+            outcomes,
+            exit_code: 0, // ignored by helper
+            io_errors,
+        }
+    }
+
+    #[test]
+    fn compiled_clean_plus_failed_repairable_only_yields_two() {
+        let result = build_result(
+            vec![
+                (
+                    PathBuf::from("a.glyph"),
+                    FileOutcome::Compiled {
+                        diagnostics: DiagBag::new(),
+                    },
+                ),
+                (
+                    PathBuf::from("b.glyph"),
+                    FileOutcome::Failed {
+                        diagnostics: bag_with(Classification::Repairable),
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(compute_pipeline_exit_code(&result, false), 2);
+    }
+
+    #[test]
+    fn any_error_diagnostic_yields_one() {
+        let result = build_result(
+            vec![
+                (
+                    PathBuf::from("a.glyph"),
+                    FileOutcome::Failed {
+                        diagnostics: bag_with(Classification::Error),
+                    },
+                ),
+                (
+                    PathBuf::from("b.glyph"),
+                    FileOutcome::Failed {
+                        diagnostics: bag_with(Classification::Repairable),
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(compute_pipeline_exit_code(&result, false), 1);
+    }
+
+    #[test]
+    fn skipped_with_otherwise_clean_yields_one() {
+        let result = build_result(
+            vec![
+                (
+                    PathBuf::from("a.glyph"),
+                    FileOutcome::Skipped {
+                        failed_dep: PathBuf::from("b.glyph"),
+                    },
+                ),
+                (
+                    PathBuf::from("c.glyph"),
+                    FileOutcome::Compiled {
+                        diagnostics: DiagBag::new(),
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(compute_pipeline_exit_code(&result, false), 1);
+    }
+
+    #[test]
+    fn io_errors_outrank_diagnostics() {
+        let result = build_result(
+            vec![(
+                PathBuf::from("a.glyph"),
+                FileOutcome::Compiled {
+                    diagnostics: DiagBag::new(),
+                },
+            )],
+            vec![IoFailure {
+                path: PathBuf::from("a.md"),
+                kind: IoFailureKind::Md,
+                error: "permission denied".into(),
+            }],
+        );
+        assert_eq!(compute_pipeline_exit_code(&result, false), 3);
+    }
+
+    #[test]
+    fn strict_promotes_repairable_to_one() {
+        let result = build_result(
+            vec![(
+                PathBuf::from("a.glyph"),
+                FileOutcome::Failed {
+                    diagnostics: bag_with(Classification::Repairable),
+                },
+            )],
+            Vec::new(),
+        );
+        assert_eq!(compute_pipeline_exit_code(&result, true), 1);
+    }
+
+    /// A skipped file plus a sibling with only repairable diagnostics must
+    /// still yield `1` (partial failure), not `2`. Earlier the `any_skipped`
+    /// promotion was guarded by `code == 0` and would silently leave `2` in
+    /// place.
+    #[test]
+    fn skipped_plus_repairable_yields_one() {
+        let result = build_result(
+            vec![
+                (
+                    PathBuf::from("a.glyph"),
+                    FileOutcome::Failed {
+                        diagnostics: bag_with(Classification::Repairable),
+                    },
+                ),
+                (
+                    PathBuf::from("b.glyph"),
+                    FileOutcome::Skipped {
+                        failed_dep: PathBuf::from("a.glyph"),
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(compute_pipeline_exit_code(&result, false), 1);
+    }
+
+    /// `compile_directory_with_options` emits `Failed { diagnostics: empty }`
+    /// when a `CompileError` propagates without a structured diagnostic
+    /// (`crates/glyph-core/src/lib.rs` catchall). The aggregator must treat
+    /// that as a hard error — silently downgrading to `0` would mask real
+    /// compile failures and break `atomic_emission` callers.
+    #[test]
+    fn failed_with_empty_bag_yields_one() {
+        let result = build_result(
+            vec![(
+                PathBuf::from("a.glyph"),
+                FileOutcome::Failed {
+                    diagnostics: DiagBag::new(),
+                },
+            )],
+            Vec::new(),
+        );
+        assert_eq!(compute_pipeline_exit_code(&result, false), 1);
+    }
 }
