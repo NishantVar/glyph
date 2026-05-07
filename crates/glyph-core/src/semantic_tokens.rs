@@ -49,6 +49,7 @@ use crate::ast::{
     BlockDecl, ConstDecl, ContextEntry, Decl, ExportBlockDecl, FlowStmt, ImportDecl, ImportKind,
     ReturnExpr, Skill, SourceFile,
 };
+use crate::condition::tokenize_condition;
 use crate::diagnostic::DiagBag;
 use crate::parse::parse_with_diagnostics_opts;
 use crate::span::{LineIndex, Span, Spanned};
@@ -99,11 +100,17 @@ pub enum SemTokenType {
     GlyphSectionFlow = 19,
     /// `{name}` interpolation slot inside a flow inline string.
     GlyphInterpolation = 20,
+    /// A predicate token in an `if`/`elif` condition position. Covers all
+    /// three predicate forms: `BLOCKNAME.applies()`, a bare string-kinded
+    /// `const` name, and an inline string literal `"..."`. Distinct from
+    /// `GlyphFlowString` (instructional payload) — predicates are logic
+    /// guards, not prose emitted to the agent.
+    GlyphPredicate = 21,
 }
 
 impl SemTokenType {
     /// Names in the LSP `semanticTokensProvider.legend.tokenTypes` array.
-    pub const fn legend() -> [&'static str; 21] {
+    pub const fn legend() -> [&'static str; 22] {
         [
             "keyword",                 // 0
             "type",                    // 1
@@ -126,6 +133,7 @@ impl SemTokenType {
             "glyphSectionConstraints", // 18
             "glyphSectionFlow",        // 19
             "glyphInterpolation",      // 20
+            "glyphPredicate",          // 21
         ]
     }
 }
@@ -447,6 +455,21 @@ fn collect_block_decl_names(ast: &SourceFile) -> HashSet<String> {
     names
 }
 
+/// Collect the names of every same-file `const` declaration. Used to
+/// identify bare-name predicate tokens in `if`/`elif` conditions — any
+/// unquoted token that matches a const name is treated as `PredicateConst`
+/// for highlighting. This is syntactic-only (no type inference); it may
+/// highlight bool consts too, which is acceptable for LSP coloring.
+fn collect_const_decl_names(ast: &SourceFile) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for decl in &ast.decls {
+        if let Decl::Const(c) = decl {
+            names.insert(c.node.name.clone());
+        }
+    }
+    names
+}
+
 fn classify_ast(
     ast: &SourceFile,
     block_names: &HashSet<String>,
@@ -455,10 +478,11 @@ fn classify_ast(
     line_index: &LineIndex,
     out: &mut Vec<RawSemToken>,
 ) {
+    let const_names = collect_const_decl_names(ast);
     for decl in &ast.decls {
         match decl {
-            Decl::Skill(s) => classify_skill(s, block_names, source, file_id, line_index, out),
-            Decl::Block(b) => classify_block(b, block_names, source, file_id, line_index, out),
+            Decl::Skill(s) => classify_skill(s, block_names, &const_names, source, file_id, line_index, out),
+            Decl::Block(b) => classify_block(b, block_names, &const_names, source, file_id, line_index, out),
             Decl::ExportBlock(eb) => classify_export_block(eb, source, file_id, line_index, out),
             Decl::Const(c) => classify_const(c, source, file_id, line_index, out),
             Decl::Import(i) => classify_import(i, source, file_id, line_index, out),
@@ -469,6 +493,7 @@ fn classify_ast(
 fn classify_skill(
     spanned: &Spanned<Skill>,
     block_names: &HashSet<String>,
+    const_names: &HashSet<String>,
     source: &str,
     file_id: u32,
     line_index: &LineIndex,
@@ -490,13 +515,14 @@ fn classify_skill(
     // body_bare_names are plain Strings without span info (M2 upgrade pending);
     // skip semantic token emission for them.
     for stmt in &spanned.node.flow {
-        classify_flow_stmt(stmt, block_names, line_index, out);
+        classify_flow_stmt(stmt, block_names, const_names, source, file_id, line_index, out);
     }
 }
 
 fn classify_block(
     spanned: &Spanned<BlockDecl>,
     block_names: &HashSet<String>,
+    const_names: &HashSet<String>,
     source: &str,
     file_id: u32,
     line_index: &LineIndex,
@@ -513,7 +539,7 @@ fn classify_block(
     }
     classify_params(&spanned.node.params, line_index, out);
     for stmt in &spanned.node.flow {
-        classify_flow_stmt(stmt, block_names, line_index, out);
+        classify_flow_stmt(stmt, block_names, const_names, source, file_id, line_index, out);
     }
 }
 
@@ -681,6 +707,9 @@ fn classify_context_entries(
 fn classify_flow_stmt(
     stmt: &FlowStmt,
     block_names: &HashSet<String>,
+    const_names: &HashSet<String>,
+    source: &str,
+    file_id: u32,
     line_index: &LineIndex,
     out: &mut Vec<RawSemToken>,
 ) {
@@ -740,26 +769,178 @@ fn classify_flow_stmt(
         }
         FlowStmt::Return(_) => {}
         FlowStmt::Branch {
+            condition,
             then_body,
             elif_branches,
             else_body,
             ..
         } => {
+            // Emit GlyphPredicate tokens for predicate-form `if` conditions.
+            emit_predicate_tokens(
+                source,
+                file_id,
+                condition,
+                const_names,
+                "if",
+                line_index,
+                out,
+            );
             for s in then_body {
-                classify_flow_stmt(s, block_names, line_index, out);
+                classify_flow_stmt(s, block_names, const_names, source, file_id, line_index, out);
             }
             for elif in elif_branches {
+                // Emit GlyphPredicate tokens for predicate-form `elif` conditions.
+                emit_predicate_tokens(
+                    source,
+                    file_id,
+                    &elif.condition,
+                    const_names,
+                    "elif",
+                    line_index,
+                    out,
+                );
                 for s in &elif.body {
-                    classify_flow_stmt(s, block_names, line_index, out);
+                    classify_flow_stmt(s, block_names, const_names, source, file_id, line_index, out);
                 }
             }
             if let Some(eb) = else_body {
                 for s in eb {
-                    classify_flow_stmt(s, block_names, line_index, out);
+                    classify_flow_stmt(s, block_names, const_names, source, file_id, line_index, out);
                 }
             }
         }
         FlowStmt::InlineString(_) => {}
+    }
+}
+
+// -- Predicate span resolution -------------------------------------------
+
+/// Scan `source` for all occurrences of `<kw> <condition_text>:` (where `kw`
+/// is `"if"` or `"elif"`), then — for each occurrence — re-tokenize the
+/// condition text and emit a [`SemTokenType::GlyphPredicate`] token for each
+/// predicate-kind token using a syntactic-only classifier:
+///
+/// - Token that starts with `"` → `PredicateLiteral`
+/// - Token that contains `.applies()` → `PredicateApplies`
+/// - Token that matches a name in `const_names` → `PredicateConst`
+/// - Everything else → not a predicate (skipped)
+///
+/// **Why scan all occurrences?** The `FlowStmt::Branch` AST node does not
+/// carry a source span for itself or its condition expression. Scanning every
+/// matching occurrence handles files where the same condition text appears in
+/// multiple branches (each position gets highlighted correctly). The
+/// `sort_and_dedup` pass removes genuine duplicates.
+///
+/// **Why syntactic-only?** The semantic token collector runs only the parse
+/// pass, not the analyze pass, so `ConditionClassification` slots in the AST
+/// are always `None` here. Syntactic detection is sound for two of the three
+/// forms and "best effort" for `PredicateConst` (uses any same-file const
+/// name, regardless of type — acceptable for LSP coloring).
+fn emit_predicate_tokens(
+    source: &str,
+    file_id: u32,
+    condition_text: &str,
+    const_names: &HashSet<String>,
+    kw: &str, // "if" or "elif"
+    line_index: &LineIndex,
+    out: &mut Vec<RawSemToken>,
+) {
+    // Strip trailing ` :` that the parser may append to condition strings.
+    let condition_text = condition_text.trim().trim_end_matches(':').trim_end();
+    if condition_text.is_empty() {
+        return;
+    }
+
+    let condition_tokens = tokenize_condition(condition_text);
+
+    // Quick exit: nothing to highlight if none of the tokens are predicate-like.
+    let has_predicate = condition_tokens.iter().any(|ct| {
+        ct.starts_with('"') || ct.contains(".applies()") || const_names.contains(ct.as_str())
+    });
+    if !has_predicate {
+        return;
+    }
+
+    let bytes = source.as_bytes();
+    let src_len = bytes.len();
+    let kw_bytes = kw.as_bytes();
+    let kw_len = kw.len();
+    let cond_bytes = condition_text.as_bytes();
+
+    let mut search_pos = 0usize;
+    while search_pos + kw_len <= src_len {
+        // Match the keyword as a standalone word.
+        if &bytes[search_pos..search_pos + kw_len] != kw_bytes {
+            search_pos += 1;
+            continue;
+        }
+        let preceded_ok = search_pos == 0 || !is_ident_continue(bytes[search_pos - 1]);
+        let followed_ok = search_pos + kw_len >= src_len
+            || !is_ident_continue(bytes[search_pos + kw_len]);
+        if !preceded_ok || !followed_ok {
+            search_pos += 1;
+            continue;
+        }
+
+        // Skip whitespace after the keyword.
+        let mut p = search_pos + kw_len;
+        while p < src_len && (bytes[p] == b' ' || bytes[p] == b'\t') {
+            p += 1;
+        }
+        let cond_start = p;
+
+        // Check verbatim match of condition text.
+        if cond_start + cond_bytes.len() > src_len
+            || &bytes[cond_start..cond_start + cond_bytes.len()] != cond_bytes
+        {
+            search_pos += 1;
+            continue;
+        }
+        // Verify the byte right after the condition text is a terminator.
+        let after = cond_start + cond_bytes.len();
+        if after < src_len
+            && bytes[after] != b':'
+            && bytes[after] != b' '
+            && bytes[after] != b'\t'
+            && bytes[after] != b'\n'
+        {
+            search_pos += 1;
+            continue;
+        }
+
+        // Walk condition_tokens, tracking byte offset inside condition_text.
+        let mut tok_offset = 0usize;
+        for ct in &condition_tokens {
+            // Skip whitespace to reach this token's start in condition_text.
+            while tok_offset < cond_bytes.len()
+                && (cond_bytes[tok_offset] == b' ' || cond_bytes[tok_offset] == b'\t')
+            {
+                tok_offset += 1;
+            }
+            let tok_len = ct.len();
+            if tok_offset + tok_len > cond_bytes.len() {
+                break;
+            }
+
+            let is_predicate = ct.starts_with('"')
+                || ct.contains(".applies()")
+                || const_names.contains(ct.as_str());
+            if is_predicate {
+                let abs_start = (cond_start + tok_offset) as u32;
+                let abs_end = abs_start + tok_len as u32;
+                let span = Span::new(file_id, abs_start, abs_end);
+                push_span(
+                    out,
+                    span,
+                    SemTokenType::GlyphPredicate,
+                    SemTokenModifier::NONE,
+                    line_index,
+                );
+            }
+            tok_offset += tok_len;
+        }
+
+        search_pos = cond_start + cond_bytes.len();
     }
 }
 
@@ -958,7 +1139,7 @@ mod tests {
 
     #[test]
     fn legend_lengths_match_discriminants() {
-        assert_eq!(SemTokenType::legend().len(), 21);
+        assert_eq!(SemTokenType::legend().len(), 22);
         assert_eq!(SemTokenModifier::legend().len(), 4);
     }
 
@@ -1253,5 +1434,78 @@ mod tests {
                 b
             );
         }
+    }
+
+    // -- Predicate-form highlighting tests (Task 5.4) ---------------------
+
+    #[test]
+    fn predicate_const_form_emits_glyph_predicate() {
+        // `if my_const:` — bare const name in condition position.
+        // `my_const` is a same-file const decl, so it is identified as a
+        // predicate token and gets GlyphPredicate highlighting.
+        let src = concat!(
+            "skill main()\n",
+            "    description: \"d\"\n",
+            "    flow:\n",
+            "        if my_const:\n",
+            "            \"do it\"\n",
+            "\n",
+            "const my_const = \"the user opted in\"\n",
+        );
+        let tokens = collect_semantic_tokens(src, 0);
+        let pred = find_token(&tokens, 3, "my_const", src)
+            .expect("`my_const` GlyphPredicate token on if line");
+        assert_eq!(
+            pred.token_type,
+            SemTokenType::GlyphPredicate as u32,
+            "expected GlyphPredicate for bare const name in condition; got token: {:?}",
+            pred
+        );
+    }
+
+    #[test]
+    fn predicate_literal_form_emits_glyph_predicate() {
+        // `if "the user opted in":` — inline string literal in condition position.
+        let src = concat!(
+            "skill main()\n",
+            "    description: \"d\"\n",
+            "    flow:\n",
+            "        if \"the user opted in\":\n",
+            "            \"do it\"\n",
+        );
+        let tokens = collect_semantic_tokens(src, 0);
+        let pred = find_token(&tokens, 3, "\"the user opted in\"", src)
+            .expect("`\"the user opted in\"` GlyphPredicate token on if line");
+        assert_eq!(
+            pred.token_type,
+            SemTokenType::GlyphPredicate as u32,
+            "expected GlyphPredicate for string literal in condition; got token: {:?}",
+            pred
+        );
+    }
+
+    #[test]
+    fn predicate_applies_form_emits_glyph_predicate() {
+        // `if my_block.applies():` — BLOCKNAME.applies() in condition position.
+        // The entire `my_block.applies()` span is highlighted as GlyphPredicate.
+        let src = concat!(
+            "skill main()\n",
+            "    description: \"d\"\n",
+            "    flow:\n",
+            "        if my_block.applies():\n",
+            "            \"do it\"\n",
+            "\n",
+            "block my_block()\n",
+            "    \"step\"\n",
+        );
+        let tokens = collect_semantic_tokens(src, 0);
+        let pred = find_token(&tokens, 3, "my_block.applies()", src)
+            .expect("`my_block.applies()` GlyphPredicate token on if line");
+        assert_eq!(
+            pred.token_type,
+            SemTokenType::GlyphPredicate as u32,
+            "expected GlyphPredicate for applies() form in condition; got token: {:?}",
+            pred
+        );
     }
 }
