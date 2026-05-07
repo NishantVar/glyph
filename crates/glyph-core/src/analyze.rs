@@ -1167,7 +1167,7 @@ pub fn analyze_with_diagnostics(
 
     // Task 3.1: emit G::analyze::condition-non-boolean-non-predicate for
     // numeric-kinded tokens in condition position.
-    validate_file_numeric_conditions(&file, file_label, line_index, bag);
+    check_file_numeric_conditions(&file, file_label, line_index, bag);
 
     file
 }
@@ -2074,7 +2074,7 @@ pub fn analyze_with_imports(
 
     // Task 3.1: emit G::analyze::condition-non-boolean-non-predicate for
     // numeric-kinded tokens in condition position.
-    validate_file_numeric_conditions(&annotated, file_label, line_index, bag);
+    check_file_numeric_conditions(&annotated, file_label, line_index, bag);
 
     annotated
 }
@@ -3068,15 +3068,15 @@ fn annotate_branch_classifications<'a>(
     }
 }
 
-/// Annotate every `Branch` node in each `Skill`'s flow inside a `SourceFile`.
-///
-/// Called once at the end of `analyze_with_diagnostics` (and `analyze_with_imports`)
-/// after all semantic diagnostics have been emitted.
-fn annotate_file_branches(file: &mut SourceFile) {
-    // Build the texts map with owned keys so the borrow of `file.decls` ends
-    // before the mutable iteration below begins.
-    let owned_texts: HashMap<String, (String, crate::kind_infer::TypeTag)> = file
-        .decls
+/// Build the file-level owned-key `texts` backing store mapping each const
+/// name to its `(body, TypeTag)`. Callers convert this to the `&str`-keyed
+/// shape that `classify_condition` / `annotate_branch_classifications`
+/// consume; that conversion must happen in the caller's scope so the `&str`
+/// references stay tied to a binding the caller owns.
+fn build_const_texts(
+    file: &SourceFile,
+) -> HashMap<String, (String, crate::kind_infer::TypeTag)> {
+    file.decls
         .iter()
         .filter_map(|d| match d {
             crate::ast::Decl::Const(c) => {
@@ -3100,8 +3100,17 @@ fn annotate_file_branches(file: &mut SourceFile) {
             }
             _ => None,
         })
-        .collect();
-    // Convert to `&str`-keyed map for `classify_condition`'s parameter type.
+        .collect()
+}
+
+/// Annotate every `Branch` node in each `Skill`'s flow inside a `SourceFile`.
+///
+/// Called once at the end of `analyze_with_diagnostics` (and `analyze_with_imports`)
+/// after all semantic diagnostics have been emitted.
+fn annotate_file_branches(file: &mut SourceFile) {
+    // Build the texts map with owned keys so the borrow of `file.decls` ends
+    // before the mutable iteration below begins.
+    let owned_texts = build_const_texts(file);
     let texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = owned_texts
         .iter()
         .map(|(k, v)| (k.as_str(), v.clone()))
@@ -3127,17 +3136,17 @@ fn annotate_file_branches(file: &mut SourceFile) {
 /// Walk every `Branch`/`ElifBranch` condition in `flow` and push
 /// `G::analyze::condition-non-boolean-non-predicate` for any condition that
 /// contains a `Numeric`-kinded token.
-fn validate_flow_numeric_conditions(
+fn check_flow_numeric_conditions(
     flow: &[FlowStmt],
     span: crate::span::Span,
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
     texts: &HashMap<&str, (String, crate::kind_infer::TypeTag)>,
+    empty_params: &HashSet<&str>,
+    empty_bindings: &HashSet<&str>,
+    empty_block_decls: &HashMap<&str, &BlockDecl>,
 ) {
-    let empty_params: HashSet<&str> = HashSet::new();
-    let empty_bindings: HashSet<&str> = HashSet::new();
-    let empty_block_decls: HashMap<&str, &BlockDecl> = HashMap::new();
     for stmt in flow {
         match stmt {
             FlowStmt::Branch {
@@ -3150,9 +3159,9 @@ fn validate_flow_numeric_conditions(
                 let c = classify_condition(
                     condition,
                     texts,
-                    &empty_params,
-                    &empty_bindings,
-                    &empty_block_decls,
+                    empty_params,
+                    empty_bindings,
+                    empty_block_decls,
                 );
                 if c.has_numeric_token {
                     bag.push(
@@ -3175,9 +3184,9 @@ fn validate_flow_numeric_conditions(
                     let ec = classify_condition(
                         &elif.condition,
                         texts,
-                        &empty_params,
-                        &empty_bindings,
-                        &empty_block_decls,
+                        empty_params,
+                        empty_bindings,
+                        empty_block_decls,
                     );
                     if ec.has_numeric_token {
                         bag.push(
@@ -3197,18 +3206,41 @@ fn validate_flow_numeric_conditions(
                             span,
                         );
                     }
-                    validate_flow_numeric_conditions(
+                    check_flow_numeric_conditions(
                         &elif.body,
                         span,
                         file_label,
                         line_index,
                         bag,
                         texts,
+                        empty_params,
+                        empty_bindings,
+                        empty_block_decls,
                     );
                 }
-                validate_flow_numeric_conditions(then_body, span, file_label, line_index, bag, texts);
+                check_flow_numeric_conditions(
+                    then_body,
+                    span,
+                    file_label,
+                    line_index,
+                    bag,
+                    texts,
+                    empty_params,
+                    empty_bindings,
+                    empty_block_decls,
+                );
                 if let Some(eb) = else_body {
-                    validate_flow_numeric_conditions(eb, span, file_label, line_index, bag, texts);
+                    check_flow_numeric_conditions(
+                        eb,
+                        span,
+                        file_label,
+                        line_index,
+                        bag,
+                        texts,
+                        empty_params,
+                        empty_bindings,
+                        empty_block_decls,
+                    );
                 }
             }
             _ => {}
@@ -3219,55 +3251,39 @@ fn validate_flow_numeric_conditions(
 /// Emit `G::analyze::condition-non-boolean-non-predicate` for every skill in
 /// `file` that has a numeric-kinded token in a branch condition.
 ///
-/// Called once at the end of `analyze_with_diagnostics` after
-/// `annotate_file_branches` so the classifier results are already populated.
-fn validate_file_numeric_conditions(
+/// Called once at the end of `analyze_with_diagnostics` and
+/// `analyze_with_imports` after `annotate_file_branches`, so the classifier
+/// results are already populated.
+fn check_file_numeric_conditions(
     file: &SourceFile,
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
 ) {
-    // Build the same texts map used by annotate_file_branches.
-    let owned_texts: HashMap<String, (String, crate::kind_infer::TypeTag)> = file
-        .decls
-        .iter()
-        .filter_map(|d| match d {
-            crate::ast::Decl::Const(c) => {
-                let name = c.node.name.clone();
-                let (body, literal) = match &c.node.value {
-                    crate::ast::ConstValue::String(s) => {
-                        (s.clone(), crate::kind_infer::Literal::String(s.clone()))
-                    }
-                    crate::ast::ConstValue::Int(s) => {
-                        (s.clone(), crate::kind_infer::Literal::Number(s.clone()))
-                    }
-                    crate::ast::ConstValue::Float(s) => {
-                        (s.clone(), crate::kind_infer::Literal::Number(s.clone()))
-                    }
-                    crate::ast::ConstValue::Bool(s) => {
-                        (s.clone(), crate::kind_infer::Literal::Bool(s.clone()))
-                    }
-                };
-                let tag = crate::kind_infer::infer_primitive(&literal);
-                Some((name, (body, tag)))
-            }
-            _ => None,
-        })
-        .collect();
+    let owned_texts = build_const_texts(file);
     let texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = owned_texts
         .iter()
         .map(|(k, v)| (k.as_str(), v.clone()))
         .collect();
 
+    // Allocate the empty params/bindings/block_decls collections ONCE here so
+    // the recursive walker doesn't re-allocate at every nesting level.
+    let empty_params: HashSet<&str> = HashSet::new();
+    let empty_bindings: HashSet<&str> = HashSet::new();
+    let empty_block_decls: HashMap<&str, &BlockDecl> = HashMap::new();
+
     for decl in &file.decls {
         if let crate::ast::Decl::Skill(spanned) = decl {
-            validate_flow_numeric_conditions(
+            check_flow_numeric_conditions(
                 &spanned.node.flow,
                 spanned.span,
                 file_label,
                 line_index,
                 bag,
                 &texts,
+                &empty_params,
+                &empty_bindings,
+                &empty_block_decls,
             );
         }
     }
@@ -3388,7 +3404,8 @@ fn classify_token<'a>(
         return ConditionTokenKind::PredicateApplies;
     }
     // Numeric literal: integer or float token.
-    if tok.parse::<i64>().is_ok() || tok.parse::<f64>().is_ok() {
+    // `f64::from_str` accepts every well-formed integer literal too.
+    if tok.parse::<f64>().is_ok() {
         return ConditionTokenKind::Numeric;
     }
     if let Some((_body, tag)) = texts.get(tok) {
@@ -6220,7 +6237,7 @@ skill foo()
     }
 
     #[test]
-    fn int_const_in_condition_position_fires_kind_mismatch() {
+    fn int_const_in_condition_position_fires_non_boolean_non_predicate() {
         let src = r#"
 const max = 3
 
@@ -6238,7 +6255,7 @@ skill foo()
     }
 
     #[test]
-    fn float_literal_in_condition_position_fires_kind_mismatch() {
+    fn float_literal_in_condition_position_fires_non_boolean_non_predicate() {
         let src = r#"
 skill foo()
     description: "test"
@@ -6254,7 +6271,7 @@ skill foo()
     }
 
     #[test]
-    fn string_const_in_condition_position_does_not_fire_kind_mismatch() {
+    fn string_const_in_condition_position_does_not_fire_non_boolean_non_predicate() {
         let src = r#"
 const big = "a big change"
 
