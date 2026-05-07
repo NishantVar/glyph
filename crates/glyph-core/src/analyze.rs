@@ -3331,8 +3331,6 @@ fn check_nested_branches(
 // `check_file_numeric_conditions` reads the cached `condition_classification`
 // populated by `annotate_file_branches` instead of re-tokenizing.
 
-use crate::condition::ConditionClassification;
-
 // ---------------------------------------------------------------------------
 // Branch annotation walker (Task 2.4 + Task 6 Decl::Block extension)
 // ---------------------------------------------------------------------------
@@ -3440,34 +3438,18 @@ fn annotate_file_branches(
     for (idx, decl) in file.decls.iter_mut().enumerate() {
         match decl {
             Decl::Skill(spanned) => {
-                let consts: std::collections::HashMap<&str, crate::kind_infer::TypeTag> =
-                    consts_owned
-                        .iter()
-                        .map(|(k, v)| (k.as_str(), v.clone()))
-                        .collect();
-                let params_set: std::collections::HashSet<&str> =
-                    per_decl_params[idx].iter().map(|s| s.as_str()).collect();
-                let ctx = crate::condition::ConditionContext {
-                    consts,
-                    params_with_string_default: params_set,
-                    bindings: std::collections::HashSet::new(),
-                };
-                annotate_branch_classifications(&mut spanned.node.flow, &ctx);
+                annotate_decl_branches(
+                    &mut spanned.node.flow,
+                    &consts_owned,
+                    &per_decl_params[idx],
+                );
             }
             Decl::Block(spanned) => {
-                let consts: std::collections::HashMap<&str, crate::kind_infer::TypeTag> =
-                    consts_owned
-                        .iter()
-                        .map(|(k, v)| (k.as_str(), v.clone()))
-                        .collect();
-                let params_set: std::collections::HashSet<&str> =
-                    per_decl_params[idx].iter().map(|s| s.as_str()).collect();
-                let ctx = crate::condition::ConditionContext {
-                    consts,
-                    params_with_string_default: params_set,
-                    bindings: std::collections::HashSet::new(),
-                };
-                annotate_branch_classifications(&mut spanned.node.flow, &ctx);
+                annotate_decl_branches(
+                    &mut spanned.node.flow,
+                    &consts_owned,
+                    &per_decl_params[idx],
+                );
             }
             // `Decl::ExportBlock` has only `flow_strings: Vec<String>` — no
             // structured FlowStmt::Branch nodes to annotate. See design spec
@@ -3475,6 +3457,30 @@ fn annotate_file_branches(
             _ => {}
         }
     }
+}
+
+/// Per-decl helper for `annotate_file_branches`: borrow the pre-baked owned
+/// consts table and params-with-string-default set, build a transient
+/// `ConditionContext`, and run `annotate_branch_classifications` over the
+/// decl's flow. Extracted so the `Decl::Skill` and `Decl::Block` arms reduce
+/// to a single call each.
+fn annotate_decl_branches(
+    flow: &mut [FlowStmt],
+    consts_owned: &std::collections::HashMap<String, crate::kind_infer::TypeTag>,
+    params_owned: &std::collections::HashSet<String>,
+) {
+    let consts: std::collections::HashMap<&str, crate::kind_infer::TypeTag> = consts_owned
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.clone()))
+        .collect();
+    let params_set: std::collections::HashSet<&str> =
+        params_owned.iter().map(|s| s.as_str()).collect();
+    let ctx = crate::condition::ConditionContext {
+        consts,
+        params_with_string_default: params_set,
+        bindings: std::collections::HashSet::new(),
+    };
+    annotate_branch_classifications(flow, &ctx);
 }
 
 /// Walk a flow body and push
@@ -3560,30 +3566,15 @@ fn check_file_numeric_conditions(
     bag: &mut DiagBag,
 ) {
     for decl in &file.decls {
-        match decl {
-            Decl::Skill(spanned) => {
-                check_flow_numeric_conditions(
-                    &spanned.node.flow,
-                    spanned.span,
-                    file_label,
-                    line_index,
-                    bag,
-                );
-            }
-            Decl::Block(spanned) => {
-                check_flow_numeric_conditions(
-                    &spanned.node.flow,
-                    spanned.span,
-                    file_label,
-                    line_index,
-                    bag,
-                );
-            }
-            // `Decl::ExportBlock` flow walking deferred per design spec Out
-            // of Scope §7 — `ExportBlockDecl.flow_strings` carries no
-            // structured FlowStmt::Branch.
-            _ => {}
-        }
+        // `Decl::ExportBlock` flow walking deferred per design spec Out of
+        // Scope §7 — `ExportBlockDecl.flow_strings` carries no structured
+        // FlowStmt::Branch.
+        let (flow, span) = match decl {
+            Decl::Skill(spanned) => (&spanned.node.flow, spanned.span),
+            Decl::Block(spanned) => (&spanned.node.flow, spanned.span),
+            _ => continue,
+        };
+        check_flow_numeric_conditions(flow, span, file_label, line_index, bag);
     }
 }
 
