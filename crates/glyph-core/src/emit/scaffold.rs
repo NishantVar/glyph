@@ -143,6 +143,7 @@ pub struct SpanPayload {
     pub resolved_body: Option<String>,
     pub condition_expression: Option<String>,
     pub resolved_predicates: Option<BTreeMap<String, String>>,
+    pub classification: Option<crate::condition::ConditionClassification>,
     pub predicate_shape: BranchPredicateShape,
     pub param_name: Option<String>,
     pub param_type: Option<String>,

@@ -353,3 +353,71 @@ skill main()
         "or-operator must pass through verbatim:\n{md}"
     );
 }
+
+#[test]
+fn stub_fill_eq_with_string_rhs_preserves_quotes_and_substitutes() {
+    let source = r#"const complex_change = "the requested change is complex"
+
+skill main(risk: String)
+    description: "Test."
+    flow:
+        if risk == "high" and complex_change
+            "Escalate."
+        else
+            "Proceed."
+"#;
+    let md = compile_and_read_md("eq_string_rhs.glyph", source);
+    assert!(
+        md.contains("risk == \"high\""),
+        "operand `risk == \"high\"` must render verbatim with quotes:\n{md}"
+    );
+    assert!(
+        md.contains("the requested change is complex"),
+        "complex_change must be substituted:\n{md}"
+    );
+}
+
+#[test]
+fn stub_fill_numeric_eq_no_substitution() {
+    let source = r#"skill main(max_attempts: Int)
+    description: "Test."
+    flow:
+        if max_attempts == 3
+            "Halt."
+        else
+            "Continue."
+"#;
+    let md = compile_and_read_md("numeric_eq.glyph", source);
+    assert!(
+        md.contains("max_attempts == 3"),
+        "numeric == operand must render verbatim:\n{md}"
+    );
+}
+
+#[test]
+fn stub_fill_paren_grouped_predicates_preserves_parens_and_substitutes() {
+    let source = r#"const big = "the change is big"
+const small = "the change is small"
+
+skill main(reviewable: Bool)
+    description: "Test."
+    flow:
+        if (big or small) and reviewable
+            "Review."
+        else
+            "Skip."
+"#;
+    let md = compile_and_read_md("paren_grouped.glyph", source);
+    assert!(
+        md.contains("the change is big") && md.contains("the change is small"),
+        "both const bodies substituted:\n{md}"
+    );
+    assert!(
+        md.contains("(") && md.contains(")"),
+        "parens preserved in output:\n{md}"
+    );
+    assert!(
+        md.contains("reviewable"),
+        "Boolean token `reviewable` rendered bare:\n{md}"
+    );
+}

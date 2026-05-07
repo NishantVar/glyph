@@ -314,7 +314,7 @@ fn classify_token(tok: &str, ctx: &ConditionContext) -> ConditionTokenKind {
 /// `)`, walk back to the matching `(`. Else return `end`. Unbalanced parens
 /// fall back to the immediate neighbour; malformed conditions are caught by
 /// other analyze rules.
-fn match_paren_left(raw: &[String], end: usize) -> usize {
+pub(crate) fn match_paren_left(raw: &[String], end: usize) -> usize {
     if raw[end] != ")" {
         return end;
     }
@@ -336,7 +336,7 @@ fn match_paren_left(raw: &[String], end: usize) -> usize {
     end
 }
 
-fn match_paren_right(raw: &[String], start: usize) -> usize {
+pub(crate) fn match_paren_right(raw: &[String], start: usize) -> usize {
     if raw[start] != "(" {
         return start;
     }

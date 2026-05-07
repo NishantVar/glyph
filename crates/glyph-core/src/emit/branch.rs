@@ -82,7 +82,7 @@ pub fn strip_trailing_period(s: &str) -> &str {
 /// For `PredicateLiteral`: emit the literal text with surrounding quotes
 /// stripped (matches the existing `extract_predicate_token` contract for
 /// quoted literals).
-fn render_substituted_condition(
+pub(crate) fn render_substituted_condition(
     classification: &crate::condition::ConditionClassification,
     resolved_predicates: &std::collections::BTreeMap<String, String>,
 ) -> String {
@@ -253,6 +253,7 @@ fn emit_mixed_condition(
         payload: SpanPayload {
             condition_expression: Some(br.condition.clone()),
             resolved_predicates: br.resolved_predicates.clone(),
+            classification: br.classification.clone(),
             predicate_shape: br.predicate_shape.clone(),
             ..SpanPayload::default()
         },
@@ -270,6 +271,7 @@ fn emit_mixed_condition(
             payload: SpanPayload {
                 condition_expression: Some(elif.condition.clone()),
                 resolved_predicates: br.resolved_predicates.clone(),
+                classification: elif.classification.clone(),
                 predicate_shape: elif.predicate_shape.clone(),
                 ..SpanPayload::default()
             },
