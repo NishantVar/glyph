@@ -3098,4 +3098,34 @@ mod tests {
         let violations = validate_output(ir, md);
         assert!(violations.is_empty(), "got: {:?}", violations);
     }
+
+    #[test]
+    fn check_resolved_predicates_rejects_const_form_with_missing_prose() {
+        // IR declares the resolved-predicate prose `"the change is big"` for the
+        // bare-const predicate `big`, but the rendered markdown does NOT contain
+        // that prose. The new positive check must fire.
+        let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"big","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":{"big":"the change is big"},"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
+        let md = "## Instructions\n\n### Steps\n\n1. If something else:\n   a. Stop.\n";
+        let violations = validate_output(ir, md);
+        assert!(
+            violations.iter().any(|v| v.id == "G::expand::predicate-prose-missing"),
+            "expected G::expand::predicate-prose-missing; got: {:?}",
+            violations
+        );
+    }
+
+    #[test]
+    fn check_resolved_predicates_rejects_literal_form_with_missing_prose() {
+        // IR declares an inline-literal predicate `"the user opted in"`, but the
+        // rendered markdown does not contain that text. The new positive check
+        // must fire on the literal arm too.
+        let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"\"the user opted in\"","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":null,"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
+        let md = "## Instructions\n\n### Steps\n\n1. If they declined:\n   a. Skip.\n";
+        let violations = validate_output(ir, md);
+        assert!(
+            violations.iter().any(|v| v.id == "G::expand::predicate-prose-missing"),
+            "expected G::expand::predicate-prose-missing; got: {:?}",
+            violations
+        );
+    }
 }
