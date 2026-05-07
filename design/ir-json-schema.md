@@ -28,7 +28,7 @@ The matching `TypeTag` for primitive consts is inferred at the lowering boundary
 {
   "ir_version": 1,
   "compiler": "glyph 0.1.0",
-  "source_file": "fix_bug.glyph.md",
+  "source_file": "fix_bug.glyph",
   "skill": { ... }
 }
 ```
@@ -37,10 +37,10 @@ The matching `TypeTag` for primitive consts is inferred at the lowering boundary
 |---|---|---|
 | `ir_version` | integer | Monotonic schema version. Starts at `1`. Bumps on any breaking shape change (field removal, rename, type change). Adding new fields does not bump this. |
 | `compiler` | string | Freeform compiler identifier for debugging. Format: `"glyph <semver>"`. Not parsed by consumers — human-readable only. |
-| `source_file` | string | Relative path to the `.glyph.md` source file that produced this IR. |
+| `source_file` | string | Relative path to the `.glyph` source file that produced this IR. |
 | `skill` | object | The root `Skill` node (see §Skill below). Always exactly one. |
 
-**The envelope is per-skill.** A `.glyph.md` source file produces at most one `foo.ir.json` file, rooted in its single `Skill` node (recall: MVP allows exactly one `skill` per file — `G::parse::multiple-skills`). **Library files (zero `skill` declarations) produce no IR JSON output.** A library has no Skill to root the envelope on, so `--emit-ir` is a silent no-op for IR on libraries: no `foo.ir.json` is written. The CLI's stdout NDJSON wrapper still emits a normal `{"file": ..., "diagnostics": [], "emitted": [...]}` line for the library file, listing any procedure `.md` artifacts produced (per `cli.md` §Diagnostic Output). Library IR caching is deferred until incremental compilation exists; until then, emitting library IR would be dead bytes with no consumer. See `cli.md` §IR JSON Output for the corresponding CLI contract.
+**The envelope is per-skill.** A `.glyph` source file produces at most one `foo.ir.json` file, rooted in its single `Skill` node (recall: MVP allows exactly one `skill` per file — `G::parse::multiple-skills`). **Library files (zero `skill` declarations) produce no IR JSON output.** A library has no Skill to root the envelope on, so `--emit-ir` is a silent no-op for IR on libraries: no `foo.ir.json` is written. The CLI's stdout NDJSON wrapper still emits a normal `{"file": ..., "diagnostics": [], "emitted": [...]}` line for the library file, listing any procedure `.md` artifacts produced (per `cli.md` §Diagnostic Output). Library IR caching is deferred until incremental compilation exists; until then, emitting library IR would be dead bytes with no consumer. See `cli.md` §IR JSON Output for the corresponding CLI contract.
 
 **Agent behavior on `ir_version`:** If `ir_version > KNOWN_MAX`, warn and attempt to proceed (ignore unknown fields). If `ir_version` introduces a shape the agent cannot parse, hard fail with a clear message naming the version mismatch.
 
@@ -492,7 +492,7 @@ A complete `fix_bug.ir.json` for the `fix_bug` skill from `expand.md` §8.
 {
   "ir_version": 1,
   "compiler": "glyph 0.1.0",
-  "source_file": "fix_bug.glyph.md",
+  "source_file": "fix_bug.glyph",
   "skill": {
     "node_id": "n0",
     "kind": "skill",

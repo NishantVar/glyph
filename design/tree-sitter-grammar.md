@@ -4,7 +4,7 @@ This document specifies the tree-sitter grammar design for `.glyph` source files
 
 ## 1. Syntax Survey
 
-Every construct below was observed in the test corpus (`crates/glyph-cli/tests/corpus/valid/` and `repairable/`) or is specified in the canonical design docs (`language-surface.md`, `ir-and-semantics.md`). Corpus file citations use short names and retain the current `.glyph.md` extension in paths — the project is migrating source files to `.glyph`; that rename is handled separately and does not affect the grammar.
+Every construct below was observed in the test corpus (`crates/glyph-cli/tests/corpus/valid/` and `repairable/`) or is specified in the canonical design docs (`language-surface.md`, `ir-and-semantics.md`). Corpus file citations use short names and retain the current `.glyph` extension in paths — the project is migrating source files to `.glyph`; that rename is handled separately and does not affect the grammar.
 
 ### 1.1 Top-Level Declarations
 
@@ -411,7 +411,7 @@ The project is migrating to a `.glyph` extension. The grammar assumes this exclu
 
 ### 6.2 Migration Handoff
 
-The compiler and corpus rename from `.glyph.md` to `.glyph` is out of scope for this design and is being handled separately by the user. The grammar implementation should target `.glyph` from the start; any remaining `.glyph.md` references in the corpus are historical and will be updated independently.
+The compiler and corpus rename from `.glyph` to `.glyph` is out of scope for this design and is being handled separately by the user. The grammar implementation should target `.glyph` from the start; any remaining `.glyph` references in the corpus are historical and will be updated independently.
 
 ### 6.3 Indentation Edge Cases
 

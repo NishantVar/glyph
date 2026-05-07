@@ -2,7 +2,7 @@
 
 VS Code extension that wraps the `glyph lsp` language server. Provides
 diagnostics, go-to-definition (same-file + cross-file), and semantic-token
-highlighting for `.glyph.md` files.
+highlighting for `.glyph` files.
 
 This is a thin client. All language behaviour ships from `glyph-lsp` so VS
 Code, Neovim, and any other LSP-aware editor share the same logic.
@@ -11,13 +11,13 @@ Code, Neovim, and any other LSP-aware editor share the same logic.
 
 - **Diagnostics** — published on `didOpen` and `didSave` (save-only, per
   design §10.C). Covers Phase 1 (Parse) + Phase 2 (Analyze). Includes
-  cross-file diagnostics for imported files (M3 Phase A): if a `.glyph.md`
+  cross-file diagnostics for imported files (M3 Phase A): if a `.glyph`
   file you save imports a dep that has its own diagnostics, they appear
   on the dep's tab/path.
 - **Go-to-definition** — `gd` / F12 jumps to `block`, `text`,
   `export block` declarations and `{param}` slots in flow inline
   strings. Cross-file imports follow the
-  `import "./<rel>.glyph.md" { name }` clause.
+  `import "./<rel>.glyph" { name }` clause.
 - **Semantic-token highlighting** — `textDocument/semanticTokens/full`,
   legend matched to the tree-sitter grammar so the highlighting stays
   consistent across editors. Token types: keyword, type, function,
@@ -50,8 +50,8 @@ settings to an absolute path.
    This launches a second VS Code window ("Extension Development Host")
    with the extension loaded.
 
-3. In the dev host, open any `.glyph.md` file (e.g.
-   `crates/glyph-cli/tests/corpus/valid/imports/fix_bug.glyph.md`).
+3. In the dev host, open any `.glyph` file (e.g.
+   `crates/glyph-cli/tests/corpus/valid/imports/fix_bug.glyph`).
    Expect:
    - Syntax colors appear (driven by semantic tokens).
    - Save the file: any `G::parse::*` / `G::analyze::*` diagnostics

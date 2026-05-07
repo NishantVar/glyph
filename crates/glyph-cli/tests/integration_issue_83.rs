@@ -40,7 +40,7 @@ fn run_check_pretty(file: &Path) -> Output {
 #[test]
 fn ac7_pretty_stderr_emits_generic_type_name_warnings() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("ac7_generic.glyph.md");
+    let path = dir.path().join("ac7_generic.glyph");
     std::fs::write(
         &path,
         "\

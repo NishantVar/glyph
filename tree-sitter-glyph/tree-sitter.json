@@ -5,7 +5,7 @@
       "camelcase": "Glyph",
       "scope": "source.glyph",
       "path": ".",
-      "file-types": ["glyph", "glyph.md"],
+      "file-types": ["glyph"],
       "highlights": "queries/highlights.scm"
     }
   ],

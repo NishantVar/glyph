@@ -1,4 +1,4 @@
-import "./lib_with_required_export_block.glyph.md" { helper }
+import "./lib_with_required_export_block.glyph" { helper }
 
 skill main()
     description: "Calls an imported export block but omits its required argument."

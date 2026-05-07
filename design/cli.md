@@ -12,9 +12,9 @@ Run the compiler's deterministic phases: Parse (1), Analyze (2), Lower (4), Vali
 
 The compiler does **not** run Phase 3 (Repair) or Phase 6 Step 2 (Expand reshaping). Those are the agent's responsibility. If Phase 2 produces `repairable` diagnostics, the compiler stops after Phase 2 and exits with code 2. The agent performs LLM repair on the source and re-invokes. If Phase 2 is clean, the compiler continues through the remaining deterministic phases to produce output.
 
-- `<path>` is a file (`*.glyph.md`) or directory. Directory mode globs `**/*.glyph.md` recursively.
+- `<path>` is a file (`*.glyph`) or directory. Directory mode globs `**/*.glyph` recursively.
 - **Directory mode compiles every file in scope, unconditionally.** There is no reachability filter: a library file with no in-scope consumer still compiles (and may produce zero emitted artifacts, exit 0). Reachability-based pruning is post-MVP.
-- Transitive dependencies are auto-discovered via DAG closure: if `a.glyph.md` imports `b.glyph.md`, the compiler processes `b` even if the user only named `a`. Already-valid cached dependencies may be skipped.
+- Transitive dependencies are auto-discovered via DAG closure: if `a.glyph` imports `b.glyph`, the compiler processes `b` even if the user only named `a`. Already-valid cached dependencies may be skipped.
 - Library files (zero `skill` declarations) that produce no `.md` output succeed silently (exit 0, info-level log at `-v`).
 
 ### `glyph check <path>`
@@ -39,7 +39,7 @@ Accepts `--format` flag (same as `compile`/`check`) for diagnostic output format
 
 ### `glyph fmt <path>`
 
-Run Phase 3a (deterministic source rewrites) only. No LLM, no IR construction, no compiled output. Rewrites the `.glyph.md` source files in place.
+Run Phase 3a (deterministic source rewrites) only. No LLM, no IR construction, no compiled output. Rewrites the `.glyph` source files in place.
 
 `fmt` runs in **two strata** to maximise the work it can do on imperfect source:
 
@@ -85,7 +85,7 @@ Logging uses verbosity-gated `eprintln!` to stderr. Default level is warn (error
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--out-dir <path>` | `-o` | Override output directory. Default: compiled `.md` lands next to its `.glyph.md` source. Procedure subdirectories are created relative to this location. |
+| `--out-dir <path>` | `-o` | Override output directory. Default: compiled `.md` lands next to its `.glyph` source. Procedure subdirectories are created relative to this location. |
 | `--emit-ir` | | Emit the post-Step-1 resolved IR as a sidecar JSON file next to the compiled `.md` (e.g., `fix_bug.ir.json`). See §IR JSON Output. |
 | `--format <fmt>` | `-f` | Diagnostic output format: `pretty` (default, uses `codespan-reporting`) or `json` (structured, for agent consumption). See §Diagnostic Output. |
 | `--strict` | | Treat `repairable` diagnostics as hard errors: exit code 1 instead of 2. No `.md` output is written. Useful for CI gates and lint-clean enforcement. |
@@ -109,8 +109,8 @@ By default, compiled files are placed next to their source:
 ```
 project/
   skills/
-    fix_bug.glyph.md      → fix_bug.md
-    review_tools.glyph.md → review_tools.md
+    fix_bug.glyph      → fix_bug.md
+    review_tools.glyph → review_tools.md
                              review_tools/          (procedure subdirectory)
                                review-code.md
 ```
@@ -120,8 +120,8 @@ With `--out-dir build/`:
 ```
 project/
   skills/
-    fix_bug.glyph.md
-    review_tools.glyph.md
+    fix_bug.glyph
+    review_tools.glyph
   build/
     fix_bug.md
     review_tools.md
@@ -180,7 +180,7 @@ In **JSON mode** (`--format=json`): actionable diagnostics (`error` + `repairabl
 
 ```
 error[G::analyze::undefined-call]: unresolved call `inspect_failure`
-  ┌─ skills/fix_bug.glyph.md:6:9
+  ┌─ skills/fix_bug.glyph:6:9
   │
 6 │         inspect_failure(scope) with "focus on auth boundaries"
   │         ^^^^^^^^^^^^^^^ no declaration found for this name
@@ -195,8 +195,8 @@ Output uses **NDJSON** (newline-delimited JSON): one complete JSON object per li
 Each line is a complete `{"file": ..., "diagnostics": [...], "emitted": [...]}` object:
 
 ```jsonl
-{"file":"skills/lib/util.glyph.md","diagnostics":[],"emitted":["skills/lib/util.md"]}
-{"file":"skills/fix_bug.glyph.md","diagnostics":[{"id":"G::analyze::undefined-call","classification":"repairable","message":"unresolved call `inspect_failure`","span":{"file":"skills/fix_bug.glyph.md","start":{"line":6,"col":9},"end":{"line":6,"col":23}},"related":[],"hints":["repair will generate a definition for this call"]}],"emitted":[]}
+{"file":"skills/lib/util.glyph","diagnostics":[],"emitted":["skills/lib/util.md"]}
+{"file":"skills/fix_bug.glyph","diagnostics":[{"id":"G::analyze::undefined-call","classification":"repairable","message":"unresolved call `inspect_failure`","span":{"file":"skills/fix_bug.glyph","start":{"line":6,"col":9},"end":{"line":6,"col":23}},"related":[],"hints":["repair will generate a definition for this call"]}],"emitted":[]}
 ```
 
 The `diagnostics` array matches the `Diagnostic` shape defined in `diagnostics.md`. The `emitted` array lists output paths produced for that file (compiled `.md`, `.ir.json` if `--emit-ir`, procedure `.md` files); it is empty when the file did not progress past Phase 2.
@@ -207,7 +207,7 @@ Each file's diagnostics are grouped into a single JSON object on a single line s
 
 When `<path>` is a directory or when named files have imports:
 
-1. The compiler discovers all `.glyph.md` files in scope (directory glob or DAG closure from named roots).
+1. The compiler discovers all `.glyph` files in scope (directory glob or DAG closure from named roots).
 2. Files are processed in topological order per `pipeline.md` §Multi-File Compilation Order.
 3. Partial failure follows `pipeline.md` §Partial Failure Policy: failed files skip their dependents, successful files still emit output.
 4. Diagnostics are emitted per-file as each file completes (streaming in pretty mode, one JSON object per file in JSON mode).

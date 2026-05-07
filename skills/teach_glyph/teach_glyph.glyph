@@ -1,11 +1,11 @@
-// teach_glyph.glyph.md
+// teach_glyph.glyph
 //
 // Skill that teaches a coding agent how to author Glyph source files.
 // Pulls in the Glyph language reference and the authoring rules from
 // sibling library files; each entry is imported by name and listed
 // under `context:` (bare) or `constraints:` (with polarity).
 
-import "./teach_glyph_context.glyph.md" {
+import "./teach_glyph_context.glyph" {
     glyph_overview,
     file_kinds,
     layout_rules,
@@ -23,7 +23,7 @@ import "./teach_glyph_context.glyph.md" {
     quick_reference,
 }
 
-import "./teach_glyph_constraints.glyph.md" {
+import "./teach_glyph_constraints.glyph" {
     four_space_indentation,
     primitive_type_names_in_source,
     string_interpolation,
@@ -43,14 +43,14 @@ import "./teach_glyph_constraints.glyph.md" {
     deeply_nested_calls,
 }
 
-import "./glyph_authoring_passes.glyph.md" {
+import "./glyph_authoring_passes.glyph" {
     factor_long_instructions_and_texts,
     sort_declarations,
     compile_and_iterate,
 }
 
 skill teach_glyph(target)
-    description: "Author or edit a Glyph source file (.glyph.md) at `target` for a task described by the user."
+    description: "Author or edit a Glyph source file (.glyph) at `target` for a task described by the user."
 
     context:
         glyph_overview
@@ -98,7 +98,7 @@ skill teach_glyph(target)
         factor_long_instructions_and_texts()
         sort_declarations()
         compile_and_iterate(target)
-        return <"path to the authored or updated .glyph.md file">
+        return <"path to the authored or updated .glyph file">
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Authoring-procedure blocks — each block is one logical phase of writing
@@ -108,7 +108,7 @@ skill teach_glyph(target)
 block gather_intent(target)
     flow:
         "Read the user's request and identify the skill's purpose, the runtime parameters it will need, and any task-specific constraints."
-        "If {target} is an existing `.glyph.md` file, read it first and treat the task as an edit. Otherwise, plan to create a new file at {target}."
+        "If {target} is an existing `.glyph` file, read it first and treat the task as an edit. Otherwise, plan to create a new file at {target}."
 
 block choose_file_shape()
     "Decide the file kind: a skill file with exactly one `skill` declaration, or a library file with zero `skill` declarations and at least one `export block` or `export const`."

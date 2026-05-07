@@ -5,11 +5,11 @@
 //! needed) and compile end-to-end with exit code 0.
 //!
 //! Acceptance criteria (Bar 3):
-//!   - prefs.glyph.md compiles (exit 0, zero .md emission)
-//!   - repo_tools.glyph.md compiles (exit 0, library)
-//!   - fix_bug.glyph.md compiles (exit 0, imports from prefs + repo_tools resolve)
-//!   - review_pr.glyph.md compiles (exit 0, imports from repo_tools, branching works)
-//!   - update_docs.glyph.md compiles (exit 0, standalone)
+//!   - prefs.glyph compiles (exit 0, zero .md emission)
+//!   - repo_tools.glyph compiles (exit 0, library)
+//!   - fix_bug.glyph compiles (exit 0, imports from prefs + repo_tools resolve)
+//!   - review_pr.glyph compiles (exit 0, imports from repo_tools, branching works)
+//!   - update_docs.glyph compiles (exit 0, standalone)
 //!   - DAG order respected: libraries compile before consumers
 //!   - Cross-file name resolution works
 //!
@@ -143,7 +143,7 @@ fn fix_bug_resolves_imported_constraint() {
 
     let md = std::fs::read_to_string(path.join("fix_bug.md")).unwrap();
 
-    // The imported text `preserve_existing_patterns` from prefs.glyph.md
+    // The imported text `preserve_existing_patterns` from prefs.glyph
     // should appear in the Constraints section.
     assert!(
         md.contains("### Constraints"),
@@ -163,7 +163,7 @@ fn fix_bug_resolves_imported_block_call() {
 
     let md = std::fs::read_to_string(path.join("fix_bug.md")).unwrap();
 
-    // The imported block `inspect_repo` from repo_tools.glyph.md has 150+
+    // The imported block `inspect_repo` from repo_tools.glyph has 150+
     // words, so it gets Tier 3 projection — a procedure file reference.
     assert!(
         md.contains("repo_tools/inspect-repo.md"),
@@ -231,7 +231,7 @@ fn fix_bug_has_context_section() {
 
     let md = std::fs::read_to_string(path.join("fix_bug.md")).unwrap();
 
-    // fix_bug.glyph.md has `context:` sub-section at skill level,
+    // fix_bug.glyph has `context:` sub-section at skill level,
     // which should render as `### Context` in the output.
     assert!(
         md.contains("### Context"),
@@ -257,7 +257,7 @@ fn review_pr_has_branch_scoped_context() {
 
     let md = std::fs::read_to_string(path.join("review_pr.md")).unwrap();
 
-    // review_pr.glyph.md has `context security_note` inside the
+    // review_pr.glyph has `context security_note` inside the
     // `if risk == "high"` arm. This should render inline as a Note,
     // not as a top-level ### Context section.
     assert!(
@@ -280,7 +280,7 @@ fn fix_bug_has_applies_conditional_same_file() {
 
     let md = std::fs::read_to_string(path.join("fix_bug.md")).unwrap();
 
-    // fix_bug.glyph.md uses `if deep_investigation.applies()` — same-file block.
+    // fix_bug.glyph uses `if deep_investigation.applies()` — same-file block.
     assert!(
         md.contains("bug spans multiple subsystems"),
         "deep_investigation.applies() should render with the block's description"
@@ -300,8 +300,8 @@ fn fix_bug_has_applies_conditional_imported() {
 
     let md = std::fs::read_to_string(path.join("fix_bug.md")).unwrap();
 
-    // fix_bug.glyph.md uses `if has_test_suite.applies()` — imported block
-    // from repo_tools.glyph.md whose description lives in the library file.
+    // fix_bug.glyph uses `if has_test_suite.applies()` — imported block
+    // from repo_tools.glyph whose description lives in the library file.
     assert!(
         md.contains("established test suite"),
         "imported has_test_suite.applies() should render with the library block's description"

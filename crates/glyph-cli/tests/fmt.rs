@@ -53,7 +53,7 @@ fn run_fmt_check_with_effects(file: &PathBuf) -> Output {
 
 #[test]
 fn fmt_rewrites_tabs_to_four_spaces() {
-    let src = fmt_corpus_path("tabs.glyph.md");
+    let src = fmt_corpus_path("tabs.glyph");
     // Copy to a temp file so we don't mutate the corpus.
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let tmp_path = tmp.path().to_path_buf();
@@ -70,7 +70,7 @@ fn fmt_rewrites_tabs_to_four_spaces() {
 
 #[test]
 fn fmt_hoists_body_constraints_into_constraints_section() {
-    let src = fmt_corpus_path("body_constraints.glyph.md");
+    let src = fmt_corpus_path("body_constraints.glyph");
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let tmp_path = tmp.path().to_path_buf();
     std::fs::copy(&src, &tmp_path).unwrap();
@@ -97,7 +97,7 @@ fn fmt_hoists_body_constraints_into_constraints_section() {
 
 #[test]
 fn fmt_hoists_body_and_flow_context_into_context_section() {
-    let src = fmt_corpus_path("body_context.glyph.md");
+    let src = fmt_corpus_path("body_context.glyph");
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let tmp_path = tmp.path().to_path_buf();
     std::fs::copy(&src, &tmp_path).unwrap();
@@ -119,7 +119,7 @@ fn fmt_hoists_body_and_flow_context_into_context_section() {
 
 #[test]
 fn fmt_preserves_branch_scoped_markers() {
-    let src = fmt_corpus_path("branch_scoped.glyph.md");
+    let src = fmt_corpus_path("branch_scoped.glyph");
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let tmp_path = tmp.path().to_path_buf();
     std::fs::copy(&src, &tmp_path).unwrap();
@@ -140,7 +140,7 @@ fn fmt_preserves_branch_scoped_markers() {
 
 #[test]
 fn fmt_reorders_sections_to_canonical_layout() {
-    let src = fmt_corpus_path("noncanonical_order.glyph.md");
+    let src = fmt_corpus_path("noncanonical_order.glyph");
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let tmp_path = tmp.path().to_path_buf();
     std::fs::copy(&src, &tmp_path).unwrap();
@@ -163,7 +163,7 @@ fn fmt_reorders_sections_to_canonical_layout() {
 
 #[test]
 fn fmt_check_exits_1_when_changes_needed() {
-    let src = fmt_corpus_path("body_constraints.glyph.md");
+    let src = fmt_corpus_path("body_constraints.glyph");
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let tmp_path = tmp.path().to_path_buf();
     std::fs::copy(&src, &tmp_path).unwrap();
@@ -179,7 +179,7 @@ fn fmt_check_exits_1_when_changes_needed() {
 #[test]
 fn fmt_check_exits_0_when_already_formatted() {
     // First format the file, then run --check on the result.
-    let src = fmt_corpus_path("body_constraints.glyph.md");
+    let src = fmt_corpus_path("body_constraints.glyph");
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let tmp_path = tmp.path().to_path_buf();
     std::fs::copy(&src, &tmp_path).unwrap();
@@ -202,7 +202,7 @@ fn fmt_preserves_generated_const_and_skill_when_mixed() {
     // generated-const line BETWEEN description and flow, corrupting both
     // the skill body layout and the generated-const placement. The pin:
     // the generated const must end up AFTER the skill's flow body.
-    let src = fmt_corpus_path("generated_const_after_skill.glyph.md");
+    let src = fmt_corpus_path("generated_const_after_skill.glyph");
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let tmp_path = tmp.path().to_path_buf();
     std::fs::copy(&src, &tmp_path).unwrap();
@@ -240,7 +240,7 @@ fn fmt_preserves_generated_const_and_skill_when_mixed() {
 #[test]
 fn fmt_is_idempotent() {
     // Use the most complex fixture (non-canonical order).
-    let src = fmt_corpus_path("noncanonical_order.glyph.md");
+    let src = fmt_corpus_path("noncanonical_order.glyph");
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let tmp_path = tmp.path().to_path_buf();
     std::fs::copy(&src, &tmp_path).unwrap();
@@ -271,7 +271,7 @@ fn fmt_strips_legacy_none_return_type() {
     // - private block header `-> None` stripped
     // - valid `-> Path` header preserved
     // - body `return none` (value-position keyword) untouched
-    let src = fmt_corpus_path("legacy_none_return.glyph.md");
+    let src = fmt_corpus_path("legacy_none_return.glyph");
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let tmp_path = tmp.path().to_path_buf();
     std::fs::copy(&src, &tmp_path).unwrap();
@@ -386,7 +386,7 @@ fn fmt_strips_legacy_none_return_type() {
 /// position between `description:` and `context:`.
 #[test]
 fn fmt_with_enable_effects_preserves_effects_section() {
-    let src = fmt_corpus_path("noncanonical_order.glyph.md");
+    let src = fmt_corpus_path("noncanonical_order.glyph");
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let tmp_path = tmp.path().to_path_buf();
     std::fs::copy(&src, &tmp_path).unwrap();
@@ -426,8 +426,8 @@ fn fmt_with_enable_effects_preserves_effects_section() {
 
 #[test]
 fn multi_autofix_converges() {
-    let input = include_str!("corpus/fmt/multi_autofix_input.glyph.md");
-    let expected = include_str!("corpus/fmt/multi_autofix_expected.glyph.md");
+    let input = include_str!("corpus/fmt/multi_autofix_input.glyph");
+    let expected = include_str!("corpus/fmt/multi_autofix_expected.glyph");
 
     // Step 1: fmt produces the expected canonical source.
     let result = glyph_core::fmt::fmt_source(input, true);
@@ -440,7 +440,7 @@ fn multi_autofix_converges() {
     // and would spuriously flag `send`/`subagent` as missing imports even
     // though they ARE imported on the post-fmt source.
     let dir = tempfile::tempdir().unwrap();
-    let tmp_path = dir.path().join("multi_autofix.glyph.md");
+    let tmp_path = dir.path().join("multi_autofix.glyph");
     std::fs::write(&tmp_path, expected).unwrap();
     let bag = glyph_core::check_file_with_effects(&tmp_path, true);
     let repairable: Vec<_> = bag

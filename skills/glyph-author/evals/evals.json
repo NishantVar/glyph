@@ -10,7 +10,7 @@
     {
       "id": 1,
       "name": "convert-skill-md-to-glyph",
-      "prompt": "Port this SKILL.md to Glyph (`triage_failing_test.glyph.md`):\n\n```\n---\nname: triage-failing-test\ndescription: Investigate a failing test, identify the root cause, and propose a minimal fix.\n---\n\n# Triage a failing test\n\n1. Reproduce the failure locally before investigating.\n2. Identify the root cause; do not propose fixes before the cause is known.\n3. Never skip, xfail, or delete the failing test as a 'fix'.\n4. After fixing, run the relevant suite and confirm the test passes.\n\n## Output\n\nReturn a short summary: root cause, the fix you applied, and any follow-up items.\n```",
+      "prompt": "Port this SKILL.md to Glyph (`triage_failing_test.glyph`):\n\n```\n---\nname: triage-failing-test\ndescription: Investigate a failing test, identify the root cause, and propose a minimal fix.\n---\n\n# Triage a failing test\n\n1. Reproduce the failure locally before investigating.\n2. Identify the root cause; do not propose fixes before the cause is known.\n3. Never skip, xfail, or delete the failing test as a 'fix'.\n4. After fixing, run the relevant suite and confirm the test passes.\n\n## Output\n\nReturn a short summary: root cause, the fix you applied, and any follow-up items.\n```",
       "files": []
     },
     {

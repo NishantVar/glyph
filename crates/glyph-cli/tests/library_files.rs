@@ -14,12 +14,12 @@ fn glyph_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_glyph"))
 }
 
-/// AC1: export-text-only library (prefs.glyph.md) compiles to zero .md, exit 0.
+/// AC1: export-text-only library (prefs.glyph) compiles to zero .md, exit 0.
 #[test]
 fn ac1_export_text_only_library_cli() {
     let dir = tempfile::tempdir().unwrap();
 
-    std::fs::write(dir.path().join("prefs.glyph.md"), "\
+    std::fs::write(dir.path().join("prefs.glyph"), "\
 export const terminal_mux = \"tmux\"
 export const validation_strictness = \"high\"
 ").unwrap();
@@ -48,13 +48,13 @@ export const validation_strictness = \"high\"
 fn ac4_no_exports_in_library_cli() {
     let dir = tempfile::tempdir().unwrap();
 
-    std::fs::write(dir.path().join("empty_lib.glyph.md"), "\
+    std::fs::write(dir.path().join("empty_lib.glyph"), "\
 const private_only = \"This is private.\"
 ").unwrap();
 
     let output = Command::new(glyph_bin())
         .arg("check")
-        .arg(dir.path().join("empty_lib.glyph.md"))
+        .arg(dir.path().join("empty_lib.glyph"))
         .output()
         .expect("failed to spawn glyph binary");
 
@@ -78,7 +78,7 @@ const private_only = \"This is private.\"
 fn ac3_closure_violation_cli() {
     let dir = tempfile::tempdir().unwrap();
 
-    std::fs::write(dir.path().join("lib.glyph.md"), "\
+    std::fs::write(dir.path().join("lib.glyph"), "\
 block private_helper()
     \"Do private stuff.\"
 
@@ -90,7 +90,7 @@ export block shared_util(x = \"default\")
 
     let output = Command::new(glyph_bin())
         .arg("check")
-        .arg(dir.path().join("lib.glyph.md"))
+        .arg(dir.path().join("lib.glyph"))
         .output()
         .expect("failed to spawn glyph binary");
 

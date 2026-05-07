@@ -1,4 +1,4 @@
-// glyph_authoring_passes.glyph.md
+// glyph_authoring_passes.glyph
 //
 // Shared post-write passes for any skill that authors or edits Glyph source.
 // teach_glyph and convert_md_to_glyph both import these.

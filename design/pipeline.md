@@ -9,7 +9,7 @@ This supersedes the 5-pass diagram in `README.md`, the 9-step list in `language-
 The Glyph compiler has **seven phases** in two LLM-bounded stages:
 
 ```
-Source (.glyph.md)
+Source (.glyph)
   → 1. Parse           (deterministic)
   → 2. Analyze         (deterministic)
   → 3. Repair          [LLM, bounded loop]
@@ -38,13 +38,13 @@ This is the "Safety Sandwich" pattern referenced in `foundations.md` #18: determ
 
 ## Phase 1: Parse (deterministic)
 
-**Input:** Raw `.glyph.md` source text (one or more files).
+**Input:** Raw `.glyph` source text (one or more files).
 
 **Output:** Loose source AST per file + import dependency DAG across files.
 
 Parse turns raw text into structure without understanding meaning.
 
-- Reads the `.glyph.md` file and tracks indentation levels (4-space units per `language-surface.md`).
+- Reads the `.glyph` file and tracks indentation levels (4-space units per `language-surface.md`).
 - Flags tabs and mixed indentation as repairable diagnostics (repair may auto-fix to 4-space indentation).
 - Identifies top-level declarations: `skill`, `block`, `export block`, `const`, `export const`, `import`, `generated const`, `generated block` (and their `export` variants where valid).
 - Identifies declaration headers: name, parameters, return types.
@@ -98,7 +98,7 @@ Analyze tries to understand the source as deeply as it can using deterministic r
 
 **Input:** Original source + annotated AST + structured diagnostics from Phase 2.
 
-**Output:** Repaired `.glyph.md` source written back to the file.
+**Output:** Repaired `.glyph` source written back to the file.
 
 Repair makes the source valid so it can compile. It is not just a safety net — it is the **primary content generation mechanism for novice authors** (`foundations.md` #33, `repair.md` §1). A novice using only the kernel surface writes source that contains many undefined names and calls; repair materializes definitions for them.
 
@@ -158,7 +158,7 @@ for each declaration D with len(D.constraints) >= 2:
     tension diagnostics emitted as warnings, build proceeds
 ```
 
-**Hard fail on non-convergence.** If repairable diagnostics remain after 3 iterations, the compiler does not emit a compiled `.md` file. It exits with a non-zero status and surfaces the residual diagnostics on stderr for the author to fix manually. The source file retains whatever partial repairs succeeded in earlier iterations (since Repair writes back to `.glyph.md` after each accepted iteration). The author sees the residual diagnostics, fixes them, and recompiles. The compiler never emits a compiled file from source that still has `repairable` diagnostics.
+**Hard fail on non-convergence.** If repairable diagnostics remain after 3 iterations, the compiler does not emit a compiled `.md` file. It exits with a non-zero status and surfaces the residual diagnostics on stderr for the author to fix manually. The source file retains whatever partial repairs succeeded in earlier iterations (since Repair writes back to `.glyph` after each accepted iteration). The author sees the residual diagnostics, fixes them, and recompiles. The compiler never emits a compiled file from source that still has `repairable` diagnostics.
 
 **Why max 3:** Iteration 1 handles the bulk. Iteration 2 catches cascading issues — e.g., a generated definition introduces a new name that needs role inference, or splitting a compound name at a use site reveals a new unresolved concept name. Iteration 3 is the safety margin. If 3 rounds cannot converge, the source has a deeper problem that requires human intervention. The bound is a practical limit, not a convergence guarantee — source with deeper dependency chains (e.g., a generated definition that introduces a call to another undefined name, which itself implies a role that requires a third repair) may require author intervention between compiles.
 
@@ -231,7 +231,7 @@ Validate is the final correctness gate before any LLM touches the IR.
 
 Expand is where the structured IR becomes readable agent instructions. Repair made the source *valid*. Expand makes the output *useful*.
 
-Compilation is **parameterless**: Expand does not receive concrete argument values. Parameters appear in the compiled output as named slots (e.g., `{scope}`) listed in a `## Parameters` section with descriptions and optional defaults. The consuming LLM resolves them from user context at runtime. The `.glyph.md` source is the authoring artifact; the compiled `.md` is a stable, single artifact per source file (per `compiled-output.md`).
+Compilation is **parameterless**: Expand does not receive concrete argument values. Parameters appear in the compiled output as named slots (e.g., `{scope}`) listed in a `## Parameters` section with descriptions and optional defaults. The consuming LLM resolves them from user context at runtime. The `.glyph` source is the authoring artifact; the compiled `.md` is a stable, single artifact per source file (per `compiled-output.md`).
 
 ### Two-step expansion model
 
@@ -347,14 +347,14 @@ export block review_code(files) -> ReviewResult
 Two skills that import and call `review_code` with different emphasis:
 
 ```glyph
-// In security_review.glyph.md
+// In security_review.glyph
 skill security_review(scope = ".")
     flow:
         files = gather_files(scope)
         report = review_code(files) with "prioritize security vulnerabilities and unsafe patterns"
         return report
 
-// In performance_review.glyph.md
+// In performance_review.glyph
 skill performance_review(scope = ".")
     flow:
         files = gather_files(scope)
@@ -429,19 +429,19 @@ Emit is pure formatting. The IR has all the content; Emit arranges it into the f
   4. Single blank line between sections.
   5. Standard Markdown only.
 
-- **File output.** Same-basename `.md` for skills. E.g., `fix_bug.glyph.md` → `fix_bug.md`. For external-file procedure projections, Emit also writes standalone procedure `.md` files to a subdirectory named after the source file (e.g., `review_tools.glyph.md` with `export block review_code` → `review_tools/review-code.md`). Procedure files carry `kind: procedure` in frontmatter to distinguish from top-level skills.
+- **File output.** Same-basename `.md` for skills. E.g., `fix_bug.glyph` → `fix_bug.md`. For external-file procedure projections, Emit also writes standalone procedure `.md` files to a subdirectory named after the source file (e.g., `review_tools.glyph` with `export block review_code` → `review_tools/review-code.md`). Procedure files carry `kind: procedure` in frontmatter to distinguish from top-level skills.
 
 - **Atomic rename on disk.** Both compiled artifacts are written through a temp-then-rename pattern: Phase 7 first writes to `foo.md.tmp` and (when `--emit-ir` is set) `foo.ir.json.tmp`, then renames each to its final path only after the entire pipeline succeeds for that file. On hard-fail anywhere in Phases 1–7, the `.tmp` files are deleted and any **prior** `foo.md` / `foo.ir.json` on disk is left untouched. The same rule applies uniformly to compiled Markdown and emitted IR JSON. This is the per-file half of the partial-failure policy (see §Partial Failure Policy below for the multi-file build-level rules).
 
 - **Startup cleanup of stale `.tmp` siblings.** At the very start of Phase 7, before writing any new `.tmp` file, the compiler scans the output paths it is about to write and deletes any pre-existing `.tmp` siblings (`foo.md.tmp`, `foo.ir.json.tmp`, and the `.tmp` companions of any procedure files this build will emit). This handles leftovers from a prior run that crashed, was SIGINT-killed, or was otherwise terminated between writing a `.tmp` and renaming it. There is no lockfile and no separate process supervisor — the sweep is idempotent (deleting a non-existent `.tmp` is a no-op) and self-contained per file. A `.tmp` belonging to a *different* output path (one this build is not about to produce) is left untouched.
 
-- **Library file emission.** A library file (zero `skill` declarations) runs through the same Emit phase. Since there is no skill to project, Emit produces no skill-level `.md` file. However, each `export block` in the library whose expanded prose is >= 150 words (above the Tier 1 inline threshold; see `compiled-output.md` §Three-Tier Block Projection) emits a standalone procedure `.md` file into a subdirectory named after the library source file (e.g., `repo_tools.glyph.md` with `export block inspect_repo` → `repo_tools/inspect-repo.md`). Export blocks below the threshold and all `export const` values emit nothing — they contribute to consumers only through the validated IR. A library that produces zero `.md` files compiles successfully with no output; this is normal, not an error (see `language-surface.md` §File-Level Rules). Sibling exports within a single library file are visited in **source order** (top-to-bottom as they appear in the `.glyph.md`); this fixes diagnostic ordering and on-disk write order for reproducibility. Forward references between sibling exports are legal — same-file blocks have no declaration-order requirement (`data-flow.md`).
+- **Library file emission.** A library file (zero `skill` declarations) runs through the same Emit phase. Since there is no skill to project, Emit produces no skill-level `.md` file. However, each `export block` in the library whose expanded prose is >= 150 words (above the Tier 1 inline threshold; see `compiled-output.md` §Three-Tier Block Projection) emits a standalone procedure `.md` file into a subdirectory named after the library source file (e.g., `repo_tools.glyph` with `export block inspect_repo` → `repo_tools/inspect-repo.md`). Export blocks below the threshold and all `export const` values emit nothing — they contribute to consumers only through the validated IR. A library that produces zero `.md` files compiles successfully with no output; this is normal, not an error (see `language-surface.md` §File-Level Rules). Sibling exports within a single library file are visited in **source order** (top-to-bottom as they appear in the `.glyph`); this fixes diagnostic ordering and on-disk write order for reproducibility. Forward references between sibling exports are legal — same-file blocks have no declaration-order requirement (`data-flow.md`).
 
 **What Emit does not do:** No LLM involvement. No content generation. No decisions about what to say. If Expand did its job, Emit is trivial.
 
 ## Multi-File Compilation Order
 
-When compiling multiple `.glyph.md` files that import each other:
+When compiling multiple `.glyph` files that import each other:
 
 1. **Phase 1 (Parse)** builds the import dependency DAG across all files and topological-sorts it. Cycles are rejected as hard errors.
 
@@ -459,7 +459,7 @@ When compiling multiple `.glyph.md` files that import each other:
 
 8. **Consumer-side projection-tier word counts.** During a library's Phase 6 Step 1, the resolved expanded prose for each `export block` is computed once and the word count is recorded as a derived field on the validated IR's `ExportBlock` node (in-memory only; not part of the JSON schema — see `ir-schema.md` §Top-Level Compilation Units). Consumers depend on this: when a downstream skill enters its own Phase 6 Step 1, its three-tier projection heuristic reads the imported callee's `resolved_word_count` directly from the in-memory IR. Topological order guarantees the value is computed before any consumer needs it.
 
-9. **Directory-mode scope: every file, no reachability filter.** When the user invokes `glyph compile dir/` (per `cli.md` §`glyph compile`), every `.glyph.md` file in scope compiles unconditionally, regardless of whether any in-scope skill reaches it through imports. A library file with no in-scope consumer still goes through Phases 1–7 and may produce zero emitted artifacts (which is normal — exit 0). Reachability filtering — pruning the build to only files transitively reachable from a designated root skill — is post-MVP. The DAG ordering above governs which files compile *before* which, not *whether* a file compiles.
+9. **Directory-mode scope: every file, no reachability filter.** When the user invokes `glyph compile dir/` (per `cli.md` §`glyph compile`), every `.glyph` file in scope compiles unconditionally, regardless of whether any in-scope skill reaches it through imports. A library file with no in-scope consumer still goes through Phases 1–7 and may produce zero emitted artifacts (which is normal — exit 0). Reachability filtering — pruning the build to only files transitively reachable from a designated root skill — is post-MVP. The DAG ordering above governs which files compile *before* which, not *whether* a file compiles.
 
 ### Partial Failure Policy
 
@@ -469,7 +469,7 @@ When some files in a multi-file build fail, the compiler uses a **skip-dependent
 
 2. **Atomic per-file emission.** `.md` files are written atomically per file at the end of Phase 7. A file either fully succeeds (its `.md` is written or replaced) or its `.md` is not touched. There is no half-written compiled output.
 
-3. **Stale `.md` policy.** If a previous build emitted `b.md` and the current build fails (or skips) `b.glyph.md`, the existing `b.md` on disk is **left in place** (not deleted). The compiler emits a stderr note: "`b.md` was not regenerated; the on-disk version reflects the previous successful build of `b.glyph.md` and may be out of sync." Authors who want stale outputs purged must delete them manually; the compiler never deletes a previously emitted `.md` on a failed re-build.
+3. **Stale `.md` policy.** If a previous build emitted `b.md` and the current build fails (or skips) `b.glyph`, the existing `b.md` on disk is **left in place** (not deleted). The compiler emits a stderr note: "`b.md` was not regenerated; the on-disk version reflects the previous successful build of `b.glyph` and may be out of sync." Authors who want stale outputs purged must delete them manually; the compiler never deletes a previously emitted `.md` on a failed re-build.
 
 4. **Exit code.** The build exits `0` only if every file in the build set succeeded. If any file failed or was skipped, exit `1`. A build that succeeds for some files and fails for others still produces partial output (the successful files' `.md` are written) but signals failure via the exit code.
 
@@ -511,7 +511,7 @@ Key clarifications this reconciliation makes:
 
 ## Source-To-Source vs. IR-Only Transforms
 
-| Transform | Phase | Touches `.glyph.md`? |
+| Transform | Phase | Touches `.glyph`? |
 |---|---|---|
 | Unconditional constraint → `constraints:` section (body-level + flow-top-level) | 3a | Yes |
 | Unconditional context → `context:` section (body-level + flow-top-level) | 3a | Yes |
@@ -548,7 +548,7 @@ All seven phases produce output that depends only on source content and imports 
 
 **Transitive dependency hashes.** The cache key includes the post-repair source hashes of **all transitive dependencies**, not just direct imports. If a library file changes, its procedure `.md` files may change, which means every consumer whose cache key includes that library's hash is stale and must recompile. This is conservative — a library change triggers consumer recompilation even if the change did not affect the specific export the consumer uses. Fine-grained per-export invalidation is a post-MVP optimization.
 
-**Note:** The cache key is the **post-repair** source hash, not the original author-written source. Repair (Phase 3) writes back to the `.glyph.md` file, so the source on disk after a successful compile already includes all repairs. Subsequent compilations of the same file will find no repairable diagnostics, skip repair, and produce the same validated IR — which matches the cached entry.
+**Note:** The cache key is the **post-repair** source hash, not the original author-written source. Repair (Phase 3) writes back to the `.glyph` file, so the source on disk after a successful compile already includes all repairs. Subsequent compilations of the same file will find no repairable diagnostics, skip repair, and produce the same validated IR — which matches the cached entry.
 
 **Step 2 non-determinism caveat:** Step 2 (LLM reshaping) is not idempotent across model versions or repeated runs at temperature > 0 (see `expand.md` §7). Byte-stable caching of compiled output requires including the Step 2 output in the cache entry. If the source has not changed and a cached Step 2 output exists, the pipeline may skip Step 2 entirely and reuse the cached prose.
 

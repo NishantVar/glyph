@@ -1,7 +1,7 @@
 //! glyph-core: deterministic compiler phases for the Glyph language.
 //!
 //! Walking-skeleton scope (slice 1): minimum viable Phase 1 / 2 / 4 / 5 / 6-Step1 / 7
-//! that produces a byte-identical golden snapshot for `update_docs.glyph.md` per
+//! that produces a byte-identical golden snapshot for `update_docs.glyph` per
 //! `design/mvp-acceptance.md` §1.
 
 pub mod analyze;
@@ -369,7 +369,7 @@ fn collect_cross_file_targets(
 
 /// End-to-end file-driven compile.
 ///
-/// Reads `<name>.glyph.md`, runs the pipeline, and (on the success path) writes
+/// Reads `<name>.glyph`, runs the pipeline, and (on the success path) writes
 /// `<name>.md` next to the source file. The returned `CompileOutcome` carries
 /// either the compiled output or a `DiagBag`; the CLI is responsible for
 /// rendering and exit-code mapping.
@@ -397,17 +397,17 @@ pub fn compile_file_with_effects(path: &Path, enable_effects: bool) -> Result<Co
 
 /// Resolve an import path relative to the importing file's directory.
 ///
-/// If the path doesn't end with `.glyph.md` and no file exists at the literal
-/// path, appends `.glyph.md` and retries. Returns the canonical path.
+/// If the path doesn't end with `.glyph` and no file exists at the literal
+/// path, appends `.glyph` and retries. Returns the canonical path.
 fn resolve_import_path(importer: &Path, import_path: &str) -> Option<PathBuf> {
     let base_dir = importer.parent().unwrap_or_else(|| Path::new("."));
     let candidate = base_dir.join(import_path);
     if candidate.is_file() {
         return candidate.canonicalize().ok();
     }
-    // Auto-resolution: try appending `.glyph.md`.
-    if !import_path.ends_with(".glyph.md") {
-        let with_ext = base_dir.join(format!("{}.glyph.md", import_path));
+    // Auto-resolution: try appending `.glyph`.
+    if !import_path.ends_with(".glyph") {
+        let with_ext = base_dir.join(format!("{}.glyph", import_path));
         if with_ext.is_file() {
             return with_ext.canonicalize().ok();
         }
@@ -943,7 +943,7 @@ fn check_one_file(
     Some(extract_exports(&file))
 }
 
-/// Result of compiling a directory of `.glyph.md` files.
+/// Result of compiling a directory of `.glyph` files.
 #[derive(Debug)]
 pub struct BuildResult {
     /// Per-file outcomes, keyed by the source path.
@@ -963,7 +963,7 @@ pub enum FileOutcome {
     Skipped { failed_dep: PathBuf },
 }
 
-/// Compile all `.glyph.md` files in `sources` (already collected and sorted).
+/// Compile all `.glyph` files in `sources` (already collected and sorted).
 ///
 /// Builds the import DAG, topological-sorts, compiles each file in order.
 /// Implements partial failure: skip-dependents, leave-stale-`.md`, exit 1 if
@@ -1173,21 +1173,21 @@ fn tmp_path_for(path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Map `foo.glyph.md` → `foo.ir.json` next to the source file.
+/// Map `foo.glyph` → `foo.ir.json` next to the source file.
 fn ir_json_output_path(input: &Path) -> PathBuf {
     let parent = input.parent().unwrap_or_else(|| Path::new("."));
     let file_name = input.file_name().and_then(|s| s.to_str()).unwrap_or("");
     let stem = file_name
-        .strip_suffix(".glyph.md")
+        .strip_suffix(".glyph")
         .unwrap_or_else(|| file_name.strip_suffix(".md").unwrap_or(file_name));
     parent.join(format!("{}.ir.json", stem))
 }
 
-/// Map `foo.glyph.md` → `foo.md` next to the source file.
+/// Map `foo.glyph` → `foo.md` next to the source file.
 fn compiled_output_path(input: &Path) -> std::path::PathBuf {
     let parent = input.parent().unwrap_or_else(|| Path::new("."));
     let file_name = input.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    let stem = file_name.strip_suffix(".glyph.md").unwrap_or(
+    let stem = file_name.strip_suffix(".glyph").unwrap_or(
         file_name
             .strip_suffix(".md")
             .unwrap_or(file_name),
@@ -1195,11 +1195,11 @@ fn compiled_output_path(input: &Path) -> std::path::PathBuf {
     parent.join(format!("{}.md", stem))
 }
 
-/// Extract the library stem from a source path: `repo_tools.glyph.md` → `repo_tools`.
+/// Extract the library stem from a source path: `repo_tools.glyph` → `repo_tools`.
 fn library_stem(input: &Path) -> String {
     let file_name = input.file_name().and_then(|s| s.to_str()).unwrap_or("");
     file_name
-        .strip_suffix(".glyph.md")
+        .strip_suffix(".glyph")
         .unwrap_or(file_name.strip_suffix(".md").unwrap_or(file_name))
         .to_string()
 }
@@ -1661,7 +1661,7 @@ mod tests {
 
     #[test]
     fn output_path_strips_glyph_md() {
-        let p = compiled_output_path(Path::new("tests/corpus/valid/update_docs.glyph.md"));
+        let p = compiled_output_path(Path::new("tests/corpus/valid/update_docs.glyph"));
         assert_eq!(p, Path::new("tests/corpus/valid/update_docs.md"));
     }
 
@@ -1669,7 +1669,7 @@ mod tests {
     fn check_source_returns_empty_bag_on_empty_file_repairs_skipped() {
         // An empty file produces `G::parse::empty-file` (error). check_source
         // surfaces it and exits without running later phases.
-        let bag = check_source("", 0, "empty.glyph.md");
+        let bag = check_source("", 0, "empty.glyph");
         assert!(!bag.is_empty());
         assert_eq!(bag.exit_code(), 1);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
@@ -1763,7 +1763,7 @@ skill main()
     flow:
         greet()
 ";
-        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 assert!(
@@ -1791,7 +1791,7 @@ skill main()
         greet()
 ";
         // Compile and check that expansion happened (word count < 150 = Tier 1 inline).
-        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 // The block body has 5 words, well under 150, so it should inline.
@@ -1850,7 +1850,7 @@ skill main()
     flow:
         setup()
 ";
-        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 // Multi-step block body should be concatenated with spaces for Tier 1.
@@ -1875,7 +1875,7 @@ skill main()
     flow:
         unknown_block()
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::undefined-call"),
@@ -1901,7 +1901,7 @@ skill main()
     flow:
         \"Do something.\"
 ";
-        let bag = check_source_with_effects(src, 0, "test.glyph.md", true);
+        let bag = check_source_with_effects(src, 0, "test.glyph", true);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::parse::none-with-effects"),
@@ -1927,7 +1927,7 @@ skill main()
     flow:
         writer()
 ";
-        let bag = check_source_with_effects(src, 0, "test.glyph.md", true);
+        let bag = check_source_with_effects(src, 0, "test.glyph", true);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::effects-under-declared"),
@@ -1952,7 +1952,7 @@ skill main()
     flow:
         reader()
 ";
-        let bag = check_source_with_effects(src, 0, "test.glyph.md", true);
+        let bag = check_source_with_effects(src, 0, "test.glyph", true);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::effects-over-declared"),
@@ -1980,7 +1980,7 @@ skill main()
     flow:
         writer()
 ";
-        let bag = check_source_with_effects(src, 0, "test.glyph.md", true);
+        let bag = check_source_with_effects(src, 0, "test.glyph", true);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::missing-effects"),
@@ -2003,7 +2003,7 @@ skill main()
     flow:
         \"Do something.\"
 ";
-        let outcome = compile_source_with_effects(src, 0, "test.glyph.md", true).expect("should compile");
+        let outcome = compile_source_with_effects(src, 0, "test.glyph", true).expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 assert!(
@@ -2029,7 +2029,7 @@ skill main()
     flow:
         \"Do something.\"
 ";
-        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 assert!(
@@ -2065,7 +2065,7 @@ skill main()
         reader()
         writer()
 ";
-        let outcome = compile_source_with_effects(src, 0, "test.glyph.md", true).expect("should compile");
+        let outcome = compile_source_with_effects(src, 0, "test.glyph", true).expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 assert!(
@@ -2102,7 +2102,7 @@ skill main()
     flow:
         outer()
 ";
-        let bag = check_source_with_effects(src, 0, "test.glyph.md", true);
+        let bag = check_source_with_effects(src, 0, "test.glyph", true);
         // No errors or repairables — declared matches inferred exactly.
         assert!(
             !bag.has_error(),
@@ -2131,7 +2131,7 @@ skill main()
     flow:
         writer()
 ";
-        let bag = check_source_with_effects(src, 0, "test.glyph.md", true);
+        let bag = check_source_with_effects(src, 0, "test.glyph", true);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::effects-under-declared"),
@@ -2152,7 +2152,7 @@ skill main()
     flow:
         \"Do something.\"
 ";
-        let bag = check_source_with_effects(src, 0, "test.glyph.md", true);
+        let bag = check_source_with_effects(src, 0, "test.glyph", true);
         assert!(
             !bag.has_error(),
             "effects: none with empty inferred set should be valid, got: {:?}",
@@ -2171,7 +2171,7 @@ skill main()
     flow:
         \"Do something.\"
 ";
-        let outcome = compile_source_with_effects(src, 0, "test.glyph.md", true).expect("should compile");
+        let outcome = compile_source_with_effects(src, 0, "test.glyph", true).expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 assert!(
@@ -2198,7 +2198,7 @@ skill main()
     flow:
         \"Do something.\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::parse::effects-disabled"),
@@ -2216,7 +2216,7 @@ block helper()
     effects: writes_files
     \"Do something.\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::parse::effects-disabled"),
@@ -2239,7 +2239,7 @@ skill update_docs()
         \"Read the repository changes.\"
         return summarize_changes()
 ";
-        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 // The final step should contain the return folding text.
@@ -2268,7 +2268,7 @@ skill main()
     flow:
         helper()
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             !ids.contains(&"G::analyze::missing-return"),
@@ -2291,7 +2291,7 @@ skill main()
     flow:
         \"Do something.\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::missing-return"),
@@ -2317,7 +2317,7 @@ skill main()
     flow:
         \"Do something.\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             !ids.contains(&"G::analyze::missing-return"),
@@ -2340,7 +2340,7 @@ export block compute(x = \"default\")
         \"Compute something.\"
         return x
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::export-missing-return-type"),
@@ -2371,7 +2371,7 @@ export block notify(msg = \"hello\")
         \"Send a notification.\"
         return none
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             !ids.contains(&"G::analyze::export-missing-return-type"),
@@ -2395,7 +2395,7 @@ export block compute(x = \"default\") -> Path
         \"Compute something.\"
         return x
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             !ids.contains(&"G::analyze::export-missing-return-type"),
@@ -2427,7 +2427,7 @@ export block compute(x = \"default\")
     flow:
         \"Compute something.\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::missing-return"),
@@ -2454,7 +2454,7 @@ skill foo() -> String
     flow:
         \"do something\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::generic-type-name"),
@@ -2490,7 +2490,7 @@ export block compute(x = \"d\") -> String
         \"x\"
         return x
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::generic-type-name"),
@@ -2519,7 +2519,7 @@ block helper() -> String
     flow:
         \"work\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::generic-type-name"),
@@ -2543,7 +2543,7 @@ skill foo() -> BranchName
     flow:
         \"do something\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             !ids.contains(&"G::analyze::generic-type-name"),
@@ -2563,7 +2563,7 @@ skill foo() -> String
     flow:
         \"do something\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::generic-type-name"),
@@ -2608,7 +2608,7 @@ export block compute(x = \"d\") -> Bool
         \"x\"
         return x
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let warnings: Vec<&Diagnostic> = bag
             .iter()
             .filter(|d| d.id == "G::analyze::generic-type-name")
@@ -2643,7 +2643,7 @@ skill foo() -> string
     flow:
         \"do something\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let diag = bag
             .iter()
             .find(|d| d.id == "G::analyze::generic-type-name")
@@ -2666,7 +2666,7 @@ skill foo() -> String
     flow:
         \"do something\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let diag = bag
             .iter()
             .find(|d| d.id == "G::analyze::generic-type-name")
@@ -2696,7 +2696,7 @@ skill foo() -> Agent
     flow:
         \"do something\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             !ids.contains(&"G::analyze::generic-type-name"),
@@ -2720,7 +2720,7 @@ skill foo() -> None
     flow:
         \"do something\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::parse::none-as-return-type"),
@@ -2745,8 +2745,8 @@ skill foo() -> None
         // through the imports path.
         let dir = tempfile::tempdir().unwrap();
 
-        // lib.glyph.md — exports a const so the importer has something to import.
-        let lib_path = dir.path().join("lib.glyph.md");
+        // lib.glyph — exports a const so the importer has something to import.
+        let lib_path = dir.path().join("lib.glyph");
         std::fs::write(
             &lib_path,
             r#"export const greeting = "hello"
@@ -2754,12 +2754,12 @@ skill foo() -> None
         )
         .unwrap();
 
-        // main.glyph.md — has an `import` (forces the imports path) and one
+        // main.glyph — has an `import` (forces the imports path) and one
         // banned return type per header-bearing decl kind.
-        let main_path = dir.path().join("main.glyph.md");
+        let main_path = dir.path().join("main.glyph");
         std::fs::write(
             &main_path,
-            r#"import "./lib.glyph.md" { greeting }
+            r#"import "./lib.glyph" { greeting }
 
 skill main() -> String
     description: "Main."
@@ -2804,7 +2804,7 @@ skill main()
         return none
         \"Do something after return.\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::parse::return-not-terminal"),
@@ -2824,7 +2824,7 @@ skill main()
         return none
         return none
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::parse::multiple-returns"),
@@ -2849,7 +2849,7 @@ skill main()
         let flow = vec![FlowStmt::Return(ReturnExpr::None)];
         let mut bag = DiagBag::new();
 
-        check_return_rules(&flow, sp, "test.glyph.md", &line_index, &mut bag, true);
+        check_return_rules(&flow, sp, "test.glyph", &line_index, &mut bag, true);
 
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
@@ -2870,7 +2870,7 @@ skill main()
         \"Do something.\"
         return none
 ";
-        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 assert!(
@@ -2901,7 +2901,7 @@ skill main()
         \"Compute the result.\"
         return result
 ";
-        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 assert!(
@@ -2926,7 +2926,7 @@ skill main()
     flow:
         \"Do something.\"
 ";
-        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 assert!(
@@ -2996,7 +2996,7 @@ skill main()
         else
             \"Do the default thing.\"
 ";
-        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 // Step 1 should be the prepare step.
@@ -3030,7 +3030,7 @@ skill main()
             if level == \"high\"
                 \"Do the high-fast thing.\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::nested-branch"),
@@ -3054,7 +3054,7 @@ skill main()
         if fast_mode.applies()
             fast_mode()
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         // Should NOT have errors — applies() is valid in branch condition.
         assert!(
@@ -3076,7 +3076,7 @@ skill main()
         if my_text.applies()
             \"Do something.\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::applies-on-non-block"),
@@ -3099,7 +3099,7 @@ skill main()
         if my_block.applies()
             my_block()
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::applies-on-undescribed-block"),
@@ -3121,7 +3121,7 @@ skill main()
         if unknown_thing.applies()
             \"Do something.\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::applies-on-non-block"),
@@ -3145,7 +3145,7 @@ skill main()
         else
             \"Run normal checks.\"
 ";
-        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 // context should NOT appear as a top-level ### Context section.
@@ -3184,7 +3184,7 @@ skill main()
         else
             \"Update internal docs.\"
 ";
-        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 // Constraint should NOT appear in ### Constraints.
@@ -3270,7 +3270,7 @@ skill main()
         else
             \"Do default processing.\"
 ";
-        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 assert!(
@@ -3311,7 +3311,7 @@ skill main()
         if my_block.applies
             \"Do something.\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::parse::applies-no-parens"),
@@ -3335,7 +3335,7 @@ skill main()
         if my_block.applies(x)
             \"Do something.\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::parse::applies-with-args"),
@@ -3354,7 +3354,7 @@ skill main()
         if mode == \"fast\"
             \"Do the fast thing.\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             !ids.contains(&"G::parse::operator-in-expression"),
@@ -3379,7 +3379,7 @@ skill main()
     flow:
         my_block.applies()
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::parse::applies-outside-condition"),
@@ -3387,7 +3387,7 @@ skill main()
             ids
         );
         // It should NOT compile successfully.
-        let outcome = compile_source(src, 0, "test.glyph.md");
+        let outcome = compile_source(src, 0, "test.glyph");
         match outcome {
             Ok(CompileOutcome::Compiled { .. }) => {
                 panic!("applies() outside branch condition should not compile successfully");
@@ -3408,7 +3408,7 @@ skill main()
     flow:
         some_name with \"focus\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::parse::with-on-bare-name"),
@@ -3430,7 +3430,7 @@ skill main()
     flow:
         foo() with \"a\" with \"b\"
 ";
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::parse::multiple-with"),
@@ -3453,7 +3453,7 @@ skill main()
     flow:
         inspect_repo(scope) with \"focus on auth\"
 ";
-        let outcome = compile_source(src, 0, "test.glyph.md").expect("should compile");
+        let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 // The modifier text should NOT appear in the compiled output.
@@ -3532,7 +3532,7 @@ skill main()
 
     #[test]
     fn import_selective_parses() {
-        let src = r#"import "./prefs.glyph.md" { preserve_existing_patterns }
+        let src = r#"import "./prefs.glyph" { preserve_existing_patterns }
 
 skill fix_bug()
     description: "Fix a bug."
@@ -3545,7 +3545,7 @@ skill fix_bug()
             _ => None,
         });
         let import = import.expect("import should be present");
-        assert_eq!(import.path, "./prefs.glyph.md");
+        assert_eq!(import.path, "./prefs.glyph");
         match &import.kind {
             ast::ImportKind::Selective(names) => {
                 assert_eq!(names.len(), 1);
@@ -3558,7 +3558,7 @@ skill fix_bug()
 
     #[test]
     fn import_whole_module_parses() {
-        let src = r#"import "./prefs.glyph.md" as prefs
+        let src = r#"import "./prefs.glyph" as prefs
 
 skill fix_bug()
     description: "Fix a bug."
@@ -3571,7 +3571,7 @@ skill fix_bug()
             _ => None,
         });
         let import = import.expect("import should be present");
-        assert_eq!(import.path, "./prefs.glyph.md");
+        assert_eq!(import.path, "./prefs.glyph");
         match &import.kind {
             ast::ImportKind::WholeModule { alias } => {
                 assert_eq!(alias, "prefs");
@@ -3582,17 +3582,17 @@ skill fix_bug()
 
     #[test]
     fn import_cross_file_name_resolution() {
-        // AC1: fix_bug.glyph.md resolves names imported from prefs.glyph.md
-        // and repo_tools.glyph.md.
+        // AC1: fix_bug.glyph resolves names imported from prefs.glyph
+        // and repo_tools.glyph.
         let dir = tempfile::tempdir().unwrap();
 
-        // prefs.glyph.md — export const
-        let prefs_path = dir.path().join("prefs.glyph.md");
+        // prefs.glyph — export const
+        let prefs_path = dir.path().join("prefs.glyph");
         std::fs::write(&prefs_path, r#"export const preserve_existing_patterns = "Prefer existing patterns."
 "#).unwrap();
 
-        // repo_tools.glyph.md — export block
-        let tools_path = dir.path().join("repo_tools.glyph.md");
+        // repo_tools.glyph — export block
+        let tools_path = dir.path().join("repo_tools.glyph");
         std::fs::write(&tools_path, r#"export block inspect_repo(scope = ".")
     description: "Inspect the repo."
     flow:
@@ -3600,10 +3600,10 @@ skill fix_bug()
         return context
 "#).unwrap();
 
-        // fix_bug.glyph.md — imports from both
-        let fix_path = dir.path().join("fix_bug.glyph.md");
-        std::fs::write(&fix_path, r#"import "./prefs.glyph.md" { preserve_existing_patterns }
-import "./repo_tools.glyph.md" { inspect_repo }
+        // fix_bug.glyph — imports from both
+        let fix_path = dir.path().join("fix_bug.glyph");
+        std::fs::write(&fix_path, r#"import "./prefs.glyph" { preserve_existing_patterns }
+import "./repo_tools.glyph" { inspect_repo }
 
 skill fix_bug(scope = ".")
     description: "Fix a bug."
@@ -3631,10 +3631,10 @@ skill fix_bug(scope = ".")
         // AC2: Circular-import path is included in the diagnostic message.
         let dir = tempfile::tempdir().unwrap();
 
-        let a_path = dir.path().join("a.glyph.md");
-        let b_path = dir.path().join("b.glyph.md");
+        let a_path = dir.path().join("a.glyph");
+        let b_path = dir.path().join("b.glyph");
 
-        std::fs::write(&a_path, r#"import "./b.glyph.md" { something }
+        std::fs::write(&a_path, r#"import "./b.glyph" { something }
 
 skill main()
     description: "A."
@@ -3642,7 +3642,7 @@ skill main()
         "Do something."
 "#).unwrap();
 
-        std::fs::write(&b_path, r#"import "./a.glyph.md" { something }
+        std::fs::write(&b_path, r#"import "./a.glyph" { something }
 
 export const something = "Hello."
 "#).unwrap();
@@ -3656,7 +3656,7 @@ export const something = "Hello."
         // Check that the cycle path is in the message.
         let diag = bag.iter().find(|d| d.id == "G::analyze::circular-import").unwrap();
         assert!(
-            diag.message.contains("a.glyph.md") && diag.message.contains("b.glyph.md"),
+            diag.message.contains("a.glyph") && diag.message.contains("b.glyph"),
             "cycle path should include both files, got: {}", diag.message
         );
         assert!(
@@ -3670,13 +3670,13 @@ export const something = "Hello."
         // AC3: Importing a private (non-exported) name fails with import-private.
         let dir = tempfile::tempdir().unwrap();
 
-        let lib_path = dir.path().join("lib.glyph.md");
+        let lib_path = dir.path().join("lib.glyph");
         std::fs::write(&lib_path, r#"const private_text = "This is private."
 export const public_text = "This is public."
 "#).unwrap();
 
-        let main_path = dir.path().join("main.glyph.md");
-        std::fs::write(&main_path, r#"import "./lib.glyph.md" { private_text }
+        let main_path = dir.path().join("main.glyph");
+        std::fs::write(&main_path, r#"import "./lib.glyph" { private_text }
 
 skill main()
     description: "Main."
@@ -3698,15 +3698,15 @@ skill main()
         // AC4: Importing a skill (not a block/text) fails with import-skill.
         let dir = tempfile::tempdir().unwrap();
 
-        let lib_path = dir.path().join("lib.glyph.md");
+        let lib_path = dir.path().join("lib.glyph");
         std::fs::write(&lib_path, r#"skill some_skill()
     description: "A skill."
     flow:
         "Do something."
 "#).unwrap();
 
-        let main_path = dir.path().join("main.glyph.md");
-        std::fs::write(&main_path, r#"import "./lib.glyph.md" { some_skill }
+        let main_path = dir.path().join("main.glyph");
+        std::fs::write(&main_path, r#"import "./lib.glyph" { some_skill }
 
 skill main()
     description: "Main."
@@ -3727,13 +3727,13 @@ skill main()
         // AC5: Duplicate imports are repairable diagnostics (exit 2).
         let dir = tempfile::tempdir().unwrap();
 
-        let lib_path = dir.path().join("lib.glyph.md");
+        let lib_path = dir.path().join("lib.glyph");
         std::fs::write(&lib_path, r#"export const greeting = "Hello."
 "#).unwrap();
 
-        let main_path = dir.path().join("main.glyph.md");
-        std::fs::write(&main_path, r#"import "./lib.glyph.md" { greeting }
-import "./lib.glyph.md" { greeting }
+        let main_path = dir.path().join("main.glyph");
+        std::fs::write(&main_path, r#"import "./lib.glyph" { greeting }
+import "./lib.glyph" { greeting }
 
 skill main()
     description: "Main."
@@ -3757,13 +3757,13 @@ skill main()
         // AC5: Unused imports are repairable diagnostics (exit 2).
         let dir = tempfile::tempdir().unwrap();
 
-        let lib_path = dir.path().join("lib.glyph.md");
+        let lib_path = dir.path().join("lib.glyph");
         std::fs::write(&lib_path, r#"export const greeting = "Hello."
 export const farewell = "Goodbye."
 "#).unwrap();
 
-        let main_path = dir.path().join("main.glyph.md");
-        std::fs::write(&main_path, r#"import "./lib.glyph.md" { greeting, farewell }
+        let main_path = dir.path().join("main.glyph");
+        std::fs::write(&main_path, r#"import "./lib.glyph" { greeting, farewell }
 
 skill main()
     description: "Main."
@@ -3798,15 +3798,15 @@ skill main()
     fn imported_block_used_in_return_call_position_does_not_fire_unused_import() {
         let dir = tempfile::tempdir().unwrap();
 
-        let lib_path = dir.path().join("lib.glyph.md");
+        let lib_path = dir.path().join("lib.glyph");
         std::fs::write(&lib_path, r#"export block do_thing()
     description: "Do a thing."
     flow:
         "Do it."
 "#).unwrap();
 
-        let main_path = dir.path().join("main.glyph.md");
-        std::fs::write(&main_path, r#"import "./lib.glyph.md" { do_thing }
+        let main_path = dir.path().join("main.glyph");
+        std::fs::write(&main_path, r#"import "./lib.glyph" { do_thing }
 
 skill main()
     description: "Main."
@@ -3835,12 +3835,12 @@ skill main()
     fn imported_name_used_in_return_name_position_does_not_fire_unused_import() {
         let dir = tempfile::tempdir().unwrap();
 
-        let lib_path = dir.path().join("lib.glyph.md");
+        let lib_path = dir.path().join("lib.glyph");
         std::fs::write(&lib_path, r#"export const greeting = "Hello."
 "#).unwrap();
 
-        let main_path = dir.path().join("main.glyph.md");
-        std::fs::write(&main_path, r#"import "./lib.glyph.md" { greeting }
+        let main_path = dir.path().join("main.glyph");
+        std::fs::write(&main_path, r#"import "./lib.glyph" { greeting }
 
 skill main()
     description: "Main."
@@ -3864,8 +3864,8 @@ skill main()
         // Missing file produces G::analyze::missing-file.
         let dir = tempfile::tempdir().unwrap();
 
-        let main_path = dir.path().join("main.glyph.md");
-        std::fs::write(&main_path, r#"import "./nonexistent.glyph.md" { something }
+        let main_path = dir.path().join("main.glyph");
+        std::fs::write(&main_path, r#"import "./nonexistent.glyph" { something }
 
 skill main()
     description: "Main."
@@ -3885,7 +3885,7 @@ skill main()
     fn check_source_flags_tab_indent_as_repairable() {
         // Tab-indented source surfaces a `repairable` diagnostic, not an error.
         let src = "skill foo()\n\tflow:\n\t\t\"bar\"\n";
-        let bag = check_source(src, 0, "tab.glyph.md");
+        let bag = check_source(src, 0, "tab.glyph");
         assert_eq!(bag.exit_code(), 2, "expected exit 2 for tab indent");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(ids.contains(&"G::parse::tab-indent"), "ids: {:?}", ids);
@@ -3895,26 +3895,26 @@ skill main()
 
     #[test]
     fn ac1_directory_compile_processes_every_file() {
-        // AC1: `glyph compile dir/` processes every `.glyph.md` even if not
+        // AC1: `glyph compile dir/` processes every `.glyph` even if not
         // transitively reached by imports.
         let dir = tempfile::tempdir().unwrap();
 
         // Three independent files — none imports the others.
-        std::fs::write(dir.path().join("a.glyph.md"), "\
+        std::fs::write(dir.path().join("a.glyph"), "\
 skill alpha()
     description: \"Alpha skill.\"
     flow:
         \"Do alpha.\"
 ").unwrap();
 
-        std::fs::write(dir.path().join("b.glyph.md"), "\
+        std::fs::write(dir.path().join("b.glyph"), "\
 skill beta()
     description: \"Beta skill.\"
     flow:
         \"Do beta.\"
 ").unwrap();
 
-        std::fs::write(dir.path().join("c.glyph.md"), "\
+        std::fs::write(dir.path().join("c.glyph"), "\
 skill gamma()
     description: \"Gamma skill.\"
     flow:
@@ -3922,9 +3922,9 @@ skill gamma()
 ").unwrap();
 
         let sources: Vec<PathBuf> = vec![
-            dir.path().join("a.glyph.md"),
-            dir.path().join("b.glyph.md"),
-            dir.path().join("c.glyph.md"),
+            dir.path().join("a.glyph"),
+            dir.path().join("b.glyph"),
+            dir.path().join("c.glyph"),
         ];
         let result = compile_directory(&sources);
 
@@ -3946,14 +3946,14 @@ skill gamma()
         // list is reversed.
         let dir = tempfile::tempdir().unwrap();
 
-        // lib.glyph.md — standalone (no skill, just an export const — library)
-        std::fs::write(dir.path().join("lib.glyph.md"), "\
+        // lib.glyph — standalone (no skill, just an export const — library)
+        std::fs::write(dir.path().join("lib.glyph"), "\
 export const greeting = \"Hello from lib.\"
 ").unwrap();
 
-        // consumer.glyph.md — imports from lib but is self-contained for compile
-        std::fs::write(dir.path().join("consumer.glyph.md"), "\
-import \"./lib.glyph.md\" { greeting }
+        // consumer.glyph — imports from lib but is self-contained for compile
+        std::fs::write(dir.path().join("consumer.glyph"), "\
+import \"./lib.glyph\" { greeting }
 
 skill main()
     description: \"Main skill.\"
@@ -3963,8 +3963,8 @@ skill main()
 
         // Pass files in reverse alphabetical order to prove topo sort reorders.
         let sources: Vec<PathBuf> = vec![
-            dir.path().join("consumer.glyph.md"),
-            dir.path().join("lib.glyph.md"),
+            dir.path().join("consumer.glyph"),
+            dir.path().join("lib.glyph"),
         ];
         let result = compile_directory(&sources);
 
@@ -3973,7 +3973,7 @@ skill main()
         // lib should come before consumer in the outcomes (topological order).
         let first_file = &result.outcomes[0].0;
         assert!(
-            first_file.to_string_lossy().contains("lib.glyph.md"),
+            first_file.to_string_lossy().contains("lib.glyph"),
             "lib should compile before consumer, got: {}",
             first_file.display()
         );
@@ -3981,26 +3981,26 @@ skill main()
 
     #[test]
     fn ac3_failure_skips_dependent_with_warning() {
-        // AC3: Failure in b.glyph.md skips c.glyph.md (which imports it) with
+        // AC3: Failure in b.glyph skips c.glyph (which imports it) with
         // the G::build::skipped-due-to-failed-import warning.
         let dir = tempfile::tempdir().unwrap();
 
-        // a.glyph.md — valid, standalone
-        std::fs::write(dir.path().join("a.glyph.md"), "\
+        // a.glyph — valid, standalone
+        std::fs::write(dir.path().join("a.glyph"), "\
 skill alpha()
     description: \"Alpha skill.\"
     flow:
         \"Do alpha.\"
 ").unwrap();
 
-        // b.glyph.md — intentionally broken (will fail Phase 1)
-        std::fs::write(dir.path().join("b.glyph.md"), "\
+        // b.glyph — intentionally broken (will fail Phase 1)
+        std::fs::write(dir.path().join("b.glyph"), "\
 this is not valid glyph syntax at all!!!
 ").unwrap();
 
-        // c.glyph.md — imports b, should be skipped
-        std::fs::write(dir.path().join("c.glyph.md"), "\
-import \"./b.glyph.md\" { something }
+        // c.glyph — imports b, should be skipped
+        std::fs::write(dir.path().join("c.glyph"), "\
+import \"./b.glyph\" { something }
 
 skill gamma()
     description: \"Gamma skill.\"
@@ -4009,9 +4009,9 @@ skill gamma()
 ").unwrap();
 
         let sources: Vec<PathBuf> = vec![
-            dir.path().join("a.glyph.md"),
-            dir.path().join("b.glyph.md"),
-            dir.path().join("c.glyph.md"),
+            dir.path().join("a.glyph"),
+            dir.path().join("b.glyph"),
+            dir.path().join("c.glyph"),
         ];
         let result = compile_directory(&sources);
 
@@ -4022,38 +4022,38 @@ skill gamma()
 
         // c should be skipped.
         let c_outcome = result.outcomes.iter().find(|(p, _)| {
-            p.to_string_lossy().contains("c.glyph.md")
+            p.to_string_lossy().contains("c.glyph")
         });
-        assert!(c_outcome.is_some(), "c.glyph.md should be in outcomes");
+        assert!(c_outcome.is_some(), "c.glyph should be in outcomes");
         match &c_outcome.unwrap().1 {
             FileOutcome::Skipped { failed_dep } => {
                 assert!(
-                    failed_dep.to_string_lossy().contains("b.glyph.md"),
-                    "failed_dep should reference b.glyph.md, got: {}",
+                    failed_dep.to_string_lossy().contains("b.glyph"),
+                    "failed_dep should reference b.glyph, got: {}",
                     failed_dep.display()
                 );
             }
-            other => panic!("expected Skipped for c.glyph.md, got: {:?}", other),
+            other => panic!("expected Skipped for c.glyph, got: {:?}", other),
         }
     }
 
     #[test]
     fn ac4_stale_md_left_untouched_on_skip() {
-        // AC4: Stale c.md left untouched on disk after c.glyph.md skip.
+        // AC4: Stale c.md left untouched on disk after c.glyph skip.
         let dir = tempfile::tempdir().unwrap();
 
         // Pre-existing stale c.md from a previous build.
         let stale_content = "# Previous build output\nThis is stale.";
         std::fs::write(dir.path().join("c.md"), stale_content).unwrap();
 
-        // b.glyph.md — broken
-        std::fs::write(dir.path().join("b.glyph.md"), "\
+        // b.glyph — broken
+        std::fs::write(dir.path().join("b.glyph"), "\
 this is broken!!!
 ").unwrap();
 
-        // c.glyph.md — imports b, will be skipped
-        std::fs::write(dir.path().join("c.glyph.md"), "\
-import \"./b.glyph.md\" { something }
+        // c.glyph — imports b, will be skipped
+        std::fs::write(dir.path().join("c.glyph"), "\
+import \"./b.glyph\" { something }
 
 skill gamma()
     description: \"Gamma skill.\"
@@ -4062,8 +4062,8 @@ skill gamma()
 ").unwrap();
 
         let sources: Vec<PathBuf> = vec![
-            dir.path().join("b.glyph.md"),
-            dir.path().join("c.glyph.md"),
+            dir.path().join("b.glyph"),
+            dir.path().join("c.glyph"),
         ];
         let result = compile_directory(&sources);
 
@@ -4083,26 +4083,26 @@ skill gamma()
         // successful files.
         let dir = tempfile::tempdir().unwrap();
 
-        // good.glyph.md — valid
-        std::fs::write(dir.path().join("good.glyph.md"), "\
+        // good.glyph — valid
+        std::fs::write(dir.path().join("good.glyph"), "\
 skill good()
     description: \"Good skill.\"
     flow:
         \"Do good.\"
 ").unwrap();
 
-        // bad.glyph.md — broken
-        std::fs::write(dir.path().join("bad.glyph.md"), "\
+        // bad.glyph — broken
+        std::fs::write(dir.path().join("bad.glyph"), "\
 this is broken!!!
 ").unwrap();
 
         let sources: Vec<PathBuf> = vec![
-            dir.path().join("good.glyph.md"),
-            dir.path().join("bad.glyph.md"),
+            dir.path().join("good.glyph"),
+            dir.path().join("bad.glyph"),
         ];
         let result = compile_directory(&sources);
 
-        // Exit 1 because bad.glyph.md failed.
+        // Exit 1 because bad.glyph failed.
         assert_eq!(result.exit_code, 1, "should exit 1 when any file fails");
 
         // good.md should exist (partial output).
@@ -4122,7 +4122,7 @@ const private_text = \"This is private.\"
 block helper()
     \"Do something.\"
 ";
-        let bag = check_source(src, 0, "empty_lib.glyph.md");
+        let bag = check_source(src, 0, "empty_lib.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::no-exports-in-library"),
@@ -4138,7 +4138,7 @@ block helper()
         // successfully (exit 0) and produce zero .md output.
         let dir = tempfile::tempdir().unwrap();
 
-        let prefs_path = dir.path().join("prefs.glyph.md");
+        let prefs_path = dir.path().join("prefs.glyph");
         std::fs::write(&prefs_path, "\
 export const terminal_mux = \"tmux\"
 export const validation_strictness = \"high\"
@@ -4163,7 +4163,7 @@ export const validation_strictness = \"high\"
 export const terminal_mux = \"tmux\"
 export const validation_strictness = \"high\"
 ";
-        let bag = check_source(src, 0, "prefs.glyph.md");
+        let bag = check_source(src, 0, "prefs.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             !ids.contains(&"G::analyze::no-exports-in-library"),
@@ -4186,7 +4186,7 @@ export block shared_util(x = \"default\")
         private_helper()
         return x
 ";
-        let bag = check_source(src, 0, "lib.glyph.md");
+        let bag = check_source(src, 0, "lib.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::closure-violation"),
@@ -4208,7 +4208,7 @@ export block shared_util(x = \"default\")
         \"Use {x}.\"
         return x
 ";
-        let bag = check_source(src, 0, "lib.glyph.md");
+        let bag = check_source(src, 0, "lib.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             !ids.contains(&"G::analyze::closure-violation"),
@@ -4224,7 +4224,7 @@ export block shared_util(x = \"default\")
 export const greeting = \"Hello.\"
 export const greeting = \"Hi.\"
 ";
-        let bag = check_source(src, 0, "lib.glyph.md");
+        let bag = check_source(src, 0, "lib.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::name-collision"),
@@ -4282,7 +4282,7 @@ export block inspect_repo(scope = \".\") -> Path
 {}        return scope
 ", long_body);
 
-        let tools_path = dir.path().join("repo_tools.glyph.md");
+        let tools_path = dir.path().join("repo_tools.glyph");
         std::fs::write(&tools_path, &repo_tools_src).unwrap();
 
         let sources: Vec<PathBuf> = vec![tools_path.clone()];
@@ -4311,7 +4311,7 @@ export block inspect_repo(scope = \".\") -> Path
 
     #[test]
     fn tier3_library_emits_procedure_files() {
-        // AC1: repo_tools.glyph.md with two large export blocks should emit
+        // AC1: repo_tools.glyph with two large export blocks should emit
         //      repo_tools/inspect-repo.md and repo_tools/run-tests.md
         // AC2: Procedure files carry `kind: procedure` in frontmatter
         let dir = tempfile::tempdir().unwrap();
@@ -4344,7 +4344,7 @@ export block run_tests(target = \"all\") -> TestResult
 {}        return target
 ", long_body_1, long_body_2);
 
-        let tools_path = dir.path().join("repo_tools.glyph.md");
+        let tools_path = dir.path().join("repo_tools.glyph");
         std::fs::write(&tools_path, &repo_tools_src).unwrap();
 
         let sources: Vec<PathBuf> = vec![tools_path.clone()];
@@ -4388,7 +4388,7 @@ export block inspect_repo(scope = \".\") -> Path
 {}        return scope
 ", long_body);
 
-        let lib_path = dir.path().join("repo_tools.glyph.md");
+        let lib_path = dir.path().join("repo_tools.glyph");
         std::fs::write(&lib_path, &lib_src).unwrap();
 
         // Consumer skill that imports and calls inspect_repo
@@ -4401,7 +4401,7 @@ skill audit_code()
     flow:
         inspect_repo()
 ";
-        let consumer_path = dir.path().join("audit_code.glyph.md");
+        let consumer_path = dir.path().join("audit_code.glyph");
         std::fs::write(&consumer_path, consumer_src).unwrap();
 
         let sources: Vec<PathBuf> = vec![lib_path.clone(), consumer_path.clone()];
@@ -4439,7 +4439,7 @@ export block inspect_repo(scope = \".\") -> Path
 {}        return scope
 ", long_body);
 
-        let tools_path = dir.path().join("repo_tools.glyph.md");
+        let tools_path = dir.path().join("repo_tools.glyph");
         std::fs::write(&tools_path, &repo_tools_src).unwrap();
 
         let sources: Vec<PathBuf> = vec![tools_path.clone()];
@@ -4462,7 +4462,7 @@ export block inspect_repo(scope = \".\") -> Path
     fn stdlib_subagent_resolvable_via_import() {
         // AC1: `subagent` is resolvable when imported from `@glyph/std`.
         let dir = tempfile::tempdir().unwrap();
-        let main_path = dir.path().join("main.glyph.md");
+        let main_path = dir.path().join("main.glyph");
         std::fs::write(&main_path, r#"import "@glyph/std" { subagent }
 
 skill delegate(task = "do something")
@@ -4487,7 +4487,7 @@ skill delegate(task = "do something")
     fn stdlib_load_not_importable() {
         // AC2: `load` is compiler-internal and NOT resolvable from author source.
         let dir = tempfile::tempdir().unwrap();
-        let main_path = dir.path().join("main.glyph.md");
+        let main_path = dir.path().join("main.glyph");
         std::fs::write(&main_path, r#"import "@glyph/std" { load }
 
 skill runner()
@@ -4508,7 +4508,7 @@ skill runner()
     fn stdlib_send_resolvable_via_import() {
         // AC1: `send` is resolvable when imported from `@glyph/std`.
         let dir = tempfile::tempdir().unwrap();
-        let main_path = dir.path().join("main.glyph.md");
+        let main_path = dir.path().join("main.glyph");
         std::fs::write(&main_path, r#"import "@glyph/std" { send }
 
 skill notify(msg = "hello")
@@ -4537,7 +4537,7 @@ skill notify(msg = "hello")
     flow:
         subagent(task)
 "#;
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::stdlib-missing-import"),
@@ -4558,7 +4558,7 @@ skill notify(msg = "hello")
     flow:
         send(msg)
 "#;
-        let bag = check_source(src, 0, "test.glyph.md");
+        let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::stdlib-missing-import"),
@@ -4570,7 +4570,7 @@ skill notify(msg = "hello")
     fn stdlib_unknown_module_fires() {
         // AC4: `unknown-stdlib-module` error fires on import of nonexistent @glyph/ path.
         let dir = tempfile::tempdir().unwrap();
-        let main_path = dir.path().join("main.glyph.md");
+        let main_path = dir.path().join("main.glyph");
         std::fs::write(&main_path, r#"import "@glyph/foo" { bar }
 
 skill main()
@@ -4607,7 +4607,7 @@ skill delegate(task = "do something")
     flow:
         subagent(task)
 "#;
-        let bag = check_source_with_effects(src, 0, "test.glyph.md", true);
+        let bag = check_source_with_effects(src, 0, "test.glyph", true);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::effects-under-declared"),
@@ -4628,7 +4628,7 @@ skill foo()
         flow:
             \"Nested flow not allowed.\"
 ";
-        let bag = check_source(src, 0, "nested_flow.glyph.md");
+        let bag = check_source(src, 0, "nested_flow.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(ids.contains(&"G::parse::nested-flow"), "ids: {:?}", ids);
     }
@@ -4639,7 +4639,7 @@ skill foo()
         let src = "\
 skill empty()
 ";
-        let bag = check_source(src, 0, "empty_skill.glyph.md");
+        let bag = check_source(src, 0, "empty_skill.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(ids.contains(&"G::analyze::empty-skill-body"), "ids: {:?}", ids);
     }
@@ -4658,7 +4658,7 @@ skill bar()
     flow:
         \"Do bar.\"
 ";
-        let bag = check_source(src, 0, "two_skills.glyph.md");
+        let bag = check_source(src, 0, "two_skills.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(ids.contains(&"G::parse::multiple-skills"), "ids: {:?}", ids);
     }
@@ -4673,7 +4673,7 @@ skill foo()
     flow:
         \"Do something.\"
 ";
-        let bag = check_source(src, 0, "dup.glyph.md");
+        let bag = check_source(src, 0, "dup.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(ids.contains(&"G::parse::duplicate-subsection"), "ids: {:?}", ids);
     }
@@ -4687,7 +4687,7 @@ skill foo()
     flow:
         \"prefix\" + \"suffix\"
 ";
-        let bag = check_source(src, 0, "op.glyph.md");
+        let bag = check_source(src, 0, "op.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(ids.contains(&"G::parse::operator-in-expression"), "ids: {:?}", ids);
         assert_eq!(bag.exit_code(), 2, "operator-in-expression is repairable (exit 2)");
@@ -4697,7 +4697,7 @@ skill foo()
     fn parse_mixed_indent_diagnostic() {
         // Source with spaces then tab on the same line triggers mixed-indent.
         let src = "skill foo()\n \tflow:\n";
-        let bag = check_source(src, 0, "mixed.glyph.md");
+        let bag = check_source(src, 0, "mixed.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(ids.contains(&"G::parse::mixed-indent"), "ids: {:?}", ids);
         assert_eq!(bag.exit_code(), 2, "mixed-indent is repairable (exit 2)");
@@ -4718,13 +4718,13 @@ skill foo()
         // silently skips the mismatch.
         let dir = tempfile::tempdir().unwrap();
 
-        let lib_path = dir.path().join("lib.glyph.md");
+        let lib_path = dir.path().join("lib.glyph");
         std::fs::write(&lib_path, "export block do_thing() -> Plan\n    description: \"Make a plan.\"\n    flow:\n        return \"a plan was made\"\n").unwrap();
 
-        let main_path = dir.path().join("main.glyph.md");
+        let main_path = dir.path().join("main.glyph");
         std::fs::write(
             &main_path,
-            "import \"./lib.glyph.md\" { do_thing }\n\nskill main() -> Report\n    description: \"Main.\"\n    flow:\n        return do_thing()\n",
+            "import \"./lib.glyph\" { do_thing }\n\nskill main() -> Report\n    description: \"Main.\"\n    flow:\n        return do_thing()\n",
         )
         .unwrap();
 
@@ -4769,7 +4769,7 @@ skill main()
     flow:
         writer()
 ";
-        let bag_on = check_source_with_effects(src, 0, "test.glyph.md", true);
+        let bag_on = check_source_with_effects(src, 0, "test.glyph", true);
         let ids_on: Vec<&str> = bag_on.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids_on.contains(&"G::analyze::missing-effects"),
@@ -4789,7 +4789,7 @@ skill main()
     flow:
         writer()
 ";
-        let bag_off = check_source_with_effects(src_no_effects, 0, "test.glyph.md", false);
+        let bag_off = check_source_with_effects(src_no_effects, 0, "test.glyph", false);
         let ids_off: Vec<&str> = bag_off.iter().map(|d| d.id.as_str()).collect();
         assert!(
             !ids_off.iter().any(|id| id.starts_with("G::analyze::effects")),
@@ -4813,7 +4813,7 @@ skill main()
     flow:
         writer()
 ";
-        let bag_on = check_source_with_effects(src, 0, "test.glyph.md", true);
+        let bag_on = check_source_with_effects(src, 0, "test.glyph", true);
         let ids_on: Vec<&str> = bag_on.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids_on.contains(&"G::analyze::effects-under-declared"),
@@ -4831,7 +4831,7 @@ skill main()
     flow:
         writer()
 ";
-        let bag_off = check_source_with_effects(src_off, 0, "test.glyph.md", false);
+        let bag_off = check_source_with_effects(src_off, 0, "test.glyph", false);
         let ids_off: Vec<&str> = bag_off.iter().map(|d| d.id.as_str()).collect();
         assert!(
             !ids_off.iter().any(|id| id.starts_with("G::analyze::effects")),
@@ -4854,7 +4854,7 @@ skill main()
     flow:
         reader()
 ";
-        let bag_on = check_source_with_effects(src, 0, "test.glyph.md", true);
+        let bag_on = check_source_with_effects(src, 0, "test.glyph", true);
         let ids_on: Vec<&str> = bag_on.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids_on.contains(&"G::analyze::effects-over-declared"),
@@ -4873,7 +4873,7 @@ skill main()
     flow:
         reader()
 ";
-        let bag_off = check_source_with_effects(src_off, 0, "test.glyph.md", false);
+        let bag_off = check_source_with_effects(src_off, 0, "test.glyph", false);
         let ids_off: Vec<&str> = bag_off.iter().map(|d| d.id.as_str()).collect();
         assert!(
             !ids_off.iter().any(|id| id.starts_with("G::analyze::effects")),
@@ -4890,7 +4890,7 @@ skill main()
 skill main()
     effects: reads_files
 ";
-        let bag_on = check_source_with_effects(src_on, 0, "test.glyph.md", true);
+        let bag_on = check_source_with_effects(src_on, 0, "test.glyph", true);
         let ids_on: Vec<&str> = bag_on.iter().map(|d| d.id.as_str()).collect();
         assert!(
             !ids_on.contains(&"G::analyze::empty-skill-body"),
@@ -4903,7 +4903,7 @@ skill main()
         let src_off = "\
 skill main()
 ";
-        let bag_off = check_source_with_effects(src_off, 0, "test.glyph.md", false);
+        let bag_off = check_source_with_effects(src_off, 0, "test.glyph", false);
         let ids_off: Vec<&str> = bag_off.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids_off.contains(&"G::analyze::empty-skill-body"),
@@ -4919,7 +4919,7 @@ skill main()
         // Two files: a clean importer that depends on a dep with a diagnostic.
         // The dep error should publish under the dep's URI, NOT the importer's.
         let dir = tempfile::tempdir().unwrap();
-        let dep_path = dir.path().join("dep.glyph.md");
+        let dep_path = dir.path().join("dep.glyph");
         // `dep_text` references an undefined name → fires `undefined-name`.
         let dep_text = "\
 export const alpha = \"alpha.\"
@@ -4933,9 +4933,9 @@ skill dep_skill()
         std::fs::write(&dep_path, dep_text).unwrap();
 
         // Importer pulls `alpha` and uses it as a constraint.
-        let importer_path = dir.path().join("main.glyph.md");
+        let importer_path = dir.path().join("main.glyph");
         let importer_src = "\
-import \"./dep.glyph.md\" { alpha }
+import \"./dep.glyph\" { alpha }
 
 skill main()
     description: \"main.\"
@@ -4990,12 +4990,12 @@ skill main()
         // `import-private` diagnostic must surface under the importer URI
         // (importer is the file with the buggy `import` line).
         let dir = tempfile::tempdir().unwrap();
-        let dep_path = dir.path().join("dep.glyph.md");
+        let dep_path = dir.path().join("dep.glyph");
         std::fs::write(&dep_path, "const private_text = \"private.\"\n").unwrap();
 
-        let importer_path = dir.path().join("main.glyph.md");
+        let importer_path = dir.path().join("main.glyph");
         let importer_src = "\
-import \"./dep.glyph.md\" { not_exported }
+import \"./dep.glyph\" { not_exported }
 
 skill main()
     description: \"main.\"
@@ -5020,13 +5020,13 @@ skill main()
     fn check_file_partition_round_trip_matches_legacy_check_file() {
         // Sanity: check_file_partition + merge == check_file_with_effects.
         let dir = tempfile::tempdir().unwrap();
-        let dep_path = dir.path().join("dep.glyph.md");
+        let dep_path = dir.path().join("dep.glyph");
         std::fs::write(&dep_path, "export const alpha = \"alpha.\"\n").unwrap();
-        let main_path = dir.path().join("main.glyph.md");
+        let main_path = dir.path().join("main.glyph");
         std::fs::write(
             &main_path,
             "\
-import \"./dep.glyph.md\" { alpha }
+import \"./dep.glyph\" { alpha }
 
 skill main()
     description: \"main.\"

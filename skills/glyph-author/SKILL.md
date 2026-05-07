@@ -1,11 +1,11 @@
 ---
 name: glyph-author
-description: Use when authoring or editing a Glyph source file (any file ending in `.glyph.md`), porting an existing SKILL.md or agent skill into Glyph, or when the user asks for a skill "in Glyph". Glyph is a small DSL whose source compiles to agent-facing Markdown; do not invent ad-hoc syntax — match the closed primitive set, the permitted declaration forms, and the closed effect/constraint vocabulary documented here. Even if the user just says "write a skill that does X" while inside or referencing a Glyph project, prefer Glyph syntax over freeform Markdown.
+description: Use when authoring or editing a Glyph source file (any file ending in `.glyph`), porting an existing SKILL.md or agent skill into Glyph, or when the user asks for a skill "in Glyph". Glyph is a small DSL whose source compiles to agent-facing Markdown; do not invent ad-hoc syntax — match the closed primitive set, the permitted declaration forms, and the closed effect/constraint vocabulary documented here. Even if the user just says "write a skill that does X" while inside or referencing a Glyph project, prefer Glyph syntax over freeform Markdown.
 ---
 
 # Authoring Glyph
 
-Glyph source files end in `.glyph.md`. The whole file is Glyph source — there is no Markdown passthrough. Markdown structure (`#`, `##`, prose paragraphs) belongs in the **compiled output**, not in the source you write. If you find yourself reaching for a Markdown header, you are no longer writing Glyph.
+Glyph source files end in `.glyph`. The whole file is Glyph source — there is no Markdown passthrough. Markdown structure (`#`, `##`, prose paragraphs) belongs in the **compiled output**, not in the source you write. If you find yourself reaching for a Markdown header, you are no longer writing Glyph.
 
 This skill is the in-context reference. For deeper detail, the two files in `references/` are loaded only when needed:
 
@@ -28,7 +28,7 @@ The most common authoring mistake is collapsing categories: putting context insi
 
 ## File anatomy
 
-A `.glyph.md` file is either:
+A `.glyph` file is either:
 
 - **A skill file** — exactly one `skill` declaration, plus any imports / value bindings / blocks it needs.
 - **A library file** — zero `skill` declarations, at least one `export` declaration, plus private helpers.

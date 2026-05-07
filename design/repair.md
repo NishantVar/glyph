@@ -389,7 +389,7 @@ All generated declarations (both `generated const` and `generated block`) must a
 Example file structure:
 
 ```glyph
-import "./repo_tools.glyph.md" { unrelated_edits }
+import "./repo_tools.glyph" { unrelated_edits }
 
 const short_note = "Keep changes minimal."
 
@@ -436,7 +436,7 @@ Authors may interact with generated declarations in three ways. All work through
 
 - **Edit the body.** The declaration stays `generated const` / `generated block`. Repair sees the name is defined and skips it. For `generated block`, edits are still constrained to the single-string body until promoted.
 - **Promote to `const` or `block`.** Delete the word `generated`. For a promoted `block`, the author may then add `flow:`, `effects:`, `constraints:`, and a proper body with multiple steps. The declaration may also be moved anywhere in the file.
-- **Promote to imported library.** Move the content into another `.glyph.md` file as `export const` or `export block`, import it back, and delete the local `generated` declaration.
+- **Promote to imported library.** Move the content into another `.glyph` file as `export const` or `export block`, import it back, and delete the local `generated` declaration.
 
 ### 5.7 Not Exportable
 
@@ -540,7 +540,7 @@ This restriction eliminates cross-file trigger propagation: one file's repair ca
 
 **Generated bodies do not introduce cross-file dependencies.** A `generated block` body is a single instruction string with `{param}` slots (§5.1, single-string rule). It is not a `flow:` block and cannot contain calls into other declarations — neither same-file nor imported. This sidesteps the question of whether a repair-generated body could legitimately reference an imported callee: by construction, it never does. If the author's intent requires composing imported callees, the right surface is a hand-written `block` or `export block`, not a generated definition.
 
-**Post-MVP:** cross-file repair (editing other `.glyph.md` files when diagnostics require it) and auto-import discovery (adding imports to files the author did not reference) are deferred. See `todo.md`.
+**Post-MVP:** cross-file repair (editing other `.glyph` files when diagnostics require it) and auto-import discovery (adding imports to files the author did not reference) are deferred. See `todo.md`.
 
 ## 10. Argument-Agnosticism Invariant
 
@@ -563,7 +563,7 @@ Repair is LLM-driven and **not byte-deterministic** across runs. Two compiles of
 **Authoring workflow.** The expected model is:
 
 1. Author writes source using the novice kernel (often with undefined names, missing markers, etc.).
-2. Author runs the compiler locally. Repair fires, writes back to the `.glyph.md` file, compilation succeeds.
+2. Author runs the compiler locally. Repair fires, writes back to the `.glyph` file, compilation succeeds.
 3. Author **commits the post-repair source**. The committed file is fully repaired — subsequent compiles find no `repairable` diagnostics, skip Repair entirely, and produce identical IR.
 
 This makes downstream builds (CI, other contributors) reproducible by construction: they read the post-repair source and Repair becomes a no-op.

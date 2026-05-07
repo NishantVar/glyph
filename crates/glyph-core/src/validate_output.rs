@@ -1590,7 +1590,7 @@ mod tests {
         serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -1633,7 +1633,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -1677,7 +1677,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -1783,7 +1783,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -1872,7 +1872,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -1915,7 +1915,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -1948,7 +1948,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -1982,7 +1982,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -2027,7 +2027,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -2081,7 +2081,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -2156,7 +2156,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -2209,7 +2209,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -2246,7 +2246,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -2302,7 +2302,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -2337,7 +2337,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -2391,7 +2391,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -2444,7 +2444,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -2499,7 +2499,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -2553,7 +2553,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -2607,7 +2607,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -2640,7 +2640,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -2747,7 +2747,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -2808,7 +2808,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",
@@ -2868,7 +2868,7 @@ mod tests {
         let ir = serde_json::json!({
             "ir_version": 1,
             "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph.md",
+            "source_file": "test.glyph",
             "skill": {
                 "node_id": "n0",
                 "kind": "skill",

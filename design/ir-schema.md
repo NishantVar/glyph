@@ -286,7 +286,7 @@ Nodes introduced by Lower (compiler-generated temporary bindings from nested-cal
 
 ### Stability
 
-**Identical source → identical IDs.** If the post-repair `.glyph.md` source is **byte-identical**, Lower produces **identical IDs** — same AST structure, same traversal, same monotonic assignment. This is the guarantee the cache key relies on (`pipeline.md` §Cacheability). Whitespace-only changes that do not alter AST structure also produce identical IDs.
+**Identical source → identical IDs.** If the post-repair `.glyph` source is **byte-identical**, Lower produces **identical IDs** — same AST structure, same traversal, same monotonic assignment. This is the guarantee the cache key relies on (`pipeline.md` §Cacheability). Whitespace-only changes that do not alter AST structure also produce identical IDs.
 
 **Edits invalidate all IDs.** Changes that alter the AST (added, removed, or reordered nodes) reassign IDs from scratch. Inserting a new `step` mid-skill shifts all downstream IDs. Consumers must not cache or persist node IDs across source edits.
 

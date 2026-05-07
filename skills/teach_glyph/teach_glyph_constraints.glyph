@@ -1,4 +1,4 @@
-// teach_glyph_constraints.glyph.md
+// teach_glyph_constraints.glyph
 //
 // Library file. Each authoring rule for Glyph source is a polarity-neutral
 // `export const`. Importers attach polarity (`must`, `must avoid`,

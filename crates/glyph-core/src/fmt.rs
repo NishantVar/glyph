@@ -1915,8 +1915,8 @@ skill main()
     fn fmt_collapse_imports_no_op_when_paths_differ() {
         // Both imports are used, so unused-removal won't touch them.
         // Collapse only fires when two imports share the same path.
-        let src = r#"import "./a.glyph.md" { foo }
-import "./b.glyph.md" { bar }
+        let src = r#"import "./a.glyph" { foo }
+import "./b.glyph" { bar }
 
 skill main()
     description: "Main."

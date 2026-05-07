@@ -1,7 +1,7 @@
 //! Slice 3 integration tests — `glyph check <path>`.
 //!
 //! Acceptance criteria from `mvp-issues.md` slice 3:
-//!   1. `glyph check valid/update_docs.glyph.md` exits 0 with no files written.
+//!   1. `glyph check valid/update_docs.glyph` exits 0 with no files written.
 //!   2. `glyph check repairable/<file>` exits 2 with diagnostics on stdout (JSON)
 //!      or stderr (pretty).
 //!   3. `glyph check invalid/<file>` exits 1.
@@ -42,7 +42,7 @@ fn run_check_no_format(file: PathBuf) -> Output {
 
 #[test]
 fn check_valid_exits_zero_and_writes_no_md() {
-    let src = corpus_path("valid", "update_docs.glyph.md");
+    let src = corpus_path("valid", "update_docs.glyph");
     let sibling_md = src.with_file_name("update_docs.md");
 
     // Snapshot: was the .md present *before* this test? `walking_skeleton` may have
@@ -100,7 +100,7 @@ fn check_valid_exits_zero_and_writes_no_md() {
 
 #[test]
 fn check_repairable_exits_two_with_diagnostic_on_stdout() {
-    let src = corpus_path("repairable", "tab_indent.glyph.md");
+    let src = corpus_path("repairable", "tab_indent.glyph");
     let result = run_check(src, "json");
     assert_eq!(
         result.status.code(),
@@ -132,7 +132,7 @@ fn check_repairable_exits_two_with_diagnostic_on_stdout() {
 
 #[test]
 fn check_repairable_pretty_renders_to_stderr() {
-    let src = corpus_path("repairable", "tab_indent.glyph.md");
+    let src = corpus_path("repairable", "tab_indent.glyph");
     let result = run_check(src, "pretty");
     assert_eq!(result.status.code(), Some(2));
     let stdout = String::from_utf8_lossy(&result.stdout).to_string();
@@ -151,7 +151,7 @@ fn check_repairable_pretty_renders_to_stderr() {
 
 #[test]
 fn check_invalid_exits_one() {
-    let src = corpus_path("invalid", "empty.glyph.md");
+    let src = corpus_path("invalid", "empty.glyph");
     let result = run_check(src, "json");
     assert_eq!(
         result.status.code(),
@@ -164,7 +164,7 @@ fn check_invalid_exits_one() {
 
 #[test]
 fn check_accepts_directory_path() {
-    // The repairable fixture lives in its own dir with no other .glyph.md siblings.
+    // The repairable fixture lives in its own dir with no other .glyph siblings.
     // A directory-mode check should pick up the one file and exit 2.
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -184,7 +184,7 @@ fn check_accepts_directory_path() {
 fn check_default_format_is_pretty() {
     // Calling with no `--format` flag should default to `pretty` and still exit
     // with the right code on a clean file.
-    let src = corpus_path("valid", "update_docs.glyph.md");
+    let src = corpus_path("valid", "update_docs.glyph");
     let result = run_check_no_format(src);
     assert_eq!(result.status.code(), Some(0));
 }

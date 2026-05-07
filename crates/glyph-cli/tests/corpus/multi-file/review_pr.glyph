@@ -1,4 +1,4 @@
-import "./repo_tools.glyph.md" { inspect_repo, run_tests }
+import "./repo_tools.glyph" { inspect_repo, run_tests }
 
 skill review_pr(scope = ".", risk = "medium")
     description: "Review a pull request for correctness, style, and safety."

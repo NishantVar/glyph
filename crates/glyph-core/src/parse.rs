@@ -1,7 +1,7 @@
 //! Phase 1 parser — hand-rolled recursive descent over the tokenizer's output.
 //!
 //! Walking-skeleton scope: parses exactly the constructs needed for
-//! `update_docs.glyph.md` per `design/mvp-acceptance.md` §1.
+//! `update_docs.glyph` per `design/mvp-acceptance.md` §1.
 
 use crate::ast::{
     BlockDecl, ConstDecl, ConstValue, ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl,
@@ -378,7 +378,7 @@ pub fn parse_with_diagnostics_opts(
             bag.push(
                 Diagnostic::error(
                     "G::parse::multiple-skills",
-                    "a `.glyph.md` file may contain at most one `skill` declaration",
+                    "a `.glyph` file may contain at most one `skill` declaration",
                     SourceSpan::from_byte_span(file_label, span, line_index),
                 ),
                 span,
@@ -3648,7 +3648,7 @@ mod none_return_tests {
     fn run(src: &str) -> (Vec<String>, u8) {
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
-        let _ = parse_with_diagnostics(src, 0, "t.glyph.md", &line_index, &mut bag);
+        let _ = parse_with_diagnostics(src, 0, "t.glyph", &line_index, &mut bag);
         let ids: Vec<String> = bag.iter().map(|d| d.id.clone()).collect();
         (ids, bag.exit_code())
     }
@@ -4192,7 +4192,7 @@ skill foo()
     fn diagnostic_ids(src: &str) -> Vec<String> {
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
-        let _ = parse_with_diagnostics(src, 0, "t.glyph.md", &line_index, &mut bag);
+        let _ = parse_with_diagnostics(src, 0, "t.glyph", &line_index, &mut bag);
         bag.iter().map(|d| d.id.clone()).collect()
     }
 
@@ -4499,7 +4499,7 @@ export block foo() -> Report
 ";
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
-        let _ = parse_with_diagnostics(src, 0, "t.glyph.md", &line_index, &mut bag);
+        let _ = parse_with_diagnostics(src, 0, "t.glyph", &line_index, &mut bag);
         let ids: Vec<_> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.iter()
@@ -4536,7 +4536,7 @@ mod duplicate_subsection_recovery_tests {
         let file = match parse_with_diagnostics_opts(
             src,
             0,
-            "dup.glyph.md",
+            "dup.glyph",
             &line_index,
             &mut bag,
             true,
@@ -4888,7 +4888,7 @@ skill foo()
     fn parse_first_block_with_bag(src: &str) -> (crate::ast::BlockDecl, DiagBag) {
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
-        let file = parse_with_diagnostics_opts(src, 0, "dup.glyph.md", &line_index, &mut bag, true)
+        let file = parse_with_diagnostics_opts(src, 0, "dup.glyph", &line_index, &mut bag, true)
             .expect("parser must recover and return Some(file)");
         let block = file
             .decls
@@ -4906,7 +4906,7 @@ skill foo()
     ) -> (crate::ast::ExportBlockDecl, DiagBag) {
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
-        let file = parse_with_diagnostics_opts(src, 0, "dup.glyph.md", &line_index, &mut bag, true)
+        let file = parse_with_diagnostics_opts(src, 0, "dup.glyph", &line_index, &mut bag, true)
             .expect("parser must recover and return Some(file)");
         let eb = file
             .decls
@@ -5142,7 +5142,7 @@ skill foo()
         let file = parse_with_diagnostics_opts(
             src,
             0,
-            "dup.glyph.md",
+            "dup.glyph",
             &line_index,
             &mut bag,
             true,
@@ -5364,8 +5364,8 @@ mod import_decl_tests {
 
     #[test]
     fn multi_line_with_trailing_comma_equals_single_line() {
-        let multi = "import \"./x.glyph.md\" {\n    a,\n    b,\n    c,\n}\n";
-        let single = "import \"./x.glyph.md\" { a, b, c }\n";
+        let multi = "import \"./x.glyph\" {\n    a,\n    b,\n    c,\n}\n";
+        let single = "import \"./x.glyph\" { a, b, c }\n";
         assert_eq!(
             extract(parse_first_import(multi)),
             extract(parse_first_import(single)),
@@ -5374,9 +5374,9 @@ mod import_decl_tests {
 
     #[test]
     fn multi_line_without_trailing_comma_parses() {
-        let src = "import \"./x.glyph.md\" {\n    a,\n    b,\n    c\n}\n";
+        let src = "import \"./x.glyph\" {\n    a,\n    b,\n    c\n}\n";
         let (path, names) = extract(parse_first_import(src));
-        assert_eq!(path, "./x.glyph.md");
+        assert_eq!(path, "./x.glyph");
         let bare: Vec<&str> = names.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(bare, vec!["a", "b", "c"]);
         assert!(names.iter().all(|(_, alias)| alias.is_none()));
@@ -5386,7 +5386,7 @@ mod import_decl_tests {
     fn multi_line_mixed_layout_parses() {
         // Some names on the header line, more on subsequent lines, `}` on
         // its own line. Asserts the parser does not require a uniform layout.
-        let src = "import \"./x.glyph.md\" { a, b,\n    c,\n    d,\n}\n";
+        let src = "import \"./x.glyph\" { a, b,\n    c,\n    d,\n}\n";
         let (_, names) = extract(parse_first_import(src));
         let bare: Vec<&str> = names.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(bare, vec!["a", "b", "c", "d"]);
@@ -5396,7 +5396,7 @@ mod import_decl_tests {
     fn multi_line_aliases_across_lines_parse() {
         // Items themselves stay on a single line; line breaks between items
         // are exercised. Both aliases survive.
-        let src = "import \"./x.glyph.md\" {\n    foo as f,\n    bar as b,\n}\n";
+        let src = "import \"./x.glyph\" {\n    foo as f,\n    bar as b,\n}\n";
         let (_, names) = extract(parse_first_import(src));
         assert_eq!(names.len(), 2);
         assert_eq!(names[0].0, "foo");
@@ -5410,7 +5410,7 @@ mod import_decl_tests {
         // `b` on a new line without a comma after `a`. The diagnostic must
         // mention both `,` and `}` and pin the span to the `b` token, not
         // to a `LineStart`.
-        let src = "import \"./x.glyph.md\" { a\n    b\n}\n";
+        let src = "import \"./x.glyph\" { a\n    b\n}\n";
         let err = parse(src, 0).err().expect("expected ParseError");
         match err {
             ParseError::Unexpected { ref message, span } => {
@@ -5433,7 +5433,7 @@ mod import_decl_tests {
         // Both should be invisible to the parser by the time it sees the
         // brace list, so the import parses cleanly.
         let src = "\
-import \"./x.glyph.md\" {
+import \"./x.glyph\" {
     // explanatory note
     a, // why we need a
     b,
@@ -5456,7 +5456,7 @@ import \"./x.glyph.md\" {
         // After the fix, parse_import succeeds, both Arrow and `<` tokens
         // are consumed legitimately, and neither cascade triggers.
         let src = "\
-import \"./other.glyph.md\" {
+import \"./other.glyph\" {
     foo,
     bar,
 }
@@ -5467,7 +5467,7 @@ skill main() -> Path
 ";
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
-        let _ = parse_with_diagnostics(src, 0, "t.glyph.md", &line_index, &mut bag);
+        let _ = parse_with_diagnostics(src, 0, "t.glyph", &line_index, &mut bag);
         let ids: Vec<String> = bag.iter().map(|d| d.id.clone()).collect();
         assert!(
             !ids.iter().any(|s| s == "G::parse::operator-in-expression"),

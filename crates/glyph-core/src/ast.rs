@@ -1,7 +1,7 @@
 //! Loose AST emitted by the parser (Phase 1).
 //!
 //! Names are unresolved, types unchecked, roles unassigned.
-//! Walking-skeleton subset — covers the constructs in `update_docs.glyph.md`.
+//! Walking-skeleton subset — covers the constructs in `update_docs.glyph`.
 
 use crate::output_target::OutputTargetExpr;
 use crate::span::{Span, Spanned};
@@ -32,7 +32,7 @@ pub enum Decl {
 /// An `import` declaration at the top of a source file.
 #[derive(Clone, Debug)]
 pub struct ImportDecl {
-    /// The path string from the source (e.g., `"./prefs.glyph.md"`).
+    /// The path string from the source (e.g., `"./prefs.glyph"`).
     pub path: String,
     /// The import form: selective `{ name1, name2 as alias }` or whole-module `as alias`.
     pub kind: ImportKind,

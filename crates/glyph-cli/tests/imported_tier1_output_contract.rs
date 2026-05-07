@@ -19,8 +19,8 @@ fn glyph_bin() -> PathBuf {
 #[test]
 fn imported_tier1_callee_uses_locked_identifier_suffix() {
     let dir = tempfile::tempdir().unwrap();
-    let lib_path = dir.path().join("lib.glyph.md");
-    let consumer_path = dir.path().join("consumer.glyph.md");
+    let lib_path = dir.path().join("lib.glyph");
+    let consumer_path = dir.path().join("consumer.glyph");
 
     std::fs::write(
         &lib_path,
@@ -36,7 +36,7 @@ export block helper() -> BranchName
     std::fs::write(
         &consumer_path,
         "\
-import \"./lib.glyph.md\" { helper }
+import \"./lib.glyph\" { helper }
 
 skill main()
     description: \"Demo.\"
@@ -77,8 +77,8 @@ skill main()
 #[test]
 fn imported_return_only_tier1_callee_uses_standalone_template() {
     let dir = tempfile::tempdir().unwrap();
-    let lib_path = dir.path().join("lib.glyph.md");
-    let consumer_path = dir.path().join("consumer.glyph.md");
+    let lib_path = dir.path().join("lib.glyph");
+    let consumer_path = dir.path().join("consumer.glyph");
 
     // Return-only helper: body_text is empty so resolved_imports.block_bodies
     // doesn't include the helper. The cross-file fix-up still hoists the OC
@@ -97,7 +97,7 @@ export block helper() -> BranchName
     std::fs::write(
         &consumer_path,
         "\
-import \"./lib.glyph.md\" { helper }
+import \"./lib.glyph\" { helper }
 
 skill main()
     description: \"Demo.\"

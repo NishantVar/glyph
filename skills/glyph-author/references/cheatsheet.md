@@ -4,7 +4,7 @@ One-page syntactic reference. Pair with `examples.md` for full runnable forms.
 
 ## File rules
 
-- Source files end in `.glyph.md`. The whole file is Glyph source.
+- Source files end in `.glyph`. The whole file is Glyph source.
 - A skill file: exactly one `skill` declaration.
 - A library file: zero `skill`s, ≥1 `export` declaration.
 - Indentation: 4 spaces, no tabs, no mixed indentation.

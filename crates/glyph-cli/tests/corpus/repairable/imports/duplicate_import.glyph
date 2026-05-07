@@ -1,0 +1,8 @@
+import "./lib_repairable.glyph" { greeting }
+import "./lib_repairable.glyph" { farewell }
+
+skill main()
+    description: "Main."
+    require greeting
+    flow:
+        "Do something."

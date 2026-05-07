@@ -172,7 +172,7 @@ No `tokio`, no `async-std`, no async runtime. Standard library `std::fs` for fil
 
 The compiler is a short-lived process: read source files, run deterministic phases, write output files. There is no I/O concurrency, no HTTP calls, no parallelism. Every phase is a pure function from its input to its output plus diagnostics.
 
-**Multi-file builds are strictly serial.** A `glyph compile dir/` invocation compiles each `.glyph.md` file one at a time, in topological order over the import DAG. There is no threadpool, no `rayon`, no async fan-out across files. This is a direct consequence of the sync-only decision: independent files in the DAG are not parallelised. See `pipeline.md` §Multi-File Compilation Order for the topological ordering contract that this serial execution model satisfies. Parallelism across files is a post-MVP optimisation.
+**Multi-file builds are strictly serial.** A `glyph compile dir/` invocation compiles each `.glyph` file one at a time, in topological order over the import DAG. There is no threadpool, no `rayon`, no async fan-out across files. This is a direct consequence of the sync-only decision: independent files in the DAG are not parallelised. See `pipeline.md` §Multi-File Compilation Order for the topological ordering contract that this serial execution model satisfies. Parallelism across files is a post-MVP optimisation.
 
 ### Rationale
 
@@ -252,7 +252,7 @@ The compiler is a phase-granular toolkit invoked by an agent skill. The full com
 ```
 Agent                                    Compiler (glyph compile)
   │                                        │
-  ├─ glyph compile foo.glyph.md ──────────►│─ Phase 1 (Parse)
+  ├─ glyph compile foo.glyph ──────────►│─ Phase 1 (Parse)
   │        --format json --emit-ir         │─ Phase 2 (Analyze)
   │                                        │
   │  (one of three outcomes)               │
@@ -261,7 +261,7 @@ Agent                                    Compiler (glyph compile)
   │  └─ Surface to author, stop            │
   │                                        │
   │  ◄─── exit 2 + diagnostics (JSON) ────│  (repairable diagnostics only)
-  │  ├─ LLM repair: edit foo.glyph.md     │
+  │  ├─ LLM repair: edit foo.glyph     │
   │  └─ Re-invoke glyph compile ──────────►│  (loop until exit 0 or 1)
   │                                        │
   │  ◄─── exit 0 ─────────────────────────│  (clean through Phase 2)

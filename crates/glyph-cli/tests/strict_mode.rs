@@ -52,7 +52,7 @@ fn run_check(file: &std::path::Path, extra_args: &[&str]) -> Output {
 
 #[test]
 fn strict_compile_repairable_exits_one() {
-    let result = run_compile(&repairable("missing_description.glyph.md"), &["--strict"]);
+    let result = run_compile(&repairable("missing_description.glyph"), &["--strict"]);
     assert_eq!(
         result.status.code(),
         Some(1),
@@ -74,7 +74,7 @@ fn strict_compile_all_repairable_files_exit_one() {
         .unwrap()
         .filter_map(|e| {
             let p = e.unwrap().path();
-            if p.is_file() && p.to_string_lossy().ends_with(".glyph.md") {
+            if p.is_file() && p.to_string_lossy().ends_with(".glyph") {
                 Some(p)
             } else {
                 None
@@ -101,7 +101,7 @@ fn strict_compile_all_repairable_files_exit_one() {
 
 #[test]
 fn no_strict_compile_repairable_exits_two() {
-    let result = run_compile(&repairable("missing_description.glyph.md"), &[]);
+    let result = run_compile(&repairable("missing_description.glyph"), &[]);
     assert_eq!(
         result.status.code(),
         Some(2),
@@ -117,8 +117,8 @@ fn no_strict_compile_repairable_exits_two() {
 fn strict_compile_valid_exits_zero() {
     // Copy to tempdir to avoid polluting corpus with .md output.
     let dir = tempfile::tempdir().unwrap();
-    let src = valid("update_docs.glyph.md");
-    let tmp_src = dir.path().join("update_docs.glyph.md");
+    let src = valid("update_docs.glyph");
+    let tmp_src = dir.path().join("update_docs.glyph");
     std::fs::copy(&src, &tmp_src).unwrap();
 
     let result = run_compile(&tmp_src, &["--strict"]);
@@ -139,13 +139,13 @@ fn strict_compile_all_valid_files_exit_zero() {
         .join("tests")
         .join("corpus")
         .join("valid");
-    // Collect all .glyph.md files (top-level only — imports/ needs multi-file
+    // Collect all .glyph files (top-level only — imports/ needs multi-file
     // context which is directory-compile territory, not per-file).
     let mut files: Vec<PathBuf> = std::fs::read_dir(&valid_dir)
         .unwrap()
         .filter_map(|e| {
             let p = e.unwrap().path();
-            if p.is_file() && p.to_string_lossy().ends_with(".glyph.md") {
+            if p.is_file() && p.to_string_lossy().ends_with(".glyph") {
                 Some(p)
             } else {
                 None
@@ -176,7 +176,7 @@ fn strict_compile_all_valid_files_exit_zero() {
 
 #[test]
 fn strict_check_repairable_exits_one() {
-    let result = run_check(&repairable("missing_description.glyph.md"), &["--strict"]);
+    let result = run_check(&repairable("missing_description.glyph"), &["--strict"]);
     assert_eq!(
         result.status.code(),
         Some(1),
@@ -188,7 +188,7 @@ fn strict_check_repairable_exits_one() {
 
 #[test]
 fn strict_check_valid_exits_zero() {
-    let result = run_check(&valid("update_docs.glyph.md"), &["--strict"]);
+    let result = run_check(&valid("update_docs.glyph"), &["--strict"]);
     assert_eq!(
         result.status.code(),
         Some(0),
@@ -203,8 +203,8 @@ fn strict_check_valid_exits_zero() {
 #[test]
 fn strict_compile_repairable_does_not_write_md() {
     let dir = tempfile::tempdir().unwrap();
-    let src = repairable("missing_description.glyph.md");
-    let tmp_src = dir.path().join("missing_description.glyph.md");
+    let src = repairable("missing_description.glyph");
+    let tmp_src = dir.path().join("missing_description.glyph");
     std::fs::copy(&src, &tmp_src).unwrap();
 
     let out_path = dir.path().join("missing_description.md");

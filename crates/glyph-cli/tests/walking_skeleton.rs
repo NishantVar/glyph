@@ -1,7 +1,7 @@
 //! Walking-skeleton integration test for slice 1.
 //!
 //! Verifies the contract from `design/mvp-acceptance.md` §1:
-//!   1. `glyph compile tests/corpus/valid/update_docs.glyph.md` exits 0.
+//!   1. `glyph compile tests/corpus/valid/update_docs.glyph` exits 0.
 //!   2. The emitted `update_docs.md` matches the byte-stable golden snapshot.
 //!   3. Re-running the compile produces byte-identical output.
 
@@ -18,7 +18,7 @@ fn corpus_source() -> PathBuf {
         .join("tests")
         .join("corpus")
         .join("valid")
-        .join("update_docs.glyph.md")
+        .join("update_docs.glyph")
 }
 
 /// Copy the corpus source to a tempdir to avoid parallel-test races on
@@ -26,7 +26,7 @@ fn corpus_source() -> PathBuf {
 fn setup_tempdir() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let src = corpus_source();
-    let tmp_src = dir.path().join("update_docs.glyph.md");
+    let tmp_src = dir.path().join("update_docs.glyph");
     std::fs::copy(&src, &tmp_src).unwrap();
     let out = dir.path().join("update_docs.md");
     (dir, tmp_src, out)

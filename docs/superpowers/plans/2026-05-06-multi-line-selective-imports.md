@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Allow selective-import brace lists `{ … }` in `.glyph.md` files to span multiple lines, so long import lists are readable and the cascading false-error class (`operator-in-expression` on later `->`, `output-target-outside-return` on later `<…>`) cannot be triggered by a wrapped import.
+**Goal:** Allow selective-import brace lists `{ … }` in `.glyph` files to span multiple lines, so long import lists are readable and the cascading false-error class (`operator-in-expression` on later `->`, `output-target-outside-return` on later `<…>`) cannot be triggered by a wrapped import.
 
 **Architecture:** Add `Parser::skip_line_starts`, a private helper that advances `self.pos` past consecutive `LineStart` tokens. Call it at three positions inside the `TokenKind::Lbrace` arm of `Parser::parse_import` (after `{`, after each `,`, before the closing-brace check). Items themselves remain atomic — `name`, `as`, `alias` must stay on a single line. Replace the final `expect(&Rbrace)` with a peek-and-match producing a clearer diagnostic on missing separators. No tokenizer, AST, IR, lowering, or LSP changes.
 
@@ -90,8 +90,8 @@ Append this `#[test]` inside `mod import_decl_tests` (immediately above the clos
 ```rust
 #[test]
 fn multi_line_with_trailing_comma_equals_single_line() {
-    let multi = "import \"./x.glyph.md\" {\n    a,\n    b,\n    c,\n}\n";
-    let single = "import \"./x.glyph.md\" { a, b, c }\n";
+    let multi = "import \"./x.glyph\" {\n    a,\n    b,\n    c,\n}\n";
+    let single = "import \"./x.glyph\" { a, b, c }\n";
     assert_eq!(
         extract(parse_first_import(multi)),
         extract(parse_first_import(single)),
@@ -238,9 +238,9 @@ Inside `mod import_decl_tests`, append:
 ```rust
 #[test]
 fn multi_line_without_trailing_comma_parses() {
-    let src = "import \"./x.glyph.md\" {\n    a,\n    b,\n    c\n}\n";
+    let src = "import \"./x.glyph\" {\n    a,\n    b,\n    c\n}\n";
     let (path, names) = extract(parse_first_import(src));
-    assert_eq!(path, "./x.glyph.md");
+    assert_eq!(path, "./x.glyph");
     let bare: Vec<&str> = names.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(bare, vec!["a", "b", "c"]);
     assert!(names.iter().all(|(_, alias)| alias.is_none()));
@@ -254,7 +254,7 @@ fn multi_line_without_trailing_comma_parses() {
 fn multi_line_mixed_layout_parses() {
     // Some names on the header line, more on subsequent lines, `}` on
     // its own line. Asserts the parser does not require a uniform layout.
-    let src = "import \"./x.glyph.md\" { a, b,\n    c,\n    d,\n}\n";
+    let src = "import \"./x.glyph\" { a, b,\n    c,\n    d,\n}\n";
     let (_, names) = extract(parse_first_import(src));
     let bare: Vec<&str> = names.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(bare, vec!["a", "b", "c", "d"]);
@@ -268,7 +268,7 @@ fn multi_line_mixed_layout_parses() {
 fn multi_line_aliases_across_lines_parse() {
     // Items themselves stay on a single line; line breaks between items
     // are exercised. Both aliases survive.
-    let src = "import \"./x.glyph.md\" {\n    foo as f,\n    bar as b,\n}\n";
+    let src = "import \"./x.glyph\" {\n    foo as f,\n    bar as b,\n}\n";
     let (_, names) = extract(parse_first_import(src));
     assert_eq!(names.len(), 2);
     assert_eq!(names[0].0, "foo");
@@ -316,7 +316,7 @@ fn multi_line_missing_comma_between_names_diagnostic() {
     // `b` on a new line without a comma after `a`. The diagnostic must
     // mention both `,` and `}` and pin the span to the `b` token, not
     // to a `LineStart`.
-    let src = "import \"./x.glyph.md\" { a\n b\n }\n";
+    let src = "import \"./x.glyph\" { a\n b\n }\n";
     let err = parse(src, 0).err().expect("expected ParseError");
     match err {
         ParseError::Unexpected { ref message, span } => {
@@ -388,7 +388,7 @@ fn multi_line_with_comments_parses() {
     // Both should be invisible to the parser by the time it sees the
     // brace list, so the import parses cleanly.
     let src = "\
-import \"./x.glyph.md\" {
+import \"./x.glyph\" {
     // explanatory note
     a, // why we need a
     b,
@@ -447,7 +447,7 @@ fn multi_line_import_does_not_cascade_to_arrow_or_output_target() {
     // After the fix, parse_import succeeds, both Arrow and `<` tokens
     // are consumed legitimately, and neither cascade triggers.
     let src = "\
-import \"./other.glyph.md\" {
+import \"./other.glyph\" {
     foo,
     bar,
 }
@@ -458,7 +458,7 @@ skill main() -> Path
 ";
     let line_index = LineIndex::new(src);
     let mut bag = DiagBag::new();
-    let _ = parse_with_diagnostics(src, 0, "t.glyph.md", &line_index, &mut bag);
+    let _ = parse_with_diagnostics(src, 0, "t.glyph", &line_index, &mut bag);
     let ids: Vec<String> = bag.iter().map(|d| d.id.clone()).collect();
     assert!(
         !ids.iter().any(|s| s == "G::parse::operator-in-expression"),
@@ -567,8 +567,8 @@ Selective examples currently sit at lines 207-212:
 **Selective:**
 
 \`\`\`glyph
-import "./prefs.glyph.md" { preserve_existing_patterns, validation_strictness }
-import "./repo_tools.glyph.md" { inspect_repo as inspect, has_test_suite }
+import "./prefs.glyph" { preserve_existing_patterns, validation_strictness }
+import "./repo_tools.glyph" { inspect_repo as inspect, has_test_suite }
 \`\`\`
 ```
 
@@ -580,7 +580,7 @@ Insert this right after the closing ` ``` ` of the existing block (still inside 
 For long lists, the brace body may span multiple lines. A trailing comma is allowed:
 
 ```glyph
-import "./glyph_authoring_passes.glyph.md" {
+import "./glyph_authoring_passes.glyph" {
     factor_long_instructions_and_texts,
     sort_declarations,
     compile_and_iterate,

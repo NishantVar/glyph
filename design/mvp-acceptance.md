@@ -7,7 +7,7 @@ This document defines the walking skeleton, test corpus structure, multi-file ac
 **Exit codes:** `0` = success (all phases complete, `.md` emitted), `1` = hard errors (compilation cannot proceed), `2` = repairable diagnostics only (pipeline stops after Phase 2, agent can repair and re-invoke), `3` = invocation error (bad flags, missing path, permission denied, IO failure).
 
 **Agent interaction model:**
-1. Agent invokes `glyph compile foo.glyph.md --format json --emit-ir`.
+1. Agent invokes `glyph compile foo.glyph --format json --emit-ir`.
 2. If exit code 2: agent reads JSON diagnostics from stdout, repairs source, re-invokes.
 3. If exit code 0: compiler ran Phases 1→2→4→5→6-Step1→7, wrote `foo.md` (mechanical expansion) + `foo.ir.json` (full typed IR with `with` modifiers, projection tiers, etc.).
 4. Agent optionally post-processes `foo.md` using `foo.ir.json` for LLM-quality prose (Step 2 reshaping, `with` modifier application). This is outside the compiler's scope.
@@ -24,7 +24,7 @@ The walking skeleton is the first thing that compiles end-to-end via `glyph comp
 - Explicit `effects:` and `description:` (no inference gaps)
 - No imports (single-file)
 
-### Source: `update_docs.glyph.md`
+### Source: `update_docs.glyph`
 
 ```glyph
 skill update_docs()
@@ -82,13 +82,13 @@ effects: [reads_files, writes_files]
 ### CLI test
 
 ```bash
-glyph compile tests/corpus/valid/update_docs.glyph.md --format json
+glyph compile tests/corpus/valid/update_docs.glyph --format json
 # Exit code: 0
 # Writes: update_docs.md (matches golden snapshot)
 # Stdout JSON: { "diagnostics": [], "emitted": ["update_docs.md"] }
 ```
 
-**v0.0.1 passes when:** `glyph compile update_docs.glyph.md` exits 0 and produces byte-identical `update_docs.md` on every run.
+**v0.0.1 passes when:** `glyph compile update_docs.glyph` exits 0 and produces byte-identical `update_docs.md` on every run.
 
 
 ## 2. Test Corpus
@@ -113,14 +113,14 @@ The compiler produces **scaffolded expansion** — the deterministic emitter (`e
 
 | File | What it tests |
 |------|---------------|
-| `update_docs.glyph.md` | Walking skeleton. Parameterless, inline strings only, explicit const defs, no calls. |
-| `fix_bug.glyph.md` | Flagship. Parameters with defaults, `block` defs, `const` defs, `with` modifier (stored in IR, not applied in `.md`), `return`, constraint markers at body level. Exercises call expansion, projection tier assignment, return folding. |
-| `constraint_only.glyph.md` | Skill with `constraints:` section but no `flow:`. Tests `### Steps` omission in output. |
-| `branching.glyph.md` | Skill with `if`/`elif`/`else` in flow. Tests conditional projection (lettered sub-steps per arm). Note: `==` in `if` conditions is branch-condition syntax, not a value-level operator — does not trigger `G::parse::operator-in-expression`. |
-| `effects_over_declared.glyph.md` | Skill that declares more effects than inferred. Compiles successfully; emits `G::analyze::effects-over-declared` warning (stderr). |
-| `explicit_blocks.glyph.md` | Skill with 4+ statement private block. Tests Tier 2 same-file procedure projection. |
-| `library_text_only.glyph.md` | Library file with only `export const` constants. Tests zero `.md` emission, no error. |
-| `library_with_blocks.glyph.md` | Library file with `export block` declarations. Tests library compilation path and procedure emission rules. |
+| `update_docs.glyph` | Walking skeleton. Parameterless, inline strings only, explicit const defs, no calls. |
+| `fix_bug.glyph` | Flagship. Parameters with defaults, `block` defs, `const` defs, `with` modifier (stored in IR, not applied in `.md`), `return`, constraint markers at body level. Exercises call expansion, projection tier assignment, return folding. |
+| `constraint_only.glyph` | Skill with `constraints:` section but no `flow:`. Tests `### Steps` omission in output. |
+| `branching.glyph` | Skill with `if`/`elif`/`else` in flow. Tests conditional projection (lettered sub-steps per arm). Note: `==` in `if` conditions is branch-condition syntax, not a value-level operator — does not trigger `G::parse::operator-in-expression`. |
+| `effects_over_declared.glyph` | Skill that declares more effects than inferred. Compiles successfully; emits `G::analyze::effects-over-declared` warning (stderr). |
+| `explicit_blocks.glyph` | Skill with 4+ statement private block. Tests Tier 2 same-file procedure projection. |
+| `library_text_only.glyph` | Library file with only `export const` constants. Tests zero `.md` emission, no error. |
+| `library_with_blocks.glyph` | Library file with `export block` declarations. Tests library compilation path and procedure emission rules. |
 
 ### 2.2 `repairable/` — Stops at Phase 2 (exit code 2)
 
@@ -128,20 +128,20 @@ Each file has `repairable` diagnostics. The compiler stops after Phase 2 and emi
 
 | File | Diagnostics exercised |
 |------|----------------------|
-| `novice_fix_bug.glyph.md` | `G::analyze::undefined-name`, `G::analyze::undefined-call` |
-| `novice_simple.glyph.md` | `G::analyze::undefined-name`, `G::analyze::ambiguous-role` |
-| `indent_tabs.glyph.md` | `G::parse::tab-indent` |
-| `mixed_indent.glyph.md` | `G::parse::mixed-indent` |
-| `nested_branch.glyph.md` | `G::analyze::nested-branch` |
-| `missing_effects.glyph.md` | `G::analyze::missing-effects` |
-| `duplicate_import.glyph.md` | `G::analyze::duplicate-import` |
-| `unused_import.glyph.md` | `G::analyze::unused-import` |
-| `duplicate_subsection.glyph.md` | `G::parse::duplicate-subsection` |
-| `operator_expr.glyph.md` | `G::parse::operator-in-expression` |
-| `param_slot_default.glyph.md` | `G::parse::param-slot-in-non-instruction-string` |
-| `stdlib_missing_import.glyph.md` | `G::analyze::stdlib-missing-import` |
-| `missing_return.glyph.md` | `G::analyze::missing-return` |
-| `missing_description.glyph.md` | `G::analyze::missing-description` |
+| `novice_fix_bug.glyph` | `G::analyze::undefined-name`, `G::analyze::undefined-call` |
+| `novice_simple.glyph` | `G::analyze::undefined-name`, `G::analyze::ambiguous-role` |
+| `indent_tabs.glyph` | `G::parse::tab-indent` |
+| `mixed_indent.glyph` | `G::parse::mixed-indent` |
+| `nested_branch.glyph` | `G::analyze::nested-branch` |
+| `missing_effects.glyph` | `G::analyze::missing-effects` |
+| `duplicate_import.glyph` | `G::analyze::duplicate-import` |
+| `unused_import.glyph` | `G::analyze::unused-import` |
+| `duplicate_subsection.glyph` | `G::parse::duplicate-subsection` |
+| `operator_expr.glyph` | `G::parse::operator-in-expression` |
+| `param_slot_default.glyph` | `G::parse::param-slot-in-non-instruction-string` |
+| `stdlib_missing_import.glyph` | `G::analyze::stdlib-missing-import` |
+| `missing_return.glyph` | `G::analyze::missing-return` |
+| `missing_description.glyph` | `G::analyze::missing-description` |
 
 ### 2.3 `invalid/` — Hard-fail (exit code 1)
 
@@ -151,28 +151,28 @@ When a file contains both `error` and `repairable` diagnostics, exit code is `1`
 
 | File | Expected diagnostic |
 |------|-------------------|
-| `empty.glyph.md` | `G::parse::empty-file` |
-| `empty_flow.glyph.md` | `G::parse::empty-flow` |
-| `two_skills.glyph.md` | `G::parse::multiple-skills` |
-| `nested_flow.glyph.md` | `G::parse::nested-flow` |
-| `none_with_effects.glyph.md` | `G::parse::none-with-effects` |
-| `chained_with.glyph.md` | `G::parse::multiple-with` |
-| `with_bare_name.glyph.md` | `G::parse::with-on-bare-name` |
-| `return_mid_flow.glyph.md` | `G::parse::return-not-terminal` |
-| `return_in_branch.glyph.md` | `G::parse::return-in-branch` |
-| `two_returns.glyph.md` | `G::parse::multiple-returns` |
-| `name_collision.glyph.md` | `G::analyze::name-collision` |
-| `import_private.glyph.md` | `G::analyze::import-private` |
-| `import_skill.glyph.md` | `G::analyze::import-skill` |
-| `circular_import_a.glyph.md` + `_b.glyph.md` | `G::analyze::circular-import` |
-| `missing_file.glyph.md` | `G::analyze::missing-file` |
-| `effects_under.glyph.md` | `G::analyze::effects-under-declared` |
-| `empty_skill.glyph.md` | `G::analyze::empty-skill-body` |
-| `missing_required_arg.glyph.md` / `export_block_missing_required_arg.glyph.md` / `imports/missing_required_arg_imported.glyph.md` | `G::analyze::missing-required-arg` (call sites that omit a positional argument for a parameter without a default — fires for private `block`, same-file `export block`, and imported `export block` callees; PRD #103 / Issues #104, #105) |
-| `bad_param_slot.glyph.md` | `G::analyze::unknown-param-slot` |
-| `closure_leak.glyph.md` | `G::analyze::closure-violation` |
-| `library_no_exports.glyph.md` | `G::analyze::no-exports-in-library` |
-| `import_unknown_stdlib.glyph.md` | `G::imports::unknown-stdlib-module` |
+| `empty.glyph` | `G::parse::empty-file` |
+| `empty_flow.glyph` | `G::parse::empty-flow` |
+| `two_skills.glyph` | `G::parse::multiple-skills` |
+| `nested_flow.glyph` | `G::parse::nested-flow` |
+| `none_with_effects.glyph` | `G::parse::none-with-effects` |
+| `chained_with.glyph` | `G::parse::multiple-with` |
+| `with_bare_name.glyph` | `G::parse::with-on-bare-name` |
+| `return_mid_flow.glyph` | `G::parse::return-not-terminal` |
+| `return_in_branch.glyph` | `G::parse::return-in-branch` |
+| `two_returns.glyph` | `G::parse::multiple-returns` |
+| `name_collision.glyph` | `G::analyze::name-collision` |
+| `import_private.glyph` | `G::analyze::import-private` |
+| `import_skill.glyph` | `G::analyze::import-skill` |
+| `circular_import_a.glyph` + `_b.glyph` | `G::analyze::circular-import` |
+| `missing_file.glyph` | `G::analyze::missing-file` |
+| `effects_under.glyph` | `G::analyze::effects-under-declared` |
+| `empty_skill.glyph` | `G::analyze::empty-skill-body` |
+| `missing_required_arg.glyph` / `export_block_missing_required_arg.glyph` / `imports/missing_required_arg_imported.glyph` | `G::analyze::missing-required-arg` (call sites that omit a positional argument for a parameter without a default — fires for private `block`, same-file `export block`, and imported `export block` callees; PRD #103 / Issues #104, #105) |
+| `bad_param_slot.glyph` | `G::analyze::unknown-param-slot` |
+| `closure_leak.glyph` | `G::analyze::closure-violation` |
+| `library_no_exports.glyph` | `G::analyze::no-exports-in-library` |
+| `import_unknown_stdlib.glyph` | `G::imports::unknown-stdlib-module` |
 
 
 ## 3. Multi-File Acceptance Project
@@ -182,18 +182,18 @@ A 5-skill project in `tests/corpus/multi-file/` that exercises imports, DAG reso
 ### Import DAG
 
 ```
-prefs.glyph.md ◄──── fix_bug.glyph.md
+prefs.glyph ◄──── fix_bug.glyph
                          │
-repo_tools.glyph.md ◄───┤
+repo_tools.glyph ◄───┤
          ▲               │
-         └────── review_pr.glyph.md
+         └────── review_pr.glyph
 
-update_docs.glyph.md  (standalone, no imports)
+update_docs.glyph  (standalone, no imports)
 ```
 
 Topological compile order: `prefs` → `repo_tools` → {`fix_bug`, `review_pr`, `update_docs`} (last three are independent).
 
-### 3.1 `prefs.glyph.md` — Preferences library
+### 3.1 `prefs.glyph` — Preferences library
 
 ```glyph
 // Team-wide coding preferences.
@@ -214,7 +214,7 @@ Make the smallest change that solves the problem.
 
 **Tests:** Library with only `export const`. Zero `.md` emission. Names importable by consumers.
 
-### 3.2 `repo_tools.glyph.md` — Reusable procedures library
+### 3.2 `repo_tools.glyph` — Reusable procedures library
 
 ```glyph
 export block inspect_repo(scope = ".") -> Report
@@ -238,11 +238,11 @@ export block run_tests(scope = ".") -> TestResult
 
 **Tests:** Library with `export block` declarations. Each block has explicit effects, parameters with defaults, return type, and multi-statement flow. Tests Tier 2/3 projection decisions at consumer call sites.
 
-### 3.3 `fix_bug.glyph.md` — Flagship skill
+### 3.3 `fix_bug.glyph` — Flagship skill
 
 ```glyph
-import "./prefs.glyph.md" { preserve_existing_patterns }
-import "./repo_tools.glyph.md" { inspect_repo }
+import "./prefs.glyph" { preserve_existing_patterns }
+import "./repo_tools.glyph" { inspect_repo }
 
 skill fix_bug(scope = ".")
     description: "Debug and fix a bug in the codebase with minimal, targeted changes."
@@ -283,10 +283,10 @@ block summarize_changes()
 
 **Tests:** Selective import from two libraries. Cross-file name resolution. `with` modifier on imported call (stored in IR; mechanical `.md` uses resolved body text without modifier application). Mix of imported const, local const, local blocks. Tier 1 inline (small blocks) + Tier 2 same-file procedure (if any block exceeds threshold). Return folding. Constraint rendering with imported `preserve_existing_patterns`.
 
-### 3.4 `review_pr.glyph.md` — Skill with branching
+### 3.4 `review_pr.glyph` — Skill with branching
 
 ```glyph
-import "./repo_tools.glyph.md" { inspect_repo, run_tests }
+import "./repo_tools.glyph" { inspect_repo, run_tests }
 
 skill review_pr(scope = ".", risk = "medium")
     description: "Review a pull request for correctness, style, and safety."
@@ -311,7 +311,7 @@ const check_tests = "Verify that tests exist for changed behavior and that they 
 
 **Tests:** Branching (`if`/`else`) with conditional projection. Multiple imports from same library. Parameters with defaults. Two constraint markers. Imported `export block` called in branch body. Tests lettered sub-step rendering.
 
-### 3.5 `update_docs.glyph.md` — Standalone skill
+### 3.5 `update_docs.glyph` — Standalone skill
 
 Same as the walking skeleton (§1). Tests standalone compilation with no imports alongside import-heavy siblings.
 
@@ -477,11 +477,11 @@ Every file in `tests/corpus/valid/` and `tests/corpus/multi-file/` produces byte
 ### Bar 3: Multi-file project compiles
 
 The 5-skill project in `tests/corpus/multi-file/` (§3) compiles successfully:
-- `prefs.glyph.md` compiles (exit 0, zero `.md` emission)
-- `repo_tools.glyph.md` compiles (exit 0, emits procedure files if blocks exceed Tier 1 threshold)
-- `fix_bug.glyph.md` compiles (exit 0, imports from prefs + repo_tools resolve)
-- `review_pr.glyph.md` compiles (exit 0, imports from repo_tools, branching works)
-- `update_docs.glyph.md` compiles (exit 0, standalone)
+- `prefs.glyph` compiles (exit 0, zero `.md` emission)
+- `repo_tools.glyph` compiles (exit 0, emits procedure files if blocks exceed Tier 1 threshold)
+- `fix_bug.glyph` compiles (exit 0, imports from prefs + repo_tools resolve)
+- `review_pr.glyph` compiles (exit 0, imports from repo_tools, branching works)
+- `update_docs.glyph` compiles (exit 0, standalone)
 - DAG order respected: libraries compile before consumers
 - Cross-file name resolution works
 
@@ -508,14 +508,14 @@ All snapshot tests use the `insta` crate for Rust, located in `glyph-cli/tests/`
 ```rust
 #[test]
 fn valid_update_docs() {
-    let result = glyph_compile("tests/corpus/valid/update_docs.glyph.md");
+    let result = glyph_compile("tests/corpus/valid/update_docs.glyph");
     assert_eq!(result.exit_code, 0);
     insta::assert_snapshot!(result.emitted_md("update_docs.md"));
 }
 
 #[test]
 fn repairable_novice_fix_bug() {
-    let result = glyph_compile("tests/corpus/repairable/novice_fix_bug.glyph.md");
+    let result = glyph_compile("tests/corpus/repairable/novice_fix_bug.glyph");
     assert_eq!(result.exit_code, 2);
     insta::assert_snapshot!(result.diagnostics_json());
     // Verify specific diagnostic IDs present
@@ -525,7 +525,7 @@ fn repairable_novice_fix_bug() {
 
 #[test]
 fn invalid_empty_file() {
-    let result = glyph_compile("tests/corpus/invalid/empty.glyph.md");
+    let result = glyph_compile("tests/corpus/invalid/empty.glyph");
     assert_eq!(result.exit_code, 1);
     insta::assert_snapshot!(result.diagnostics_json());
     assert!(result.has_diagnostic("G::parse::empty-file"));
@@ -533,7 +533,7 @@ fn invalid_empty_file() {
 
 #[test]
 fn strict_rejects_repairable() {
-    let result = glyph_compile_strict("tests/corpus/repairable/novice_fix_bug.glyph.md");
+    let result = glyph_compile_strict("tests/corpus/repairable/novice_fix_bug.glyph");
     assert_eq!(result.exit_code, 1); // --strict promotes exit 2 → exit 1
 }
 ```

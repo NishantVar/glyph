@@ -1,0 +1,3 @@
+import "./circular_a.glyph" { a_text }
+
+export const something = "From B."

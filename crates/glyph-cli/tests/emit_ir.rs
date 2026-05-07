@@ -39,14 +39,14 @@ fn ir_json_path(source: &std::path::Path) -> PathBuf {
         .unwrap()
         .to_str()
         .unwrap()
-        .strip_suffix(".glyph.md")
+        .strip_suffix(".glyph")
         .unwrap();
     parent.join(format!("{}.ir.json", stem))
 }
 
 #[test]
 fn emit_ir_produces_ir_json_file() {
-    let (_dir, src) = setup_tempdir("update_docs.glyph.md");
+    let (_dir, src) = setup_tempdir("update_docs.glyph");
     let result = run_compile_emit_ir(&src);
     assert!(
         result.status.success(),
@@ -65,14 +65,14 @@ fn emit_ir_produces_ir_json_file() {
     // Check top-level envelope fields.
     assert_eq!(v["ir_version"], 1);
     assert!(v["compiler"].as_str().unwrap().starts_with("glyph "));
-    assert_eq!(v["source_file"].as_str().unwrap(), "update_docs.glyph.md");
+    assert_eq!(v["source_file"].as_str().unwrap(), "update_docs.glyph");
     assert_eq!(v["skill"]["kind"], "skill");
     assert_eq!(v["skill"]["name"], "update_docs");
 }
 
 #[test]
 fn emit_ir_is_byte_identical_across_runs() {
-    let (_dir, src) = setup_tempdir("update_docs.glyph.md");
+    let (_dir, src) = setup_tempdir("update_docs.glyph");
     let ir_path = ir_json_path(&src);
 
     let r1 = run_compile_emit_ir(&src);
@@ -114,7 +114,7 @@ skill fix()
     flow:
         inspect() with "focus on auth"
 "#;
-    let v = compile_and_read_ir("with_mod.glyph.md", source);
+    let v = compile_and_read_ir("with_mod.glyph", source);
     let flow = v["skill"]["flow"].as_array().unwrap();
     let call = &flow[0];
     assert_eq!(call["kind"], "call");
@@ -137,7 +137,7 @@ skill fix()
     flow:
         review_code()
 "#;
-    let v = compile_and_read_ir("proj_mode.glyph.md", source);
+    let v = compile_and_read_ir("proj_mode.glyph", source);
     let flow = v["skill"]["flow"].as_array().unwrap();
     let call = &flow[0];
     assert_eq!(call["kind"], "call");
@@ -156,7 +156,7 @@ skill fix()
     flow:
         helper()
 "#;
-    let v = compile_and_read_ir("proj_inline.glyph.md", source);
+    let v = compile_and_read_ir("proj_inline.glyph", source);
     let flow = v["skill"]["flow"].as_array().unwrap();
     // Tier 1 calls keep their Call shape in IR so call-site metadata remains
     // available to validators and downstream tooling.
@@ -185,7 +185,7 @@ skill fix()
     flow:
         review_code()
 "#;
-    let v = compile_and_read_ir("desc.glyph.md", source);
+    let v = compile_and_read_ir("desc.glyph", source);
     let flow = v["skill"]["flow"].as_array().unwrap();
     let call = &flow[0];
     assert_eq!(call["kind"], "call");
@@ -213,7 +213,7 @@ skill fix()
     flow:
         review_code()
 "#;
-    let v = compile_and_read_ir("desc_absent.glyph.md", source);
+    let v = compile_and_read_ir("desc_absent.glyph", source);
     let flow = v["skill"]["flow"].as_array().unwrap();
     let call = &flow[0];
     assert_eq!(call["kind"], "call");
@@ -225,7 +225,7 @@ skill fix()
 
 #[test]
 fn emit_ir_includes_applies_descriptions_on_branch() {
-    let (_dir, src) = setup_tempdir("branching.glyph.md");
+    let (_dir, src) = setup_tempdir("branching.glyph");
     let result = run_compile_emit_ir(&src);
     assert!(result.status.success());
     let ir_path = ir_json_path(&src);
@@ -235,7 +235,7 @@ fn emit_ir_includes_applies_descriptions_on_branch() {
     // Find the branch node in flow.
     let flow = v["skill"]["flow"].as_array().unwrap();
     let branch = flow.iter().find(|n| n["kind"] == "branch").unwrap();
-    // branching.glyph.md uses mode == "fast" / mode == "slow", not .applies().
+    // branching.glyph uses mode == "fast" / mode == "slow", not .applies().
     // So applies_descriptions should be null.
     assert!(
         branch["applies_descriptions"].is_null(),
@@ -265,7 +265,7 @@ skill main()
         else
             "Do the default thing."
 "#;
-    let v = compile_and_read_ir("applies.glyph.md", source);
+    let v = compile_and_read_ir("applies.glyph", source);
     let flow = v["skill"]["flow"].as_array().unwrap();
     let branch = flow.iter().find(|n| n["kind"] == "branch").unwrap();
     let ad = &branch["applies_descriptions"];
@@ -289,7 +289,7 @@ skill fix()
     flow:
         review_code()
 "#;
-    let v = compile_and_read_ir("local_refs.glyph.md", source);
+    let v = compile_and_read_ir("local_refs.glyph", source);
     let flow = v["skill"]["flow"].as_array().unwrap();
     let call = &flow[0];
     assert_eq!(call["kind"], "call");
@@ -308,7 +308,7 @@ fn emit_ir_role_enum_includes_context_value() {
     flow:
         "Do the fix."
 "#;
-    let v = compile_and_read_ir("context_role.glyph.md", source);
+    let v = compile_and_read_ir("context_role.glyph", source);
     let context = v["skill"]["context"].as_array().unwrap();
     assert!(!context.is_empty(), "context array should not be empty");
     assert_eq!(context[0]["kind"], "context");
@@ -323,7 +323,7 @@ fn emit_ir_skill_carries_context_array() {
     flow:
         "Do the thing."
 "#;
-    let v = compile_and_read_ir("ctx_empty.glyph.md", source);
+    let v = compile_and_read_ir("ctx_empty.glyph", source);
     let context = v["skill"]["context"].as_array().unwrap();
     assert!(context.is_empty(), "context should be empty when no context declared");
 }
@@ -343,7 +343,7 @@ skill fix()
     flow:
         review_code()
 "#;
-    let v = compile_and_read_ir("callee_ctx.glyph.md", source);
+    let v = compile_and_read_ir("callee_ctx.glyph", source);
     let flow = v["skill"]["flow"].as_array().unwrap();
     let call = &flow[0];
     assert_eq!(call["kind"], "call");
@@ -362,7 +362,7 @@ fn emit_ir_context_node_serializes_correctly() {
     flow:
         "Do the fix."
 "#;
-    let v = compile_and_read_ir("ctx_node.glyph.md", source);
+    let v = compile_and_read_ir("ctx_node.glyph", source);
     let context = v["skill"]["context"].as_array().unwrap();
     assert_eq!(context.len(), 1);
     let cn = &context[0];
@@ -379,7 +379,7 @@ fn emit_ir_params_serialize_with_correct_default() {
         "Inspect files under {scope}."
         "Write to {target}."
 "#;
-    let v = compile_and_read_ir("params.glyph.md", source);
+    let v = compile_and_read_ir("params.glyph", source);
     let params = v["skill"]["params"].as_array().unwrap();
     assert_eq!(params.len(), 2);
 
@@ -397,7 +397,7 @@ fn emit_ir_params_serialize_with_correct_default() {
 
 #[test]
 fn emit_ir_conforms_to_schema_full_skill() {
-    let (_dir, src) = setup_tempdir("with_context.glyph.md");
+    let (_dir, src) = setup_tempdir("with_context.glyph");
     let result = run_compile_emit_ir(&src);
     assert!(
         result.status.success(),
@@ -425,7 +425,7 @@ fn emit_ir_conforms_to_schema_full_skill() {
     assert!(skill["constraints"].is_array());
     assert!(skill["flow"].is_array());
 
-    // Context should have entries (with_context.glyph.md has context section).
+    // Context should have entries (with_context.glyph has context section).
     let ctx = skill["context"].as_array().unwrap();
     assert!(!ctx.is_empty());
     for c in ctx {

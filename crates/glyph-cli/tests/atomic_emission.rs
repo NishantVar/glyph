@@ -20,14 +20,14 @@ fn failed_compile_leaves_no_tmp_and_no_md() {
 
     // Write a glyph file with a syntax error (no skill declaration — will error).
     std::fs::write(
-        dir.path().join("broken.glyph.md"),
+        dir.path().join("broken.glyph"),
         "this is not valid glyph syntax and has no skill declaration\n",
     )
     .unwrap();
 
     let output = Command::new(glyph_bin())
         .arg("compile")
-        .arg(dir.path().join("broken.glyph.md"))
+        .arg(dir.path().join("broken.glyph"))
         .output()
         .expect("failed to run glyph");
 
@@ -50,7 +50,7 @@ fn failed_compile_leaves_no_tmp_and_no_md() {
 fn prior_md_survives_failed_rebuild() {
     let dir = tempfile::tempdir().unwrap();
 
-    let source_path = dir.path().join("hello.glyph.md");
+    let source_path = dir.path().join("hello.glyph");
     let output_path = dir.path().join("hello.md");
 
     // Write a valid glyph file and compile it successfully.
@@ -112,7 +112,7 @@ skill hello()
 fn stale_tmp_cleaned_on_rebuild() {
     let dir = tempfile::tempdir().unwrap();
 
-    let source_path = dir.path().join("greet.glyph.md");
+    let source_path = dir.path().join("greet.glyph");
 
     std::fs::write(
         &source_path,
@@ -172,7 +172,7 @@ export block setup_env(shell = \"bash\") -> Path
         flow_lines,
     );
 
-    let lib_path = dir.path().join("mylib.glyph.md");
+    let lib_path = dir.path().join("mylib.glyph");
     std::fs::write(&lib_path, &source).unwrap();
 
     // Create the subdir and a stale .tmp for the procedure file.
@@ -207,7 +207,7 @@ export block setup_env(shell = \"bash\") -> Path
 fn directory_mode_cleans_stale_tmp() {
     let dir = tempfile::tempdir().unwrap();
 
-    let source_path = dir.path().join("task.glyph.md");
+    let source_path = dir.path().join("task.glyph");
     std::fs::write(
         &source_path,
         "\

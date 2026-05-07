@@ -15,7 +15,7 @@ fn corpus_dir() -> PathBuf {
 }
 
 fn compile_fixture(name: &str) -> String {
-    let source = corpus_dir().join(format!("{}.glyph.md", name));
+    let source = corpus_dir().join(format!("{}.glyph", name));
     let compiled = corpus_dir().join(format!("{}.md", name));
     let _ = std::fs::remove_file(&compiled);
 

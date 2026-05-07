@@ -14,7 +14,7 @@ the symptom, the impact, and the proposed fix.
   hand side is a call expression — but the parser doesn't accept it.
 
   - **Reproduction:** `glyph check
-    crates/glyph-cli/tests/corpus/valid/imports/fix_bug.glyph.md` — exits 0,
+    crates/glyph-cli/tests/corpus/valid/imports/fix_bug.glyph` — exits 0,
     emits no diagnostics, but no AST is produced internally.
   - **Symptom for downstream tools:** the LSP returns `null` for every cursor
     position on this file (no AST → no resolution table → no go-to-def). Any
@@ -33,7 +33,7 @@ the symptom, the impact, and the proposed fix.
     `undefined-name` diagnostic when the binding's RHS references an unknown
     callee.
   - **Workaround until fixed:** verification of cross-file LSP behavior uses
-    `crates/glyph-cli/tests/corpus/multi-file/fix_bug.glyph.md` instead, which
+    `crates/glyph-cli/tests/corpus/multi-file/fix_bug.glyph` instead, which
     is structurally identical but doesn't include the binding.
 
 ## Formatter (issue #109 follow-ups, codex pass-4 P2)
@@ -97,14 +97,14 @@ the symptom, the impact, and the proposed fix.
   authored corpus uses three different conventions for `avoid`-polarity
   constraint bodies: gerund-form
   (`"Letting an output-target token..."`,
-  `"Adding, merging, splitting..."` — used in `expand.glyph.md` and the
+  `"Adding, merging, splitting..."` — used in `expand.glyph` and the
   cli test corpus), already-`Avoid`-prefixed
   (`"Avoid leaving references to removed or renamed symbols."` in
   `GLYPH_LANGUAGE_GUIDE.md:1015` and
-  `skills/teach_glyph/teach_glyph_context.glyph.md:559`), and
+  `skills/teach_glyph/teach_glyph_context.glyph:559`), and
   already-`Do not`-prefixed
   (`"Do not make changes unrelated to the task."` in
-  `crates/glyph-cli/tests/corpus/valid/imports/prefs.glyph.md:2`;
+  `crates/glyph-cli/tests/corpus/valid/imports/prefs.glyph:2`;
   `"Do not make changes outside the requested scope."` prescribed for the
   Repair pass in `design/repair.md:156`). Wrapping the prefixed bodies in
   the locked `Avoid {text}.` / `You must never {text}.` templates

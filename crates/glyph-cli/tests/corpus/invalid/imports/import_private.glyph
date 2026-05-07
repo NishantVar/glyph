@@ -1,4 +1,4 @@
-import "./lib_with_private.glyph.md" { private_text }
+import "./lib_with_private.glyph" { private_text }
 
 skill main()
     description: "Main."

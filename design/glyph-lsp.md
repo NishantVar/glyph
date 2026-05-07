@@ -10,7 +10,7 @@ Cross-references throughout to `design/diagnostics.md`, `design/pipeline.md`, `d
 
 ## 1. Goal and Scope
 
-**v1 ships two LSP capabilities** for `.glyph.md` files:
+**v1 ships two LSP capabilities** for `.glyph` files:
 
 1. `textDocument/publishDiagnostics` — push the diagnostics produced by `glyph-core`'s Phase 1 (Parse) + Phase 2 (Analyze) phases (the same engine `glyph check` runs). Triggered on `didOpen` and `didSave`. `didChange` debouncing is deferred (see §5).
 2. `textDocument/definition` — go-to-definition for any identifier that resolves to a top-level declaration (`skill`, `block`, `export block`, `text`, `import`-introduced name, or a header parameter). Cross-file resolution follows `import` paths.
@@ -29,7 +29,7 @@ The compiler is and remains the single source of truth for diagnostics and resol
                                                      ┌─────────────────┐
                                                      │  source files   │
                                                      │   on disk       │
-                                                     │  (*.glyph.md)   │
+                                                     │  (*.glyph)   │
                                                      └────────▲────────┘
                                                               │ read for
                                                               │ unsaved
@@ -63,7 +63,7 @@ The compiler is and remains the single source of truth for diagnostics and resol
 
 **Last-published-diagnostics cache (`DiagSnapshot`).** Per-URI list of the diagnostics most recently sent. The server clears stale URIs by publishing an empty list when a file is closed *and* no longer transitively imported.
 
-**No worker pool in v1.** All compiler work is synchronous on the request handler. This is fine for kilobyte-scale `.glyph.md` files; if profiling later shows latency, a single background worker channel is the natural extension. See §10 risk #4.
+**No worker pool in v1.** All compiler work is synchronous on the request handler. This is fine for kilobyte-scale `.glyph` files; if profiling later shows latency, a single background worker channel is the natural extension. See §10 risk #4.
 
 ---
 
@@ -316,7 +316,7 @@ Triggered by `textDocument/definition { textDocument: { uri }, position: { line,
 
 **Cross-file resolution (M3).** The `Resolution { def_file, def_span }` already carries the path the def lives in (per §4.4). The LSP converts the path to a `Url` (`Url::from_file_path`) and replies. If the def file is not currently open, that's fine — `Url::from_file_path` works on any extant filesystem path.
 
-**Stdlib targets (`@glyph/std`).** When `resolution.kind == Stdlib`, there is no `.glyph.md` source to jump to — these are compiler-embedded primitives (see `lib.rs:368-407`). v1 returns `null`. Post-MVP could open a synthetic markdown buffer describing the primitive (analogous to rust-analyzer's "go to definition on a built-in"). Out of scope here.
+**Stdlib targets (`@glyph/std`).** When `resolution.kind == Stdlib`, there is no `.glyph` source to jump to — these are compiler-embedded primitives (see `lib.rs:368-407`). v1 returns `null`. Post-MVP could open a synthetic markdown buffer describing the primitive (analogous to rust-analyzer's "go to definition on a built-in"). Out of scope here.
 
 **Inside `{name}` slots.** Per the brief's specific call-out:
 
@@ -351,7 +351,7 @@ Three milestones, each landing as its own PR. Each PR is independently shippable
 **Exit criteria.**
 
 1. `nvim-lspconfig` snippet in §9 attaches and shows the welcome message in `:LspInfo`.
-2. Opening a `.glyph.md` file with a known parse error (e.g., `flow:` indented with tabs) shows the corresponding `G::parse::tab-indent` diagnostic in the editor with the correct line and column.
+2. Opening a `.glyph` file with a known parse error (e.g., `flow:` indented with tabs) shows the corresponding `G::parse::tab-indent` diagnostic in the editor with the correct line and column.
 3. Saving a file with a fixed source clears the diagnostic.
 4. Opening a clean file produces zero diagnostics in `:LspInfo`.
 5. Server shuts down cleanly on `exit` notification (no orphan stdio processes).
@@ -390,9 +390,9 @@ Three milestones, each landing as its own PR. Each PR is independently shippable
 
 **Exit criteria.**
 
-1. A buffer with `import "./prefs.glyph.md" { project_conventions }` and a use of `project_conventions` jumps to the `text project_conventions` declaration in `prefs.glyph.md`, opening that file in the editor.
+1. A buffer with `import "./prefs.glyph" { project_conventions }` and a use of `project_conventions` jumps to the `text project_conventions` declaration in `prefs.glyph`, opening that file in the editor.
 2. Editing the importer to refer to a non-existent name produces a `G::analyze::import-private` (or related) diagnostic, with span on the `import` line.
-3. Editing `prefs.glyph.md` and saving clears or updates the importer's diagnostics on the next request that needs them (no perceptible lag in nvim).
+3. Editing `prefs.glyph` and saving clears or updates the importer's diagnostics on the next request that needs them (no perceptible lag in nvim).
 4. Stdlib references (`subagent`, `send`) do not jump (return `null`) but also do not error.
 5. All M1 / M2 exit criteria still pass.
 
@@ -419,9 +419,9 @@ if not configs.glyph then
       root_dir = lspconfig.util.root_pattern(
         ".git",
         "Cargo.toml",                              -- glyph projects often live in a workspace
-        "*.glyph.md"                               -- fallback: dir containing any .glyph.md
+        "*.glyph"                               -- fallback: dir containing any .glyph
       ),
-      single_file_support = true,                  -- works on lone .glyph.md files
+      single_file_support = true,                  -- works on lone .glyph files
       init_options = {
         enableEffects = false,                     -- match CLI default; flip to true if your project uses effects:
       },
@@ -435,14 +435,11 @@ lspconfig.glyph.setup({
   -- capabilities = your_capabilities,
 })
 
--- Filetype detection: .glyph.md → filetype "glyph"
+-- Filetype detection: .glyph → filetype "glyph"
 -- (The tree-sitter grammar branch ships a parser keyed off this same filetype.)
 vim.filetype.add({
   extension = {
-    ["glyph.md"] = "glyph",  -- compound extension
-  },
-  pattern = {
-    [".*%.glyph%.md"] = "glyph",  -- belt-and-braces; matches even when extension table doesn't fire
+    ["glyph"] = "glyph",
   },
 })
 ```
@@ -450,11 +447,11 @@ vim.filetype.add({
 **Notes.**
 
 - **`cmd = { "glyph", "lsp" }`** matches the M1 subcommand decision (§8). If the user prefers an explicit binary, swap to `{ "glyph-lsp" }` — but we don't ship one in v1.
-- **`filetypes = { "glyph" }`** must agree with whatever the tree-sitter highlighting branch uses. The compound `glyph.md` extension is awkward; both branches should land on the same filetype name.
+- **`filetypes = { "glyph" }`** must agree with whatever the tree-sitter highlighting branch uses; both branches should land on the same filetype name.
 - **`init_options.enableEffects`** mirrors the CLI's `--enable-effects` flag. Default `false` per `cli.md`.
-- **`single_file_support = true`** means an `nvim` invocation that opens a single `.glyph.md` outside any project root still gets diagnostics (M1 covers this; M2/M3 may degrade gracefully when there's no on-disk import context).
+- **`single_file_support = true`** means an `nvim` invocation that opens a single `.glyph` outside any project root still gets diagnostics (M1 covers this; M2/M3 may degrade gracefully when there's no on-disk import context).
 
-**Verification.** With the above, `:LspInfo` after opening a `.glyph.md` shows `glyph` attached. `:lua vim.lsp.buf.definition()` (or `gd` if mapped on `LspAttach`) jumps to the def. `:lua vim.diagnostic.open_float()` shows the diagnostic at point.
+**Verification.** With the above, `:LspInfo` after opening a `.glyph` shows `glyph` attached. `:lua vim.lsp.buf.definition()` (or `gd` if mapped on `LspAttach`) jumps to the def. `:lua vim.diagnostic.open_float()` shows the diagnostic at point.
 
 ### VS Code (untested)
 
@@ -470,7 +467,7 @@ A minimal extension manifest that points at the same binary:
   "contributes": {
     "languages": [{
       "id": "glyph",
-      "extensions": [".glyph.md"],
+      "extensions": [".glyph"],
       "aliases": ["Glyph"]
     }]
   }
@@ -535,7 +532,7 @@ Recommendation: ship M1 save-only; reconsider after dogfooding. Adding a 200ms `
 
 ### E. **Workspace-wide diagnostics are deferred.** *(Low — explicit non-goal.)*
 
-The server only knows about open buffers and their (resolved-on-demand) imports. A user who never opens `lib_x.glyph.md` won't see diagnostics from it even though it's in the project. v1 is "what your editor shows you." A workspace symbol index / project diagnostics is a clean post-MVP follow-up — `compile_directory` already builds the DAG and can stream per-file diagnostics.
+The server only knows about open buffers and their (resolved-on-demand) imports. A user who never opens `lib_x.glyph` won't see diagnostics from it even though it's in the project. v1 is "what your editor shows you." A workspace symbol index / project diagnostics is a clean post-MVP follow-up — `compile_directory` already builds the DAG and can stream per-file diagnostics.
 
 ### F. **`tokio` dependency adds build-time weight.** *(Low.)*
 

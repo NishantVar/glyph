@@ -20,7 +20,7 @@ use crate::span::{LineIndex, Span};
 
 /// Stable diagnostic id for the warning fired when an author writes one of
 /// the banned generic type names (e.g. `String`, `Int`, `List`) in type
-/// position in a `.glyph.md` source file.
+/// position in a `.glyph` source file.
 ///
 /// Warning tier — non-blocking; compilation continues. Closest neighbor in
 /// classification + phase is `G::analyze::effects-over-declared`. See
@@ -344,10 +344,10 @@ mod tests {
         let mut bag = DiagBag::new();
         // Insert in deliberately unsorted order.
         for (d, s) in [
-            mk("b.glyph.md", 5, "G::a::z"),
-            mk("a.glyph.md", 10, "G::a::a"),
-            mk("a.glyph.md", 5, "G::a::z"),
-            mk("a.glyph.md", 5, "G::a::a"),
+            mk("b.glyph", 5, "G::a::z"),
+            mk("a.glyph", 10, "G::a::a"),
+            mk("a.glyph", 5, "G::a::z"),
+            mk("a.glyph", 5, "G::a::a"),
         ] {
             bag.push(d, s);
         }
@@ -360,10 +360,10 @@ mod tests {
         assert_eq!(
             order,
             vec![
-                ("a.glyph.md", "G::a::a"),  // byte 5, id a
-                ("a.glyph.md", "G::a::z"),  // byte 5, id z
-                ("a.glyph.md", "G::a::a"),  // byte 10
-                ("b.glyph.md", "G::a::z"),  // file b last
+                ("a.glyph", "G::a::a"),  // byte 5, id a
+                ("a.glyph", "G::a::z"),  // byte 5, id z
+                ("a.glyph", "G::a::a"),  // byte 10
+                ("b.glyph", "G::a::z"),  // file b last
             ]
         );
     }
@@ -373,12 +373,12 @@ mod tests {
         let src = "abc\ndef\n";
         let li = line_index(src);
         // "abc" — bytes [0, 3). Inclusive end should be (line 1, col 3), not col 4.
-        let s = SourceSpan::from_byte_span("f.glyph.md", Span::new(0, 0, 3), &li);
+        let s = SourceSpan::from_byte_span("f.glyph", Span::new(0, 0, 3), &li);
         assert_eq!(s.start, LineCol { line: 1, col: 1 });
         assert_eq!(s.end, LineCol { line: 1, col: 3 });
 
         // single char "c": [2, 3) → start == end == (1, 3)
-        let s = SourceSpan::from_byte_span("f.glyph.md", Span::new(0, 2, 3), &li);
+        let s = SourceSpan::from_byte_span("f.glyph", Span::new(0, 2, 3), &li);
         assert_eq!(s.start, s.end);
     }
 
@@ -388,7 +388,7 @@ mod tests {
             "G::parse::empty-file",
             "source has no declarations",
             SourceSpan {
-                file: "f.glyph.md".into(),
+                file: "f.glyph".into(),
                 start: LineCol { line: 1, col: 1 },
                 end: LineCol { line: 1, col: 1 },
             },

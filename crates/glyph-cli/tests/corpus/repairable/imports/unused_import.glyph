@@ -1,4 +1,4 @@
-import "./lib_repairable.glyph.md" { greeting, farewell }
+import "./lib_repairable.glyph" { greeting, farewell }
 
 skill main()
     description: "Main."

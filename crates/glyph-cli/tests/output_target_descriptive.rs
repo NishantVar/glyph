@@ -34,7 +34,7 @@ fn run_fmt(file: &Path) -> Output {
         .expect("failed to spawn glyph binary")
 }
 
-/// Strip `.glyph.md` suffix and return the sibling `.md` path that `compile` writes to.
+/// Strip `.glyph` suffix and return the sibling `.md` path that `compile` writes to.
 fn md_path(source: &Path) -> PathBuf {
     let parent = source.parent().unwrap();
     let stem = source
@@ -42,7 +42,7 @@ fn md_path(source: &Path) -> PathBuf {
         .unwrap()
         .to_str()
         .unwrap()
-        .strip_suffix(".glyph.md")
+        .strip_suffix(".glyph")
         .unwrap();
     parent.join(format!("{}.md", stem))
 }
@@ -60,7 +60,7 @@ fn ndjson_contains_id(stdout: &str, id: &str) -> bool {
 #[test]
 fn descriptive_output_target_in_block_compiles_and_prose_carries_description() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("block_desc.glyph.md");
+    let path = dir.path().join("block_desc.glyph");
     std::fs::write(
         &path,
         "\
@@ -100,7 +100,7 @@ skill main()
 #[test]
 fn descriptive_output_target_in_export_block_compiles() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("export_block_desc.glyph.md");
+    let path = dir.path().join("export_block_desc.glyph");
     std::fs::write(
         &path,
         "\
@@ -129,7 +129,7 @@ export block compute() -> Confirmation
 #[test]
 fn same_domain_type_with_different_descriptions_compiles_cleanly() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("two_desc_blocks.glyph.md");
+    let path = dir.path().join("two_desc_blocks.glyph");
     std::fs::write(
         &path,
         "\
@@ -167,7 +167,7 @@ skill main()
 #[test]
 fn placeholder_string_return_repairs_to_descriptive_form() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("placeholder_desc.glyph.md");
+    let path = dir.path().join("placeholder_desc.glyph");
     std::fs::write(
         &path,
         "\

@@ -15,7 +15,7 @@ Glyph is a small language for authoring agent skills. You write structured sourc
 ## Example
 
 ```glyph
-import "./prefs.glyph.md" { house_style }
+import "./prefs.glyph" { house_style }
 
 // const: named value (string, int, or float). Reusable across the file.
 const tone = """
