@@ -6,7 +6,6 @@
 //! - Tier 1 (inline): callee body < 150 words → call keeps inline projection metadata.
 
 use crate::condition::ConditionTokenKind;
-use crate::emit::branch::extract_predicate_token;
 use crate::ir::{IrArena, IrNode};
 use std::collections::{BTreeMap, HashMap};
 
@@ -151,65 +150,16 @@ pub fn expand_step1_with_imported_descriptions(
     }
     // Clone the consts map so we can borrow it below without arena borrow conflict.
     let consts_for_lookup: BTreeMap<String, String> = arena.consts.clone();
-    // Walk Branch nodes and populate resolved_predicates.
+    // Walk Branch nodes and populate resolved_predicates by consuming the
+    // Analyze-attached `classification.tokens` instead of re-tokenizing.
+    // Tokens with `is_comparison_operand == true` are skipped per
+    // `design/data-flow.md` §327.
     let nodes = arena.nodes_mut();
     for i in 0..nodes.len() {
-        if let IrNode::Branch(ref br) = nodes[i] {
-            let mut descs: BTreeMap<String, String> = BTreeMap::new();
-            // Check all conditions (if + elif) for .applies() patterns and
-            // bare-identifier const references (PredicateConst).
-            let mut conditions = vec![br.condition.clone()];
-            for elif in &br.elif_branches {
-                conditions.push(elif.condition.clone());
-            }
-            for cond in &conditions {
-                // PredicateApplies: scan for all .applies() tokens.
-                let applies_suffix = ".applies()";
-                let mut search_from = 0;
-                while let Some(pos) = cond[search_from..].find(applies_suffix) {
-                    let abs_pos = search_from + pos;
-                    let receiver = &cond[..abs_pos];
-                    let block_name = receiver
-                        .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
-                        .next()
-                        .unwrap_or("");
-                    if !block_name.is_empty() {
-                        if let Some(desc) = block_descriptions.get(block_name) {
-                            descs.insert(block_name.to_string(), desc.clone());
-                        }
-                    }
-                    search_from = abs_pos + applies_suffix.len();
-                }
-                // PredicateConst: scan every whitespace-separated token for bare
-                // identifier const references, including within mixed conditions.
-                // (Previously only resolved pure single-token conditions; Task 4.5
-                // extends this to mixed/compositional conditions.)
-                // Strip trailing `:` (parser includes it in the condition string).
-                // TODO: strip the trailing `:` once at IR construction time
-                // (lower.rs / parse.rs) so consumers (analyze, expand, emit)
-                // don't each have to redo this work.
-                let cond_stripped = cond.trim_end_matches(':').trim();
-                // `split_whitespace` mangles `"quoted literal"` tokens, but only `PredicateConst`
-                // needs lookup here — `PredicateLiteral` is emitted directly by stub_fill (quotes
-                // stripped at render time), so split-mangled literal fragments harmlessly fall
-                // through `extract_predicate_token` and the `matches!` guard.
-                for raw_tok in cond_stripped.split_whitespace() {
-                    // Strip trailing punctuation so bare tokens like `big` are
-                    // recognised even if adjacent to a comma or similar.
-                    let tok = raw_tok.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_');
-                    if let Some((token, ConditionTokenKind::PredicateConst)) =
-                        extract_predicate_token(tok)
-                    {
-                        if let Some(body) = consts_for_lookup.get(&token) {
-                            descs.insert(token, body.clone());
-                        }
-                    }
-                }
-            }
-            if !descs.is_empty() {
-                // We need to mutate the Branch — clone data and replace.
-                let mut br_clone = br.clone();
-                br_clone.resolved_predicates = Some(descs);
+        if let IrNode::Branch(br) = &nodes[i] {
+            let mut br_clone = br.clone();
+            populate_resolved_predicates(&mut br_clone, &consts_for_lookup, &block_descriptions);
+            if br_clone.resolved_predicates.is_some() {
                 nodes[i] = IrNode::Branch(br_clone);
             }
         }
@@ -286,6 +236,56 @@ pub fn expand_step1_with_imported_descriptions(
     }
 
     arena
+}
+
+/// Populate `branch.resolved_predicates` by walking the Analyze-attached
+/// classification tokens on `branch` and each of its elif arms. Tokens marked
+/// `is_comparison_operand` are skipped per `design/data-flow.md` §327 — they
+/// are operands of an `==` comparison and must NOT enter resolved_predicates.
+///
+/// `consts` maps const-name → resolved body text (typically `IrArena.consts`).
+/// `block_descriptions` maps block-name → its `description:` text (locals
+/// override imports; the caller is responsible for that merge).
+fn populate_resolved_predicates(
+    branch: &mut crate::ir::IrBranch,
+    consts: &BTreeMap<String, String>,
+    block_descriptions: &HashMap<String, String>,
+) {
+    let mut rp: BTreeMap<String, String> = BTreeMap::new();
+
+    let mut walk = |c: &crate::condition::ConditionClassification| {
+        for tok in &c.tokens {
+            if tok.is_comparison_operand {
+                continue;
+            }
+            match tok.kind {
+                ConditionTokenKind::PredicateApplies => {
+                    let key = tok.text.trim_end_matches(".applies()").to_string();
+                    if let Some(desc) = block_descriptions.get(&key) {
+                        rp.insert(key, desc.clone());
+                    }
+                }
+                ConditionTokenKind::PredicateConst => {
+                    let key = tok.text.clone();
+                    if let Some(body) = consts.get(&key) {
+                        rp.insert(key, body.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    };
+
+    if let Some(c) = &branch.classification {
+        walk(c);
+    }
+    for elif in &branch.elif_branches {
+        if let Some(c) = &elif.classification {
+            walk(c);
+        }
+    }
+
+    branch.resolved_predicates = if rp.is_empty() { None } else { Some(rp) };
 }
 
 #[cfg(test)]
@@ -567,6 +567,25 @@ skill current()
         );
     }
 
+    /// Run parse → analyze_with_diagnostics → lower so that
+    /// `IrBranch.classification` is populated by the live pipeline (Tasks 5/6).
+    /// Post-Task-7, `expand_step1` consumes that classification directly,
+    /// so any test that exercises `resolved_predicates` MUST go through
+    /// the analyzed entry-point — `analyze::analyze` is a no-op stub.
+    fn lower_analyzed(src: &str) -> crate::ir::IrArena {
+        use crate::analyze::analyze_with_diagnostics;
+        use crate::diagnostic::DiagBag;
+        use crate::domain_registry::Registry;
+        use crate::span::LineIndex;
+        let (file, _) = parse::parse(src, 0).expect("source should parse");
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let mut registry = Registry::new();
+        let analyzed =
+            analyze_with_diagnostics(file, 0, "test", &line_index, &mut bag, &mut registry);
+        lower::lower(&analyzed).expect("source should lower")
+    }
+
     #[test]
     fn expand_step1_populates_resolved_predicates_for_const_form() {
         let src = r#"
@@ -578,8 +597,7 @@ skill foo()
         if big:
             "stop"
 "#;
-        let (file, _) = parse::parse(src, 0).expect("source should parse");
-        let arena = lower::lower(&file).expect("source should lower");
+        let arena = lower_analyzed(src);
         let arena = expand_step1(arena);
         // Find the Branch node in the arena.
         let branch = arena
@@ -611,8 +629,7 @@ skill foo()
         elif small:
             "continue"
 "#;
-        let (file, _) = parse::parse(src, 0).expect("source should parse");
-        let arena = lower::lower(&file).expect("source should lower");
+        let arena = lower_analyzed(src);
         let arena = expand_step1(arena);
         // Find the Branch node in the arena.
         let branch = arena

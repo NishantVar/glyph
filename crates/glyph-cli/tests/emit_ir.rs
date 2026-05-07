@@ -605,3 +605,57 @@ skill main()
         ids
     );
 }
+
+#[test]
+fn expand_skips_eq_operand_from_resolved_predicates() {
+    let source = r#"const complex_change = "the requested change is complex"
+
+skill main(risk: String)
+    description: "Test."
+    flow:
+        if risk == "high" and complex_change
+            "Escalate."
+        else
+            "Proceed."
+"#;
+    let v = compile_and_read_ir("eq_operand_skipped.glyph", source);
+    let flow = v["skill"]["flow"].as_array().unwrap();
+    let branch = flow.iter().find(|n| n["kind"] == "branch").unwrap();
+    let rp = &branch["resolved_predicates"];
+    assert!(rp.is_object(), "resolved_predicates should be populated");
+    assert_eq!(
+        rp["complex_change"], "the requested change is complex",
+        "complex_change must resolve"
+    );
+    assert!(
+        rp.get("high").is_none() && rp.get("\"high\"").is_none(),
+        "operand `\"high\"` must NOT enter resolved_predicates; got keys: {:?}",
+        rp.as_object().unwrap().keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn expand_resolves_both_predicates_in_or_compound() {
+    let source = r#"block fast_mode()
+    description: "Fast processing path."
+    flow:
+        "Fast work."
+
+block slow_mode()
+    description: "Slow processing path."
+    flow:
+        "Slow work."
+
+skill main()
+    description: "Test."
+    flow:
+        if fast_mode.applies() or slow_mode.applies()
+            "Either path."
+"#;
+    let v = compile_and_read_ir("or_compound_predicates.glyph", source);
+    let flow = v["skill"]["flow"].as_array().unwrap();
+    let branch = flow.iter().find(|n| n["kind"] == "branch").unwrap();
+    let rp = &branch["resolved_predicates"];
+    assert_eq!(rp["fast_mode"], "Fast processing path.");
+    assert_eq!(rp["slow_mode"], "Slow processing path.");
+}

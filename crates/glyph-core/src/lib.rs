@@ -3824,8 +3824,22 @@ skill main()
         else
             \"Do default processing.\"
 ";
+        // Task 7: expand consumes IrBranch.classification, populated by the
+        // analyze→lower path. The bare `analyze::analyze` stub is a no-op, so
+        // this test must use `analyze_with_diagnostics` (which runs
+        // `annotate_file_branches`) for classification to reach the IR.
         let (file, _) = parse::parse(src, 0).expect("should parse");
-        let file = analyze::analyze(file);
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let file = analyze::analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
         let arena = lower::lower(&file).expect("should lower");
         let arena = expand::expand_step1(arena);
         // Find the Branch node.
