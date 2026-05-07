@@ -135,3 +135,127 @@ fn type_decl_imported_selectively_drives_param_description() {
         md
     );
 }
+
+// --- §8.4 locked return-prose templates: one fixture+test per spec row. ---
+
+/// Compile a fixture and return the resulting `.md`. Panics on non-zero exit.
+fn compile_and_read(name: &str) -> String {
+    let src = fixture("valid", name);
+    let out = src.with_extension("md");
+    let _ = std::fs::remove_file(&out);
+    let result = run_compile(src.clone());
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "expected exit 0 for {name}; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    std::fs::read_to_string(&out).expect("compiled .md missing")
+}
+
+#[test]
+fn return_row1_descriptive_target_produces_x() {
+    let md = compile_and_read("return_row1_descriptive.glyph");
+    assert!(
+        md.contains("Inspect the scope. Produce: a structured diagnosis."),
+        "row 1 sentence should appear:\n{md}"
+    );
+}
+
+#[test]
+fn return_row2_named_with_type_decl_includes_description() {
+    let md = compile_and_read("return_row2_named_with_type_decl.glyph");
+    assert!(
+        md.contains("Inspect the scope. Produce `diagnosis` (`Diagnosis`): root cause and severity."),
+        "row 2 sentence should appear:\n{md}"
+    );
+}
+
+#[test]
+fn return_row3_named_with_type_no_decl_omits_description() {
+    let md = compile_and_read("return_row3_named_with_type_no_decl.glyph");
+    assert!(
+        md.contains("Inspect the scope. Produce `diagnosis` (`Diagnosis`)."),
+        "row 3 sentence should appear:\n{md}"
+    );
+    assert!(
+        !md.contains("`Diagnosis`):"),
+        "row 3 must not include a colon-led description:\n{md}"
+    );
+}
+
+#[test]
+fn return_row4_named_no_type_just_produces_name() {
+    let md = compile_and_read("return_row4_named_no_type.glyph");
+    assert!(
+        md.contains("Inspect the scope. Produce `diagnosis`."),
+        "row 4 sentence should appear:\n{md}"
+    );
+    assert!(
+        !md.contains("`diagnosis` ("),
+        "row 4 must not include a parenthesized type:\n{md}"
+    );
+}
+
+#[test]
+fn return_row5_expr_with_type_decl_includes_description() {
+    let md = compile_and_read("return_row5_expr_with_type_decl.glyph");
+    assert!(
+        md.contains("Inspect the scope. Return a `Diagnosis`: root cause and severity."),
+        "row 5 sentence should appear:\n{md}"
+    );
+    assert!(
+        !md.contains("Return the result of"),
+        "legacy fold must not fire when `-> Foo` is in scope:\n{md}"
+    );
+}
+
+#[test]
+fn return_row6_expr_with_type_no_decl_omits_description() {
+    let md = compile_and_read("return_row6_expr_with_type_no_decl.glyph");
+    assert!(
+        md.contains("Inspect the scope. Return a `Diagnosis`."),
+        "row 6 sentence should appear:\n{md}"
+    );
+    assert!(
+        !md.contains("Return a `Diagnosis`:"),
+        "row 6 must not include a colon-led description:\n{md}"
+    );
+    assert!(
+        !md.contains("Return the result of"),
+        "legacy fold must not fire when `-> Foo` is in scope:\n{md}"
+    );
+}
+
+#[test]
+fn return_row7_return_only_body_uses_standalone_sentence() {
+    // Row 7 routes to row 5/6 shape, but the callee is return-only so the
+    // sentence is emitted standalone (no leading body to fold into).
+    let md = compile_and_read("return_row7_return_only_body.glyph");
+    assert!(
+        md.contains("1. Produce `diagnosis` (`Diagnosis`): root cause and severity."),
+        "row 7 standalone sentence should appear:\n{md}"
+    );
+    assert!(
+        !md.contains("1. , and"),
+        "row 7 must not emit a leading-comma malformed line:\n{md}"
+    );
+}
+
+#[test]
+fn return_row8_no_type_no_target_emits_no_sentence() {
+    let md = compile_and_read("return_row8_no_type_no_target.glyph");
+    assert!(
+        md.contains("1. Inspect the scope.\n"),
+        "row 8 should leave the final step unmodified:\n{md}"
+    );
+    assert!(
+        !md.contains("Produce"),
+        "row 8 must not append any §8.4 sentence:\n{md}"
+    );
+    assert!(
+        !md.contains("Return a "),
+        "row 8 must not append a `Return a` sentence:\n{md}"
+    );
+}

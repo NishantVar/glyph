@@ -65,6 +65,13 @@ pub struct IrSkill {
     /// serializes IR via the derive.
     #[serde(skip)]
     pub output_contract: Option<NodeId>,
+    /// Source-text spelling of the `-> DomainType` annotation (e.g. `"Diagnosis"`).
+    /// `return_type` above stores the canonicalized `TypeTag::DomainType("diagnosis")`,
+    /// which loses the original casing — but the §8.4 return-prose templates render
+    /// the type as the author wrote it (`` Produce `name` (`Foo`). ``) and look up
+    /// the `TypeRegistry` description by source-text key. `None` mirrors `return_type`.
+    #[serde(skip)]
+    pub return_type_text: Option<String>,
 }
 
 /// Resolved parameter metadata threaded through Phase 6 Step 1 into the
@@ -131,6 +138,10 @@ pub struct IrBlock {
     /// private block's flow ends with `return <IDENT>`.
     #[serde(skip)]
     pub output_contract: Option<NodeId>,
+    /// Source-text type name; mirrors `IrSkill::return_type_text`. See that
+    /// field's doc for why the canonicalized `return_type` is insufficient.
+    #[serde(skip)]
+    pub return_type_text: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -172,6 +183,14 @@ pub struct IrCall {
     /// without a `return <…>` contract.
     #[serde(skip)]
     pub callee_output_contract: Option<OutputTargetForm>,
+    /// Callee block's source-text `-> DomainType` spelling (e.g. `"Diagnosis"`).
+    /// Mirrors `callee_output_contract`'s plumbing: same-file lower populates
+    /// from the block declaration; cross-file fix-up populates from
+    /// `ResolvedImports::block_return_types`. Used by the §8.4 return-prose
+    /// templates when the callee's contract drives a Tier-1 last step (skill
+    /// has no OC of its own). `None` for stdlib and untyped callees.
+    #[serde(skip)]
+    pub callee_return_type_text: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

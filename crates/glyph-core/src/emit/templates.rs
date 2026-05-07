@@ -1,9 +1,8 @@
 //! Locked deterministic-emitter templates. Single-grep changes only.
 
+use crate::ir::{OutputTargetForm, TypeRegistry};
+
 pub const EXTERNAL_FILE_TEMPLATE: &str = "Load and follow the procedure in `{path}`.";
-pub const IDENTIFIER_RETURN_SUFFIX: &str = ", and return that as your result.";
-pub const DESCRIPTION_RETURN_SUFFIX_PREFIX: &str = ", and return ";
-pub const DESCRIPTION_RETURN_SUFFIX_TAIL: &str = " as your result.";
 
 pub fn kebab_case(snake: &str) -> String {
     snake.replace('_', "-")
@@ -13,34 +12,80 @@ pub fn external_file_step(path: &str) -> String {
     EXTERNAL_FILE_TEMPLATE.replace("{path}", path)
 }
 
-/// Append the `Identifier` return-fold suffix to a final-Step body, stripping
-/// any trailing period from the body first so the suffix begins with `, `.
-pub fn append_identifier_suffix(body: &str) -> String {
-    let trimmed = body.trim_end().trim_end_matches('.');
-    format!("{trimmed}{IDENTIFIER_RETURN_SUFFIX}")
+/// Collapse runs of any whitespace (incl. embedded `\n`/`\t` decoded by the
+/// tokenizer) to single spaces. Used by every §8.4 template that splices a
+/// descriptive text into a single-line sentence.
+fn normalize_ws(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Append the `Description` return-fold suffix with the description text
-/// substituted in.
-pub fn append_description_suffix(body: &str, description: &str) -> String {
-    let trimmed = body.trim_end().trim_end_matches('.');
-    format!("{trimmed}{DESCRIPTION_RETURN_SUFFIX_PREFIX}{description}{DESCRIPTION_RETURN_SUFFIX_TAIL}")
+/// Produce the §8.4 "appended sentence" for a return contract, or `None` when
+/// the row is "no appended sentence" (`-> Foo` absent and no descriptive output
+/// target). The eight rows from the spec table:
+///
+/// 1. `return <"X">`                                → `Produce: X.`
+/// 2. `return <name>` + `-> Foo` + `type Foo = <D>` → `` Produce `name` (`Foo`): D. ``
+/// 3. `return <name>` + `-> Foo`, no `type Foo`     → `` Produce `name` (`Foo`). ``
+/// 4. `return <name>`, no `-> Foo`                  → `` Produce `name`. ``
+/// 5. `return expr` + `-> Foo` + `type Foo = <D>`   → `` Return a `Foo`: D. ``
+/// 6. `return expr` + `-> Foo`, no `type Foo`       → `` Return a `Foo`. ``
+/// 7. Return-only body                              → same as the corresponding row above
+/// 8. No `-> Foo` and no descriptive target         → `None`
+///
+/// Caller responsibilities:
+/// - For rows 1-4: pass `output_form = Some(...)`.
+/// - For rows 5-6: pass `output_form = None` (caller's flow ends in plain
+///   `return expr` without an output-target form). The caller is responsible
+///   for not invoking this helper at all when the only "return" is an
+///   identifier path (e.g., `return some_name`) and that path needs a
+///   different rendering strategy.
+pub fn compute_return_sentence(
+    return_type_text: Option<&str>,
+    output_form: Option<&OutputTargetForm>,
+    type_registry: &TypeRegistry,
+) -> Option<String> {
+    match output_form {
+        Some(OutputTargetForm::Description(text)) => Some(format!("Produce: {}.", normalize_ws(text))),
+        Some(OutputTargetForm::Identifier(name)) => Some(match return_type_text {
+            Some(t) => match type_registry.descriptions.get(t) {
+                Some(d) => format!("Produce `{}` (`{}`): {}.", name, t, normalize_ws(d)),
+                None => format!("Produce `{}` (`{}`).", name, t),
+            },
+            None => format!("Produce `{}`.", name),
+        }),
+        None => match return_type_text {
+            Some(t) => Some(match type_registry.descriptions.get(t) {
+                Some(d) => format!("Return a `{}`: {}.", t, normalize_ws(d)),
+                None => format!("Return a `{}`.", t),
+            }),
+            None => None,
+        },
+    }
 }
 
-/// When there is no prior step body to suffix-onto (e.g., a return-only
-/// skill), emit a standalone "Return ... as your result." sentence.
-pub fn standalone_return_identifier(name: &str) -> String {
-    let humanized = name.replace('_', " ");
-    format!("Return {humanized} as your result.")
-}
-
-pub fn standalone_return_description(description: &str) -> String {
-    format!("Return {description} as your result.")
+/// Append the §8.4 sentence to a Step body. `body` is the rendered last-step
+/// prose without a trailing newline. Callers join the sentence onto the body
+/// after a single space, stripping any trailing period from the body so the
+/// transition reads naturally.
+pub fn append_return_sentence(body: &str, sentence: &str) -> String {
+    let trimmed = body.trim_end().trim_end_matches('.').trim_end();
+    if trimmed.is_empty() {
+        sentence.to_string()
+    } else {
+        format!("{trimmed}. {sentence}")
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::{OutputTargetForm, TypeRegistry};
+
+    fn registry_with(name: &str, desc: &str) -> TypeRegistry {
+        let mut r = TypeRegistry::default();
+        r.descriptions.insert(name.into(), desc.into());
+        r
+    }
 
     #[test]
     fn kebab_simple() {
@@ -58,42 +103,94 @@ mod tests {
     }
 
     #[test]
-    fn identifier_suffix_strips_trailing_period() {
+    fn row_1_descriptive_target_produces_x() {
+        let form = OutputTargetForm::Description("a structured diagnosis".into());
+        let s = compute_return_sentence(None, Some(&form), &TypeRegistry::default());
+        assert_eq!(s.as_deref(), Some("Produce: a structured diagnosis."));
+    }
+
+    #[test]
+    fn row_2_named_with_type_decl() {
+        let form = OutputTargetForm::Identifier("diagnosis".into());
+        let reg = registry_with("Diagnosis", "root cause and severity");
+        let s = compute_return_sentence(Some("Diagnosis"), Some(&form), &reg);
         assert_eq!(
-            append_identifier_suffix("Run cargo test."),
-            "Run cargo test, and return that as your result."
-        );
-        assert_eq!(
-            append_identifier_suffix("Run cargo test"),
-            "Run cargo test, and return that as your result."
+            s.as_deref(),
+            Some("Produce `diagnosis` (`Diagnosis`): root cause and severity.")
         );
     }
 
     #[test]
-    fn description_suffix_substitutes_text() {
+    fn row_3_named_with_type_no_decl() {
+        let form = OutputTargetForm::Identifier("diagnosis".into());
+        let s = compute_return_sentence(Some("Diagnosis"), Some(&form), &TypeRegistry::default());
+        assert_eq!(s.as_deref(), Some("Produce `diagnosis` (`Diagnosis`)."));
+    }
+
+    #[test]
+    fn row_4_named_no_type() {
+        let form = OutputTargetForm::Identifier("diagnosis".into());
+        let s = compute_return_sentence(None, Some(&form), &TypeRegistry::default());
+        assert_eq!(s.as_deref(), Some("Produce `diagnosis`."));
+    }
+
+    #[test]
+    fn row_5_expr_with_type_decl() {
+        let reg = registry_with("Diagnosis", "root cause and severity");
+        let s = compute_return_sentence(Some("Diagnosis"), None, &reg);
         assert_eq!(
-            append_description_suffix("Run cargo test.", "the test summary"),
-            "Run cargo test, and return the test summary as your result."
+            s.as_deref(),
+            Some("Return a `Diagnosis`: root cause and severity.")
         );
     }
 
     #[test]
-    fn standalone_return_identifier_humanizes_name() {
+    fn row_6_expr_with_type_no_decl() {
+        let s = compute_return_sentence(Some("Diagnosis"), None, &TypeRegistry::default());
+        assert_eq!(s.as_deref(), Some("Return a `Diagnosis`."));
+    }
+
+    #[test]
+    fn row_8_no_type_no_target() {
+        let s = compute_return_sentence(None, None, &TypeRegistry::default());
+        assert!(s.is_none());
+    }
+
+    #[test]
+    fn description_normalizes_whitespace() {
+        let form = OutputTargetForm::Description("a  multi\nline\tdescription".into());
+        let s = compute_return_sentence(None, Some(&form), &TypeRegistry::default()).unwrap();
+        assert_eq!(s, "Produce: a multi line description.");
+    }
+
+    #[test]
+    fn type_level_description_normalizes_whitespace() {
+        let reg = registry_with("Foo", "first  line\nsecond\tline");
+        let s = compute_return_sentence(Some("Foo"), None, &reg).unwrap();
+        assert_eq!(s, "Return a `Foo`: first line second line.");
+    }
+
+    #[test]
+    fn append_return_sentence_strips_trailing_period() {
         assert_eq!(
-            standalone_return_identifier("current_branch"),
-            "Return current branch as your result."
+            append_return_sentence("Inspect the scope.", "Produce `diagnosis`."),
+            "Inspect the scope. Produce `diagnosis`."
         );
         assert_eq!(
-            standalone_return_identifier("result"),
-            "Return result as your result."
+            append_return_sentence("Inspect the scope", "Produce `diagnosis`."),
+            "Inspect the scope. Produce `diagnosis`."
         );
     }
 
     #[test]
-    fn standalone_return_description_uses_text() {
+    fn append_return_sentence_handles_empty_body() {
         assert_eq!(
-            standalone_return_description("root cause and affected files"),
-            "Return root cause and affected files as your result."
+            append_return_sentence("", "Produce `diagnosis`."),
+            "Produce `diagnosis`."
+        );
+        assert_eq!(
+            append_return_sentence("   ", "Produce `diagnosis`."),
+            "Produce `diagnosis`."
         );
     }
 }

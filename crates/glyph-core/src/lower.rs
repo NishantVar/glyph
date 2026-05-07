@@ -283,15 +283,16 @@ fn lower_flow_body(
                 // `BlockDecl::return_type` from the same `blocks` map used for
                 // body-text resolution; stdlib calls (no map entry) → None.
                 // Cross-file resolution is deferred to D17.
-                let return_type = blocks
+                let callee_rt_spanned = blocks
                     .get(target.node.as_str())
                     .and_then(|b| b.return_type.as_ref())
                     .or_else(|| {
                         export_blocks
                             .get(target.node.as_str())
                             .and_then(|b| b.return_type.as_ref())
-                    })
-                    .map(|s| name_to_typetag(s.node.as_str()));
+                    });
+                let return_type = callee_rt_spanned.map(|s| name_to_typetag(s.node.as_str()));
+                let callee_return_type_text = callee_rt_spanned.map(|s| s.node.clone());
                 let callee_output_contract = blocks
                     .get(target.node.as_str())
                     .and_then(|b| block_callee_output_form(b))
@@ -311,6 +312,7 @@ fn lower_flow_body(
                     procedure_path: None,
                     return_type,
                     callee_output_contract,
+                    callee_return_type_text,
                 }));
                 ids.push(id);
             }
@@ -475,6 +477,8 @@ pub fn lower_with_imports(
         .return_type
         .as_ref()
         .map(|s| name_to_typetag(s.node.as_str()));
+    let skill_return_type_text: Option<String> =
+        skill.return_type.as_ref().map(|s| s.node.clone());
     let skill_id = arena.push(IrNode::Skill(IrSkill {
         node_id: NodeId(0),
         name: skill.name.clone(),
@@ -487,6 +491,7 @@ pub fn lower_with_imports(
         return_text: None,
         return_type: skill_return_type.clone(),
         output_contract: None,
+        return_type_text: skill_return_type_text,
     }));
 
     // Lower block declarations to IrBlock nodes.
@@ -535,6 +540,8 @@ pub fn lower_with_imports(
                 .return_type
                 .as_ref()
                 .map(|s| name_to_typetag(s.node.as_str()));
+            let block_return_type_text: Option<String> =
+                block.return_type.as_ref().map(|s| s.node.clone());
             // Issue #85: scan for a top-level `return <IDENT>` in this
             // block's flow. If present, push an `IrOutputContract` node now
             // (so its id < the block's id is fine — the block holds an
@@ -553,6 +560,7 @@ pub fn lower_with_imports(
                 outgoing_calls,
                 return_type: block_return_type,
                 output_contract: block_output_contract,
+                return_type_text: block_return_type_text,
             }));
         }
     }
@@ -621,15 +629,16 @@ pub fn lower_with_imports(
                 // Issue #84 chunk 6: same-file callee return-type lookup —
                 // see the matching site in `lower_flow_body` above for the
                 // shared rationale.
-                let return_type = blocks
+                let callee_rt_spanned = blocks
                     .get(target.node.as_str())
                     .and_then(|b| b.return_type.as_ref())
                     .or_else(|| {
                         export_blocks
                             .get(target.node.as_str())
                             .and_then(|b| b.return_type.as_ref())
-                    })
-                    .map(|s| name_to_typetag(s.node.as_str()));
+                    });
+                let return_type = callee_rt_spanned.map(|s| name_to_typetag(s.node.as_str()));
+                let callee_return_type_text = callee_rt_spanned.map(|s| s.node.clone());
                 let callee_output_contract = blocks
                     .get(target.node.as_str())
                     .and_then(|b| block_callee_output_form(b))
@@ -649,6 +658,7 @@ pub fn lower_with_imports(
                     procedure_path: None,
                     return_type,
                     callee_output_contract,
+                    callee_return_type_text,
                 }));
                 step_ids.push(id);
             }

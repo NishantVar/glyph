@@ -439,9 +439,15 @@ fn sweep_name_collisions(
     // Collect every parameter (across all decl kinds) and every const at
     // file level, paired with the span we want pinned in the `related`
     // field of the collision diagnostic.
+    //
+    // `type Foo` decls are deliberately omitted from this sweep: the spec
+    // (`typed-params-with-descriptions §8.4`) endorses the canonical
+    // `type Foo = <"...">` + `-> Foo` pattern, so a type decl whose name
+    // matches an in-scope domain type is the *intended* shape, not a
+    // collision. The `type Foo` × `block Foo` / `const Foo` / etc. shadowing
+    // case is covered by the universal-namespace check in `analyze_imports`.
     let mut params: Vec<(&str, Span)> = Vec::new();
     let mut consts: Vec<(&str, Span)> = Vec::new();
-    let mut types: Vec<(&str, Span)> = Vec::new();
     for decl in &file.decls {
         match decl {
             Decl::Skill(s) => {
@@ -463,9 +469,7 @@ fn sweep_name_collisions(
                 consts.push((c.node.name.as_str(), c.span));
             }
             Decl::Import(_) => {}
-            Decl::TypeDecl(t) => {
-                types.push((t.node.name.as_str(), t.span));
-            }
+            Decl::TypeDecl(_) => {}
         }
     }
 
@@ -490,19 +494,6 @@ fn sweep_name_collisions(
                     entry,
                     const_raw,
                     *const_span,
-                    file_label,
-                    line_index,
-                    bag,
-                );
-            }
-        }
-        for (type_raw, type_span) in &types {
-            if crate::domain_registry::canonicalize_identifier(type_raw) == entry.canonical_name {
-                emit_name_collision(
-                    "type",
-                    entry,
-                    type_raw,
-                    *type_span,
                     file_label,
                     line_index,
                     bag,

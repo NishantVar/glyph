@@ -1278,6 +1278,20 @@ fn emit_library_procedures(path: &Path, enable_effects: bool) -> Vec<(String, St
     let stem = library_stem(path);
     let mut emitted = Vec::new();
 
+    // Build a local TypeRegistry from same-file `type` decls so the §8.4
+    // templates can resolve type-level descriptions when `-> Foo` matches a
+    // declared type. Cross-file imports for procedure-file emission are out
+    // of scope here (the procedure is rendered from the library's own AST,
+    // which only sees its own type decls).
+    let mut local_type_registry = ir::TypeRegistry::default();
+    for decl in &parsed.decls {
+        if let Decl::TypeDecl(t) = decl {
+            local_type_registry
+                .descriptions
+                .insert(t.node.name.clone(), t.node.description.node.clone());
+        }
+    }
+
     for decl in &parsed.decls {
         if let Decl::ExportBlock(eb) = decl {
             if eb.node.body_word_count < 150 {
@@ -1304,6 +1318,7 @@ fn emit_library_procedures(path: &Path, enable_effects: bool) -> Vec<(String, St
                 }
                 _ => None,
             };
+            let return_type_text = eb.node.return_type.as_ref().map(|s| s.node.clone());
             let markdown = emit::emit_procedure(
                 &eb.node.name,
                 desc,
@@ -1311,6 +1326,8 @@ fn emit_library_procedures(path: &Path, enable_effects: bool) -> Vec<(String, St
                 &params,
                 &eb.node.flow_strings,
                 output_form.as_ref(),
+                return_type_text.as_deref(),
+                &local_type_registry,
                 enable_effects,
             );
 
@@ -1727,6 +1744,14 @@ fn compile_source_with_resolved_imports(
             if c.callee_output_contract.is_none() {
                 if let Some(form) = resolved_imports.block_output_contracts.get(&c.target) {
                     c.callee_output_contract = Some(form.clone());
+                }
+            }
+            // §8.4 return-prose templates need the callee's source-text
+            // `-> Foo` spelling for the `(Foo)` parenthetical. Mirror the OC
+            // hoist above using the consumer-side re-keyed `block_return_types`.
+            if c.callee_return_type_text.is_none() {
+                if let Some(rt) = resolved_imports.block_return_types.get(&c.target) {
+                    c.callee_return_type_text = Some(rt.node.clone());
                 }
             }
         }

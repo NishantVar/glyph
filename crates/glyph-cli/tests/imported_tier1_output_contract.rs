@@ -61,8 +61,8 @@ skill main()
 
     let md = std::fs::read_to_string(dir.path().join("consumer.md")).unwrap();
     assert!(
-        md.contains(", and return that as your result."),
-        "imported Tier-1 callee should append the locked Identifier suffix:\n{md}"
+        md.contains(". Produce `current_branch` (`BranchName`)."),
+        "imported Tier-1 callee should append the §8.4 row-3 sentence:\n{md}"
     );
     assert!(
         !md.contains("Return the result of"),
@@ -122,11 +122,11 @@ skill main()
 
     let md = std::fs::read_to_string(dir.path().join("consumer.md")).unwrap();
     assert!(
-        md.contains("1. Return current branch as your result."),
-        "imported return-only Tier-1 callee should produce a standalone return step:\n{md}"
+        md.contains("1. Produce `current_branch` (`BranchName`)."),
+        "imported return-only Tier-1 callee should produce the §8.4 row-3 sentence:\n{md}"
     );
     assert!(
-        !md.contains("1. , and return"),
+        !md.contains("1. , and"),
         "must not emit a leading-comma malformed suffix:\n{md}"
     );
 }

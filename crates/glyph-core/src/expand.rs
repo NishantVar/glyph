@@ -189,18 +189,22 @@ pub fn expand_step1_with_imported_descriptions(
     // Phase 3: Return folding (Phase 6 Step 1).
     // If the skill has a return_text, append it to the final step's text.
     //
-    // Skipped when an output_contract is in scope at the final step: the emit
-    // pass applies the locked output-contract templates, and running the
-    // legacy fold alongside would produce doubled return instructions like
-    // "Return the result of X. ..., and return that as your result."
-    // (`design/expand.md` §3.5; `design/compiled-output.md` §OutputContract
-    // Rendering.)
+    // Skipped when EITHER an output_contract OR a `-> Foo` return annotation
+    // is in scope at the final step: the emit pass applies the locked §8.4
+    // templates in those cases, and running the legacy fold alongside would
+    // produce doubled return instructions like "Return the result of X.
+    // Return a `Foo`." (`design/expand.md` §3.5; spec §8.4.)
     if let Some(root_id) = arena.root_skill() {
-        let (return_text, skill_has_oc) = if let IrNode::Skill(s) = arena.get(root_id) {
-            (s.return_text.clone(), s.output_contract.is_some())
-        } else {
-            (None, false)
-        };
+        let (return_text, skill_has_oc, skill_has_return_type) =
+            if let IrNode::Skill(s) = arena.get(root_id) {
+                (
+                    s.return_text.clone(),
+                    s.output_contract.is_some(),
+                    s.return_type_text.is_some(),
+                )
+            } else {
+                (None, false, false)
+            };
         if let Some(ref ret) = return_text {
             let last_step_id = if let IrNode::Skill(s) = arena.get(root_id) {
                 s.steps.last().copied()
@@ -213,15 +217,20 @@ pub fn expand_step1_with_imported_descriptions(
                 // import fix-up step in `compile_source_with_resolved_imports`
                 // for imported callees, so this gate behaves consistently
                 // regardless of import boundary.
-                let callee_has_oc =
+                let (callee_has_oc, callee_has_return_type) =
                     if let IrNode::Call(c) = arena.get(step_id) {
-                        c.projection_tier == Some(1) && c.callee_output_contract.is_some()
+                        (
+                            c.projection_tier == Some(1) && c.callee_output_contract.is_some(),
+                            c.projection_tier == Some(1) && c.callee_return_type_text.is_some(),
+                        )
                     } else {
-                        false
+                        (false, false)
                     };
                 let nodes = arena.nodes_mut();
                 match &mut nodes[step_id.0 as usize] {
-                    IrNode::InlineInstruction(inst) if !skill_has_oc => {
+                    IrNode::InlineInstruction(inst)
+                        if !skill_has_oc && !skill_has_return_type =>
+                    {
                         inst.text = format!(
                             "{} Return the result of {}.",
                             inst.text.trim_end_matches('.').trim(),
@@ -231,7 +240,9 @@ pub fn expand_step1_with_imported_descriptions(
                     IrNode::Call(call)
                         if call.projection_tier == Some(1)
                             && !skill_has_oc
-                            && !callee_has_oc =>
+                            && !skill_has_return_type
+                            && !callee_has_oc
+                            && !callee_has_return_type =>
                     {
                         if let Some(body) = &mut call.resolved_body {
                             *body = format!(
@@ -298,9 +309,10 @@ skill current() -> BranchName
         return <current_branch>
 ",
         );
+        // §8.4 row 3: `return <name>` + `-> Foo`, no `type Foo` decl.
         assert!(
-            md.contains("Return current branch as your result."),
-            "compiled Markdown should use the standalone Identifier return form:\n{md}"
+            md.contains("Produce `current_branch` (`BranchName`)."),
+            "compiled Markdown should use the §8.4 row-3 sentence:\n{md}"
         );
         assert!(
             !md.contains("<current_branch>"),
@@ -311,8 +323,8 @@ skill current() -> BranchName
     #[test]
     fn block_output_contract_folds_before_inline_expansion() {
         // The helper is a return-only block. After Tier-1 inline expansion its
-        // resolved_body is empty, so the last-step renders via the standalone
-        // return template instead of suffixing an empty body.
+        // resolved_body is empty, so the last-step renders the §8.4 sentence
+        // standalone instead of folding into an empty body.
         let md = compile_markdown(
             "\
 block helper() -> BranchName
@@ -326,9 +338,10 @@ skill current()
         helper()
 ",
         );
+        // §8.4 row 3 (callee's contract bubbles up via Tier-1).
         assert!(
-            md.contains(", and return that as your result."),
-            "inlined block output contract should use the locked Identifier return suffix:\n{md}"
+            md.contains(". Produce `current_branch` (`BranchName`)."),
+            "inlined block output contract should append the §8.4 row-3 sentence:\n{md}"
         );
         assert!(
             !md.contains("<current_branch>"),
@@ -351,10 +364,10 @@ skill diagnose_issue() -> Diagnosis
             !md.contains("<\"root cause and affected files\">"),
             "compiled Markdown leaked the descriptive token:\n{md}"
         );
-        // Constraint (b): description text appears in the return suffix.
+        // §8.4 row 1: descriptive output target — `Produce: X.`.
         assert!(
-            md.contains(", and return root cause and affected files as your result."),
-            "compiled Markdown must incorporate the description text in the return suffix:\n{md}"
+            md.contains(". Produce: root cause and affected files."),
+            "compiled Markdown must use the §8.4 row-1 sentence:\n{md}"
         );
     }
 
@@ -362,9 +375,8 @@ skill diagnose_issue() -> Diagnosis
     fn empty_body_tier1_callee_uses_standalone_return() {
         // Return-only inline helper: flow body is just `return <X>`, so
         // `resolved_body` after Tier-1 inline expansion is empty. The last-step
-        // path must route to the standalone return template instead of
-        // suffixing the empty string (which would render
-        // `1. , and return that as your result.`).
+        // path must emit the §8.4 sentence standalone rather than fold into
+        // an empty body (which would render a leading-comma malformed line).
         let md = compile_markdown(
             "\
 block helper() -> BranchName
@@ -378,11 +390,11 @@ skill main()
 ",
         );
         assert!(
-            md.contains("1. Return current branch as your result."),
-            "return-only Tier-1 callee should produce a standalone return step:\n{md}"
+            md.contains("1. Produce `current_branch` (`BranchName`)."),
+            "return-only Tier-1 callee should produce the §8.4 row-3 sentence:\n{md}"
         );
         assert!(
-            !md.contains("1. , and return"),
+            !md.contains("1. , and"),
             "must not emit a leading-comma malformed suffix:\n{md}"
         );
     }
@@ -401,12 +413,13 @@ skill main()
         helper()
 ",
         );
+        // §8.4 row 1 wins regardless of the `-> Diagnosis` annotation.
         assert!(
-            md.contains("1. Return root cause and affected files as your result."),
-            "return-only Tier-1 callee with descriptive contract should produce a standalone return step:\n{md}"
+            md.contains("1. Produce: root cause and affected files."),
+            "return-only Tier-1 callee with descriptive contract should produce the §8.4 row-1 sentence:\n{md}"
         );
         assert!(
-            !md.contains("1. , and return"),
+            !md.contains("1. , and"),
             "must not emit a leading-comma malformed suffix:\n{md}"
         );
     }
@@ -426,19 +439,19 @@ skill main()
 ",
         );
         assert!(!md.contains("<\"branch name as currently checked out\">"));
+        // §8.4 row 1 (descriptive output target wins over the type annotation).
         assert!(
-            md.contains(", and return branch name as currently checked out as your result."),
-            "block description return suffix should appear in compiled markdown:\n{md}"
+            md.contains(". Produce: branch name as currently checked out."),
+            "block description return suffix should appear as §8.4 row-1 sentence:\n{md}"
         );
     }
 
     #[test]
     fn descriptive_output_contract_with_embedded_control_chars_normalizes_to_single_line() {
         // The tokenizer decodes `\n`/`\t` inside `<"…">` to literal control
-        // characters before reaching the scaffold builder. Inserting them verbatim
-        // breaks the single-sentence ", and return X as your result." contract — a
-        // newline in `desc` splits the prose across two Markdown lines. The scaffold
-        // builder collapses runs of whitespace (incl. LF/CR/TAB) to a single space.
+        // characters before reaching the scaffold builder. The §8.4 sentence
+        // must collapse runs of whitespace (incl. LF/CR/TAB) to single spaces
+        // so the prose stays on one line.
         let md = compile_markdown(
             "\
 skill diagnose_issue() -> Diagnosis
@@ -461,18 +474,17 @@ skill diagnose_issue() -> Diagnosis
             md.contains("root cause severity and affected files"),
             "expected whitespace-collapsed description in prose:\n{md}"
         );
-        // Return suffix uses the new locked form.
+        // Return sentence uses the §8.4 row-1 form.
         assert!(
-            md.contains(", and return root cause severity and affected files as your result."),
-            "expected single-line return suffix with whitespace-collapsed description:\n{md}"
+            md.contains(". Produce: root cause severity and affected files."),
+            "expected §8.4 row-1 sentence with whitespace-collapsed description:\n{md}"
         );
     }
 
     /// Precedence: when both the enclosing skill and an inlined callee
     /// declare an `output_contract`, the SKILL's contract wins. The skill's
-    /// `return <…>` is the author's stated final return, so its template
-    /// must drive the locked suffix even though the body chunk happens to
-    /// come from the callee.
+    /// `return <…>` is the author's stated final return, so its §8.4 sentence
+    /// must drive the suffix even though the body chunk comes from the callee.
     #[test]
     fn skill_output_contract_beats_callee_in_tier1() {
         let md = compile_markdown(
@@ -490,8 +502,8 @@ skill main() -> Diagnosis
 ",
         );
         assert!(
-            md.contains(", and return final wrapped diagnosis as your result."),
-            "skill's output_contract should drive the suffix in compiled markdown:\n{md}"
+            md.contains(". Produce: final wrapped diagnosis."),
+            "skill's output_contract should drive the §8.4 row-1 sentence:\n{md}"
         );
         assert!(
             !md.contains("raw helper diagnosis"),
@@ -501,11 +513,8 @@ skill main() -> Diagnosis
 
     /// Regression: a skill with a bare-name `return` whose final flow step is a
     /// Tier-1 call into a block carrying its own `output_contract` must NOT
-    /// receive both the legacy "Return the result of …" fold and the locked
-    /// emit-pass suffix. The legacy fold is the deterministic emitter's job to
-    /// own when the new contract pipeline is active; this gate prevents the
-    /// doubled "Return the result of X. ..., and return that as your result."
-    /// shape Codex flagged.
+    /// receive both the legacy "Return the result of …" fold and the §8.4
+    /// sentence. The fold is silenced when the callee provides a contract.
     #[test]
     fn legacy_fold_skipped_when_callee_has_output_contract() {
         let md = compile_markdown(
@@ -527,8 +536,8 @@ skill current()
             "legacy return fold must not fire when the callee carries an output_contract:\n{md}"
         );
         assert!(
-            md.contains(", and return that as your result."),
-            "expected the locked Identifier return suffix:\n{md}"
+            md.contains(". Produce `current_branch` (`BranchName`)."),
+            "expected the §8.4 row-3 sentence:\n{md}"
         );
     }
 }
