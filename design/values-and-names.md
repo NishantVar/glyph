@@ -218,6 +218,17 @@ The no-shadowing rule applies unchanged: if multiple declarations named `foo` ar
 
 UFCS desugaring happens in Lower (Phase 4), not Parse. The AST preserves the `.foo()` syntax so diagnostic spans point to what the author actually wrote. Analyze disambiguates dot syntax from qualified-call syntax (`M.foo()`) based on what the left-hand side resolves to — see `data-flow.md` §UFCS for the full disambiguation rule and worked examples.
 
+### Bare-Name Resolution In Condition Position
+
+When a bare identifier appears in an `if` / `elif` condition position, name resolution follows the standard order above (const, parameter, local binding, import, generated definition). After resolution, the **inferred kind** of the resolved declaration determines the condition's treatment (see `types.md` §Inferred Kinds):
+
+- **String-kinded** (`const x = "…"`, parameter with string default, etc.) → the condition is classified as a natural-language predicate. The string body is routed to `resolved_predicates` on the Branch IR node; Expand Step 1 populates it for Step 2 to project.
+- **Bool-kinded** (explicit `const x = true`, Bool-returning call binding, etc.) → the condition remains a standard boolean, unchanged behavior.
+- **Opaque / domain-kinded** (return value from a typed call, untyped parameter) → treated as boolean (no regression from today's behavior).
+- **Int- or Float-kinded** → hard error `G::analyze::condition-non-boolean-non-predicate`; the compiler does not implicitly truth-test numeric values.
+
+This routing is Analyze's responsibility. It fires at the single point where name resolution meets condition classification; no other phase re-derives the kind for this purpose. See `data-flow.md` §Condition Expressions for the full condition-form table and composition rules.
+
 ## Enums And Symbols
 
 The MVP does not include a dedicated enum or symbol type. Enumerated values are represented as strings.

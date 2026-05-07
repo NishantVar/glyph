@@ -121,6 +121,10 @@ The compiler produces **scaffolded expansion** — the deterministic emitter (`e
 | `explicit_blocks.glyph` | Skill with 4+ statement private block. Tests Tier 2 same-file procedure projection. |
 | `library_text_only.glyph` | Library file with only `export const` constants. Tests zero `.md` emission, no error. |
 | `library_with_blocks.glyph` | Library file with `export block` declarations. Tests library compilation path and procedure emission rules. |
+| `predicate_const_single_arm.glyph` | Single-arm `if` guarded by a string-kinded `const` predicate. Tests `predicate_const` token kind, `resolved_predicates` map population, and pure-predicate branch projection with one arm. |
+| `predicate_const_multi_arm.glyph` | Multi-arm `if`/`elif`/`else` using two string-const predicates. Tests that all arms contribute to `resolved_predicates` and that the pure-predicate "decide which applies" projection fires. |
+| `predicate_inline_literal.glyph` | `if` condition is a quoted string literal. Tests `predicate_literal` token kind, that no `resolved_predicates` map entry is written for literals, and that the literal prose appears verbatim in the branch projection header. |
+| `predicate_mixed.glyph` | `if` arm mixes a string-const predicate with `and not is_dry_run`. Tests `predicate_const` + `boolean` token kinds in one condition, mixed-condition branch projection, and that `resolved_predicates` is populated only for the predicate token. |
 
 ### 2.2 `repairable/` — Stops at Phase 2 (exit code 2)
 

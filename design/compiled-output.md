@@ -297,25 +297,33 @@ Strength is advisory prose framing — the wording surfaces non-negotiability fo
 
 - **Branch-scoped context.** A `context:` declaration inside an `if`/`elif`/`else` branch in `flow:` follows the same pattern as branch-scoped constraints: it is **inlined into the prose of an adjacent sub-step** (e.g., "Note: this module handles authentication only."), not surfaced in `### Context`. Only skill-level `context:` declarations render in the `### Context` section.
 
-### Description-Driven Branch Projection
+### Predicate-Driven Branch Projection
 
-A `Branch` whose conditions invoke the block trigger predicate `BLOCKNAME.applies()` (see [ir-and-semantics.md](ir-and-semantics.md) §Block Trigger Predicate) is rendered using the resolved block descriptions carried on the IR Branch's `applies_descriptions` side-map (`ir-schema.md` §Resolved IR `ResolvedBranch`, `ir-json-schema.md` §Branch). The compiled-output rule chooses one of two prose forms based on the shape of the conditions:
+A `Branch` whose conditions are expressed using natural-language predicate forms (see [ir-and-semantics.md](ir-and-semantics.md) §Predicates) is rendered using the resolved predicate prose carried on the IR Branch's `resolved_predicates` side-map (`ir-schema.md` §Resolved IR `ResolvedBranch`, `ir-json-schema.md` §Branch). Three predicate forms contribute to this side-map:
 
-- **Pure-applies form ("decide which applies").** When every arm's condition is *purely* one or more `applies()` calls combined by `or` — or each `if`/`elif` arm is guarded by a single `applies()` call with no other operators — Step 2 emits a single numbered Step that introduces the choice ("Decide which of the following applies and follow only that path:") and renders each arm as a lettered sub-step keyed by the resolved description rather than by a code-like condition expression. Example:
+| Predicate form | Source example | Step 1 resolution |
+|---|---|---|
+| Block trigger predicate | `fork_with_plan.applies()` | Reads `description:` from the named block |
+| String-const predicate | `complex_change_required` | Reads the value of the string-kinded `const` |
+| Inline literal predicate | `"the user has explicitly opted out"` | Uses the literal string directly; no map entry |
+
+The compiled-output rule chooses one of two prose forms based on the shape of the conditions:
+
+- **Pure-predicate form ("decide which applies").** When every arm's condition is *purely* one or more predicate-form tokens combined by `or` — Step 2 emits a single numbered Step that introduces the choice ("Decide which of the following applies and follow only that path:") and renders each arm as a lettered sub-step keyed by the resolved predicate prose rather than by a code-like condition expression. Example:
 
   ```md
   3. Decide which of the following applies and follow only that path:
      a. When the user asks to fork a terminal pre-loaded with a plan: identify the plan content, save it to disk, and fork the agentic tool with delayed input.
-     b. When the user asks to fork a terminal with a conversation-history summary: read the summary template, fill it in memory, and pass it as the delayed input.
+     b. When a complex change is required: plan the full edit sequence before touching any file.
      Otherwise:
      c. Understand the user's request and route to the appropriate launcher.
   ```
 
-  The condition headers are written as user-intent / runtime conditions rather than as boolean expressions. The arms remain mutually evaluated by the consuming LLM in source order — the prose simply foregrounds the trigger description over the call-graph mechanic.
+  The condition headers are written as user-intent / runtime conditions rather than as boolean expressions. The arms remain mutually evaluated by the consuming LLM in source order — the prose simply foregrounds the predicate description over the call-graph mechanic.
 
-- **Mixed-condition form (inline description).** When an arm's condition combines an `applies()` call with regular boolean operators or other predicate calls (e.g., `block_x.applies() and not is_dry_run`), the resolved description inlines into the larger condition prose using the standard `If <condition>:` arm header. Example: an arm with condition `fork_with_plan.applies() and not is_dry_run` produces the header "If the user wants a structured plan and this is not a dry run:". Sub-steps inside the arm follow the lettered convention from §Constraint Rendering above.
+- **Mixed-condition form (inline description).** When an arm's condition combines predicate-form tokens with regular boolean operators or non-predicate names (e.g., `complex_change_required and not is_dry_run`), the resolved predicate prose inlines into the larger condition prose using the standard `If <condition>:` arm header. Example: an arm with condition `complex_change_required and not is_dry_run` produces the header "If a complex change is required and this is not a dry run:". Sub-steps inside the arm follow the lettered convention from §Constraint Rendering above.
 
-The two forms compose: a Branch with one pure-applies arm and one mixed-condition arm uses the pure-applies header for the first arm and the mixed-condition header for the second, all under a single numbered Step. The `applies_descriptions` side-map provides the resolved description text for both forms; Step 2 never reads block bodies or rewrites descriptions.
+The two forms compose: a Branch with one pure-predicate arm and one mixed-condition arm uses the pure-predicate header for the first arm and the mixed-condition header for the second, all under a single numbered Step. The `resolved_predicates` side-map provides the resolved description text for all predicate forms; Step 2 never reads block bodies or rewrites descriptions. Inline literal predicates are already prose — Step 2 uses their literal string directly without a map lookup.
 
 ### Parameter References In Steps
 

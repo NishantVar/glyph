@@ -324,6 +324,39 @@ The whole-line comment between the bodies (rule c) and the trailing comment on t
 
 Repair materializes two kinds of generated declarations: `generated const` for undefined bare names used with keyword prefixes, and `generated block` for undefined parens-calls and undefined bare names in `flow:`. Both follow the same stability, placement, promotion, and idempotence rules. The choice mirrors the const/block distinction (`language-surface.md` §1): `const` declarations are named string constants with no callable interface; `block` declarations are callable and encapsulate instructions. Repair preserves this distinction — a bare name used with a keyword prefix (`require`/`avoid`/`must`/`context`) materializes as `generated const`; a parens-call materializes as `generated block`. A bare name in `flow:` without a keyword prefix is a compile error (`G::analyze::const-in-flow`); Repair adds parentheses and materializes as `generated block`.
 
+## 6. Condition-Position Repair Routing
+
+### 6.1 New Routing Rule
+
+An undefined bare name in an `if` / `elif` condition position is routed to `generated const`, not `generated block`. This is consistent with the existing routing for constraint markers (`require X`) and context markers (`context X`), which also produce `generated const`.
+
+The complete routing table:
+
+| Use-site position | Undefined bare name → |
+|---|---|
+| `flow:` step (no keyword prefix) | `generated block` (via `G::analyze::const-in-flow` parens-add then `generated block`) |
+| Condition position (`if` / `elif`) | `generated const` (new) |
+| Constraint marker (`require X`, `avoid X`, `must X`) | `generated const` (unchanged) |
+| Context marker (`context X`) | `generated const` (unchanged) |
+
+### 6.2 Predicate Generation Prompt Template
+
+When the repair LLM generates a `generated const` for an undefined name in condition position, it receives:
+
+- The undefined name (strong signal — names like `complex_change_required` are nearly self-describing).
+- 3–5 surrounding flow statements before and after the conditional.
+- Sibling `if` / `elif` arms in the same Branch (if any), with their resolved predicate text.
+- The enclosing skill or block's `description:` and name.
+- The enclosing skill's `context:` entries (if any).
+
+**Output.** A single clause following the predicate canonical form: lowercase first word, no trailing period, 1–2 sentences typical, hard cap ~50 words. The same form as constraint text in `compiled-output.md` §Constraint Rendering. The generated clause should read naturally as an "if X" condition header — e.g., "the requested change requires regenerating multi-line prose" rather than "Returns true when the requested change requires regenerating multi-line prose."
+
+**Failure.** If the LLM produces an empty or malformed string, repair emits `G::repair::predicate-generation-failed` (error, non-repairable). The author must add the `const` manually.
+
+**Idempotence.** Repair never regenerates an existing `generated const`. The name-resolution check in §4.5 applies: if `complex_change_required` already resolves to any declaration, repair skips it.
+
+**Inferred strings with `{name}` slots.** If the generated string contains a `{name}` slot, it is stripped before storing (predicates are consulted as-is, not rendered through parameter slots).
+
 ### 5.1 Syntax
 
 **`generated const`** — for undefined bare names used with keyword prefixes (`require`/`avoid`/`must`/`context`):

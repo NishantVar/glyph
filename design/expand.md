@@ -48,7 +48,7 @@ Specifically, Step 2 receives:
 - for every `Call` node: `{ target_name, resolved_body_text, local_refs, site_modifier?, role, effects, scoped_constraints, position }`, where `resolved_body_text` is the post-Step-1 body with `{param}` references preserved as named slots and `{local}` references preserved as literal `{name}` tokens. The `local_refs` array (see `ir-schema.md` §Resolved IR) lists each local-binding slot by name and producing node ID; Step 2 cross-references this array to identify which `{name}` tokens are local bindings that must be resolved into natural-language prose. `scoped_constraints` is the list of constraints declared on the called block (see §3.2 Scoped Constraint Inlining);
 - for every top-level `Constraint` node: `{ resolved_text, strength, polarity }` (text may contain `{param}` references);
 - for every `InlineInstruction` node: `{ text, role }` (typically passes through);
-- for every `Branch` node: `{ condition_text, then_body, elif_branches, else_body, applies_descriptions? }` with every sub-body already resolved. The optional `applies_descriptions: {block_name → resolved_description}` side-map is populated by Step 1 whenever the Branch's own `condition_text` or any `elif_branches[*].condition_text` invokes the block trigger predicate `BLOCKNAME.applies()` (see `ir-and-semantics.md` §Block Trigger Predicate). Step 2 uses the side-map to choose the projection form: when every arm's condition is *purely* one or more `applies()` calls combined by `or` (or each `if`/`elif` arm is guarded by a single `applies()` call), Step 2 emits a "decide which applies" prose frame keyed by the resolved descriptions; for mixed conditions (e.g., `block_x.applies() and not is_dry_run`), Step 2 inlines the resolved description into the larger condition prose (e.g., "If the user wants a structured plan and this is not a dry run, ...");
+- for every `Branch` node: `{ condition_text, then_body, elif_branches, else_body, resolved_predicates? }` with every sub-body already resolved. The optional `resolved_predicates: {predicate_token → resolved_string}` side-map is populated by Step 1 whenever the Branch's own `condition_text` or any `elif_branches[*].condition_text` contains a predicate-form token (see `ir-and-semantics.md` §Predicates). Step 2 uses the side-map to choose the projection form: when every arm's condition is *purely* one or more predicate-form tokens combined by `or` (or each `if`/`elif` arm is guarded by a single predicate token), Step 2 emits a "decide which applies" prose frame keyed by the resolved predicate strings; for mixed conditions (e.g., `complex_change_required and not is_dry_run`), Step 2 inlines the resolved predicate into the larger condition prose via a `BranchCondition` span (e.g., "If the requested change requires regenerating multi-line prose and this is not a dry run, ...");
 - for the `Return` expression: its resolved text plus a flag indicating it must fold into the final Step;
 - skill-level metadata: `name`, `description` (if present), `effects` (as a list), the ordered position of each node in `flow:`, and the parameter list (names, types, and defaults if declared — used for generating the `## Parameters` section, where parameters without defaults render with a `(required)` marker per `compiled-output.md`).
 - a **stable, file-local IR node ID** (e.g., `n0`, `n1`, …) on every node, assigned by Lower (`pipeline.md` Phase 4). The IDs are opaque, never appear in compiled output, and are not echoed back by Step 2 (the output contract in §3.4 is Markdown only). They exist so that Phase 6b's count + ordering checks (§4.1) and any internal diagnostic referring to "the IR node Step 2 failed to project" can name a specific node unambiguously across runs and across the parse-then-re-parse boundary inside Repair.
@@ -84,22 +84,60 @@ Step 2 picks per call based on what reads naturally. Multiple scoped constraints
 
 **Why this is Step 2's job.** Scoped constraints are call-site contextual: their wording depends on the surrounding step's prose, the strength/polarity, and the position in the flow. Mechanical folding produces awkward output. The whole-skill prompting model (§3.1) already gives Step 2 the visibility needed to weave gracefully.
 
-### 3.3 Pure-`applies()` Branch Projection Sub-Cases
+### 3.3 Pure-Predicate Branch Projection
 
-The "decide which applies" prose frame mentioned in §3.1 is not a single sentence — it is a small family of phrasings keyed to the IR shape of the `Branch`. Step 1 populates `applies_descriptions` whenever any arm condition is `BLOCKNAME.applies()`; Step 2 (or the deterministic emitter, since this projection is mechanical) selects the framing per the table below.
+The "decide which applies" prose frame mentioned in §3.1 is not a single sentence — it is a small family of phrasings keyed to the IR shape of the `Branch`. Step 1 populates `resolved_predicates` whenever any arm condition contains a predicate-form token; Step 2 (or the deterministic emitter, since this projection is mechanical) selects the framing per the table below.
 
-A `Branch` qualifies for this projection when **every** `if`/`elif` arm's condition is purely one or more `applies()` calls combined by `or`. The presence of an `else` arm does not disqualify it. Any other condition shape (e.g., `block_x.applies() and not is_dry_run`) falls back to the mixed-condition path described in §3.1, which inlines the resolved description into the larger condition prose.
+A `Branch` qualifies for **pure-predicate projection** when **every** `if`/`elif` arm's condition is purely one or more predicate-form tokens (`predicate_applies`, `predicate_const`, or `predicate_literal`) combined by `or` only. The presence of an `else` arm does not disqualify it. Any other condition shape (e.g., `complex_change_required and not is_dry_run`, mixing a predicate with a boolean token) falls back to the mixed-condition path described in §3.1, which inlines the resolved predicate into the larger condition prose via a `BranchCondition` span.
+
+All three predicate forms produce the same projection frames — the difference is only in how Step 1 resolves the predicate text:
+
+- `predicate_applies` → resolved from `resolved_predicates["block_name.applies()"]`
+- `predicate_const` → resolved from `resolved_predicates["const_name"]`
+- `predicate_literal` → the literal's inner text used directly (no map lookup)
 
 | IR shape | Frame |
 |---|---|
-| Single arm: `if X.applies(): …` (no `elif`, no `else`) | `Decide whether <X's description> applies and, if so:` followed by lettered sub-steps for the arm body. |
-| Multiple `applies()` arms, no `else` | `Decide which of the following applies and follow only that path:` (verbatim, per `compiled-output.md` §Description-Driven Branch Projection) followed by lettered sub-steps, each prefixed `If <description>:`. |
-| Multiple `applies()` arms with `else` | Same opening sentence as above, with the `else` arm's lettered sub-step prefixed `Otherwise:` instead of `If <description>:`. |
+| Single arm: one predicate token, no `elif`, no `else` | `Decide whether <resolved predicate text> applies and, if so:` followed by lettered sub-steps for the arm body. |
+| Multiple predicate arms, no `else` | `Decide which of the following applies and follow only that path:` (verbatim, per `compiled-output.md` §Predicate-Driven Branch Projection) followed by lettered sub-steps, each prefixed `If <resolved predicate text>:`. |
+| Multiple predicate arms with `else` | Same opening sentence as above, with the `else` arm's lettered sub-step prefixed `Otherwise:` instead of `If <predicate>:`. |
+
+**Worked example — single-arm pure-predicate const (from `predicate_const_single_arm.glyph`):**
+
+Source:
+```glyph
+const complex_change_required = "the requested change requires regenerating multi-line prose …"
+
+flow:
+    if complex_change_required:
+        recommend_full_compile()
+```
+
+Compiled output (deterministic):
+```md
+N. Decide whether the requested change requires regenerating multi-line prose … applies and, if so:
+   a. Stop and recommend running `/glyph:compile` instead — incremental edit cannot regenerate prose.
+```
+
+**Worked example — inline literal predicate (from `predicate_inline_literal.glyph`):**
+
+Source:
+```glyph
+flow:
+    if "the user has explicitly opted out of compile-on-save":
+        skip_compile()
+```
+
+Compiled output:
+```md
+N. Decide whether the user has explicitly opted out of compile-on-save applies and, if so:
+   a. Skip compilation and continue without changes.
+```
 
 Two scenarios that look related but are governed by different rules:
 
-- **Two independent `if` statements** (e.g., `if a.applies(): … if b.applies(): …` written as separate flow statements) are **two separate `Branch` IR nodes**. Each projects to its own top-level numbered Step independently, with its own decision frame chosen from the table above. Both arms can fire because they are not in the same Branch — the "follow only that path" framing scopes within a single Branch, not across the flow.
-- **Branches nested inside arms** stop at one level (per §4.1 sub-step counting). A nested `Branch` inside an outer arm flattens into the parent sub-step's prose; it does not re-emit a decision frame of its own. In practice Repair §4.9 auto-extracts nested branches into `generated block` declarations, so the projection rules above typically apply only to top-level Branch nodes.
+- **Two independent `if` statements** (e.g., `if a.applies(): … if b.applies(): …` written as separate flow statements) are **two separate `Branch` IR nodes**. Each projects to its own top-level numbered Step independently. Both arms can fire because they are not in the same Branch.
+- **Branches nested inside arms** stop at one level (per §4.1 sub-step counting). A nested `Branch` inside an outer arm flattens into the parent sub-step's prose. In practice Repair §4.9 auto-extracts nested branches into `generated block` declarations, so the projection rules above typically apply only to top-level Branch nodes.
 
 Phase 6b validates the resulting structure via the same count + ordering checks in §4.1; the framing sentences themselves are not checked for verbatim match (a future structural check could be added if drift becomes a problem — see `todo.md` §Phase 6b Validation).
 
@@ -158,7 +196,7 @@ The deterministic emitter owns all structure that does not require natural-langu
 - Numbered Step list, lettered sub-step list (with letter reset per Branch arm), and bulleted `### Constraints` list.
 - Constraint rendering — the four-form lock (`hard avoid`, `soft avoid`, `hard require`, `soft require`) per `compiled-output.md` §Constraint Rendering.
 - `OutputContract.Identifier` return fold — the locked suffix `, and return that as your result.` (or the standalone form `Return <name> as your result.` for return-only skills/procedures), with `<name>` snake_case → space-separated by the shared `kebab_case` / `snake_to_words` helpers.
-- Pure-`applies()` Branch projection — all three sub-cases from §3.3 (single-arm `Decide whether <desc> applies and, if so:`; multi-arm `Decide which of the following applies and follow only that path:` with `If <description>:` arm headers; `Otherwise:` else-arm header).
+- Pure-predicate Branch projection — all three sub-cases from §3.3 (single-arm `Decide whether <resolved predicate text> applies and, if so:`; multi-arm `Decide which of the following applies and follow only that path:` with `If <resolved predicate text>:` arm headers; `Otherwise:` else-arm header). All three predicate forms (`.applies()`, string-const, inline literal) use the same framing; the emitter reads the resolved predicate text from `resolved_predicates` (for `.applies()` and const forms) or directly from the condition string (for inline literals).
 - External-file Call Step template — `Load and follow the procedure in \`{procedure_path}\`.`.
 - `## Parameters` bullet scaffolding — bold name and `(default: …)` / `(required)` trailer.
 - Procedure section ordering (by first reference from `### Steps`) and procedure-name kebab-casing.
@@ -169,7 +207,7 @@ The deterministic emitter owns all structure that does not require natural-langu
 |---|---|---|---|
 | `ParamDescription` | A brief description of the parameter from its name, type, default, and usage context. | Empty string — bullet renders as `- **name** (required)` / `(default: …)`. | `llm_expand_pass.md` §1.5 |
 | `DescriptionReturnFold` | A Step-shaped paraphrase of the `OutputContract.Description` text, folded into the final Step. | Verbatim description text slotted into the locked Description-suffix wrapper. | `llm_expand_pass.md` §1.3 |
-| `BranchCondition` | Natural-language prose for a mixed-condition `if`/`elif` arm header (e.g., `block_x.applies() and not is_dry_run` → `If the user wants a structured plan and this is not a dry run:`). | Verbatim condition expression slotted into `If <expr>:`. | `llm_expand_pass.md` §1.4 |
+| `BranchCondition` | Natural-language prose for a mixed-condition `if`/`elif` arm header (e.g., `complex_change_required and not is_dry_run` → `If the requested change requires regenerating multi-line prose and this is not a dry run:`). The span payload includes the condition source string, the `resolved_predicates` map for predicate-token substitution, and the `condition_kinds` classification list so the LLM knows which tokens are predicates and which are booleans. | Verbatim condition expression slotted into `If <expr>:`. | `llm_expand_pass.md` §1.4 |
 | `CallBodyShape` | Step prose that weaves the `with` modifier, scoped constraints, and local-binding cross-references into the resolved body. | Verbatim resolved body — modifier and scoped constraints currently ignored. | `llm_expand_pass.md` §1.1, §1.2 |
 
 The scaffold-with-spans IR (`Scaffold`, `Chunk`, `SpanRef`, `SpanKind`, `SpanPayload`) is internal to the `glyph-core::emit` module. It is not exposed via `--emit-ir` and is not stable across compiler versions.

@@ -315,8 +315,18 @@ Condition expressions inside `if` and `elif` are intentionally minimal in the MV
 | `or` | `if a or b:` |
 | Parenthesized grouping | `if (a or b) and c:` |
 | Block trigger predicate | `if fork_with_plan.applies():` |
+| String-const predicate | `if complex_change_required:` (where `complex_change_required` is a `const` with a string RHS) |
+| Inline literal predicate | `if "the user has explicitly opted out of compile-on-save":` |
 
-The block-trigger form `BLOCKNAME.applies()` is a special syntactic shape (not UFCS) for description-driven dispatch. Receiver must resolve to a `block` / `export block` (or `module_alias.block_name`) carrying `description:`; `applies` takes zero arguments; parens are required. See `ir-and-semantics.md` §Block Trigger Predicate for full semantics, required-when-consulted rule, and resolution behavior. It composes with `and`/`or`/`not` like any other Boolean.
+The block-trigger form `BLOCKNAME.applies()` is a special syntactic shape (not UFCS) for description-driven dispatch. Receiver must resolve to a `block` / `export block` (or `module_alias.block_name`) carrying `description:`; `applies` takes zero arguments; parens are required. See `ir-and-semantics.md` §Predicates for full semantics and resolution behavior. It composes with `and`/`or`/`not` like any other predicate.
+
+**String-const predicate.** A bare identifier in condition position that resolves to a string-kinded `const` or `export const` is treated as a natural-language predicate — the consuming agent evaluates the resolved string against current context. Example: `const complex_change_required = "the requested change requires regenerating multi-line prose …"` then `if complex_change_required:`. Analyze classifies the condition as predicate-kinded based on the inferred kind of the resolved declaration (see `types.md` §Inferred Kinds). The string body flows into `resolved_predicates` on the Branch IR node; Expand Step 1 populates the map and Step 2 projects it as a natural-language condition header.
+
+**Inline literal predicate.** A quoted string literal in condition position is treated as a self-contained natural-language predicate. The literal is its own resolved value — no `resolved_predicates` map entry is needed. Example: `if "the user has explicitly opted out of compile-on-save":`. This form is concise for one-off conditions; extract to a named `const` when the predicate is reused or long.
+
+**`==` carve-out.** The equality form `if risk == "high":` is **not** a predicate — the `==` operator is a boolean comparison expression and the right-hand string is an operand, not a predicate body. The condition evaluates to a boolean. A bare string in condition position (`if "high":`) is a predicate; a string on the right side of `==` is a comparison value.
+
+**Composition rules.** All three predicate forms compose with `and`, `or`, `not`, and parenthesization. A Branch is **pure-predicate** when every arm's condition is one or more predicate-form tokens combined by `or` only (no `and`, no `not`, no boolean tokens). Pure-predicate branches use the deterministic "decide which applies" framing; mixed conditions (predicates composed with boolean tokens via `and`/`not`) go through the `BranchCondition` LLM span. See `compiled-output.md` §Predicate-Driven Branch Projection.
 
 Standard Python precedence: `not` binds tightest, then `and`, then `or`. Parentheses override precedence.
 

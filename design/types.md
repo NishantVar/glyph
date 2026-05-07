@@ -27,6 +27,19 @@ The compiler still tracks primitive kinds internally in the IR, inferred from li
 
 **Rationale.** Glyph's compiled output is consumed by LLMs. `-> String` carries no useful semantic signal to an LLM. `-> BranchName` does. Primitive type names are a holdover from languages where types serve compilers; in Glyph, types serve the agent reading the compiled output.
 
+### Condition-Position Kind Routing
+
+When a bare name appears in `if`/`elif` condition position, Phase 2 (Analyze) consults its inferred primitive kind to determine the semantics:
+
+| Inferred kind | Condition-position treatment |
+|---|---|
+| `bool` | Boolean predicate — standard boolean evaluation |
+| `string` | Natural-language predicate — resolves via `resolved_predicates` side-map; produces `predicate_const` token kind |
+| Opaque domain type | Treated as boolean (no regression from pre-existing behavior) |
+| `int` or `float` | Hard error: `G::analyze::condition-non-boolean-non-predicate` |
+
+This routing means that a `const` declared with a string value (e.g., `const complex_change_required = "a complex structural change is needed"`) is automatically usable as a natural-language predicate in condition position without any author-visible annotation. The `==` comparison operator carves out an exception: `if risk == "high":` is a boolean equality check — the string is an operand, not a predicate body, and does not trigger the string-predicate path.
+
 ### Casing
 
 PascalCase is the recommended convention for all type names. This matches every existing example in the design docs (`RepoContext`, `Plan`, `FileSet`, `ReviewResult`, `ValidationResult`, `FailureReport`, `Summary`).
