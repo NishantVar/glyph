@@ -935,10 +935,13 @@ fn check_one_file(
         }
     }
 
-    // Phase B.7: a param `type_annotation` referencing an imported type
-    // counts as a "use" of that import so `G::analyze::unused-import` does
-    // not fire. Done before `analyze_with_imports` so the check runs against
-    // a fully populated `used_import_names`.
+    // A param `type_annotation` referencing an imported type counts as a
+    // "use" of that import so `G::analyze::unused-import` does not fire.
+    // Selective only: whole-module type imports (`import "..." as M;
+    // p: M.T`) inherit the same alias-vs-qualified-name parity as
+    // whole-module text/block imports and are parking-lot-deferred per the
+    // typed-params spec — when that's resolved here, also fix it for texts
+    // and blocks in `track_skill_usage` / `track_flow_usage`.
     for decl in &file.decls {
         let params: &[ast::Param] = match decl {
             Decl::Skill(s) => &s.node.params,
@@ -1399,11 +1402,9 @@ struct ResolvedImports {
     /// nodes so expand- and emit-time gates can read the callee's OC without
     /// an arena lookup.
     block_output_contracts: HashMap<String, OutputTargetForm>,
-    /// Phase B.7: imported `export type` description text, re-keyed by the
-    /// consumer-side local (post-alias / post-prefix) name. Folded into the
-    /// consumer's `TypeRegistry` during lowering. Stored as `BTreeMap` so it
-    /// can be passed by reference to `lower_with_imports` without a clone
-    /// (matches `text_values` for the same reason).
+    /// Imported `export type` description text, re-keyed by the consumer-side
+    /// local (post-alias / post-prefix) name. Folded into the consumer's
+    /// `TypeRegistry` during lowering.
     type_descriptions: std::collections::BTreeMap<String, String>,
 }
 

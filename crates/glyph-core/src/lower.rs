@@ -361,12 +361,9 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
     lower_with_imports(file, &BTreeMap::new(), &BTreeMap::new())
 }
 
-/// Lower with additional imported text values available for constraint/context resolution.
-///
-/// Phase B.7: `imported_type_descriptions` carries cross-file `export type`
-/// descriptions, re-keyed by the consumer-side local (post-alias / post-prefix)
-/// name. Folded into the `TypeRegistry` after same-file `type` decls so that
-/// same-file decls take precedence on name collision (matches the analogous
+/// Lower with additional imported text values and type descriptions available
+/// for constraint/context resolution and TypeRegistry folding. Same-file `type`
+/// decls take precedence on name collision (mirrors the
 /// `local-const-overwrites-imported-text` rule for cross-file `const`
 /// shadowing earlier in this function).
 pub fn lower_with_imports(
