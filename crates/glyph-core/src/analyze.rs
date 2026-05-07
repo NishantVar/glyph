@@ -5957,6 +5957,7 @@ export block foo() -> Report
         ast::Param {
             name: name.to_string(),
             default: default.map(|s| s.to_string()),
+            type_annotation: None,
             span: Span::new(0, 0, 1),
         }
     }

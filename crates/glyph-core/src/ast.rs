@@ -204,6 +204,14 @@ pub struct Param {
     /// arguments — call sites that omit them surface
     /// `G::analyze::missing-required-arg`.
     pub default: Option<String>,
+    /// Optional `name: Type` annotation captured at parse time. Slice 4
+    /// (Phase 0) reserves the syntactic position only — the type name is
+    /// stored verbatim with its source span and **no** semantic resolution,
+    /// validation, hover, completion, or goto-def is wired up. A later type
+    /// system tier interprets this field; until then it exists purely so
+    /// authors can write the documented `name: Type` form without tripping
+    /// the parser. See `design/types.md` and `design/language-surface.md`.
+    pub type_annotation: Option<Spanned<String>>,
     /// Span covering the parameter (header position, used for diagnostic
     /// reporting in slice 4).
     pub span: Span,
