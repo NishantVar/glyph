@@ -2975,6 +2975,134 @@ fn check_nested_branches(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Condition classifier
+// ---------------------------------------------------------------------------
+
+use crate::condition::{ConditionClassification, ConditionTokenKind};
+
+const COMPOSITIONAL_OPERATORS: &[&str] = &["not", "and"];
+
+pub fn classify_condition<'a>(
+    condition: &str,
+    texts: &HashMap<&'a str, (String, crate::kind_infer::TypeTag)>,
+    params_with_string_default: &HashSet<&'a str>,
+    bindings: &HashSet<&'a str>,
+    block_decls: &HashMap<&'a str, &'a BlockDecl>,
+) -> ConditionClassification {
+    let mut tokens = Vec::new();
+    let mut has_boolean = false;
+    let mut has_predicate = false;
+    let mut has_composition = false;
+
+    let trimmed = condition.trim();
+
+    for tok in tokenize_condition(trimmed) {
+        let kind = classify_token(&tok, texts, params_with_string_default, bindings, block_decls);
+        match kind {
+            ConditionTokenKind::Boolean => has_boolean = true,
+            ConditionTokenKind::PredicateApplies
+            | ConditionTokenKind::PredicateConst
+            | ConditionTokenKind::PredicateLiteral => has_predicate = true,
+            ConditionTokenKind::Operator => {
+                if COMPOSITIONAL_OPERATORS.contains(&tok.as_str()) {
+                    has_composition = true;
+                }
+            }
+        }
+        tokens.push(kind);
+    }
+
+    ConditionClassification {
+        tokens,
+        has_boolean_token: has_boolean,
+        has_predicate_token: has_predicate,
+        has_compositional_operator: has_composition,
+    }
+}
+
+fn tokenize_condition(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut iter = s.chars().peekable();
+    let mut buf = String::new();
+    while let Some(&c) = iter.peek() {
+        match c {
+            '"' => {
+                if !buf.is_empty() {
+                    out.push(std::mem::take(&mut buf));
+                }
+                let mut lit = String::from('"');
+                iter.next();
+                while let Some(&inner) = iter.peek() {
+                    iter.next();
+                    lit.push(inner);
+                    if inner == '"' {
+                        break;
+                    }
+                }
+                out.push(lit);
+            }
+            ' ' | '\t' => {
+                if !buf.is_empty() {
+                    out.push(std::mem::take(&mut buf));
+                }
+                iter.next();
+            }
+            // Note: '(' and ')' are NOT split as separate tokens.
+            // `my_block.applies()` must remain a single token so that
+            // `classify_token` can match the `.applies()` suffix.
+            // Standalone `(` / `)` only appear as operator tokens when they
+            // are separated from other tokens by whitespace (the ' '|'\t' arm
+            // above handles the split, and `classify_token` maps them to Operator).
+            _ => {
+                buf.push(c);
+                iter.next();
+            }
+        }
+    }
+    if !buf.is_empty() {
+        out.push(buf);
+    }
+    out
+}
+
+fn classify_token<'a>(
+    tok: &str,
+    texts: &HashMap<&'a str, (String, crate::kind_infer::TypeTag)>,
+    params_with_string_default: &HashSet<&'a str>,
+    bindings: &HashSet<&'a str>,
+    _block_decls: &HashMap<&'a str, &'a BlockDecl>,
+) -> ConditionTokenKind {
+    if matches!(tok, "and" | "or" | "not" | "==" | "(" | ")") {
+        return ConditionTokenKind::Operator;
+    }
+    if tok.starts_with('"') {
+        return ConditionTokenKind::PredicateLiteral;
+    }
+    if tok.contains(".applies()") {
+        // Syntactic classification: any `NAME.applies()` form is PredicateApplies.
+        // Semantic validation (receiver must be a known block) is done by
+        // `check_applies_in_condition`, not here.
+        return ConditionTokenKind::PredicateApplies;
+    }
+    if let Some((_body, tag)) = texts.get(tok) {
+        return match tag {
+            crate::kind_infer::TypeTag::String => ConditionTokenKind::PredicateConst,
+            crate::kind_infer::TypeTag::Bool => ConditionTokenKind::Boolean,
+            _ => ConditionTokenKind::Boolean,
+        };
+    }
+    if params_with_string_default.contains(tok) {
+        return ConditionTokenKind::PredicateConst;
+    }
+    if bindings.contains(tok) {
+        return ConditionTokenKind::Boolean;
+    }
+    ConditionTokenKind::Boolean
+}
+
+// ---------------------------------------------------------------------------
+
 /// Check applies() calls in a branch condition string.
 /// Validates: applies-on-non-block, applies-on-undescribed-block.
 fn check_applies_in_condition(
@@ -6117,5 +6245,87 @@ mod validate_call_tests {
             "expected missing `c`, got {:?}",
             msgs[0]
         );
+    }
+}
+
+#[cfg(test)]
+mod classify_condition_tests {
+    use super::*;
+    use crate::condition::ConditionTokenKind as K;
+    use std::collections::{HashMap, HashSet};
+
+    fn empty_blocks<'a>() -> HashMap<&'a str, &'a BlockDecl> {
+        HashMap::new()
+    }
+
+    #[test]
+    fn classifies_pure_applies_call() {
+        let blocks: HashMap<&str, &BlockDecl> = HashMap::new();
+        let texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = HashMap::new();
+        let params: HashSet<&str> = HashSet::new();
+        let bindings: HashSet<&str> = HashSet::new();
+        let c = classify_condition("my_block.applies()", &texts, &params, &bindings, &blocks);
+        assert_eq!(c.tokens, vec![K::PredicateApplies]);
+        assert!(c.is_pure_predicate());
+    }
+
+    #[test]
+    fn classifies_string_kinded_const_as_predicate_const() {
+        let blocks = empty_blocks();
+        let mut texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = HashMap::new();
+        texts.insert("complex_change", ("the change is complex".into(), crate::kind_infer::TypeTag::String));
+        let params: HashSet<&str> = HashSet::new();
+        let bindings: HashSet<&str> = HashSet::new();
+        let c = classify_condition("complex_change", &texts, &params, &bindings, &blocks);
+        assert_eq!(c.tokens, vec![K::PredicateConst]);
+        assert!(c.is_pure_predicate());
+    }
+
+    #[test]
+    fn classifies_inline_string_literal_as_predicate_literal() {
+        let blocks = empty_blocks();
+        let texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = HashMap::new();
+        let params: HashSet<&str> = HashSet::new();
+        let bindings: HashSet<&str> = HashSet::new();
+        let c = classify_condition("\"the user opted in\"", &texts, &params, &bindings, &blocks);
+        assert_eq!(c.tokens, vec![K::PredicateLiteral]);
+        assert!(c.is_pure_predicate());
+    }
+
+    #[test]
+    fn classifies_bool_kinded_const_as_boolean() {
+        let blocks = empty_blocks();
+        let mut texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = HashMap::new();
+        texts.insert("is_dry_run", ("true".into(), crate::kind_infer::TypeTag::Bool));
+        let params: HashSet<&str> = HashSet::new();
+        let bindings: HashSet<&str> = HashSet::new();
+        let c = classify_condition("is_dry_run", &texts, &params, &bindings, &blocks);
+        assert_eq!(c.tokens, vec![K::Boolean]);
+        assert!(!c.is_pure_predicate());
+    }
+
+    #[test]
+    fn mixed_predicate_const_with_not_is_not_pure() {
+        let blocks = empty_blocks();
+        let mut texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = HashMap::new();
+        texts.insert("complex_change", ("the change is complex".into(), crate::kind_infer::TypeTag::String));
+        let params: HashSet<&str> = HashSet::new();
+        let bindings: HashSet<&str> = HashSet::new();
+        let c = classify_condition("not complex_change", &texts, &params, &bindings, &blocks);
+        assert!(!c.is_pure_predicate());
+        assert!(c.has_compositional_operator);
+        assert!(c.has_predicate_token);
+    }
+
+    #[test]
+    fn or_combination_of_predicates_stays_pure() {
+        let blocks = empty_blocks();
+        let mut texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = HashMap::new();
+        texts.insert("a", ("alpha".into(), crate::kind_infer::TypeTag::String));
+        texts.insert("b", ("beta".into(), crate::kind_infer::TypeTag::String));
+        let params: HashSet<&str> = HashSet::new();
+        let bindings: HashSet<&str> = HashSet::new();
+        let c = classify_condition("a or b", &texts, &params, &bindings, &blocks);
+        assert!(c.is_pure_predicate());
     }
 }
