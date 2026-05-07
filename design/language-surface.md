@@ -381,12 +381,32 @@ generated block summarize_changes()
 
 ### 3.8 Parameter Syntax
 
-Parameters appear inside parentheses on `skill`, `block`, and `export block` headers. Four forms:
+Parameters appear inside parentheses on `skill`, `block`, and `export block` headers. The grammar:
 
 ```
-name = "default"              // untyped, with default
-name: Type = default_value    // typed, with default
+param       = ident (":" type)? ("=" rhs)?
+rhs         = literal description?
+            | name_ref description?
+            | description
+description = "<" string_literal ">"
 ```
+
+The grammar admits all of:
+
+```
+x                                  // untyped, no default, no description
+x = "foo"                          // untyped, default
+x = <"...">                        // untyped, description
+x = "foo" <"...">                  // untyped, default + description
+x: T                               // typed, no default, no description
+x: T = "foo"                       // typed, default
+x: T = name_ref                    // typed, default-from-const
+x: T = <"...">                     // typed, description
+x: T = "foo" <"...">               // typed, default + description
+x: T = name_ref <"...">            // typed, default-from-const + description
+```
+
+**The descriptive form `<"…">` is legal in two positions: param `=` slot (per this section) and return position (`return <"…">`, see §3.7 on output targets). The two roles are syntactically distinguished by position — there is no ambiguity since after `= literal`/`= name_ref` the only legal next tokens are `,`, `)`, or `<`.**
 
 - **`skill` parameter defaults are optional.** A skill parameter without a default is a **runtime-required input**: the consuming LLM must extract its value from the user's request context with no fallback. The compiled `## Parameters` section marks such parameters as required (see [compiled-output.md](compiled-output.md) §`## Parameters`). A skill parameter with a default is optional at runtime — the LLM uses the default if the user does not specify a value. This distinction lets authors separate inputs that must come from the user (e.g., a target file path) from those that have a sensible fallback (e.g., a verbosity level).
 - **`export block` parameter defaults are optional.** Export blocks project to standalone procedure `.md` files at Tier 3, and their parameter slots are filled by the caller's `call` expression at compile time, not by the consuming LLM at runtime. A default exists for caller ergonomics: a caller may omit an argument and inherit the default. A parameter without a default is *required at every call site* — the caller must pass the corresponding positional argument. Omitting it surfaces `G::analyze::missing-required-arg` at the call (**compile error**, not repairable). The rule is uniform across same-file callers and cross-file imported callers (PRD #103 / Issues #104, #105).

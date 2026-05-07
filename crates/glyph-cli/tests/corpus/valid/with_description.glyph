@@ -1,0 +1,6 @@
+skill summarize_with_desc(scope: PathSpec = "." <"directory to summarize, relative to repo root">, target = <"absolute path to the report file">)
+    description: "Summarize a directory's contents with descriptions."
+
+    flow:
+        "Inspect files under {scope}."
+        "Write the summary to {target}."

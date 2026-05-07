@@ -5,7 +5,7 @@ description: Use when the user invokes /glyph:compile on a Glyph source file. Ru
 
 ## Parameters
 
-- **source_path** (required)
+- **source_path**. Required.
 
 ## Instructions
 
@@ -15,7 +15,7 @@ description: Use when the user invokes /glyph:compile on a Glyph source file. Ru
 2. Follow the run-repair-loop procedure below.
 3. Follow the scan-constraint-conflicts procedure below.
 4. Follow the reshape-prose procedure below.
-5. Run `glyph validate-output {source_path}.ir.json {source_path}.md`. On exit 0, the build is done. On exit 1, retry the prose reshape pass with the structural diagnostics as revise-with-feedback input. Budget at most 2 retries before surfacing the failure verbatim, and return the absolute path to the final compiled .md file as your result.
+5. Run `glyph validate-output {source_path}.ir.json {source_path}.md`. On exit 0, the build is done. On exit 1, retry the prose reshape pass with the structural diagnostics as revise-with-feedback input. Budget at most 2 retries before surfacing the failure verbatim. Produce: absolute path to the final compiled .md file.
 
 ### Procedure: run-repair-loop
 
