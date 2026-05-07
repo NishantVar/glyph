@@ -2,23 +2,20 @@
 //! fallback. See `design/expand.md` §3.3.
 
 use crate::emit::scaffold::{Scaffold, SpanId, SpanKind, SpanPayload, SpanRef};
-use crate::ir::{IrArena, IrBranch, IrNode, NodeId};
+use crate::ir::{BranchPredicateShape, IrArena, IrBranch, IrNode, NodeId};
 
 pub const SINGLE_ARM_OPENER_PREFIX: &str = "Decide whether ";
 pub const SINGLE_ARM_OPENER_TAIL: &str = " applies and, if so:";
 pub const MULTI_ARM_OPENER: &str =
     "Decide which of the following applies and follow only that path:";
 
-pub fn is_pure_applies(br: &IrBranch) -> bool {
-    is_applies_only(&br.condition)
-        && br
-            .elif_branches
-            .iter()
-            .all(|e| is_applies_only(&e.condition))
+pub fn is_pure_predicate(br: &IrBranch) -> bool {
+    is_pure_predicate_shape(&br.predicate_shape)
+        && br.elif_branches.iter().all(|e| is_pure_predicate_shape(&e.predicate_shape))
 }
 
-fn is_applies_only(c: &str) -> bool {
-    c.trim().ends_with(".applies()")
+fn is_pure_predicate_shape(s: &BranchPredicateShape) -> bool {
+    s.has_predicate_token && !s.has_boolean_token && !s.has_compositional_operator
 }
 
 pub fn extract_block_name(condition: &str) -> Option<String> {
@@ -39,7 +36,7 @@ pub fn emit_to_scaffold(
     step_num: usize,
     next_span_id: &mut u32,
 ) {
-    if is_pure_applies(br) {
+    if is_pure_predicate(br) {
         emit_pure_applies(s, arena, br, step_num);
     } else {
         emit_mixed_condition(s, arena, br, step_num, next_span_id);
@@ -184,9 +181,13 @@ mod tests {
                 m.insert("needs_review".into(), "the change needs review".into());
                 m
             }),
-            predicate_shape: BranchPredicateShape::default(),
+            predicate_shape: BranchPredicateShape {
+                has_boolean_token: false,
+                has_predicate_token: true,
+                has_compositional_operator: false,
+            },
         };
-        assert!(is_pure_applies(&br));
+        assert!(is_pure_predicate(&br));
         assert!(br.elif_branches.is_empty());
         assert!(br.else_body.is_none());
     }
@@ -200,13 +201,21 @@ mod tests {
             elif_branches: vec![IrElifBranch {
                 condition: "b.applies()".into(),
                 body: vec![],
-                predicate_shape: BranchPredicateShape::default(),
+                predicate_shape: BranchPredicateShape {
+                    has_boolean_token: false,
+                    has_predicate_token: true,
+                    has_compositional_operator: false,
+                },
             }],
             else_body: None,
             resolved_predicates: None,
-            predicate_shape: BranchPredicateShape::default(),
+            predicate_shape: BranchPredicateShape {
+                has_boolean_token: false,
+                has_predicate_token: true,
+                has_compositional_operator: false,
+            },
         };
-        assert!(is_pure_applies(&br));
+        assert!(is_pure_predicate(&br));
     }
 
     #[test]
@@ -220,7 +229,7 @@ mod tests {
             resolved_predicates: None,
             predicate_shape: BranchPredicateShape::default(),
         };
-        assert!(!is_pure_applies(&br));
+        assert!(!is_pure_predicate(&br));
     }
 
     #[test]
@@ -242,5 +251,63 @@ mod tests {
             strip_trailing_period("the change is risky"),
             "the change is risky"
         );
+    }
+
+    #[test]
+    fn pure_predicate_recognises_string_const() {
+        let br = IrBranch {
+            node_id: NodeId(0),
+            condition: "big".into(),
+            then_body: vec![],
+            elif_branches: vec![],
+            else_body: None,
+            resolved_predicates: Some({
+                let mut m = BTreeMap::new();
+                m.insert("big".into(), "the change is big".into());
+                m
+            }),
+            predicate_shape: BranchPredicateShape {
+                has_boolean_token: false,
+                has_predicate_token: true,
+                has_compositional_operator: false,
+            },
+        };
+        assert!(is_pure_predicate(&br));
+    }
+
+    #[test]
+    fn pure_predicate_recognises_inline_literal() {
+        let br = IrBranch {
+            node_id: NodeId(0),
+            condition: "\"the user opted in\"".into(),
+            then_body: vec![],
+            elif_branches: vec![],
+            else_body: None,
+            resolved_predicates: None,
+            predicate_shape: BranchPredicateShape {
+                has_boolean_token: false,
+                has_predicate_token: true,
+                has_compositional_operator: false,
+            },
+        };
+        assert!(is_pure_predicate(&br));
+    }
+
+    #[test]
+    fn pure_predicate_rejects_const_with_not() {
+        let br = IrBranch {
+            node_id: NodeId(0),
+            condition: "not big".into(),
+            then_body: vec![],
+            elif_branches: vec![],
+            else_body: None,
+            resolved_predicates: None,
+            predicate_shape: BranchPredicateShape {
+                has_boolean_token: false,
+                has_predicate_token: true,
+                has_compositional_operator: true,
+            },
+        };
+        assert!(!is_pure_predicate(&br));
     }
 }
