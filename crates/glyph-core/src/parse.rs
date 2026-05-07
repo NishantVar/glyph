@@ -5589,7 +5589,11 @@ skill foo(a: Path)
         let skill = first_skill(src);
         let p = &skill.params[0];
         assert_eq!(p.name, "a");
-        assert!(p.default.is_none(), "no default expected, got: {:?}", p.default);
+        assert!(
+            p.default.is_none(),
+            "no default expected, got: {:?}",
+            p.default
+        );
         let t = p
             .type_annotation
             .as_ref()
@@ -5653,7 +5657,10 @@ skill foo(a, b: Path, c = \"x\", d: Path = \"y\")
         // b — typed, no default
         assert_eq!(skill.params[1].name, "b");
         assert_eq!(
-            skill.params[1].type_annotation.as_ref().map(|t| t.node.as_str()),
+            skill.params[1]
+                .type_annotation
+                .as_ref()
+                .map(|t| t.node.as_str()),
             Some("Path")
         );
         assert!(skill.params[1].default.is_none());
@@ -5666,7 +5673,10 @@ skill foo(a, b: Path, c = \"x\", d: Path = \"y\")
         // d — typed, with default
         assert_eq!(skill.params[3].name, "d");
         assert_eq!(
-            skill.params[3].type_annotation.as_ref().map(|t| t.node.as_str()),
+            skill.params[3]
+                .type_annotation
+                .as_ref()
+                .map(|t| t.node.as_str()),
             Some("Path")
         );
         assert_eq!(skill.params[3].default.as_deref(), Some("\"y\""));
@@ -5687,7 +5697,11 @@ skill foo(a: Path)
             .expect("type_annotation populated");
         let start = t.span.start as usize;
         let end = t.span.end as usize;
-        assert_eq!(&src[start..end], "Path", "type ident span must cover `Path`");
+        assert_eq!(
+            &src[start..end],
+            "Path",
+            "type ident span must cover `Path`"
+        );
     }
 
     #[test]
