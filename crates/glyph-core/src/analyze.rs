@@ -441,6 +441,7 @@ fn sweep_name_collisions(
     // field of the collision diagnostic.
     let mut params: Vec<(&str, Span)> = Vec::new();
     let mut consts: Vec<(&str, Span)> = Vec::new();
+    let mut types: Vec<(&str, Span)> = Vec::new();
     for decl in &file.decls {
         match decl {
             Decl::Skill(s) => {
@@ -462,7 +463,9 @@ fn sweep_name_collisions(
                 consts.push((c.node.name.as_str(), c.span));
             }
             Decl::Import(_) => {}
-            Decl::TypeDecl(_) => {} // TODO: handled in Task B.4+
+            Decl::TypeDecl(t) => {
+                types.push((t.node.name.as_str(), t.span));
+            }
         }
     }
 
@@ -487,6 +490,19 @@ fn sweep_name_collisions(
                     entry,
                     const_raw,
                     *const_span,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+            }
+        }
+        for (type_raw, type_span) in &types {
+            if crate::domain_registry::canonicalize_identifier(type_raw) == entry.canonical_name {
+                emit_name_collision(
+                    "type",
+                    entry,
+                    type_raw,
+                    *type_span,
                     file_label,
                     line_index,
                     bag,
@@ -1143,6 +1159,29 @@ pub fn analyze_with_diagnostics(
         }
     }
 
+    // Duplicate `type Foo` in the same file is a hard error.
+    {
+        let mut seen_types: HashMap<&str, Span> = HashMap::new();
+        for d in &file.decls {
+            if let Decl::TypeDecl(t) = d {
+                let name = t.node.name.as_str();
+                let span = t.span;
+                if let Some(_prev_span) = seen_types.get(name) {
+                    bag.push(
+                        Diagnostic::error(
+                            "G::analyze::duplicate-type-decl",
+                            format!("duplicate `type {}` declaration in this file", name),
+                            SourceSpan::from_byte_span(file_label, span, line_index),
+                        ),
+                        span,
+                    );
+                } else {
+                    seen_types.insert(name, span);
+                }
+            }
+        }
+    }
+
     // Issue #84 Chunk 3 (AC5): domain-type-vs-param/const collision sweep.
     sweep_name_collisions(&file, file_label, line_index, bag, registry);
 
@@ -1150,7 +1189,9 @@ pub fn analyze_with_diagnostics(
     let has_skill = file.decls.iter().any(|d| matches!(d, Decl::Skill(_)));
     if !has_skill {
         let has_export = file.decls.iter().any(|d| {
-            matches!(d, Decl::ExportBlock(_)) || matches!(d, Decl::Const(c) if c.node.exported)
+            matches!(d, Decl::ExportBlock(_))
+                || matches!(d, Decl::Const(c) if c.node.exported)
+                || matches!(d, Decl::TypeDecl(t) if t.node.exported)
         });
         if !has_export {
             let span = crate::span::Span::new(file_id, 0, 0);
@@ -1959,7 +2000,9 @@ pub fn analyze_with_imports(
     let has_skill = file.decls.iter().any(|d| matches!(d, Decl::Skill(_)));
     if !has_skill {
         let has_export = file.decls.iter().any(|d| {
-            matches!(d, Decl::ExportBlock(_)) || matches!(d, Decl::Const(c) if c.node.exported)
+            matches!(d, Decl::ExportBlock(_))
+                || matches!(d, Decl::Const(c) if c.node.exported)
+                || matches!(d, Decl::TypeDecl(t) if t.node.exported)
         });
         if !has_export {
             let span = crate::span::Span::new(file_id, 0, 0);
@@ -5722,6 +5765,19 @@ skill main()
             signals.referenced_names.contains("inner_b"),
             "inner_b (in else_body) should be in referenced_names, got {:?}",
             signals.referenced_names
+        );
+    }
+
+    #[test]
+    fn duplicate_type_decl_emits_diagnostic() {
+        let src = r#"export type Foo = <"first">
+export type Foo = <"second">
+"#;
+        let ids = check_ids(src);
+        assert!(
+            ids.iter().any(|id| id == "G::analyze::duplicate-type-decl"),
+            "expected duplicate-type-decl; got: {:?}",
+            ids
         );
     }
 }
