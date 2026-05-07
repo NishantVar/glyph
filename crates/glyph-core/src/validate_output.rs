@@ -104,7 +104,7 @@ pub fn validate_output(ir_json: &str, md: &str) -> Vec<Violation> {
     check_procedures(&md_struct, skill, &mut violations);
 
     // Description-driven branch validation
-    check_applies_descriptions(skill, md, &mut violations);
+    check_resolved_predicates(skill, md, &mut violations);
 
     violations
 }
@@ -1510,19 +1510,19 @@ fn find_callee_flow_count(flow: &[Value], proc_name: &str) -> Option<usize> {
 // Check: description-shape-missing (description-driven branch projection)
 // ---------------------------------------------------------------------------
 
-fn check_applies_descriptions(skill: &Value, md: &str, violations: &mut Vec<Violation>) {
+fn check_resolved_predicates(skill: &Value, md: &str, violations: &mut Vec<Violation>) {
     if let Some(flow) = skill.get("flow").and_then(|f| f.as_array()) {
-        check_applies_descriptions_in_flow(flow, md, violations);
+        check_resolved_predicates_in_flow(flow, md, violations);
     }
 }
 
-fn check_applies_descriptions_in_flow(flow: &[Value], md: &str, violations: &mut Vec<Violation>) {
+fn check_resolved_predicates_in_flow(flow: &[Value], md: &str, violations: &mut Vec<Violation>) {
     for node in flow {
         let kind = node.get("kind").and_then(|k| k.as_str()).unwrap_or("");
         if kind == "branch" {
-            // Check if this branch has applies_descriptions
-            if let Some(desc_map) = node.get("applies_descriptions").and_then(|d| d.as_object()) {
-                // When applies_descriptions is populated, the compiled output
+            // Check if this branch has resolved_predicates
+            if let Some(desc_map) = node.get("resolved_predicates").and_then(|d| d.as_object()) {
+                // When resolved_predicates is populated, the compiled output
                 // must use description-keyed prose, not raw condition expressions.
                 // Verify that none of the block names followed by `.applies()`
                 // survive literally in the markdown.
@@ -1542,17 +1542,17 @@ fn check_applies_descriptions_in_flow(flow: &[Value], md: &str, violations: &mut
             }
             // Recurse into branch bodies
             if let Some(body) = node.get("then_body").and_then(|b| b.as_array()) {
-                check_applies_descriptions_in_flow(body, md, violations);
+                check_resolved_predicates_in_flow(body, md, violations);
             }
             if let Some(elifs) = node.get("elif_branches").and_then(|b| b.as_array()) {
                 for elif in elifs {
                     if let Some(body) = elif.get("body").and_then(|b| b.as_array()) {
-                        check_applies_descriptions_in_flow(body, md, violations);
+                        check_resolved_predicates_in_flow(body, md, violations);
                     }
                 }
             }
             if let Some(body) = node.get("else_body").and_then(|b| b.as_array()) {
-                check_applies_descriptions_in_flow(body, md, violations);
+                check_resolved_predicates_in_flow(body, md, violations);
             }
         }
     }
@@ -1614,7 +1614,7 @@ mod tests {
     /// Helper: minimal valid IR JSON
     fn minimal_ir() -> String {
         serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -1657,7 +1657,7 @@ mod tests {
     #[test]
     fn output_target_leak_is_rejected() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -1701,7 +1701,7 @@ mod tests {
     #[test]
     fn natural_output_target_name_is_allowed() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -1807,7 +1807,7 @@ mod tests {
     fn extra_h3_accepts_valid_h3s() {
         // All valid H3s: Context, Steps, Constraints, Procedure: <name>
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -1896,7 +1896,7 @@ mod tests {
     #[test]
     fn substep_count_mismatch() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -1921,7 +1921,12 @@ mod tests {
                         "else_body": [
                             { "node_id": "n4", "kind": "inline_instruction", "text": "Skip tests.", "role": "step" }
                         ],
-                        "applies_descriptions": null
+                        "resolved_predicates": null,
+                        "predicate_shape": {
+                            "has_boolean_token": false,
+                            "has_predicate_token": false,
+                            "has_compositional_operator": false
+                        }
                     }
                 ]
             }
@@ -1939,7 +1944,7 @@ mod tests {
     #[test]
     fn constraint_count_mismatch() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -1972,7 +1977,7 @@ mod tests {
     #[test]
     fn context_count_mismatch() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2006,7 +2011,7 @@ mod tests {
     #[test]
     fn context_count_ignores_indented_body_bullets() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2044,7 +2049,7 @@ mod tests {
     #[test]
     fn step_order_mismatch() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2089,7 +2094,7 @@ mod tests {
     #[test]
     fn dropped_param_ref() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2143,7 +2148,7 @@ mod tests {
     #[test]
     fn unresolved_local_ref() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2218,7 +2223,7 @@ mod tests {
     #[test]
     fn modifier_leaked() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2271,7 +2276,7 @@ mod tests {
     #[test]
     fn params_section_mismatch() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2308,7 +2313,7 @@ mod tests {
     #[test]
     fn params_section_missing() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2364,7 +2369,7 @@ mod tests {
     #[test]
     fn constraint_multi_sentence() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2399,7 +2404,7 @@ mod tests {
     #[test]
     fn procedure_count_mismatch() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2453,7 +2458,7 @@ mod tests {
     #[test]
     fn procedure_name_mismatch() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2506,7 +2511,7 @@ mod tests {
     #[test]
     fn procedure_step_count_mismatch() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2561,7 +2566,7 @@ mod tests {
     #[test]
     fn procedure_ref_missing() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2615,7 +2620,7 @@ mod tests {
     #[test]
     fn procedure_ref_dangling() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2669,7 +2674,7 @@ mod tests {
     #[test]
     fn procedure_duplicate() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2702,7 +2707,7 @@ mod tests {
     #[test]
     fn procedure_order() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2809,7 +2814,7 @@ mod tests {
         // using description-keyed shape. This test verifies that validates passes
         // when the branch is correctly rendered.
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2840,9 +2845,14 @@ mod tests {
                             }
                         ],
                         "else_body": null,
-                        "applies_descriptions": {
+                        "resolved_predicates": {
                             "fork_with_plan": "Fork a terminal with a plan.",
                             "fork_with_summary": "Fork a terminal with a summary."
+                        },
+                        "predicate_shape": {
+                            "has_boolean_token": false,
+                            "has_predicate_token": false,
+                            "has_compositional_operator": false
                         }
                     }
                 ]
@@ -2866,11 +2876,11 @@ mod tests {
 
     #[test]
     fn description_driven_branch_rejects_raw_applies_condition() {
-        // When a Branch has applies_descriptions, the compiled output must NOT
+        // When a Branch has resolved_predicates, the compiled output must NOT
         // contain the raw `.applies()` condition expressions. If they survive,
         // it means the description-keyed rendering failed.
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2901,9 +2911,14 @@ mod tests {
                             }
                         ],
                         "else_body": null,
-                        "applies_descriptions": {
+                        "resolved_predicates": {
                             "fork_with_plan": "Fork a terminal with a plan.",
                             "fork_with_summary": "Fork a terminal with a summary."
+                        },
+                        "predicate_shape": {
+                            "has_boolean_token": false,
+                            "has_predicate_token": false,
+                            "has_compositional_operator": false
                         }
                     }
                 ]
@@ -2930,7 +2945,7 @@ mod tests {
     #[test]
     fn description_form_leak_token_is_re_escaped_to_source_shape() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {

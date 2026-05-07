@@ -121,7 +121,7 @@ pub struct SpanPayload {
     pub resolved_body: Option<String>,
     pub description_text: Option<String>,
     pub condition_expression: Option<String>,
-    pub applies_descriptions: Option<BTreeMap<String, String>>,
+    pub resolved_predicates: Option<BTreeMap<String, String>>,
     pub param_name: Option<String>,
     pub param_type: Option<String>,
     pub param_default: Option<String>,

@@ -51,7 +51,7 @@ fn emit_pure_applies(s: &mut Scaffold, arena: &IrArena, br: &IrBranch, step_num:
     if single_arm {
         let block_name = extract_block_name(&br.condition).unwrap_or_default();
         let desc = br
-            .applies_descriptions
+            .resolved_predicates
             .as_ref()
             .and_then(|m| m.get(&block_name))
             .cloned()
@@ -83,7 +83,7 @@ fn emit_applies_arm_header_and_body(
 ) {
     let block_name = extract_block_name(condition).unwrap_or_default();
     let desc = br
-        .applies_descriptions
+        .resolved_predicates
         .as_ref()
         .and_then(|m| m.get(&block_name))
         .cloned()
@@ -109,7 +109,7 @@ fn emit_mixed_condition(
         ir_node: br.node_id,
         payload: SpanPayload {
             condition_expression: Some(br.condition.clone()),
-            applies_descriptions: br.applies_descriptions.clone(),
+            resolved_predicates: br.resolved_predicates.clone(),
             ..SpanPayload::default()
         },
     });
@@ -125,7 +125,7 @@ fn emit_mixed_condition(
             ir_node: br.node_id,
             payload: SpanPayload {
                 condition_expression: Some(elif.condition.clone()),
-                applies_descriptions: br.applies_descriptions.clone(),
+                resolved_predicates: br.resolved_predicates.clone(),
                 ..SpanPayload::default()
             },
         });
@@ -166,7 +166,7 @@ fn emit_lettered_substeps(s: &mut Scaffold, arena: &IrArena, body: &[NodeId]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{IrBranch, IrElifBranch, NodeId};
+    use crate::ir::{BranchPredicateShape, IrBranch, IrElifBranch, NodeId};
     use std::collections::BTreeMap;
 
     #[test]
@@ -177,11 +177,12 @@ mod tests {
             then_body: vec![],
             elif_branches: vec![],
             else_body: None,
-            applies_descriptions: Some({
+            resolved_predicates: Some({
                 let mut m = BTreeMap::new();
                 m.insert("needs_review".into(), "the change needs review".into());
                 m
             }),
+            predicate_shape: BranchPredicateShape::default(),
         };
         assert!(is_pure_applies(&br));
         assert!(br.elif_branches.is_empty());
@@ -197,9 +198,11 @@ mod tests {
             elif_branches: vec![IrElifBranch {
                 condition: "b.applies()".into(),
                 body: vec![],
+                predicate_shape: BranchPredicateShape::default(),
             }],
             else_body: None,
-            applies_descriptions: None,
+            resolved_predicates: None,
+            predicate_shape: BranchPredicateShape::default(),
         };
         assert!(is_pure_applies(&br));
     }
@@ -212,7 +215,8 @@ mod tests {
             then_body: vec![],
             elif_branches: vec![],
             else_body: None,
-            applies_descriptions: None,
+            resolved_predicates: None,
+            predicate_shape: BranchPredicateShape::default(),
         };
         assert!(!is_pure_applies(&br));
     }

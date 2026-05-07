@@ -3642,8 +3642,8 @@ skill main()
     }
 
     #[test]
-    fn applies_descriptions_populated_in_expand() {
-        // AC6: applies_descriptions side-map is populated post-Step-1.
+    fn resolved_predicates_populated_in_expand() {
+        // AC6: resolved_predicates side-map is populated post-Step-1.
         let src = "\
 block fast_mode()
     description: \"When the user wants fast processing.\"
@@ -3676,9 +3676,9 @@ skill main()
         });
         let branch = branch.expect("should have a Branch node");
         let descs = branch
-            .applies_descriptions
+            .resolved_predicates
             .as_ref()
-            .expect("applies_descriptions should be populated");
+            .expect("resolved_predicates should be populated");
         assert_eq!(
             descs.get("fast_mode").map(|s| s.as_str()),
             Some("When the user wants fast processing.")

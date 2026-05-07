@@ -323,7 +323,8 @@ mod tests {
             then_body: vec![], // empty — malformed!
             elif_branches: vec![],
             else_body: None,
-            applies_descriptions: None,
+            resolved_predicates: None,
+            predicate_shape: crate::ir::BranchPredicateShape::default(),
         }));
         arena.set_root_skill(NodeId(0));
         let err = validate(&arena).unwrap_err();

@@ -133,7 +133,7 @@ pub fn expand_step1_with_imported_descriptions(
         }
     }
 
-    // Phase 2b: Populate applies_descriptions on Branch nodes.
+    // Phase 2b: Populate resolved_predicates on Branch nodes.
     // Collect block descriptions into a lookup map.
     let mut block_descriptions: HashMap<String, String> = HashMap::new();
     // Include imported block descriptions first, local descriptions will override.
@@ -147,7 +147,7 @@ pub fn expand_step1_with_imported_descriptions(
             }
         }
     }
-    // Walk Branch nodes and populate applies_descriptions.
+    // Walk Branch nodes and populate resolved_predicates.
     let nodes = arena.nodes_mut();
     for i in 0..nodes.len() {
         if let IrNode::Branch(ref br) = nodes[i] {
@@ -178,7 +178,7 @@ pub fn expand_step1_with_imported_descriptions(
             if !descs.is_empty() {
                 // We need to mutate the Branch — clone data and replace.
                 let mut br_clone = br.clone();
-                br_clone.applies_descriptions = Some(descs);
+                br_clone.resolved_predicates = Some(descs);
                 nodes[i] = IrNode::Branch(br_clone);
             }
         }

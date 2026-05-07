@@ -63,7 +63,7 @@ fn emit_ir_produces_ir_json_file() {
         serde_json::from_str(&content).expect("ir.json should be valid JSON");
 
     // Check top-level envelope fields.
-    assert_eq!(v["ir_version"], 1);
+    assert_eq!(v["ir_version"], 2);
     assert!(v["compiler"].as_str().unwrap().starts_with("glyph "));
     assert_eq!(v["source_file"].as_str().unwrap(), "update_docs.glyph");
     assert_eq!(v["skill"]["kind"], "skill");
@@ -227,7 +227,7 @@ skill fix()
 }
 
 #[test]
-fn emit_ir_includes_applies_descriptions_on_branch() {
+fn emit_ir_includes_resolved_predicates_on_branch() {
     let (_dir, src) = setup_tempdir("branching.glyph");
     let result = run_compile_emit_ir(&src);
     assert!(result.status.success());
@@ -239,15 +239,21 @@ fn emit_ir_includes_applies_descriptions_on_branch() {
     let flow = v["skill"]["flow"].as_array().unwrap();
     let branch = flow.iter().find(|n| n["kind"] == "branch").unwrap();
     // branching.glyph uses mode == "fast" / mode == "slow", not .applies().
-    // So applies_descriptions should be null.
+    // So resolved_predicates should be null.
     assert!(
-        branch["applies_descriptions"].is_null(),
-        "applies_descriptions should be null when no .applies() used"
+        branch["resolved_predicates"].is_null(),
+        "resolved_predicates should be null when no .applies() used"
     );
+    // predicate_shape should always be present with default false values.
+    let shape = &branch["predicate_shape"];
+    assert!(shape.is_object(), "predicate_shape should be an object");
+    assert_eq!(shape["has_boolean_token"], false);
+    assert_eq!(shape["has_predicate_token"], false);
+    assert_eq!(shape["has_compositional_operator"], false);
 }
 
 #[test]
-fn emit_ir_includes_applies_descriptions_with_applies_calls() {
+fn emit_ir_includes_resolved_predicates_with_applies_calls() {
     let source = r#"block fast_mode()
     description: "When the user wants fast processing."
     flow:
@@ -271,10 +277,13 @@ skill main()
     let v = compile_and_read_ir("applies.glyph", source);
     let flow = v["skill"]["flow"].as_array().unwrap();
     let branch = flow.iter().find(|n| n["kind"] == "branch").unwrap();
-    let ad = &branch["applies_descriptions"];
-    assert!(ad.is_object(), "applies_descriptions should be an object");
-    assert_eq!(ad["fast_mode"], "When the user wants fast processing.");
-    assert_eq!(ad["slow_mode"], "When the user wants thorough processing.");
+    let rp = &branch["resolved_predicates"];
+    assert!(rp.is_object(), "resolved_predicates should be an object");
+    assert_eq!(rp["fast_mode"], "When the user wants fast processing.");
+    assert_eq!(rp["slow_mode"], "When the user wants thorough processing.");
+    // predicate_shape should always be present.
+    let shape = &branch["predicate_shape"];
+    assert!(shape.is_object(), "predicate_shape should be an object");
 }
 
 #[test]
@@ -450,7 +459,7 @@ fn emit_ir_conforms_to_schema_full_skill() {
     let v: serde_json::Value = serde_json::from_str(&content).unwrap();
 
     // Envelope
-    assert_eq!(v["ir_version"], 1);
+    assert_eq!(v["ir_version"], 2);
     assert!(v["compiler"].is_string());
     assert!(v["source_file"].is_string());
 

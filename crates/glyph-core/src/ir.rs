@@ -174,6 +174,15 @@ pub struct IrCall {
     pub callee_output_contract: Option<OutputTargetForm>,
 }
 
+/// Shape classification for a branch predicate. Populated by Tasks 2.5/2.6.
+/// All fields default to false until the classifier runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BranchPredicateShape {
+    pub has_boolean_token: bool,
+    pub has_predicate_token: bool,
+    pub has_compositional_operator: bool,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct IrBranch {
     pub node_id: NodeId,
@@ -187,13 +196,21 @@ pub struct IrBranch {
     /// Maps block names to their resolved `description:` text for
     /// `BLOCKNAME.applies()` calls in conditions. Populated by Expand Step 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub applies_descriptions: Option<BTreeMap<String, String>>,
+    pub resolved_predicates: Option<BTreeMap<String, String>>,
+    /// Shape classification for the branch predicate. Placeholder slot;
+    /// populated by Tasks 2.5/2.6.
+    #[serde(skip)]
+    pub predicate_shape: BranchPredicateShape,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IrElifBranch {
     pub condition: String,
     pub body: Vec<NodeId>,
+    /// Shape classification for the elif predicate. Placeholder slot;
+    /// populated by Tasks 2.5/2.6.
+    #[serde(skip)]
+    pub predicate_shape: BranchPredicateShape,
 }
 
 /// Issue #86: tagged form distinguishing identifier vs descriptive output
@@ -311,6 +328,21 @@ impl IrArena {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ir_branch_exposes_resolved_predicates_field() {
+        use crate::ir::{BranchPredicateShape, IrBranch, NodeId};
+        let br = IrBranch {
+            node_id: NodeId(0),
+            condition: "x.applies()".into(),
+            then_body: vec![],
+            elif_branches: vec![],
+            else_body: None,
+            resolved_predicates: None,
+            predicate_shape: BranchPredicateShape::default(),
+        };
+        assert!(br.resolved_predicates.is_none());
+    }
+
     #[test]
     fn output_contract_constructs_both_forms() {
         use crate::ir::{IrOutputContract, NodeId, OutputSource, OutputTargetForm};

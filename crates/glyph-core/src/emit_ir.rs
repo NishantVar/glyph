@@ -363,10 +363,10 @@ fn serialize_branch(br: &IrBranch, arena: &IrArena) -> Value {
         },
     );
 
-    // applies_descriptions
+    // resolved_predicates
     m.insert(
-        "applies_descriptions".into(),
-        match &br.applies_descriptions {
+        "resolved_predicates".into(),
+        match &br.resolved_predicates {
             Some(descs) => {
                 let obj: Map<String, Value> = descs
                     .iter()
@@ -376,6 +376,16 @@ fn serialize_branch(br: &IrBranch, arena: &IrArena) -> Value {
             }
             None => Value::Null,
         },
+    );
+
+    // predicate_shape
+    m.insert(
+        "predicate_shape".into(),
+        serde_json::json!({
+            "has_boolean_token": br.predicate_shape.has_boolean_token,
+            "has_predicate_token": br.predicate_shape.has_predicate_token,
+            "has_compositional_operator": br.predicate_shape.has_compositional_operator,
+        }),
     );
 
     Value::Object(m)
@@ -438,7 +448,7 @@ pub fn serialize_ir_json(
     };
 
     let mut envelope = Map::new();
-    envelope.insert("ir_version".into(), json!(1));
+    envelope.insert("ir_version".into(), json!(2));
     envelope.insert(
         "compiler".into(),
         Value::String(format!("glyph {}", env!("CARGO_PKG_VERSION"))),

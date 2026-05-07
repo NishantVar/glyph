@@ -348,6 +348,7 @@ fn lower_flow_body(
                     ir_elifs.push(IrElifBranch {
                         condition: elif.condition.clone(),
                         body: elif_ids,
+                        predicate_shape: crate::ir::BranchPredicateShape::default(),
                     });
                 }
                 let ir_else = if let Some(eb) = else_body {
@@ -363,7 +364,8 @@ fn lower_flow_body(
                     then_body: then_ids,
                     elif_branches: ir_elifs,
                     else_body: ir_else,
-                    applies_descriptions: None,
+                    resolved_predicates: None,
+                    predicate_shape: crate::ir::BranchPredicateShape::default(),
                 });
                 ids.push(branch_id);
             }
@@ -720,6 +722,7 @@ pub fn lower_with_imports(
                     ir_elifs.push(IrElifBranch {
                         condition: elif.condition.clone(),
                         body: elif_ids,
+                        predicate_shape: crate::ir::BranchPredicateShape::default(),
                     });
                 }
                 let ir_else = if let Some(eb) = else_body {
@@ -741,7 +744,8 @@ pub fn lower_with_imports(
                     then_body: then_ids,
                     elif_branches: ir_elifs,
                     else_body: ir_else,
-                    applies_descriptions: None,
+                    resolved_predicates: None,
+                    predicate_shape: crate::ir::BranchPredicateShape::default(),
                 });
                 step_ids.push(branch_id);
             }
