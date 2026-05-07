@@ -3647,11 +3647,22 @@ mod none_return_tests {
 
     /// Run `parse_with_diagnostics` and return (ids, exit_code).
     fn run(src: &str) -> (Vec<String>, u8) {
+        let (ids, code, _failed) = run_full(src);
+        (ids, code)
+    }
+
+    /// Run `parse_with_diagnostics` and return (ids, exit_code, parse_failed).
+    /// `parse_failed` is `true` when the parser returned `None` (i.e. an
+    /// unrecoverable structural error). Cascade-gate suppression tests use
+    /// this to lock in BOTH invariants: (a) the parser actually failed on
+    /// the malformed input, and (b) no false-positive sweeps fired on
+    /// downstream tokens.
+    fn run_full(src: &str) -> (Vec<String>, u8, bool) {
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
-        let _ = parse_with_diagnostics(src, 0, "t.glyph", &line_index, &mut bag);
+        let result = parse_with_diagnostics(src, 0, "t.glyph", &line_index, &mut bag);
         let ids: Vec<String> = bag.iter().map(|d| d.id.clone()).collect();
-        (ids, bag.exit_code())
+        (ids, bag.exit_code(), result.is_none())
     }
 
     #[test]
@@ -3818,7 +3829,12 @@ skill foo()
     flow:
         return x -> y
 ";
-        let (ids, _code) = run(src);
+        let (ids, _code, parse_failed) = run_full(src);
+        assert!(
+            parse_failed,
+            "this input must trigger a parse failure for the cascade-gate to be relevant; got ids: {:?}",
+            ids
+        );
         assert!(
             !ids.iter().any(|s| s == "G::parse::operator-in-expression"),
             "cascade-gate must suppress operator-in-expression on parse error, got: {:?}",
@@ -3833,7 +3849,12 @@ skill foo()
         // post-parse Arrow sweep is skipped; the legacy `CompileError::Parse`
         // path surfaces the structural error.
         let src = "const a = b -> c\n";
-        let (ids, _code) = run(src);
+        let (ids, _code, parse_failed) = run_full(src);
+        assert!(
+            parse_failed,
+            "this input must trigger a parse failure for the cascade-gate to be relevant; got ids: {:?}",
+            ids
+        );
         assert!(
             !ids.iter().any(|s| s == "G::parse::operator-in-expression"),
             "cascade-gate must suppress operator-in-expression on parse error, got: {:?}",
@@ -3878,7 +3899,12 @@ block foo() ->
     flow:
         \"x\"
 ";
-        let (ids, _code) = run(src);
+        let (ids, _code, parse_failed) = run_full(src);
+        assert!(
+            parse_failed,
+            "this input must trigger a parse failure for the cascade-gate to be relevant; got ids: {:?}",
+            ids
+        );
         assert!(
             !ids.iter().any(|s| s == "G::parse::operator-in-expression"),
             "cascade-gate must suppress operator-in-expression on parse error, got: {:?}",
@@ -3899,7 +3925,12 @@ skill foo() -> \"Path\"
     flow:
         \"x\"
 ";
-        let (ids, _code) = run(src);
+        let (ids, _code, parse_failed) = run_full(src);
+        assert!(
+            parse_failed,
+            "this input must trigger a parse failure for the cascade-gate to be relevant; got ids: {:?}",
+            ids
+        );
         assert!(
             !ids.iter().any(|s| s == "G::parse::operator-in-expression"),
             "cascade-gate must suppress operator-in-expression on parse error, got: {:?}",
@@ -3925,7 +3956,12 @@ skill foo()
         if cond -> other
             \"yes\"
 ";
-        let (ids, _code) = run(src);
+        let (ids, _code, parse_failed) = run_full(src);
+        assert!(
+            parse_failed,
+            "this input must trigger a parse failure for the cascade-gate to be relevant; got ids: {:?}",
+            ids
+        );
         assert!(
             !ids.iter().any(|s| s == "G::parse::operator-in-expression"),
             "cascade-gate must suppress operator-in-expression on parse error, got: {:?}",
@@ -4192,10 +4228,21 @@ skill foo()
     }
 
     fn diagnostic_ids(src: &str) -> Vec<String> {
+        let (ids, _failed) = diagnostic_ids_full(src);
+        ids
+    }
+
+    /// Like `diagnostic_ids`, but also returns whether the parser failed
+    /// (i.e. `parse_with_diagnostics` returned `None`). Cascade-gate
+    /// suppression tests use this to lock in BOTH invariants: (a) the
+    /// parser actually failed on the malformed input, and (b) no
+    /// false-positive sweeps fired on downstream tokens.
+    fn diagnostic_ids_full(src: &str) -> (Vec<String>, bool) {
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
-        let _ = parse_with_diagnostics(src, 0, "t.glyph", &line_index, &mut bag);
-        bag.iter().map(|d| d.id.clone()).collect()
+        let result = parse_with_diagnostics(src, 0, "t.glyph", &line_index, &mut bag);
+        let ids: Vec<String> = bag.iter().map(|d| d.id.clone()).collect();
+        (ids, result.is_none())
     }
 
     #[test]
@@ -4281,7 +4328,11 @@ skill foo()
     flow:
         < bar
 ";
-        let ids = diagnostic_ids(src);
+        let (ids, parse_failed) = diagnostic_ids_full(src);
+        assert!(
+            parse_failed,
+            "this input must trigger a parse failure for the cascade-gate to be relevant; got ids: {ids:?}"
+        );
         assert!(
             !ids.iter()
                 .any(|id| id == "G::parse::output-target-outside-return"),
