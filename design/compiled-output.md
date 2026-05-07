@@ -85,7 +85,7 @@ The consuming LLM reads this section before executing the Steps. For optional pa
 
 Always emitted. Contains the compiled workflow and behavioral rules via H3 sub-sections:
 
-- **`### Context`** — bulleted list of background information. Passive framing the agent should understand during execution.
+- **`### Context`** — bulleted list of background information. Passive framing the agent should understand during execution. Each context entry projects to one column-0 `- ` bullet; multi-line bodies indent continuation lines by two spaces so each entry remains a single Markdown list item. When the source entry was a bare-name reference to a `const` / `export const` (rather than an inline string), the bullet leads with a bold **kebab-case label** (the source name) on its own line, followed by a blank line, followed by the indented body. The label gives consuming agents a stable per-entry handle and matches the kebab-case convention used by `### Procedure: <name>`.
 - **`### Steps`** — numbered list (order matters). Each item is one instruction. The `return` expression from the source folds into the final item rather than producing a separate section.
 - **`### Constraints`** — bulleted list (order usually does not matter). Each item is one `Constraint` node. Strength (`soft`/`hard`) and polarity (`require`/`avoid`) affect wording, not placement in MVP.
 - **`### Procedure: <name>`** — zero or more procedure sections for blocks projected at Tier 2 (same-file procedure). Each contains a numbered list of the callee's expanded flow, with an optional constraint preamble. See §Three-Tier Block Projection for format and ordering rules.
@@ -98,6 +98,15 @@ Always emitted. Contains the compiled workflow and behavioral rules via H3 sub-s
 ### Context
 
 - This codebase follows a monorepo layout with shared internal packages.
+
+- **project-conventions**
+
+  Multi-paragraph context entries (typically imported `export const` bodies)
+  project as one column-0 bullet whose body is indented by two spaces.
+
+  - Internal bullets in the body stay nested under the entry's bullet.
+  - Headings, numbered lists, and code spans inside the body are preserved
+    verbatim and read as part of the same Context entry.
 
 ### Steps
 
@@ -120,7 +129,7 @@ Compiled output projects from the typed IR role model defined in [ir-and-semanti
 | Skill name | Frontmatter `name` | String |
 | Skill description | Frontmatter `description` | String |
 | Effect set | Frontmatter `effects` | YAML list; field omitted if effect set is empty or `none`. *Gated — requires `--enable-effects`; omitted entirely when gate is off.* |
-| `Context` | `### Context` | Bulleted list, passive informational text — no strength/polarity wording |
+| `Context` | `### Context` | Bulleted list, one column-0 `- ` per IR `Context` node; body is line-wise 2-space-indented under the bullet. NameRef entries lead with a bold kebab-case label on the bullet's first line; inline-string entries place the body directly after `- ` |
 | `Step` | `### Steps` | Numbered list, one concrete instruction per item |
 | `Constraint` | `### Constraints` | Bulleted list, wording shaped by constraint keyword (`require`/`avoid`/`must`/`must avoid`) |
 | `InputContract` + parameters | `## Parameters` section (names, descriptions, defaults or `(required)` marker) | Bulleted list |
@@ -363,9 +372,9 @@ Only imports actually used by the skill are inlined; unused imports are dead cod
 
 ## Formatting Rules
 
-1. **One instruction per list item.** No run-on multi-sentence bullets — except the final Step, which may include the return-summary sentence.
+1. **One instruction per list item.** No run-on multi-sentence bullets — except the final Step, which may include the return-summary sentence. Applies to `### Steps` and `### Constraints` items only; `### Context` entries may span multiple paragraphs and contain nested lists (see `### Context` projection rules).
 2. **Numbered lists for Steps, bulleted lists for Context and Constraints.**
-3. **No hard line-wrapping mid-sentence.** Each list item is a single unwrapped line.
+3. **No hard line-wrapping mid-sentence.** Each `### Steps` and `### Constraints` item is a single unwrapped line. `### Context` items are exempt: a Context entry's body may include paragraphs, blank lines, nested lists, and other block content provided every continuation line is indented past the bullet marker (two spaces) so the entry remains a single Markdown list item.
 4. **Single blank line between sections.** No double blank lines, no trailing whitespace.
 5. **No inline HTML or special formatting.** Standard Markdown only: headings, lists, bold, code spans.
 

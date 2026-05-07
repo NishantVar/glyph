@@ -182,6 +182,9 @@ fn serialize_context(c: &IrContext) -> Value {
     m.insert("node_id".into(), Value::String(node_id_str(c.node_id)));
     m.insert("kind".into(), Value::String("context".into()));
     m.insert("text".into(), Value::String(c.text.clone()));
+    if let Some(name) = &c.name {
+        m.insert("name".into(), Value::String(name.clone()));
+    }
     Value::Object(m)
 }
 
@@ -423,7 +426,11 @@ fn find_block_by_name<'a>(arena: &'a IrArena, name: &str) -> Option<&'a crate::i
 ///
 /// Returns the JSON string. The arena must have a root skill set.
 /// Returns `None` if the arena has no root skill (library file — no IR JSON produced).
-pub fn serialize_ir_json(arena: &IrArena, source_file: &str, enable_effects: bool) -> Option<String> {
+pub fn serialize_ir_json(
+    arena: &IrArena,
+    source_file: &str,
+    enable_effects: bool,
+) -> Option<String> {
     let root_id = arena.root_skill()?;
     let skill = match arena.get(root_id) {
         IrNode::Skill(s) => s,
@@ -476,7 +483,11 @@ pub fn serialize_ir_json(arena: &IrArena, source_file: &str, enable_effects: boo
 
     // effects
     let effects: Vec<Value> = if enable_effects {
-        skill.effects.iter().map(|e| Value::String(e.clone())).collect()
+        skill
+            .effects
+            .iter()
+            .map(|e| Value::String(e.clone()))
+            .collect()
     } else {
         Vec::new()
     };
@@ -1032,10 +1043,7 @@ skill make_report() -> Report
             desc_obj.get("kind").and_then(|v| v.as_str()),
             Some("output_contract"),
         );
-        assert_eq!(
-            desc_obj.get("node_id").and_then(|v| v.as_str()),
-            Some("n7"),
-        );
+        assert_eq!(desc_obj.get("node_id").and_then(|v| v.as_str()), Some("n7"),);
         assert_eq!(desc_obj.get("ty"), Some(&Value::Null));
         assert_eq!(
             desc_obj.get("source").and_then(|v| v.as_str()),
@@ -1072,10 +1080,7 @@ skill make_report() -> Report
             id_obj.get("kind").and_then(|v| v.as_str()),
             Some("output_contract"),
         );
-        assert_eq!(
-            id_obj.get("node_id").and_then(|v| v.as_str()),
-            Some("n3"),
-        );
+        assert_eq!(id_obj.get("node_id").and_then(|v| v.as_str()), Some("n3"),);
         assert_eq!(id_obj.get("ty"), Some(&Value::Null));
         assert_eq!(
             id_obj.get("source").and_then(|v| v.as_str()),

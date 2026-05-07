@@ -189,8 +189,17 @@ ConstraintAttrs {
 ```
 ContextNode {
   text:              String                // resolved context text
+  name:              Option<String>        // source name when entry was a NameRef; None for InlineString
 }
 ```
+
+`name` carries the **source identifier** of the referenced `const` / `export const`
+verbatim (e.g. `project_overview` as written in the source), for any
+`context: <NameRef>` entry. Inline string entries (`context: "literal"`) leave it
+absent. Kebab-case is an Emit-time rendering transform applied to this identifier
+when producing the per-entry `- **kebab-name**` lead-in in `### Context` — it is
+not stored in the IR. Downstream tooling that wants a stable handle should consume
+this field as the source identifier.
 
 ## Expressions
 

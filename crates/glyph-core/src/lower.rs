@@ -8,14 +8,14 @@ use crate::ast::{
     BlockDecl, ConstValue, ConstraintMarkerKind, ContextEntry, Decl, ExportBlockDecl, FlowStmt,
     ReturnExpr, Skill, SourceFile,
 };
-use crate::ir::{
-    IrArena, IrBlock, IrBranch, IrCall, IrConstraint, IrContext, IrElifBranch,
-    IrInlineInstruction, IrNode, IrOutputContract, IrParam, IrSkill, NodeId, OutputSource,
-    OutputTargetForm, Polarity, Role, Strength,
-};
-use crate::output_target::OutputTargetExpr;
 use crate::domain_registry::canonicalize_identifier;
+use crate::ir::{
+    IrArena, IrBlock, IrBranch, IrCall, IrConstraint, IrContext, IrElifBranch, IrInlineInstruction,
+    IrNode, IrOutputContract, IrParam, IrSkill, NodeId, OutputSource, OutputTargetForm, Polarity,
+    Role, Strength,
+};
 use crate::kind_infer::{infer_primitive, Literal as KindLiteral, TypeTag};
+use crate::output_target::OutputTargetExpr;
 use std::collections::BTreeMap;
 
 /// Map an identifier in type-position (the `<DomainType>` half of a
@@ -138,6 +138,15 @@ fn resolve_context_entry(
             .get(&name.node)
             .cloned()
             .ok_or_else(|| LowerError::UndefinedContextRef(name.node.clone())),
+    }
+}
+
+/// Extract the source name from a context entry if it was a NameRef.
+/// Returns `None` for inline strings.
+fn context_entry_name(entry: &ContextEntry) -> Option<String> {
+    match entry {
+        ContextEntry::NameRef(name) => Some(name.node.clone()),
+        ContextEntry::InlineString(_) => None,
     }
 }
 
@@ -270,7 +279,11 @@ fn lower_flow_body(
                 }));
                 ids.push(id);
             }
-            FlowStmt::Call { target, args, site_modifier } => {
+            FlowStmt::Call {
+                target,
+                args,
+                site_modifier,
+            } => {
                 let resolved_body = if let Some(block) = blocks.get(target.node.as_str()) {
                     let body_text = resolve_block_body_text(block, texts)?;
                     Some(body_text)
@@ -314,7 +327,12 @@ fn lower_flow_body(
                 }));
                 ids.push(id);
             }
-            FlowStmt::Branch { condition, then_body, elif_branches, else_body } => {
+            FlowStmt::Branch {
+                condition,
+                then_body,
+                elif_branches,
+                else_body,
+            } => {
                 let branch_id = NodeId(arena.len() as u32);
                 // Reserve a slot for the Branch node.
                 arena.push(IrNode::InlineInstruction(IrInlineInstruction {
@@ -325,7 +343,8 @@ fn lower_flow_body(
                 let then_ids = lower_flow_body(then_body, arena, texts, blocks, export_blocks)?;
                 let mut ir_elifs = Vec::new();
                 for elif in elif_branches {
-                    let elif_ids = lower_flow_body(&elif.body, arena, texts, blocks, export_blocks)?;
+                    let elif_ids =
+                        lower_flow_body(&elif.body, arena, texts, blocks, export_blocks)?;
                     ir_elifs.push(IrElifBranch {
                         condition: elif.condition.clone(),
                         body: elif_ids,
@@ -452,7 +471,12 @@ pub fn lower_with_imports(
         node_id: NodeId(0),
         name: skill.name.clone(),
         description: skill.description.clone().unwrap_or_default(),
-        effects: skill.effects.iter().filter(|e| e.as_str() != "none").cloned().collect(),
+        effects: skill
+            .effects
+            .iter()
+            .filter(|e| e.as_str() != "none")
+            .cloned()
+            .collect(),
         params,
         steps: Vec::new(),
         context: Vec::new(),
@@ -574,14 +598,20 @@ pub fn lower_with_imports(
             FlowStmt::ContextMarker(entry) => {
                 // Flow-top-level context → hoist to declaration's context list.
                 let resolved = resolve_context_entry(entry, &texts)?;
+                let name = context_entry_name(entry);
                 let next = NodeId(arena.len() as u32);
                 let id = arena.push(IrNode::Context(IrContext {
                     node_id: next,
                     text: resolved,
+                    name,
                 }));
                 flow_hoisted_context_ids.push(id);
             }
-            FlowStmt::Call { target, args, site_modifier } => {
+            FlowStmt::Call {
+                target,
+                args,
+                site_modifier,
+            } => {
                 // Create an IrCall node. Resolve callee body if block exists.
                 let resolved_body = if let Some(block) = blocks.get(target.node.as_str()) {
                     let body_text = resolve_block_body_text(block, &texts)?;
@@ -668,7 +698,12 @@ pub fn lower_with_imports(
                 // If we somehow reach here, skip silently — the diagnostic
                 // was already emitted.
             }
-            FlowStmt::Branch { condition, then_body, elif_branches, else_body } => {
+            FlowStmt::Branch {
+                condition,
+                then_body,
+                elif_branches,
+                else_body,
+            } => {
                 let branch_id = NodeId(arena.len() as u32);
                 // Reserve a placeholder slot.
                 arena.push(IrNode::InlineInstruction(IrInlineInstruction {
@@ -676,17 +711,25 @@ pub fn lower_with_imports(
                     text: String::new(),
                     role: Role::Step,
                 }));
-                let then_ids = lower_flow_body(then_body, &mut arena, &texts, &blocks, &export_blocks)?;
+                let then_ids =
+                    lower_flow_body(then_body, &mut arena, &texts, &blocks, &export_blocks)?;
                 let mut ir_elifs = Vec::new();
                 for elif in elif_branches {
-                    let elif_ids = lower_flow_body(&elif.body, &mut arena, &texts, &blocks, &export_blocks)?;
+                    let elif_ids =
+                        lower_flow_body(&elif.body, &mut arena, &texts, &blocks, &export_blocks)?;
                     ir_elifs.push(IrElifBranch {
                         condition: elif.condition.clone(),
                         body: elif_ids,
                     });
                 }
                 let ir_else = if let Some(eb) = else_body {
-                    Some(lower_flow_body(eb, &mut arena, &texts, &blocks, &export_blocks)?)
+                    Some(lower_flow_body(
+                        eb,
+                        &mut arena,
+                        &texts,
+                        &blocks,
+                        &export_blocks,
+                    )?)
                 } else {
                     None
                 };
@@ -756,10 +799,12 @@ pub fn lower_with_imports(
         let resolved = resolve_context_entry(entry, &texts)?;
         if !seen_context_texts.contains(&resolved) {
             seen_context_texts.push(resolved.clone());
+            let name = context_entry_name(entry);
             let next = NodeId(arena.len() as u32);
             let id = arena.push(IrNode::Context(IrContext {
                 node_id: next,
                 text: resolved,
+                name,
             }));
             context_ids.push(id);
         }
@@ -973,10 +1018,7 @@ block plan_work() -> Plan
 ";
         let arena = lower_skill(src);
         let block = find_block(&arena, "plan_work");
-        assert_eq!(
-            block.return_type,
-            Some(TypeTag::DomainType("plan".into()))
-        );
+        assert_eq!(block.return_type, Some(TypeTag::DomainType("plan".into())));
     }
 
     // f.9a: same-file `Call.return_type` propagation — when a skill calls a
@@ -997,10 +1039,7 @@ block make_plan() -> Plan
 ";
         let arena = lower_skill(src);
         let call = find_call(&arena, "make_plan");
-        assert_eq!(
-            call.return_type,
-            Some(TypeTag::DomainType("plan".into()))
-        );
+        assert_eq!(call.return_type, Some(TypeTag::DomainType("plan".into())));
     }
 
     // f.9b: the Call node's IR-JSON `return_type` slot must round-trip the
@@ -1027,7 +1066,12 @@ block make_plan() -> Plan
         let call_json = flow
             .iter()
             .find(|n| n["kind"] == "call" && n["target"] == "make_plan")
-            .unwrap_or_else(|| panic!("expected a call to make_plan in skill.flow; got {}", json_str));
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a call to make_plan in skill.flow; got {}",
+                    json_str
+                )
+            });
         assert_eq!(
             call_json["return_type"],
             serde_json::json!({ "domain_type": "plan" }),
@@ -1416,7 +1460,10 @@ skill demo()
             }
         }
         assert!(found_local, "expected Constraint with local const value");
-        assert!(!found_imported, "imported value should not shadow local const");
+        assert!(
+            !found_imported,
+            "imported value should not shadow local const"
+        );
     }
 
     #[test]
@@ -1551,7 +1598,10 @@ skill drive()
             .nodes()
             .iter()
             .any(|n| matches!(n, IrNode::OutputContract(_)));
-        assert!(!any_oc, "expected no OutputContract node; got arena with one");
+        assert!(
+            !any_oc,
+            "expected no OutputContract node; got arena with one"
+        );
         let root = arena.root_skill().expect("arena has a root skill");
         let skill = match arena.get(root) {
             IrNode::Skill(s) => s,
@@ -1638,9 +1688,7 @@ mod unmerged_extras_invariant_tests {
                 context_section: Vec::new(),
                 constraints_section: Vec::new(),
                 return_type: None,
-                extra_subsections: vec![DuplicateSubsection::Description(
-                    "unmerged".to_string(),
-                )],
+                extra_subsections: vec![DuplicateSubsection::Description("unmerged".to_string())],
             },
             span: Span::new(0, 0, 10),
         };
