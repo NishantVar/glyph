@@ -351,9 +351,10 @@ skill diagnose_issue() -> Diagnosis
             !md.contains("<\"root cause and affected files\">"),
             "compiled Markdown leaked the descriptive token:\n{md}"
         );
-        // Constraint (b): description text appears in the return suffix.
+        // Constraint (b): description text appears in the return suffix
+        // (with a leading determiner so the wrapper reads grammatically).
         assert!(
-            md.contains(", and return root cause and affected files as your result."),
+            md.contains(", and return the root cause and affected files as your result."),
             "compiled Markdown must incorporate the description text in the return suffix:\n{md}"
         );
     }
@@ -402,7 +403,7 @@ skill main()
 ",
         );
         assert!(
-            md.contains("1. Return root cause and affected files as your result."),
+            md.contains("1. Return the root cause and affected files as your result."),
             "return-only Tier-1 callee with descriptive contract should produce a standalone return step:\n{md}"
         );
         assert!(
@@ -427,7 +428,9 @@ skill main()
         );
         assert!(!md.contains("<\"branch name as currently checked out\">"));
         assert!(
-            md.contains(", and return branch name as currently checked out as your result."),
+            md.contains(
+                ", and return the branch name as currently checked out as your result."
+            ),
             "block description return suffix should appear in compiled markdown:\n{md}"
         );
     }
@@ -463,7 +466,9 @@ skill diagnose_issue() -> Diagnosis
         );
         // Return suffix uses the new locked form.
         assert!(
-            md.contains(", and return root cause severity and affected files as your result."),
+            md.contains(
+                ", and return the root cause severity and affected files as your result."
+            ),
             "expected single-line return suffix with whitespace-collapsed description:\n{md}"
         );
     }
@@ -490,7 +495,7 @@ skill main() -> Diagnosis
 ",
         );
         assert!(
-            md.contains(", and return final wrapped diagnosis as your result."),
+            md.contains(", and return the final wrapped diagnosis as your result."),
             "skill's output_contract should drive the suffix in compiled markdown:\n{md}"
         );
         assert!(

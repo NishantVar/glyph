@@ -3,7 +3,9 @@
 //! arms (see `obsidian/plans/expand-emitter-design-2026-05-04.md`).
 
 use super::scaffold::{Chunk, Scaffold, SpanId, SpanKind};
-use super::templates::{DESCRIPTION_RETURN_SUFFIX_PREFIX, DESCRIPTION_RETURN_SUFFIX_TAIL};
+use super::templates::{
+    ensure_determiner, DESCRIPTION_RETURN_SUFFIX_PREFIX, DESCRIPTION_RETURN_SUFFIX_TAIL,
+};
 use std::collections::HashMap;
 
 pub fn fill(scaffold: &Scaffold) -> HashMap<SpanId, String> {
@@ -18,7 +20,8 @@ pub fn fill(scaffold: &Scaffold) -> HashMap<SpanId, String> {
                         .description_text
                         .clone()
                         .unwrap_or_default();
-                    format!("{DESCRIPTION_RETURN_SUFFIX_PREFIX}{desc}{DESCRIPTION_RETURN_SUFFIX_TAIL}\n")
+                    let phrase = ensure_determiner(&desc);
+                    format!("{DESCRIPTION_RETURN_SUFFIX_PREFIX}{phrase}{DESCRIPTION_RETURN_SUFFIX_TAIL}\n")
                 }
                 SpanKind::BranchCondition => span
                     .payload
