@@ -3011,4 +3011,12 @@ mod tests {
              got {violations:?}"
         );
     }
+
+    #[test]
+    fn check_resolved_predicates_accepts_renamed_key() {
+        let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"x.applies()","resolved_predicates":{"x.applies()":"the change is large"},"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
+        let md = "## Instructions\n\n### Steps\n\n1. If the change is large:\n   a. Stop.\n";
+        let violations = validate_output(ir, md);
+        assert!(violations.is_empty(), "got: {:?}", violations);
+    }
 }
