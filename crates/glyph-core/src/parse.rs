@@ -2740,6 +2740,7 @@ impl<'a> Parser<'a> {
                                             elif_branches.push(ElifBranch {
                                                 condition: cond,
                                                 body,
+                                                condition_classification: None,
                                             });
                                         }
                                         TokenKind::Ident(kw) if kw == "else" => {
@@ -2764,6 +2765,7 @@ impl<'a> Parser<'a> {
                             then_body,
                             elif_branches,
                             else_body,
+                            condition_classification: None,
                         })
                     }
                     _ => {

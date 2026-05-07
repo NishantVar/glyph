@@ -3367,6 +3367,7 @@ skill main()
                 then_body,
                 elif_branches,
                 else_body,
+                ..
             } => {
                 assert_eq!(condition, "mode == \"fast\"");
                 assert_eq!(then_body.len(), 1);

@@ -254,6 +254,7 @@ pub enum FlowStmt {
         then_body: Vec<FlowStmt>,
         elif_branches: Vec<ElifBranch>,
         else_body: Option<Vec<FlowStmt>>,
+        condition_classification: Option<crate::condition::ConditionClassification>,
     },
 }
 
@@ -262,6 +263,7 @@ pub enum FlowStmt {
 pub struct ElifBranch {
     pub condition: String,
     pub body: Vec<FlowStmt>,
+    pub condition_classification: Option<crate::condition::ConditionClassification>,
 }
 
 /// The expression following `return`.
@@ -369,6 +371,27 @@ impl ConstValue {
             | ConstValue::Int(s)
             | ConstValue::Float(s)
             | ConstValue::Bool(s) => s.as_str(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flow_stmt_branch_carries_optional_condition_classification() {
+        let br = FlowStmt::Branch {
+            condition: "x".into(),
+            then_body: vec![],
+            elif_branches: vec![],
+            else_body: None,
+            condition_classification: None,
+        };
+        if let FlowStmt::Branch { condition_classification, .. } = br {
+            assert!(condition_classification.is_none());
+        } else {
+            panic!("expected Branch");
         }
     }
 }

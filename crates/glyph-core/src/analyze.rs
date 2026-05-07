@@ -2508,6 +2508,7 @@ fn analyze_skill(
                 then_body,
                 elif_branches,
                 else_body,
+                ..
             } => {
                 // Check for nested branches.
                 check_nested_branches(then_body, spanned.span, file_label, line_index, bag);

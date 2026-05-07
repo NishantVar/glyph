@@ -332,6 +332,7 @@ fn lower_flow_body(
                 then_body,
                 elif_branches,
                 else_body,
+                ..
             } => {
                 let branch_id = NodeId(arena.len() as u32);
                 // Reserve a slot for the Branch node.
@@ -705,6 +706,7 @@ pub fn lower_with_imports(
                 then_body,
                 elif_branches,
                 else_body,
+                ..
             } => {
                 let branch_id = NodeId(arena.len() as u32);
                 // Reserve a placeholder slot.
