@@ -1,6 +1,7 @@
 //! Branch projection: pure-predicate sub-cases + mixed-condition
 //! fallback. See `design/expand.md` §3.3.
 
+use crate::condition::ConditionTokenKind;
 use crate::emit::scaffold::{Scaffold, SpanId, SpanKind, SpanPayload, SpanRef};
 use crate::ir::{IrArena, IrBranch, IrNode, NodeId};
 
@@ -17,11 +18,39 @@ pub fn is_pure_predicate(br: &IrBranch) -> bool {
             .all(|e| e.predicate_shape.is_pure_predicate())
 }
 
-pub fn extract_block_name(condition: &str) -> Option<String> {
-    condition
-        .trim()
-        .strip_suffix(".applies()")
-        .map(str::to_string)
+pub fn extract_predicate_token(condition: &str) -> Option<(String, ConditionTokenKind)> {
+    let trimmed = condition.trim();
+
+    // Form 1: .applies() — "name.applies()"
+    if trimmed.ends_with(".applies()") {
+        let stem = &trimmed[..trimmed.len() - ".applies()".len()];
+        if !stem.is_empty() && is_bare_identifier(stem) {
+            return Some((trimmed.to_string(), ConditionTokenKind::PredicateApplies));
+        }
+        return None;
+    }
+
+    // Form 2: literal — "\"text inside quotes\""
+    if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        return Some((inner.to_string(), ConditionTokenKind::PredicateLiteral));
+    }
+
+    // Form 3: bare identifier const ref
+    if is_bare_identifier(trimmed) {
+        return Some((trimmed.to_string(), ConditionTokenKind::PredicateConst));
+    }
+
+    None
+}
+
+fn is_bare_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 pub fn strip_trailing_period(s: &str) -> &str {
@@ -46,13 +75,16 @@ pub fn emit_to_scaffold(
 fn emit_pure_applies(s: &mut Scaffold, arena: &IrArena, br: &IrBranch, step_num: usize) {
     let single_arm = br.elif_branches.is_empty() && br.else_body.is_none();
     if single_arm {
-        let block_name = extract_block_name(&br.condition).unwrap_or_default();
+        let (token, _kind) = extract_predicate_token(&br.condition)
+            .unwrap_or_else(|| (br.condition.trim().to_string(), ConditionTokenKind::PredicateConst));
+        // Lookup key: strip `.applies()` suffix for the applies form (Task 4.4 generalises).
+        let lookup_key = token.strip_suffix(".applies()").unwrap_or(&token).to_string();
         let desc = br
             .resolved_predicates
             .as_ref()
-            .and_then(|m| m.get(&block_name))
+            .and_then(|m| m.get(&lookup_key))
             .cloned()
-            .unwrap_or_else(|| block_name.clone());
+            .unwrap_or_else(|| lookup_key.clone());
         let desc = strip_trailing_period(&desc);
         s.push_literal(format!(
             "{step_num}. {SINGLE_ARM_OPENER_PREFIX}{desc}{SINGLE_ARM_OPENER_TAIL}\n"
@@ -78,13 +110,16 @@ fn emit_applies_arm_header_and_body(
     condition: &str,
     body: &[NodeId],
 ) {
-    let block_name = extract_block_name(condition).unwrap_or_default();
+    let (token, _kind) = extract_predicate_token(condition)
+        .unwrap_or_else(|| (condition.trim().to_string(), ConditionTokenKind::PredicateConst));
+    // Lookup key: strip `.applies()` suffix for the applies form (Task 4.4 generalises).
+    let lookup_key = token.strip_suffix(".applies()").unwrap_or(&token).to_string();
     let desc = br
         .resolved_predicates
         .as_ref()
-        .and_then(|m| m.get(&block_name))
+        .and_then(|m| m.get(&lookup_key))
         .cloned()
-        .unwrap_or_else(|| block_name.clone());
+        .unwrap_or_else(|| lookup_key.clone());
     let desc = strip_trailing_period(&desc);
     s.push_literal(format!("   If {desc}:\n"));
     emit_lettered_substeps(s, arena, body);
@@ -233,12 +268,23 @@ mod tests {
     }
 
     #[test]
-    fn extract_block_name_basic() {
-        assert_eq!(
-            extract_block_name("needs_review.applies()"),
-            Some("needs_review".to_string())
-        );
-        assert_eq!(extract_block_name("x == 1"), None);
+    fn extract_predicate_token_handles_all_three_forms() {
+        let (tok, kind) = extract_predicate_token("my_block.applies()").unwrap();
+        assert_eq!(tok, "my_block.applies()");
+        assert_eq!(kind, ConditionTokenKind::PredicateApplies);
+
+        let (tok, kind) = extract_predicate_token("complex_change").unwrap();
+        assert_eq!(tok, "complex_change");
+        assert_eq!(kind, ConditionTokenKind::PredicateConst);
+
+        let (tok, kind) = extract_predicate_token("\"the user opted in\"").unwrap();
+        assert_eq!(tok, "the user opted in");
+        assert_eq!(kind, ConditionTokenKind::PredicateLiteral);
+    }
+
+    #[test]
+    fn extract_predicate_token_rejects_compound_condition() {
+        assert_eq!(extract_predicate_token("x == 1"), None);
     }
 
     #[test]
