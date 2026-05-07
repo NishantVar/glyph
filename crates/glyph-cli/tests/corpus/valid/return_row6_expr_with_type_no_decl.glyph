@@ -1,0 +1,5 @@
+skill diagnose() -> Diagnosis
+    description: "Diagnose an issue."
+    flow:
+        "Inspect the scope."
+        return diagnosis

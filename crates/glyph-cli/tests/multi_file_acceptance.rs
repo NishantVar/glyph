@@ -219,6 +219,17 @@ fn repo_tools_procedure_files_emitted() {
         proc_md.contains("name: inspect-repo"),
         "procedure file should have correct name"
     );
+    // Tier 3 procedure files render `## Parameters` with the same bullet
+    // shape as the skill emitter (compiled-output.md §`## Parameters`),
+    // not the legacy `(default: …)` / `(required)` form.
+    assert!(
+        proc_md.contains("- **scope**. Default: \".\"."),
+        "procedure file should render scope with shared bullet shape; got:\n{proc_md}"
+    );
+    assert!(
+        !proc_md.contains("(default:"),
+        "procedure file must not use the legacy `(default: …)` bullet:\n{proc_md}"
+    );
 }
 
 // ── AC: Context sub-section (top-level) ────────────────────────────

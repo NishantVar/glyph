@@ -9,8 +9,8 @@ description: Review a pull request for correctness, style, and safety.
 
 ## Parameters
 
-- **scope** (default: ".")
-- **risk** (default: "medium")
+- **scope**. Default: ".".
+- **risk**. Default: "medium".
 
 ## Instructions
 
