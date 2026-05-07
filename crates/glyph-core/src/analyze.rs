@@ -538,6 +538,167 @@ fn emit_name_collision(
     bag.push(diag, entry.first_use_span);
 }
 
+/// Universal-namespace check (`design/values-and-names.md` §No-Shadowing,
+/// `design/types.md` §Same-file duplicates): a `type Foo` decl participates in
+/// the same flat scope as `const`, `block`, `export block`, parameters, and
+/// import aliases. Any other in-scope `Foo` is a hard `name-collision`.
+///
+/// This sweep complements `sweep_name_collisions` (which fires from the
+/// registry direction — `-> Foo` annotations vs param/const names) by firing
+/// from the type-decl direction. The canonical `type Foo = <"…">` + `-> Foo`
+/// pairing is **not** a collision (`design/types.md` §Same-file duplicates) and
+/// the registry sweep already covers param/const collisions when `Foo` is in
+/// the registry — so we skip those slots in that case to avoid a double-
+/// diagnostic for the same logical issue. Block-decl collisions are not
+/// covered by the registry sweep regardless, so they always fire here.
+///
+/// Import aliases (selective `name as alias`, whole-module `as alias`) are
+/// included; the host file's bare imported `name` (without `as`) is also a
+/// local binding (`design/imports.md` §Selective Imports) and counts as an
+/// alias for collision purposes.
+fn sweep_type_decl_name_collisions(
+    file: &SourceFile,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+    registry: &crate::domain_registry::Registry,
+) {
+    let type_decls: Vec<(&str, Span)> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::TypeDecl(t) => Some((t.node.name.as_str(), t.span)),
+            _ => None,
+        })
+        .collect();
+    if type_decls.is_empty() {
+        return;
+    }
+
+    let mut params: Vec<(&str, Span)> = Vec::new();
+    let mut consts: Vec<(&str, Span)> = Vec::new();
+    // (kind_label, raw_name, span) — kept separate from params/consts because
+    // block collisions fire even when the registry already covers the name.
+    let mut blocks: Vec<(&'static str, &str, Span)> = Vec::new();
+    // (raw_local_name, span). `imports` carries owned `String`s because
+    // selective alias names live behind an `Option<String>` — the caller
+    // owns the storage to keep `&str` lifetimes clean.
+    let mut imports: Vec<(String, Span)> = Vec::new();
+    for decl in &file.decls {
+        match decl {
+            Decl::Skill(s) => {
+                for p in &s.node.params {
+                    params.push((p.name.as_str(), p.span));
+                }
+            }
+            Decl::ExportBlock(e) => {
+                blocks.push(("export block", e.node.name.as_str(), e.span));
+                for p in &e.node.params {
+                    params.push((p.name.as_str(), p.span));
+                }
+            }
+            Decl::Block(b) => {
+                blocks.push(("block", b.node.name.as_str(), b.span));
+                for p in &b.node.params {
+                    params.push((p.name.as_str(), p.span));
+                }
+            }
+            Decl::Const(c) => {
+                consts.push((c.node.name.as_str(), c.span));
+            }
+            Decl::Import(imp) => match &imp.node.kind {
+                ast::ImportKind::Selective(names) => {
+                    for n in names {
+                        let local = n.alias.clone().unwrap_or_else(|| n.name.node.clone());
+                        imports.push((local, n.name.span));
+                    }
+                }
+                ast::ImportKind::WholeModule { alias } => {
+                    imports.push((alias.clone(), imp.span));
+                }
+            },
+            Decl::TypeDecl(_) => {}
+        }
+    }
+
+    for (tname, tspan) in &type_decls {
+        let canonical = crate::domain_registry::canonicalize_identifier(tname);
+        let in_registry = registry.iter().any(|e| e.canonical_name == canonical);
+        for (bkind, bname, bspan) in &blocks {
+            if crate::domain_registry::canonicalize_identifier(bname) == canonical {
+                emit_type_decl_collision(
+                    tname, *tspan, bkind, bname, *bspan, file_label, line_index, bag,
+                );
+            }
+        }
+        for (iname, ispan) in &imports {
+            if crate::domain_registry::canonicalize_identifier(iname) == canonical {
+                emit_type_decl_collision(
+                    tname,
+                    *tspan,
+                    "import alias",
+                    iname,
+                    *ispan,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+            }
+        }
+        if !in_registry {
+            for (pname, pspan) in &params {
+                if crate::domain_registry::canonicalize_identifier(pname) == canonical {
+                    emit_type_decl_collision(
+                        tname,
+                        *tspan,
+                        "parameter",
+                        pname,
+                        *pspan,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                }
+            }
+            for (cname, cspan) in &consts {
+                if crate::domain_registry::canonicalize_identifier(cname) == canonical {
+                    emit_type_decl_collision(
+                        tname, *tspan, "const", cname, *cspan, file_label, line_index, bag,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Push one `G::analyze::name-collision` Error against a `type` decl.
+/// Mirrors `emit_name_collision` but anchors the primary span on the type
+/// declaration (the binding site that introduces the name) rather than on a
+/// `-> Type` use.
+fn emit_type_decl_collision(
+    type_name: &str,
+    type_span: Span,
+    offender_kind: &str,
+    offender_raw: &str,
+    offender_span: Span,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    let primary = SourceSpan::from_byte_span(file_label, type_span, line_index);
+    let related = SourceSpan::from_byte_span(file_label, offender_span, line_index);
+    let mut diag = Diagnostic::error(
+        "G::analyze::name-collision",
+        format!(
+            "type `{}` collides with {} `{}`",
+            type_name, offender_kind, offender_raw
+        ),
+        primary,
+    );
+    diag.related.push(related);
+    bag.push(diag, type_span);
+}
+
 /// Issue #84 Chunk 4 (AC4 / D14): emit `G::analyze::nominal-mismatch` Error
 /// at a return-position call boundary when the callee's declared `-> Type`
 /// does not canonical-match the enclosing callable's declared `-> Type`.
@@ -884,6 +1045,89 @@ fn check_unmerged_duplicate_subsections(
     }
 }
 
+/// Validate that every `Param` whose default is a name reference
+/// (`Param.default_is_name_ref == true`) resolves to an in-scope `const`.
+///
+/// Authors write a name_ref default with the same shape as a literal default
+/// — `risk = default_risk` — but the parser cannot tell whether `default_risk`
+/// names a `const`, a `block`, a parameter, or nothing. The lowerer
+/// substitutes the const's rendered text into the IR; if the ref doesn't
+/// resolve, the bare identifier leaks into `## Parameters` as
+/// `Default: default_risk.` instead of the intended literal value.
+///
+/// This sweep emits `G::analyze::undefined-name` (matching the existing
+/// flow-side `const` resolver in `analyze_skill_with_usage_tracking`) so the
+/// fix-it surface stays consistent. `imported_texts` is the
+/// import-aware lookup set (already includes both bare names from selective
+/// imports and `alias.name` entries from whole-module imports); pass `None`
+/// from the no-imports `analyze_with_diagnostics` path.
+fn sweep_param_default_name_refs(
+    file: &SourceFile,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+    imported_texts: Option<&HashSet<String>>,
+) {
+    // Same-file `const` names form one half of the resolver's lookup set; the
+    // other half is `imported_texts` (already qualified with `alias.` for
+    // whole-module imports — see `lib.rs` `imported_texts.insert(...)` sites).
+    let local_consts: HashSet<&str> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Const(c) => Some(c.node.name.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    let resolves = |raw: &str| -> bool {
+        if local_consts.contains(raw) {
+            return true;
+        }
+        if let Some(set) = imported_texts {
+            if set.contains(raw) {
+                return true;
+            }
+        }
+        false
+    };
+
+    let check_params = |params: &[crate::ast::Param], bag: &mut DiagBag| {
+        for p in params {
+            if !p.default_is_name_ref {
+                continue;
+            }
+            let raw = match p.default.as_deref() {
+                Some(s) => s,
+                None => continue,
+            };
+            if resolves(raw) {
+                continue;
+            }
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::undefined-name",
+                    format!(
+                        "parameter default `{}` does not resolve to an in-scope `const`",
+                        raw
+                    ),
+                    SourceSpan::from_byte_span(file_label, p.span, line_index),
+                ),
+                p.span,
+            );
+        }
+    };
+
+    for decl in &file.decls {
+        match decl {
+            Decl::Skill(s) => check_params(&s.node.params, bag),
+            Decl::Block(b) => check_params(&b.node.params, bag),
+            Decl::ExportBlock(b) => check_params(&b.node.params, bag),
+            _ => {}
+        }
+    }
+}
+
 /// Run Phase 2 with diagnostic emission.
 ///
 /// Pushes any structured diagnostics onto `bag` and returns the AST unchanged.
@@ -1154,14 +1398,20 @@ pub fn analyze_with_diagnostics(
         }
     }
 
-    // Duplicate `type Foo` in the same file is a hard error.
+    // Duplicate `type Foo` in the same file is a hard error. Keys are
+    // canonicalized per §D6 so `type RepoContext` and `type repo_context` are
+    // treated as the same name (the language guide's case-insensitive +
+    // underscore-insensitive rule applies to *every* identifier namespace,
+    // not just primitive types — Codex finding #3 follow-up).
     {
-        let mut seen_types: HashMap<&str, Span> = HashMap::new();
+        use crate::domain_registry::canonicalize_identifier;
+        let mut seen_types: HashMap<String, Span> = HashMap::new();
         for d in &file.decls {
             if let Decl::TypeDecl(t) = d {
                 let name = t.node.name.as_str();
+                let canonical = canonicalize_identifier(name);
                 let span = t.span;
-                if let Some(_prev_span) = seen_types.get(name) {
+                if let Some(_prev_span) = seen_types.get(&canonical) {
                     bag.push(
                         Diagnostic::error(
                             "G::analyze::duplicate-type-decl",
@@ -1171,7 +1421,7 @@ pub fn analyze_with_diagnostics(
                         span,
                     );
                 } else {
-                    seen_types.insert(name, span);
+                    seen_types.insert(canonical, span);
                 }
             }
         }
@@ -1179,6 +1429,15 @@ pub fn analyze_with_diagnostics(
 
     // Issue #84 Chunk 3 (AC5): domain-type-vs-param/const collision sweep.
     sweep_name_collisions(&file, file_label, line_index, bag, registry);
+    // Universal-namespace check (`design/values-and-names.md` §No-Shadowing):
+    // type-decl-vs-param/const/block collision sweep, complementary to the
+    // registry-direction sweep above.
+    sweep_type_decl_name_collisions(&file, file_label, line_index, bag, registry);
+    // Reject name_ref param defaults that don't resolve to an in-scope `const`
+    // (Codex finding #1 follow-up): without this sweep an unresolved ref like
+    // `risk = default_risk` (when `default_risk` is a block / unknown name)
+    // leaks into the lowerer's IR as the bare identifier.
+    sweep_param_default_name_refs(&file, file_label, line_index, bag, None);
 
     // Library detection: file with zero skills.
     let has_skill = file.decls.iter().any(|d| matches!(d, Decl::Skill(_)));
@@ -2085,6 +2344,15 @@ pub fn analyze_with_imports(
     // Issue #84 Chunk 3 (AC5): domain-type-vs-param/const collision sweep.
     // Imports-path parity with `analyze_with_diagnostics`.
     sweep_name_collisions(file, file_label, line_index, bag, registry);
+    // Universal-namespace check (`design/values-and-names.md` §No-Shadowing):
+    // type-decl-vs-param/const/block collision sweep, complementary to the
+    // registry-direction sweep above. Imports-path parity.
+    sweep_type_decl_name_collisions(file, file_label, line_index, bag, registry);
+    // Codex finding #1 follow-up: reject name_ref param defaults that don't
+    // resolve to an in-scope `const` (same-file or imported). `imported_texts`
+    // already carries `alias.name` entries for whole-module imports, so a
+    // single-shape lookup covers both selective and aliased forms.
+    sweep_param_default_name_refs(file, file_label, line_index, bag, Some(imported_texts));
 
     // Library detection: file with zero skills.
     let has_skill = file.decls.iter().any(|d| matches!(d, Decl::Skill(_)));
@@ -5805,6 +6073,232 @@ export type Foo = <"second">
             ids
         );
     }
+
+    /// Codex finding #3: the §D6 case+underscore-insensitive identifier rule
+    /// applies to type names too. Two type decls that differ only in casing
+    /// or underscore placement (`RepoContext` vs `repo_context`) should
+    /// trigger `G::analyze::duplicate-type-decl`, since downstream lookups
+    /// (TypeRegistry::get) treat them as the same key.
+    #[test]
+    fn duplicate_type_decl_canonical_form_collision() {
+        let src = r#"type RepoContext = <"first">
+type repo_context = <"second">
+"#;
+        let ids = check_ids(src);
+        assert!(
+            ids.iter().any(|id| id == "G::analyze::duplicate-type-decl"),
+            "case+underscore-insensitive duplicate type decls should collide; got: {:?}",
+            ids
+        );
+    }
+
+    /// Universal-namespace check: `type Foo` collides with `const Foo` even
+    /// when no `-> Foo` annotation registers `Foo` into the domain registry.
+    #[test]
+    fn type_decl_collides_with_const() {
+        let src = r#"type Foo = <"a domain type">
+const Foo = "value"
+"#;
+        let bag = crate::check_source(src, 0, "test.glyph");
+        let collisions: Vec<&str> = bag
+            .iter()
+            .filter(|d| d.id == "G::analyze::name-collision")
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            collisions
+                .iter()
+                .any(|m| m.contains("type `Foo`") && m.contains("const")),
+            "expected type-vs-const collision, got messages: {:?}",
+            collisions
+        );
+    }
+
+    /// `type Foo` collides with a private `block Foo`. The registry sweep does
+    /// not cover block decl names, so this path is exclusive to the new sweep.
+    #[test]
+    fn type_decl_collides_with_block() {
+        let src = r#"type Foo = <"a domain type">
+block Foo()
+    description: "private helper"
+    flow:
+        "do work"
+"#;
+        let bag = crate::check_source(src, 0, "test.glyph");
+        let collisions: Vec<&str> = bag
+            .iter()
+            .filter(|d| d.id == "G::analyze::name-collision")
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            collisions
+                .iter()
+                .any(|m| m.contains("type `Foo`") && m.contains("block")),
+            "expected type-vs-block collision, got messages: {:?}",
+            collisions
+        );
+    }
+
+    /// `type Foo` collides with `export block Foo`.
+    #[test]
+    fn type_decl_collides_with_export_block() {
+        let src = r#"type Foo = <"a domain type">
+export block Foo()
+    description: "exported helper"
+    flow:
+        "do work"
+"#;
+        let bag = crate::check_source(src, 0, "test.glyph");
+        let collisions: Vec<&str> = bag
+            .iter()
+            .filter(|d| d.id == "G::analyze::name-collision")
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            collisions
+                .iter()
+                .any(|m| m.contains("type `Foo`") && m.contains("export block")),
+            "expected type-vs-export-block collision, got messages: {:?}",
+            collisions
+        );
+    }
+
+    /// `type Foo` collides with parameter `Foo` even when no `-> Foo`
+    /// annotation registers `Foo` into the registry.
+    #[test]
+    fn type_decl_collides_with_parameter_without_registry_use() {
+        let src = r#"type Foo = <"a domain type">
+skill use_it(Foo = "x")
+    description: "test"
+    flow:
+        "do work"
+"#;
+        let bag = crate::check_source(src, 0, "test.glyph");
+        let collisions: Vec<&str> = bag
+            .iter()
+            .filter(|d| d.id == "G::analyze::name-collision")
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            collisions
+                .iter()
+                .any(|m| m.contains("type `Foo`") && m.contains("parameter")),
+            "expected type-vs-parameter collision, got messages: {:?}",
+            collisions
+        );
+    }
+
+    /// Canonical pairing: `type Foo = <"…">` + `-> Foo` annotation is **not**
+    /// a collision (both refer to the same nominal type).
+    #[test]
+    fn canonical_type_decl_with_return_annotation_is_not_a_collision() {
+        let src = r#"type Foo = <"a domain type">
+skill returns_foo() -> Foo
+    description: "test"
+    flow:
+        return "value"
+"#;
+        let bag = crate::check_source(src, 0, "test.glyph");
+        let collisions: Vec<&str> = bag
+            .iter()
+            .filter(|d| d.id == "G::analyze::name-collision")
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            collisions.is_empty(),
+            "canonical type-decl + `-> Foo` must not fire name-collision, got: {:?}",
+            collisions
+        );
+    }
+
+    /// Dedupe: when `-> Foo` registers `Foo` AND a parameter named `Foo`
+    /// exists, the registry-direction sweep already fires. The type-decl
+    /// sweep skips param/const checks for in-registry names so the user sees
+    /// exactly one diagnostic per logical issue.
+    #[test]
+    fn type_decl_param_collision_dedupes_with_registry_sweep() {
+        let src = r#"type Foo = <"a domain type">
+skill use_it(Foo = "x") -> Foo
+    description: "test"
+    flow:
+        return "value"
+"#;
+        let bag = crate::check_source(src, 0, "test.glyph");
+        let param_collisions: Vec<&str> = bag
+            .iter()
+            .filter(|d| d.id == "G::analyze::name-collision" && d.message.contains("parameter"))
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            param_collisions.len(),
+            1,
+            "expected exactly one param-collision message, got: {:?}",
+            param_collisions
+        );
+    }
+
+    /// `type Foo` collides with a selectively-imported `Foo` (no `as` alias).
+    #[test]
+    fn type_decl_collides_with_selective_import() {
+        let src = r#"import "./other.glyph" { Foo }
+type Foo = <"a domain type">
+"#;
+        let bag = crate::check_source(src, 0, "test.glyph");
+        let collisions: Vec<&str> = bag
+            .iter()
+            .filter(|d| d.id == "G::analyze::name-collision")
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            collisions
+                .iter()
+                .any(|m| m.contains("type `Foo`") && m.contains("import alias")),
+            "expected type-vs-import-alias collision, got messages: {:?}",
+            collisions
+        );
+    }
+
+    /// `type Foo` collides with `import { bar as Foo }` (selective + alias).
+    #[test]
+    fn type_decl_collides_with_aliased_selective_import() {
+        let src = r#"import "./other.glyph" { bar as Foo }
+type Foo = <"a domain type">
+"#;
+        let bag = crate::check_source(src, 0, "test.glyph");
+        let collisions: Vec<&str> = bag
+            .iter()
+            .filter(|d| d.id == "G::analyze::name-collision")
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            collisions
+                .iter()
+                .any(|m| m.contains("type `Foo`") && m.contains("import alias")),
+            "expected type-vs-aliased-import collision, got messages: {:?}",
+            collisions
+        );
+    }
+
+    /// `type Foo` collides with whole-module `import "..." as Foo`.
+    #[test]
+    fn type_decl_collides_with_whole_module_import() {
+        let src = r#"import "./other.glyph" as Foo
+type Foo = <"a domain type">
+"#;
+        let bag = crate::check_source(src, 0, "test.glyph");
+        let collisions: Vec<&str> = bag
+            .iter()
+            .filter(|d| d.id == "G::analyze::name-collision")
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            collisions
+                .iter()
+                .any(|m| m.contains("type `Foo`") && m.contains("import alias")),
+            "expected type-vs-whole-module-import collision, got messages: {:?}",
+            collisions
+        );
+    }
 }
 
 #[cfg(test)]
@@ -6048,6 +6542,7 @@ mod validate_call_tests {
         ast::Param {
             name: name.to_string(),
             default: default.map(|s| s.to_string()),
+            default_is_name_ref: false,
             type_annotation: None,
             description: None,
             span: Span::new(0, 0, 1),
@@ -6178,6 +6673,159 @@ mod validate_call_tests {
             msgs[0].contains("`c`"),
             "expected missing `c`, got {:?}",
             msgs[0]
+        );
+    }
+}
+
+#[cfg(test)]
+mod param_default_name_ref_tests {
+    //! Codex finding #1 follow-up: every name_ref param default must resolve
+    //! to an in-scope `const`. These tests exercise both the rejection paths
+    //! (block / parameter / unknown identifier) and the resolution paths
+    //! (same-file const, literal default — which must NOT trigger the sweep).
+
+    fn diag_ids(src: &str) -> Vec<String> {
+        crate::check_source(src, 0, "test.glyph")
+            .iter()
+            .map(|d| d.id.clone())
+            .collect()
+    }
+
+    fn diag_messages(src: &str) -> Vec<String> {
+        crate::check_source(src, 0, "test.glyph")
+            .iter()
+            .filter(|d| d.id == "G::analyze::undefined-name")
+            .map(|d| d.message.clone())
+            .collect()
+    }
+
+    #[test]
+    fn name_ref_default_resolves_to_same_file_const_passes() {
+        // Baseline: a name_ref default that names an in-scope `const` is
+        // accepted — the sweep is a hard error so a false positive here would
+        // surface as a reported diagnostic.
+        let src = "\
+const default_risk = \"low\"
+skill demo(risk = default_risk)
+    flow:
+        \"do work\"
+";
+        let ids = diag_ids(src);
+        assert!(
+            !ids.iter().any(|id| id == "G::analyze::undefined-name"),
+            "expected no undefined-name diagnostic, got {ids:?}"
+        );
+    }
+
+    #[test]
+    fn literal_string_default_is_not_a_name_ref_and_passes() {
+        // Sanity guard: literal defaults flow through with
+        // `default_is_name_ref = false`; the sweep must skip them so
+        // `risk = \"low\"` does not trigger an `undefined-name` lookup
+        // for the bare token `\"low\"`.
+        let src = "\
+skill demo(risk = \"low\")
+    flow:
+        \"do work\"
+";
+        let ids = diag_ids(src);
+        assert!(
+            !ids.iter().any(|id| id == "G::analyze::undefined-name"),
+            "literal-default must not trigger name-resolution: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn bool_literal_default_is_not_a_name_ref_and_passes() {
+        let src = "\
+skill demo(flag = true)
+    flow:
+        \"do work\"
+";
+        let ids = diag_ids(src);
+        assert!(
+            !ids.iter().any(|id| id == "G::analyze::undefined-name"),
+            "bool literal must not trigger name-resolution: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn name_ref_default_unknown_identifier_emits_undefined_name() {
+        // `default_risk` is not declared anywhere in this file → the sweep
+        // emits `G::analyze::undefined-name` so the bare identifier never
+        // leaks into the IR / `## Parameters` output.
+        let src = "\
+skill demo(risk = default_risk)
+    flow:
+        \"do work\"
+";
+        let msgs = diag_messages(src);
+        assert!(
+            msgs.iter().any(|m| m.contains("`default_risk`")),
+            "expected diagnostic naming `default_risk`, got {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn name_ref_default_pointing_at_block_is_rejected() {
+        // A `block` is in the universal value namespace but is not a
+        // `const` value-binding, so it cannot satisfy a name_ref default.
+        let src = "\
+block helper()
+    \"step\"
+
+skill demo(risk = helper)
+    flow:
+        \"do work\"
+";
+        let msgs = diag_messages(src);
+        assert!(
+            msgs.iter().any(|m| m.contains("`helper`")),
+            "expected diagnostic naming `helper`, got {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn name_ref_default_pointing_at_sibling_param_is_rejected() {
+        // Sibling parameters are not value-bindings either; the resolver
+        // only accepts `const` declarations.
+        let src = "\
+skill demo(other = \"x\", risk = other)
+    flow:
+        \"do work\"
+";
+        let msgs = diag_messages(src);
+        assert!(
+            msgs.iter().any(|m| m.contains("`other`")),
+            "expected diagnostic naming `other`, got {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn block_param_with_unknown_name_ref_default_is_rejected() {
+        // The sweep walks Skill, Block, and ExportBlock decls — pin the
+        // Block arm so a regression in the iteration logic is caught.
+        let src = "\
+block helper(x = unknown_const)
+    \"step\"
+";
+        let msgs = diag_messages(src);
+        assert!(
+            msgs.iter().any(|m| m.contains("`unknown_const`")),
+            "expected diagnostic naming `unknown_const`, got {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn export_block_param_with_unknown_name_ref_default_is_rejected() {
+        let src = "\
+export block helper(x = unknown_const)
+    \"step\"
+";
+        let msgs = diag_messages(src);
+        assert!(
+            msgs.iter().any(|m| m.contains("`unknown_const`")),
+            "expected diagnostic naming `unknown_const`, got {msgs:?}"
         );
     }
 }

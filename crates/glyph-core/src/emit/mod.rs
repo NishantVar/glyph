@@ -30,11 +30,22 @@ pub fn emit(arena: &IrArena, enable_effects: bool) -> String {
 /// Identifier and Description forms route through the locked templates in
 /// `emit::templates` so a Tier-3 procedure retains its return contract on disk
 /// (`design/compiled-output.md` §OutputContract Rendering).
+/// One row in the Tier 3 procedure-file `## Parameters` bullet list. Mirrors
+/// the four fields the skill `## Parameters` renderer reads from `IrParam` so
+/// the two paths cannot drift on what they project (per `compiled-output.md`
+/// §`## Parameters`).
+pub struct ProcedureParam<'a> {
+    pub name: &'a str,
+    pub type_annotation: Option<&'a str>,
+    pub description: Option<&'a str>,
+    pub default: Option<&'a str>,
+}
+
 pub fn emit_procedure(
     name: &str,
     description: &str,
     effects: &[String],
-    params: &[(String, Option<String>)],
+    params: &[ProcedureParam<'_>],
     flow_strings: &[String],
     output_form: Option<&OutputTargetForm>,
     return_type_text: Option<&str>,
@@ -56,14 +67,24 @@ pub fn emit_procedure(
     }
     out.push_str("---\n\n");
 
-    // Parameters
+    // Parameters — same bullet shape as the skill `## Parameters` emitter.
+    // Picks per-param description first, falling back to the type-level
+    // `type Foo = <"…">` lookup so Tier 3 procedure files mirror the skill
+    // output (compiled-output.md §`## Parameters`).
     if !params.is_empty() {
         out.push_str("## Parameters\n\n");
-        for (pname, default) in params {
-            match default {
-                Some(v) => out.push_str(&format!("- **{}** (default: {})\n", pname, v)),
-                None => out.push_str(&format!("- **{}** (required)\n", pname)),
-            }
+        for p in params {
+            let desc = templates::effective_param_description(
+                p.description,
+                p.type_annotation,
+                type_registry,
+            );
+            out.push_str(&templates::render_param_bullet(
+                p.name,
+                p.type_annotation,
+                desc.as_deref(),
+                p.default,
+            ));
         }
         out.push('\n');
     }

@@ -136,6 +136,102 @@ fn type_decl_imported_selectively_drives_param_description() {
     );
 }
 
+/// An imported type used only in a `-> ReturnType` annotation is a use of the
+/// import: the unused-import sweep must not fire.
+#[test]
+fn imported_type_used_only_in_return_type_is_not_unused() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        tmp.path().join("types.glyph"),
+        "export type Diagnosis = <\"root cause and severity\">\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("consumer.glyph"),
+        r#"import "./types.glyph" { Diagnosis }
+
+export block triage() -> Diagnosis
+    description: "Triage an issue."
+    flow:
+        "Inspect the issue."
+        return "diagnosis text"
+"#,
+    )
+    .unwrap();
+
+    let result = Command::new(glyph_bin())
+        .arg("check")
+        .arg("--format")
+        .arg("json")
+        .arg(tmp.path())
+        .output()
+        .expect("failed to spawn glyph binary");
+
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        !stdout.contains("G::analyze::unused-import")
+            && !stderr.contains("G::analyze::unused-import"),
+        "must NOT fire G::analyze::unused-import — `-> Diagnosis` is a use of the import; \
+         stdout={stdout}\nstderr={stderr}"
+    );
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "expected exit 0; stdout={stdout}\nstderr={stderr}"
+    );
+}
+
+/// Tier 3 procedure files (export blocks with body word count >= 150) must
+/// render the `## Parameters` bullet using the shared shape — including
+/// per-param description, type-level description fallback, and the typed
+/// `(Foo)` suffix per `compiled-output.md` §`## Parameters`.
+#[test]
+fn tier3_procedure_file_renders_param_with_type_and_description() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    // 16 substantive content words per "blah" line keeps the Glyph
+    // word counter happy without bloating the fixture.
+    let big_step = "\"Inspect the project layout, dependency graph, configuration files, \
+        test suites, documentation, structural conventions, build targets, \
+        platform integrations, observability hooks, package metadata, security \
+        boundaries, deployment manifests, environment variables, secrets \
+        handling, runtime expectations, and observability targets thoroughly.\"";
+    let lib_src = format!(
+        r#"export type RepoPath = <"the path or glob to inspect">
+
+export block inspect_repo(scope: RepoPath = ".") -> Report
+    description: "Inspect the repository structure."
+    flow:
+        {big_step}
+        {big_step}
+        {big_step}
+        {big_step}
+        {big_step}
+        return "report"
+"#
+    );
+    std::fs::write(tmp.path().join("repo_tools.glyph"), lib_src).unwrap();
+
+    let result = Command::new(glyph_bin())
+        .arg("compile")
+        .arg(tmp.path())
+        .output()
+        .expect("failed to spawn glyph binary");
+    assert!(
+        result.status.success(),
+        "compile failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+
+    let proc_md = std::fs::read_to_string(tmp.path().join("repo_tools").join("inspect-repo.md"))
+        .expect("expected Tier 3 procedure file");
+    assert!(
+        proc_md.contains("- **scope** (RepoPath): the path or glob to inspect. Default: \".\"."),
+        "procedure file should pull type-level description and render typed bullet:\n{proc_md}"
+    );
+}
+
 // --- §8.4 locked return-prose templates: one fixture+test per spec row. ---
 
 /// Compile a fixture and return the resulting `.md`. Panics on non-zero exit.

@@ -6,7 +6,7 @@
 
 use crate::ast::{
     BlockDecl, ConstValue, ConstraintMarkerKind, ContextEntry, Decl, ExportBlockDecl, FlowStmt,
-    ReturnExpr, Skill, SourceFile,
+    Param, ReturnExpr, Skill, SourceFile,
 };
 use crate::domain_registry::canonicalize_identifier;
 use crate::ir::{
@@ -379,7 +379,54 @@ fn lower_flow_body(
 }
 
 pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
-    lower_with_imports(file, &BTreeMap::new(), &BTreeMap::new())
+    lower_with_imports(file, &BTreeMap::new(), &BTreeMap::new(), &BTreeMap::new())
+}
+
+/// Resolve a parameter's `default` field for emission. Literal defaults
+/// pass through; name_ref defaults (`p.default_is_name_ref == true`) are
+/// substituted with the referenced const's rendered value. For string-typed
+/// consts the substituted value is wrapped in surrounding quotes to match
+/// the storage shape of literal-string defaults (parser pre-renders string
+/// literals as `"\"value\""`), so the downstream `Default: X.` template
+/// produces consistent output regardless of authoring form.
+///
+/// `same_file_consts` carries `(rendered, TypeTag)` per local `const`;
+/// `imported_const_types` carries the inferred `TypeTag` for each imported
+/// const value present in `imported_texts`. Name_refs that resolve via
+/// `imported_texts` but lack a TypeTag entry fall through with the
+/// imported rendered value as-is (best-effort; analyze should reject
+/// unresolved refs).
+pub(crate) fn resolve_param_default(
+    p: &Param,
+    same_file_consts: &BTreeMap<String, (String, TypeTag)>,
+    imported_const_types: &BTreeMap<String, TypeTag>,
+    imported_texts: &BTreeMap<String, String>,
+) -> Option<String> {
+    let raw = p.default.as_ref()?;
+    if !p.default_is_name_ref {
+        return Some(raw.clone());
+    }
+    if let Some((rendered, tag)) = same_file_consts.get(raw) {
+        return Some(rerender_for_default(rendered, tag));
+    }
+    if let Some(rendered) = imported_texts.get(raw) {
+        let tag = imported_const_types
+            .get(raw)
+            .cloned()
+            .unwrap_or(TypeTag::None);
+        return Some(rerender_for_default(rendered, &tag));
+    }
+    Some(raw.clone())
+}
+
+/// Re-render a const's rendered text for use in a parameter `Default:` slot.
+/// Wraps `TypeTag::String` values in quotes; passes other primitive renderings
+/// through verbatim.
+fn rerender_for_default(rendered: &str, tag: &TypeTag) -> String {
+    match tag {
+        TypeTag::String => format!("\"{}\"", rendered),
+        _ => rendered.to_string(),
+    }
 }
 
 /// Lower with additional imported text values and type descriptions available
@@ -387,9 +434,15 @@ pub fn lower(file: &SourceFile) -> Result<IrArena, LowerError> {
 /// decls take precedence on name collision (mirrors the
 /// `local-const-overwrites-imported-text` rule for cross-file `const`
 /// shadowing earlier in this function).
+///
+/// `imported_const_types` complements `imported_texts` with each imported
+/// const's inferred `TypeTag` so name_ref parameter defaults can be re-rendered
+/// with the correct quoting (string consts wrap in `"…"`; numeric/bool/none
+/// pass through verbatim).
 pub fn lower_with_imports(
     file: &SourceFile,
     imported_texts: &BTreeMap<String, String>,
+    imported_const_types: &BTreeMap<String, TypeTag>,
     imported_type_descriptions: &BTreeMap<String, String>,
 ) -> Result<IrArena, LowerError> {
     // Collect imported text values into a name → value map. Local bindings
@@ -443,16 +496,16 @@ pub fn lower_with_imports(
     let mut type_registry = crate::ir::TypeRegistry::default();
     for d in &file.decls {
         if let Decl::TypeDecl(t) = d {
-            type_registry
-                .descriptions
-                .insert(t.node.name.clone(), t.node.description.node.clone());
+            type_registry.insert(&t.node.name, t.node.description.node.clone());
         }
     }
     for (name, desc) in imported_type_descriptions {
-        type_registry
-            .descriptions
-            .entry(name.clone())
-            .or_insert_with(|| desc.clone());
+        // Imported types lose to same-file decls on collision (D6-canonical
+        // form): if the consumer's `type` decl already populated this
+        // canonical key, leave it.
+        if type_registry.get(name).is_none() {
+            type_registry.insert(name, desc.clone());
+        }
     }
 
     // Find the skill declaration (exactly one in walking skeleton).
@@ -486,7 +539,7 @@ pub fn lower_with_imports(
         .iter()
         .map(|p| IrParam {
             name: p.name.clone(),
-            default: p.default.clone(),
+            default: resolve_param_default(p, &consts, imported_const_types, imported_texts),
             description: p.description.as_ref().map(|s| s.node.clone()),
             type_annotation: p.type_annotation.as_ref().map(|s| s.node.clone()),
         })
@@ -1482,7 +1535,8 @@ skill demo()
         let file = parse_file(src);
         let mut imported = BTreeMap::new();
         imported.insert("greeting".to_string(), "imported".to_string());
-        let arena = lower_with_imports(&file, &imported, &BTreeMap::new()).expect("should lower");
+        let arena = lower_with_imports(&file, &imported, &BTreeMap::new(), &BTreeMap::new())
+            .expect("should lower");
         let mut found_local = false;
         let mut found_imported = false;
         for n in arena.nodes() {
@@ -1519,6 +1573,173 @@ skill demo()
         // Lower must succeed: a generated const is lower-equivalent to a
         // private text decl as far as #81 chunk 2 is concerned.
         let _arena = lower(&file).expect("should lower with a generated const");
+    }
+
+    // Helper: pull `IrParam` slice off the first `IrSkill` in the arena.
+    fn skill_params(arena: &IrArena) -> &[IrParam] {
+        let root = arena.root_skill().expect("arena should have a root skill");
+        match arena.get(root) {
+            IrNode::Skill(s) => &s.params,
+            other => panic!("root_skill node was not Skill: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn name_ref_default_resolves_same_file_string_const_with_quotes() {
+        // `risk = default_risk` is a name_ref default; lower must substitute
+        // the const's rendered value, wrapping it in quotes to match the
+        // literal-string default storage shape (`"\"low\""`).
+        let src = "\
+const default_risk = \"low\"
+skill demo(risk = default_risk)
+    flow:
+        \"do work\"
+";
+        let arena = lower(&parse_file(src)).expect("should lower");
+        let params = skill_params(&arena);
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].name, "risk");
+        assert_eq!(params[0].default.as_deref(), Some("\"low\""));
+    }
+
+    #[test]
+    fn name_ref_default_resolves_same_file_int_const_without_quotes() {
+        // Numeric consts pass through verbatim (no quote-wrapping).
+        let src = "\
+const max_size = 5
+skill demo(size = max_size)
+    flow:
+        \"do work\"
+";
+        let arena = lower(&parse_file(src)).expect("should lower");
+        let params = skill_params(&arena);
+        assert_eq!(params[0].default.as_deref(), Some("5"));
+    }
+
+    #[test]
+    fn name_ref_default_resolves_same_file_float_const_without_quotes() {
+        let src = "\
+const ratio = 3.14
+skill demo(r = ratio)
+    flow:
+        \"do work\"
+";
+        let arena = lower(&parse_file(src)).expect("should lower");
+        let params = skill_params(&arena);
+        assert_eq!(params[0].default.as_deref(), Some("3.14"));
+    }
+
+    #[test]
+    fn name_ref_default_resolves_same_file_bool_const_without_quotes() {
+        let src = "\
+const default_flag = true
+skill demo(flag = default_flag)
+    flow:
+        \"do work\"
+";
+        let arena = lower(&parse_file(src)).expect("should lower");
+        let params = skill_params(&arena);
+        assert_eq!(params[0].default.as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn bool_literal_default_is_not_resolved_via_texts_map() {
+        // Regression guard: the parser sets `default_is_name_ref=false` for
+        // bool/`none` literals so the resolver must NOT look them up in
+        // `imported_texts` / `consts`. We seed `imported_texts` with a bogus
+        // `"true"` key — if the resolver skips the name_ref guard, that
+        // bogus value would leak into the IR.
+        let src = "\
+skill demo(flag = true)
+    flow:
+        \"do work\"
+";
+        let file = parse_file(src);
+        let mut imported = BTreeMap::new();
+        imported.insert("true".to_string(), "SHOULD_NOT_APPEAR".to_string());
+        let arena = lower_with_imports(&file, &imported, &BTreeMap::new(), &BTreeMap::new())
+            .expect("should lower");
+        let params = skill_params(&arena);
+        assert_eq!(params[0].default.as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn none_literal_default_is_not_resolved_via_texts_map() {
+        let src = "\
+skill demo(x = none)
+    flow:
+        \"do work\"
+";
+        let file = parse_file(src);
+        let mut imported = BTreeMap::new();
+        imported.insert("none".to_string(), "SHOULD_NOT_APPEAR".to_string());
+        let arena = lower_with_imports(&file, &imported, &BTreeMap::new(), &BTreeMap::new())
+            .expect("should lower");
+        let params = skill_params(&arena);
+        assert_eq!(params[0].default.as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn name_ref_default_resolves_imported_string_const_with_quotes() {
+        // Imported const with a known `TypeTag::String` must be wrapped in
+        // surrounding quotes when substituted into a name_ref default.
+        let src = "\
+skill demo(g = greeting)
+    flow:
+        \"do work\"
+";
+        let file = parse_file(src);
+        let mut imported_texts = BTreeMap::new();
+        imported_texts.insert("greeting".to_string(), "hi".to_string());
+        let mut imported_const_types = BTreeMap::new();
+        imported_const_types.insert("greeting".to_string(), TypeTag::String);
+        let arena = lower_with_imports(
+            &file,
+            &imported_texts,
+            &imported_const_types,
+            &BTreeMap::new(),
+        )
+        .expect("should lower");
+        let params = skill_params(&arena);
+        assert_eq!(params[0].default.as_deref(), Some("\"hi\""));
+    }
+
+    #[test]
+    fn name_ref_default_resolves_imported_int_const_without_quotes() {
+        let src = "\
+skill demo(n = max_n)
+    flow:
+        \"do work\"
+";
+        let file = parse_file(src);
+        let mut imported_texts = BTreeMap::new();
+        imported_texts.insert("max_n".to_string(), "42".to_string());
+        let mut imported_const_types = BTreeMap::new();
+        imported_const_types.insert("max_n".to_string(), TypeTag::Int);
+        let arena = lower_with_imports(
+            &file,
+            &imported_texts,
+            &imported_const_types,
+            &BTreeMap::new(),
+        )
+        .expect("should lower");
+        let params = skill_params(&arena);
+        assert_eq!(params[0].default.as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn literal_string_default_passes_through_unchanged() {
+        // Sanity: literal-string defaults are pre-rendered with quotes by the
+        // parser and must reach IR unchanged (the resolver's `default_is_name_ref`
+        // guard short-circuits before any texts-map lookup).
+        let src = "\
+skill demo(risk = \"low\")
+    flow:
+        \"do work\"
+";
+        let arena = lower(&parse_file(src)).expect("should lower");
+        let params = skill_params(&arena);
+        assert_eq!(params[0].default.as_deref(), Some("\"low\""));
     }
 }
 

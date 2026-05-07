@@ -205,7 +205,7 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
             let effective_desc: Option<String> = p.description.clone().or_else(|| {
                 p.type_annotation
                     .as_ref()
-                    .and_then(|t| arena.type_registry.descriptions.get(t).cloned())
+                    .and_then(|t| arena.type_registry.get(t).cloned())
             });
             let has_desc = effective_desc.is_some();
             let desc_text = effective_desc.as_deref().unwrap_or("");

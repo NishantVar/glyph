@@ -284,9 +284,31 @@ pub enum Polarity {
 /// Built during lowering from same-file `TypeDecl`s plus selectively-imported
 /// `export type` decls (Phase B.7). Consumed by the emitter for per-param
 /// type-level lookup (spec §7.1) and the return-prose fold (spec §8.4).
+///
+/// Keys are stored in §D6 canonical form (ASCII-lowercase, underscores
+/// stripped) via `canonicalize_identifier`, so `type RepoContext = …` and a
+/// param `ctx: repo_context` resolve to the same description per the language
+/// guide. Always go through `insert` / `get` rather than touching the
+/// underlying map.
 #[derive(Clone, Debug, Default)]
 pub struct TypeRegistry {
-    pub descriptions: HashMap<String, String>,
+    descriptions: HashMap<String, String>,
+}
+
+impl TypeRegistry {
+    /// Insert a description keyed by `name`. The key is normalized to its
+    /// §D6 canonical form, so subsequent `get` calls match author-spelling
+    /// variants (case + underscores).
+    pub fn insert(&mut self, name: &str, desc: String) {
+        self.descriptions
+            .insert(crate::domain_registry::canonicalize_identifier(name), desc);
+    }
+
+    /// Look up a description by author-spelling, normalized to §D6 form.
+    pub fn get(&self, name: &str) -> Option<&String> {
+        self.descriptions
+            .get(&crate::domain_registry::canonicalize_identifier(name))
+    }
 }
 
 /// Single arena per file. Lower allocates IDs in pre-order traversal.

@@ -1911,6 +1911,7 @@ impl<'a> Parser<'a> {
             let (pname, name_span) = self.expect_ident(None)?;
             let mut type_annotation: Option<Spanned<String>> = None;
             let mut default: Option<String> = None;
+            let mut default_is_name_ref = false;
             let mut end_span = name_span;
             // Optional `: Type` annotation — issue #119. Bare ident only;
             // any malformed shape (`x:`, `x: 123`) reuses the generic
@@ -1924,10 +1925,15 @@ impl<'a> Parser<'a> {
             let mut description: Option<Spanned<String>> = None;
             if matches!(self.peek().kind, TokenKind::Equals) {
                 self.pos += 1;
-                // Slice 4: only string-literal defaults are supported.
-                // Phase A.2 (issue #119): the `=` slot now also accepts a
-                // descriptive form `<"…">` either standalone or trailing a
-                // string-literal default.
+                // Per `design/language-surface.md` §3.8 the `=` slot accepts:
+                //   rhs = literal description?
+                //       | name_ref description?
+                //       | description
+                // where literal ∈ { string, int, float, bool, none } and
+                // name_ref is a bare or qualified identifier referring to a
+                // value-binding (`const`) declaration in scope. The trailing
+                // `<"…">` description is optional in both literal and name_ref
+                // shapes; standalone `<"…">` carries description with no default.
                 match &self.peek().kind {
                     TokenKind::StringLit(s) => {
                         let raw = s.clone();
@@ -1971,6 +1977,51 @@ impl<'a> Parser<'a> {
                             description = Some(d);
                         }
                     }
+                    TokenKind::NumericLit(s) => {
+                        let raw = s.clone();
+                        end_span = self.peek().span;
+                        default = Some(raw);
+                        self.pos += 1;
+                        if matches!(self.peek().kind, TokenKind::LAngle) {
+                            let d = self.parse_param_description()?;
+                            end_span = d.span;
+                            description = Some(d);
+                        }
+                    }
+                    TokenKind::Ident(s) => {
+                        // Bool / `none` literals tokenize as Ident. Anything
+                        // else is a name_ref to a `const` (bare or qualified
+                        // `M.foo`). Stored verbatim — name_ref resolution to a
+                        // literal value happens downstream (analyze/lower).
+                        let raw = s.clone();
+                        let first_span = self.peek().span;
+                        end_span = first_span;
+                        self.pos += 1;
+                        // Optional `.member` suffix → qualified name_ref.
+                        // Bool/`none` cannot be qualified, so only attempt
+                        // when the head is not a bool/none literal.
+                        let lower = raw.to_ascii_lowercase();
+                        let is_bool_or_none = matches!(lower.as_str(), "true" | "false" | "none");
+                        let stored =
+                            if !is_bool_or_none && matches!(self.peek().kind, TokenKind::Dot) {
+                                self.pos += 1;
+                                let (member, mspan) = self.expect_ident(None)?;
+                                end_span = mspan;
+                                format!("{}.{}", raw, member)
+                            } else {
+                                raw
+                            };
+                        default = Some(stored);
+                        // Bool/`none` are reserved literals, not name_refs to
+                        // a `const`; the resolver in lower must not look them
+                        // up in the texts map.
+                        default_is_name_ref = !is_bool_or_none;
+                        if matches!(self.peek().kind, TokenKind::LAngle) {
+                            let d = self.parse_param_description()?;
+                            end_span = d.span;
+                            description = Some(d);
+                        }
+                    }
                     TokenKind::LAngle => {
                         // Standalone descriptive form: `name = <"description">`.
                         let d = self.parse_param_description()?;
@@ -1981,7 +2032,7 @@ impl<'a> Parser<'a> {
                         return Err(ParseError::Unexpected {
                             span: self.peek().span,
                             message:
-                                "parameter default must be a string literal or `<\"…\">` description"
+                                "parameter default must be a literal (string / number / `true` / `false` / `none`), a name reference, or a `<\"…\">` description"
                                     .into(),
                         });
                     }
@@ -1991,6 +2042,7 @@ impl<'a> Parser<'a> {
             params.push(Param {
                 name: pname,
                 default,
+                default_is_name_ref,
                 type_annotation,
                 description,
                 span,
@@ -6033,6 +6085,115 @@ skill test_skill(x = <\"\"\"line1\nline2\"\"\">)
         let p = &skill.params[0];
         let desc = p.description.as_ref().expect("description should be Some");
         assert_eq!(desc.node, "line1\nline2");
+    }
+
+    #[test]
+    fn parse_param_int_default() {
+        let src = r#"skill test_skill(n = 5)
+    description: "test"
+    flow:
+        "step"
+"#;
+        let skill = first_skill(src);
+        let p = &skill.params[0];
+        assert_eq!(p.default.as_deref(), Some("5"));
+        assert!(p.description.is_none());
+    }
+
+    #[test]
+    fn parse_param_float_default() {
+        let src = r#"skill test_skill(t = 0.7)
+    description: "test"
+    flow:
+        "step"
+"#;
+        let skill = first_skill(src);
+        let p = &skill.params[0];
+        assert_eq!(p.default.as_deref(), Some("0.7"));
+    }
+
+    #[test]
+    fn parse_param_bool_default() {
+        let src = r#"skill test_skill(verbose = true)
+    description: "test"
+    flow:
+        "step"
+"#;
+        let skill = first_skill(src);
+        let p = &skill.params[0];
+        assert_eq!(p.default.as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn parse_param_none_default() {
+        let src = r#"skill test_skill(maybe = none)
+    description: "test"
+    flow:
+        "step"
+"#;
+        let skill = first_skill(src);
+        let p = &skill.params[0];
+        assert_eq!(p.default.as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn parse_param_name_ref_default() {
+        let src = r#"skill test_skill(risk = default_risk)
+    description: "test"
+    flow:
+        "step"
+"#;
+        let skill = first_skill(src);
+        let p = &skill.params[0];
+        assert_eq!(p.default.as_deref(), Some("default_risk"));
+    }
+
+    #[test]
+    fn parse_param_qualified_name_ref_default() {
+        let src = r#"skill test_skill(risk = prefs.default_risk)
+    description: "test"
+    flow:
+        "step"
+"#;
+        let skill = first_skill(src);
+        let p = &skill.params[0];
+        assert_eq!(p.default.as_deref(), Some("prefs.default_risk"));
+    }
+
+    #[test]
+    fn parse_param_int_with_description() {
+        let src = r#"skill test_skill(n = 5 <"how many to fetch">)
+    description: "test"
+    flow:
+        "step"
+"#;
+        let skill = first_skill(src);
+        let p = &skill.params[0];
+        assert_eq!(p.default.as_deref(), Some("5"));
+        assert_eq!(
+            p.description.as_ref().map(|d| d.node.as_str()),
+            Some("how many to fetch")
+        );
+    }
+
+    #[test]
+    fn parse_param_name_ref_with_description() {
+        let src = r#"skill test_skill(risk: RiskLevel = default_risk <"override per call">)
+    description: "test"
+    flow:
+        "step"
+"#;
+        let skill = first_skill(src);
+        let p = &skill.params[0];
+        assert_eq!(
+            p.type_annotation.as_ref().map(|t| t.node.as_str()),
+            Some("RiskLevel")
+        );
+        assert_eq!(p.default.as_deref(), Some("default_risk"));
+        assert_eq!(
+            p.description.as_ref().map(|d| d.node.as_str()),
+            Some("override per call")
+        );
     }
 
     #[test]

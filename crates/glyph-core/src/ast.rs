@@ -219,6 +219,14 @@ pub struct Param {
     /// arguments — call sites that omit them surface
     /// `G::analyze::missing-required-arg`.
     pub default: Option<String>,
+    /// `true` when `default` carries a name reference (e.g. `default_risk`
+    /// or `M.foo`) that must resolve to an in-scope `const` at compile
+    /// time; `false` for literal defaults (string / number / bool / `none`)
+    /// and for parameters with no default. Lower uses this flag to
+    /// substitute the referenced const's rendered value (with type-aware
+    /// quoting for string consts) instead of leaking the bare identifier
+    /// into the IR / `## Parameters` output.
+    pub default_is_name_ref: bool,
     /// Optional `name: Type` annotation captured at parse time. Slice 4
     /// (Phase 0) reserves the syntactic position only — the type name is
     /// stored verbatim with its source span and **no** semantic resolution,

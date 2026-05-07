@@ -12,6 +12,70 @@ pub fn external_file_step(path: &str) -> String {
     EXTERNAL_FILE_TEMPLATE.replace("{path}", path)
 }
 
+/// Pick the effective description for a parameter:
+/// 1. Per-param `<"…">` (highest precedence).
+/// 2. Type-level `type Foo = <"…">` lookup via the registry, when the param
+///    has a `name: Foo` annotation.
+/// 3. None.
+///
+/// Shared by the skill `## Parameters` emitter (`scaffold.rs`) and the Tier 3
+/// procedure-file emitter (`emit_procedure`) so the two paths cannot drift.
+pub fn effective_param_description(
+    per_param: Option<&str>,
+    type_annotation: Option<&str>,
+    type_registry: &TypeRegistry,
+) -> Option<String> {
+    if let Some(d) = per_param {
+        return Some(d.to_string());
+    }
+    type_annotation.and_then(|t| type_registry.get(t).cloned())
+}
+
+/// Render one `## Parameters` bullet given the four authored fields, returning
+/// the rendered text **including** the trailing newline. Mirrors the three
+/// shapes used by the skill emitter (`scaffold.rs`):
+///
+/// - multi-line: description has a `\n` or exceeds 120 chars.
+/// - single-line with description: `- **name** (Type): desc. Default: X.`
+/// - no description: `- **name** (Type). Default: X.` / `Required.`
+///
+/// The `(Type)` suffix is omitted when `type_annotation` is `None`. The
+/// description is rendered verbatim (caller has already chosen
+/// per-param vs type-level via `effective_param_description`).
+pub fn render_param_bullet(
+    name: &str,
+    type_annotation: Option<&str>,
+    description: Option<&str>,
+    default: Option<&str>,
+) -> String {
+    let type_suffix = match type_annotation {
+        Some(t) => format!(" ({})", t),
+        None => String::new(),
+    };
+    let meta_tail = match default {
+        Some(v) => format!("Default: {}.", v),
+        None => "Required.".to_string(),
+    };
+    match description {
+        Some(desc_text) if desc_text.contains('\n') || desc_text.len() > 120 => {
+            let mut out = format!("- **{}**{}:\n", name, type_suffix);
+            for line in desc_text.lines() {
+                out.push_str(&format!("  {}\n", line));
+            }
+            out.push_str(&format!("  {}\n", meta_tail));
+            out
+        }
+        Some(desc_text) => {
+            let trimmed = desc_text.trim_end_matches('.').trim_end();
+            format!(
+                "- **{}**{}: {}. {}\n",
+                name, type_suffix, trimmed, meta_tail
+            )
+        }
+        None => format!("- **{}**{}. {}\n", name, type_suffix, meta_tail),
+    }
+}
+
 /// Collapse runs of any whitespace (incl. embedded `\n`/`\t` decoded by the
 /// tokenizer) to single spaces. Used by every §8.4 template that splices a
 /// descriptive text into a single-line sentence.
@@ -49,14 +113,14 @@ pub fn compute_return_sentence(
             Some(format!("Produce: {}.", normalize_ws(text)))
         }
         Some(OutputTargetForm::Identifier(name)) => Some(match return_type_text {
-            Some(t) => match type_registry.descriptions.get(t) {
+            Some(t) => match type_registry.get(t) {
                 Some(d) => format!("Produce `{}` (`{}`): {}.", name, t, normalize_ws(d)),
                 None => format!("Produce `{}` (`{}`).", name, t),
             },
             None => format!("Produce `{}`.", name),
         }),
         None => match return_type_text {
-            Some(t) => Some(match type_registry.descriptions.get(t) {
+            Some(t) => Some(match type_registry.get(t) {
                 Some(d) => format!("Return a `{}`: {}.", t, normalize_ws(d)),
                 None => format!("Return a `{}`.", t),
             }),
@@ -85,7 +149,7 @@ mod tests {
 
     fn registry_with(name: &str, desc: &str) -> TypeRegistry {
         let mut r = TypeRegistry::default();
-        r.descriptions.insert(name.into(), desc.into());
+        r.insert(name, desc.into());
         r
     }
 
@@ -170,6 +234,31 @@ mod tests {
         let reg = registry_with("Foo", "first  line\nsecond\tline");
         let s = compute_return_sentence(Some("Foo"), None, &reg).unwrap();
         assert_eq!(s, "Return a `Foo`: first line second line.");
+    }
+
+    /// Codex finding #3: TypeRegistry keys are §D6 canonical (ASCII-lower +
+    /// strip underscores), so `type RepoContext = …` registered under
+    /// `RepoContext` is reachable via `repo_context`, `REPOCONTEXT`,
+    /// `repo__context`, etc. The look-up site (`compute_return_sentence` and
+    /// `effective_param_description`) must apply the same canonicalization.
+    #[test]
+    fn type_registry_lookup_is_d6_canonical() {
+        let reg = registry_with("RepoContext", "context about this repo");
+        // Sanity: exact spelling resolves.
+        let exact = compute_return_sentence(Some("RepoContext"), None, &reg);
+        assert_eq!(
+            exact.as_deref(),
+            Some("Return a `RepoContext`: context about this repo.")
+        );
+        // Snake-case variant: canonical form matches the registry key.
+        let snake = compute_return_sentence(Some("repo_context"), None, &reg);
+        assert_eq!(
+            snake.as_deref(),
+            Some("Return a `repo_context`: context about this repo.")
+        );
+        // Per-param annotation lookup uses the same path.
+        let bullet = effective_param_description(None, Some("repo_context"), &reg);
+        assert_eq!(bullet.as_deref(), Some("context about this repo"));
     }
 
     #[test]
