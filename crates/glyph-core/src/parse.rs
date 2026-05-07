@@ -459,6 +459,15 @@ fn flush_dup_export_block(
     *current_dup_kind = None;
 }
 
+/// Top-level decl keywords that must not be used as identifier names (e.g.,
+/// as a `const` name). Extend this list only when a new top-level dispatch
+/// keyword is added that could shadow a future decl form.
+const RESERVED_KEYWORDS: &[&str] = &["type"];
+
+fn is_reserved(ident: &str) -> bool {
+    RESERVED_KEYWORDS.contains(&ident)
+}
+
 impl<'a> Parser<'a> {
     fn peek(&self) -> &Token {
         &self.tokens[self.pos]
@@ -3179,6 +3188,18 @@ impl<'a> Parser<'a> {
     /// rejected here with a `ParseError::Unexpected`.
     fn parse_const_decl(&mut self) -> Result<Spanned<ConstDecl>, ParseError> {
         let (_, kw_span) = self.expect_ident(Some("const"))?;
+        // Peek at the name token before consuming it; reject reserved keywords.
+        if let TokenKind::Ident(ref s) = self.peek().kind {
+            if is_reserved(s) {
+                return Err(ParseError::Unexpected {
+                    span: self.peek().span,
+                    message: format!(
+                        "`{}` is a reserved keyword and cannot be used as a const name [G::parse::reserved-keyword-as-name]",
+                        s
+                    ),
+                });
+            }
+        }
         let (name, _) = self.expect_ident(None)?;
         self.expect(&TokenKind::Equals)?;
         let value = self.parse_const_literal_rhs()?;
@@ -3679,6 +3700,26 @@ skill demo()
         // Decl 0: Const, Decl 1: Skill.
         assert!(matches!(&file.decls[0], Decl::Const(_)));
         assert!(matches!(&file.decls[1], Decl::Skill(_)));
+    }
+
+    // -- Reserved keyword rejection (Phase B.2) --
+
+    #[test]
+    fn type_identifier_is_rejected_in_const_name_position() {
+        let err = parse("const type = \"value\"\n", 0).err();
+        match err {
+            Some(ParseError::Unexpected { ref message, .. }) => {
+                assert!(
+                    message.contains("G::parse::reserved-keyword-as-name"),
+                    "expected reserved-keyword diagnostic ID in message, got: {}",
+                    message
+                );
+            }
+            other => panic!(
+                "expected ParseError::Unexpected for `const type = ...`, got {:?}",
+                other
+            ),
+        }
     }
 }
 
