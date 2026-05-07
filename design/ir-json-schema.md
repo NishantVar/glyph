@@ -296,7 +296,7 @@ Here `{scope}` is a parameter slot (not in `local_refs`) and `{diagnosis}` is a 
 | `then_body` | array of FlowNode | yes | Flow nodes for the `if` arm. |
 | `elif_branches` | array of ElifBranch | yes | May be empty. |
 | `else_body` | array of FlowNode or null | yes | `null` when no `else` clause. |
-| `resolved_predicates` | object or null | yes | Unified predicate side-map: key is the predicate token as it appears in the condition string, value is the resolved natural-language string. Three key shapes: (1) `.applies()` form — key `"block_name.applies()"`, value is the block's resolved `description:` string; (2) string-const form — key is the bare const name (e.g., `"complex_change_required"`), value is the const's body; (3) inline literal — not stored here (the literal is already present verbatim in the condition string). `null` when no condition arm uses any predicate form. Populated by Expand Step 1. See `ir-and-semantics.md` §Predicates. **Renamed from `applies_descriptions` at ir_version 2.** |
+| `resolved_predicates` | object or null | yes | Unified predicate side-map: object mapping **predicate keys** to resolved natural-language strings. The predicate key for each form is: (1) **`.applies()` form** — bare receiver block name (e.g. `"fork_with_plan"`, NOT `"fork_with_plan.applies()"`); value is the resolved block `description:` string. (2) **string-const form** — bare const name (e.g. `"complex_change_required"`); value is the const's body. (3) **inline literal form** — not stored (the literal is verbatim in the condition string). `null` when no condition arm uses any predicate form. Populated by Expand Step 1. See `ir-and-semantics.md` §Predicates. **Renamed from `applies_descriptions` at ir_version 2.** |
 
 `Branch` is a container node. It carries no `role` — its children carry their own roles.
 
@@ -318,8 +318,8 @@ Here `{scope}` is a parameter slot (not in `local_refs`) and `{diagnosis}` is a 
   ],
   "else_body": [ ... ],
   "resolved_predicates": {
-    "fork_with_plan.applies()": "Fork a terminal pre-loaded with the current plan.",
-    "fork_with_summary.applies()": "Fork a terminal with a conversation-history summary as the prompt for the new agent."
+    "fork_with_plan": "Fork a terminal pre-loaded with the current plan.",
+    "fork_with_summary": "Fork a terminal with a conversation-history summary as the prompt for the new agent."
   }
 }
 ```
