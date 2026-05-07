@@ -1899,9 +1899,13 @@ impl<'a> Parser<'a> {
                 type_annotation = Some(Spanned::new(tname, tspan));
                 end_span = tspan;
             }
+            let mut description: Option<Spanned<String>> = None;
             if matches!(self.peek().kind, TokenKind::Equals) {
                 self.pos += 1;
                 // Slice 4: only string-literal defaults are supported.
+                // Phase A.2 (issue #119): the `=` slot now also accepts a
+                // descriptive form `<"…">` either standalone or trailing a
+                // string-literal default.
                 match &self.peek().kind {
                     TokenKind::StringLit(s) => {
                         let raw = s.clone();
@@ -1935,11 +1939,28 @@ impl<'a> Parser<'a> {
                         default = Some(format!("\"{}\"", raw));
                         end_span = lit_span;
                         self.pos += 1;
+
+                        // Combo form: `name = "default" <"description">`.
+                        // Adjacency is unambiguous because `<` is not legal
+                        // anywhere else in param-default position.
+                        if matches!(self.peek().kind, TokenKind::LAngle) {
+                            let d = self.parse_param_description()?;
+                            end_span = d.span;
+                            description = Some(d);
+                        }
+                    }
+                    TokenKind::LAngle => {
+                        // Standalone descriptive form: `name = <"description">`.
+                        let d = self.parse_param_description()?;
+                        end_span = d.span;
+                        description = Some(d);
                     }
                     _ => {
                         return Err(ParseError::Unexpected {
                             span: self.peek().span,
-                            message: "parameter default must be a string literal in slice 4".into(),
+                            message:
+                                "parameter default must be a string literal or `<\"…\">` description"
+                                    .into(),
                         });
                     }
                 }
@@ -1949,7 +1970,7 @@ impl<'a> Parser<'a> {
                 name: pname,
                 default,
                 type_annotation,
-                description: None,
+                description,
                 span,
             });
             match &self.peek().kind {
@@ -1960,6 +1981,46 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(params)
+    }
+
+    /// Parse a `<"…">` (or `<"""…""">`) descriptive form in param-default position.
+    /// Consumes `LAngle StringLit RAngle` from the token stream and returns the
+    /// description content with a span covering the full form (brackets included).
+    ///
+    /// The `<` byte offset is registered in `consumed_output_target_offsets` so the
+    /// post-parse `<` sweep does not double-fire on a `<` that is already part of a
+    /// valid param description.
+    ///
+    /// Block-string content (`<"""…""">`) is delivered by the tokenizer as a single
+    /// `StringLit` with dedent already applied (see `tokenize.rs::scan_triple_string`),
+    /// so this helper does not distinguish inline vs block form.
+    fn parse_param_description(&mut self) -> Result<Spanned<String>, ParseError> {
+        let langle_span = self.peek().span;
+        self.consumed_output_target_offsets.push(langle_span.start);
+        self.pos += 1;
+
+        let content = match &self.peek().kind {
+            TokenKind::StringLit(s) => s.clone(),
+            _ => {
+                return Err(ParseError::Unexpected {
+                    span: self.peek().span,
+                    message: "expected a quoted string inside `<…>` param description".into(),
+                });
+            }
+        };
+        self.pos += 1;
+
+        if !matches!(self.peek().kind, TokenKind::RAngle) {
+            return Err(ParseError::Unexpected {
+                span: self.peek().span,
+                message: "expected `>` to close param description".into(),
+            });
+        }
+        let end_span = self.peek().span;
+        self.pos += 1;
+
+        let span = Span::new(self.file_id, langle_span.start, end_span.end);
+        Ok(Spanned::new(content, span))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5799,6 +5860,97 @@ skill foo(a: 123)
             !ids.iter()
                 .any(|s| s == "G::parse::output-target-outside-return"),
             "cascade-gate must suppress output-target-outside-return on parse error, got: {:?}",
+            ids
+        );
+    }
+}
+
+#[cfg(test)]
+mod param_description_tests {
+    //! Issue #119 Phase A.2 — parser support for `<"…">` per-param
+    //! descriptions. The descriptive form sits in the `=` slot alongside
+    //! (or in place of) a default literal. Stored as `Param.description`
+    //! (a `Spanned<String>` covering the full `<…>` form). Phase A.2 is
+    //! syntactic only: emitter wiring lands in Phase A.4.
+    use super::*;
+    use crate::ast::{Decl, Skill};
+    use crate::span::LineIndex;
+
+    fn first_skill(src: &str) -> Skill {
+        let (file, _diags) = parse(src, 0).expect("parse should succeed");
+        file.decls
+            .into_iter()
+            .find_map(|d| match d {
+                Decl::Skill(s) => Some(s.node),
+                _ => None,
+            })
+            .expect("expected a skill declaration")
+    }
+
+    #[test]
+    fn parse_param_description_inline_form() {
+        let src = r#"skill test_skill(x = <"the description">)
+    description: "test"
+    flow:
+        "step"
+"#;
+        let skill = first_skill(src);
+        let p = &skill.params[0];
+        assert_eq!(p.name, "x");
+        assert_eq!(p.default, None);
+        let desc = p.description.as_ref().expect("description should be Some");
+        assert_eq!(desc.node, "the description");
+    }
+
+    #[test]
+    fn parse_param_combo_default_and_description() {
+        let src = r#"skill test_skill(risk = "medium" <"raise to high if auth">)
+    description: "test"
+    flow:
+        "step"
+"#;
+        let skill = first_skill(src);
+        let p = &skill.params[0];
+        assert_eq!(p.default.as_deref(), Some("\"medium\""));
+        let desc = p.description.as_ref().expect("description should be Some");
+        assert_eq!(desc.node, "raise to high if auth");
+    }
+
+    #[test]
+    fn parse_param_description_block_string() {
+        let src = "\
+skill test_skill(x = <\"\"\"line1\nline2\"\"\">)
+    description: \"test\"
+    flow:
+        \"step\"
+";
+        let skill = first_skill(src);
+        let p = &skill.params[0];
+        let desc = p.description.as_ref().expect("description should be Some");
+        assert_eq!(desc.node, "line1\nline2");
+    }
+
+    #[test]
+    fn param_description_does_not_trigger_output_target_sweep() {
+        // The `<` consumed inside `parse_param_description` must be
+        // registered in `consumed_output_target_offsets` so the post-parse
+        // LAngle sweep (which surfaces `G::parse::output-target-outside-return`)
+        // does not double-fire on a `<` that was a legitimate part of a
+        // valid param description.
+        let src = r#"skill test_skill(x = <"desc">)
+    description: "test"
+    flow:
+        "step"
+"#;
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let result = parse_with_diagnostics(src, 0, "t.glyph", &line_index, &mut bag);
+        assert!(result.is_some(), "valid source should parse");
+        let ids: Vec<String> = bag.iter().map(|d| d.id.clone()).collect();
+        assert!(
+            !ids.iter()
+                .any(|s| s == "G::parse::output-target-outside-return"),
+            "param description must register `<` as consumed; got: {:?}",
             ids
         );
     }
