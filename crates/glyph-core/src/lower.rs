@@ -854,6 +854,18 @@ pub fn lower_with_imports(
         }
     }
     arena.set_root_skill(skill_id);
+    // Persist all const declarations (name → rendered body) for use by
+    // downstream passes (Expand resolves bare-identifier predicate tokens
+    // against this map). TypeTag is dropped — Expand only needs body text.
+    //
+    // TODO: imported consts (in `imported_texts`) are not merged here.
+    // `PredicateConst` lookups for imported names will silently fail to
+    // resolve. Either merge imported_texts at this point, or surface a
+    // diagnostic in Analyze when an imported const is used as a predicate.
+    arena.consts = consts
+        .into_iter()
+        .map(|(name, (rendered, _tag))| (name, rendered))
+        .collect();
 
     Ok(arena)
 }

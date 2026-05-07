@@ -5,6 +5,8 @@
 //! - Assigns projection tiers to call sites.
 //! - Tier 1 (inline): callee body < 150 words → call keeps inline projection metadata.
 
+use crate::condition::ConditionTokenKind;
+use crate::emit::branch::extract_predicate_token;
 use crate::ir::{IrArena, IrNode};
 use std::collections::{BTreeMap, HashMap};
 
@@ -147,17 +149,21 @@ pub fn expand_step1_with_imported_descriptions(
             }
         }
     }
+    // Clone the consts map so we can borrow it below without arena borrow conflict.
+    let consts_for_lookup: BTreeMap<String, String> = arena.consts.clone();
     // Walk Branch nodes and populate resolved_predicates.
     let nodes = arena.nodes_mut();
     for i in 0..nodes.len() {
         if let IrNode::Branch(ref br) = nodes[i] {
             let mut descs: BTreeMap<String, String> = BTreeMap::new();
-            // Check all conditions (if + elif) for .applies() patterns.
+            // Check all conditions (if + elif) for .applies() patterns and
+            // bare-identifier const references (PredicateConst).
             let mut conditions = vec![br.condition.clone()];
             for elif in &br.elif_branches {
                 conditions.push(elif.condition.clone());
             }
             for cond in &conditions {
+                // PredicateApplies: scan for all .applies() tokens.
                 let applies_suffix = ".applies()";
                 let mut search_from = 0;
                 while let Some(pos) = cond[search_from..].find(applies_suffix) {
@@ -173,6 +179,21 @@ pub fn expand_step1_with_imported_descriptions(
                         }
                     }
                     search_from = abs_pos + applies_suffix.len();
+                }
+                // PredicateConst: pure single-token bare identifier → look up in consts.
+                // Only resolves when the condition is a single token of kind
+                // PredicateConst. Mixed/compositional conditions are left for Task 4.5.
+                // Strip trailing `:` (parser includes it in the condition string).
+                // TODO: strip the trailing `:` once at IR construction time
+                // (lower.rs / parse.rs) so consumers (analyze, expand, emit)
+                // don't each have to redo this work.
+                let cond_stripped = cond.trim_end_matches(':').trim();
+                if let Some((token, ConditionTokenKind::PredicateConst)) =
+                    extract_predicate_token(cond_stripped)
+                {
+                    if let Some(body) = consts_for_lookup.get(&token) {
+                        descs.insert(token, body.clone());
+                    }
                 }
             }
             if !descs.is_empty() {
@@ -525,5 +546,69 @@ skill current()
             md.contains(", and return that as your result."),
             "expected the locked Identifier return suffix:\n{md}"
         );
+    }
+
+    #[test]
+    fn expand_step1_populates_resolved_predicates_for_const_form() {
+        let src = r#"
+const big = "the change is big"
+
+skill foo()
+    description: "test"
+    flow:
+        if big:
+            "stop"
+"#;
+        let (file, _) = parse::parse(src, 0).expect("source should parse");
+        let arena = lower::lower(&file).expect("source should lower");
+        let arena = expand_step1(arena);
+        // Find the Branch node in the arena.
+        let branch = arena
+            .nodes()
+            .iter()
+            .find_map(|n| match n {
+                crate::ir::IrNode::Branch(b) => Some(b),
+                _ => None,
+            })
+            .expect("arena should contain a Branch node");
+        let rp = branch
+            .resolved_predicates
+            .as_ref()
+            .expect("resolved_predicates should be populated for PredicateConst");
+        assert_eq!(rp.get("big"), Some(&"the change is big".to_string()));
+    }
+
+    #[test]
+    fn expand_step1_populates_resolved_predicates_for_elif_const_form() {
+        let src = r#"
+const big = "the change is big"
+const small = "the change is small"
+
+skill foo()
+    description: "test"
+    flow:
+        if big:
+            "stop"
+        elif small:
+            "continue"
+"#;
+        let (file, _) = parse::parse(src, 0).expect("source should parse");
+        let arena = lower::lower(&file).expect("source should lower");
+        let arena = expand_step1(arena);
+        // Find the Branch node in the arena.
+        let branch = arena
+            .nodes()
+            .iter()
+            .find_map(|n| match n {
+                crate::ir::IrNode::Branch(b) => Some(b),
+                _ => None,
+            })
+            .expect("arena should contain a Branch node");
+        let rp = branch
+            .resolved_predicates
+            .as_ref()
+            .expect("resolved_predicates should be populated for PredicateConst");
+        assert_eq!(rp.get("big"), Some(&"the change is big".to_string()));
+        assert_eq!(rp.get("small"), Some(&"the change is small".to_string()));
     }
 }

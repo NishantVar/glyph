@@ -285,6 +285,10 @@ pub struct IrArena {
     nodes: Vec<IrNode>,
     /// The root skill, if any.
     root_skill: Option<NodeId>,
+    /// String-typed const declarations from the source file (name → rendered
+    /// body text). Populated by Lower so Expand can resolve `PredicateConst`
+    /// branch conditions into `resolved_predicates`.
+    pub consts: BTreeMap<String, String>,
 }
 
 impl IrArena {
