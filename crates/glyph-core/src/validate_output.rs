@@ -1528,11 +1528,13 @@ fn check_resolved_predicates_in_flow(flow: &[Value], md: &str, violations: &mut 
                 let rp = node.get("resolved_predicates").and_then(|d| d.as_object());
                 arms.push((cond, rp));
             }
+            // elif_branch nodes carry no resolved_predicates of their own (schema
+            // §ElifBranch). The parent branch owns the shared map covering all arms.
+            let parent_rp = node.get("resolved_predicates").and_then(|d| d.as_object());
             if let Some(elifs) = node.get("elif_branches").and_then(|b| b.as_array()) {
                 for elif in elifs {
                     if let Some(cond) = elif.get("condition").and_then(|c| c.as_str()) {
-                        let rp = elif.get("resolved_predicates").and_then(|d| d.as_object());
-                        arms.push((cond, rp));
+                        arms.push((cond, parent_rp));
                     }
                 }
             }
@@ -1555,8 +1557,11 @@ fn check_resolved_predicates_in_flow(flow: &[Value], md: &str, violations: &mut 
                     }
                 }
 
-                // Positive check: when predicate_shape.has_predicate_token is true,
-                // the resolved prose for each token must appear in the markdown.
+                // Positive check: every predicate token's resolved prose must appear in
+                // the markdown. We rely on extract_predicate_token returning None for
+                // non-predicate tokens (booleans, operators, numerics) rather than
+                // gating on predicate_shape.has_predicate_token — the two signals are
+                // equivalent for this purpose, and the token-by-token approach is simpler.
                 //
                 // The condition string carries a trailing `:` from the parser;
                 // strip it before tokenising. See expand.rs ~187 and
@@ -3110,6 +3115,25 @@ mod tests {
         assert!(
             violations.iter().any(|v| v.id == "G::expand::predicate-prose-missing"),
             "expected G::expand::predicate-prose-missing; got: {:?}",
+            violations
+        );
+    }
+
+    #[test]
+    fn check_resolved_predicates_rejects_missing_prose_in_elif_arm() {
+        // The main arm renders correctly, but the elif arm's resolved prose
+        // is missing from the markdown. The positive check must fire on
+        // elif-arm conditions, not just the main condition.
+        //
+        // Note: resolved_predicates lives on the parent branch node (IR schema
+        // §ElifBranch), covering all arms. The elif_branch carries no such map of
+        // its own. Both `big` and `small` entries are on the parent.
+        let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"big","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":{"big":"the change is big","small":"the change is small"},"then_body":[],"elif_branches":[{"kind":"elif_branch","condition":"small","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"body":[]}],"else_body":null}]}}"#;
+        let md = "## Instructions\n\n### Steps\n\n1. If the change is big:\n   a. Stop.\n2. If something else:\n   a. Continue.\n";
+        let violations = validate_output(ir, md);
+        assert!(
+            violations.iter().any(|v| v.id == "G::expand::predicate-prose-missing"),
+            "expected G::expand::predicate-prose-missing for elif arm; got: {:?}",
             violations
         );
     }
