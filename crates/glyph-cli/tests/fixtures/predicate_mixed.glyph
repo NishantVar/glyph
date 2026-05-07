@@ -6,5 +6,5 @@ block recommend_full_compile()
 skill predicate_mixed()
     description: "Demonstrate mixed condition: predicate const AND-NOT inline literal."
     flow:
-        if complex_change_required and not "is dry run"
+        if complex_change_required and not "is dry run":
             recommend_full_compile()

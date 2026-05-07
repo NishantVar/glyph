@@ -13,9 +13,9 @@ block plan_paired_edit()
 skill predicate_const_multi_arm()
     description: "Demonstrate multi-arm pure-predicate const form."
     flow:
-        if simple_value_swap
+        if simple_value_swap:
             apply_inline()
-        elif complex_change_required
+        elif complex_change_required:
             recommend_full_compile()
-        else
+        else:
             plan_paired_edit()

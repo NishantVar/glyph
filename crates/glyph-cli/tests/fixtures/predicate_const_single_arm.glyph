@@ -6,5 +6,5 @@ block recommend_full_compile()
 skill predicate_const_single_arm()
     description: "Demonstrate single-arm pure-predicate const form."
     flow:
-        if complex_change_required
+        if complex_change_required:
             recommend_full_compile()

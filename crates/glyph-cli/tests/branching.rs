@@ -173,11 +173,7 @@ fn fixture_path(name: &str, ext: &str) -> PathBuf {
 
 fn snapshot_test(fixture_name: &str) {
     let src_path = fixture_path(fixture_name, "glyph");
-    let produced_path = fixture_path(fixture_name, "md");
     let expected_path = fixture_path(fixture_name, "expected.md");
-
-    // Remove any stale produced .md so we know compile wrote a fresh one.
-    let _ = std::fs::remove_file(&produced_path);
 
     let expected_raw = std::fs::read_to_string(&expected_path)
         .unwrap_or_else(|e| panic!("failed reading {}: {}", expected_path.display(), e));
@@ -198,7 +194,14 @@ fn snapshot_test(fixture_name: &str) {
         s
     };
 
-    let result = run_compile(src_path);
+    // Copy the fixture into a tempdir so the compile output lands there,
+    // not next to the in-tree source (which would pollute `git status`).
+    let dir = tempfile::tempdir().unwrap();
+    let tmp_src = dir.path().join(format!("{}.glyph", fixture_name));
+    std::fs::copy(&src_path, &tmp_src)
+        .unwrap_or_else(|e| panic!("failed copying fixture {}: {}", fixture_name, e));
+
+    let result = run_compile(tmp_src);
     assert!(
         result.status.success(),
         "compile failed for {}:\nstdout:\n{}\nstderr:\n{}",
@@ -207,6 +210,7 @@ fn snapshot_test(fixture_name: &str) {
         String::from_utf8_lossy(&result.stderr),
     );
 
+    let produced_path = dir.path().join(format!("{}.md", fixture_name));
     let actual_md = std::fs::read_to_string(&produced_path)
         .unwrap_or_else(|e| panic!("produced .md not found for {}: {}", fixture_name, e));
 

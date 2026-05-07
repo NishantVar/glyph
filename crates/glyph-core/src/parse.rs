@@ -2745,6 +2745,13 @@ impl<'a> Parser<'a> {
                                         }
                                         TokenKind::Ident(kw) if kw == "else" => {
                                             self.pos += 1;
+                                            // Consume optional trailing `:` after `else`
+                                            // (the language guide shows `else:` with a colon;
+                                            // `parse_branch_condition` is not called for `else`
+                                            // so we must strip it explicitly here).
+                                            if matches!(self.peek().kind, TokenKind::Colon) {
+                                                self.pos += 1;
+                                            }
                                             let body = self.parse_flow_body(body_indent)?;
                                             else_body = Some(body);
                                             break; // else is always last

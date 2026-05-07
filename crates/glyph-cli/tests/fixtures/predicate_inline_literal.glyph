@@ -4,5 +4,5 @@ block skip_compile()
 skill predicate_inline_literal()
     description: "Demonstrate inline literal predicate form."
     flow:
-        if "the user has explicitly opted out of compile-on-save"
+        if "the user has explicitly opted out of compile-on-save":
             skip_compile()
