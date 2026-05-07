@@ -88,7 +88,6 @@ pub enum SpanKind {
 pub struct SpanPayload {
     pub site_modifier: Option<String>,
     pub resolved_body: Option<String>,
-    pub description_text: Option<String>,
     pub condition_expression: Option<String>,
     pub applies_descriptions: Option<BTreeMap<String, String>>,
     pub param_name: Option<String>,
@@ -175,7 +174,6 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                         param_name: Some(p.name.clone()),
                         param_type: p.type_annotation.clone(),
                         param_default: p.default.clone(),
-                        description_text: effective_desc.clone(),
                         ..SpanPayload::default()
                     },
                 });
@@ -198,7 +196,6 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                         param_name: Some(p.name.clone()),
                         param_type: p.type_annotation.clone(),
                         param_default: p.default.clone(),
-                        description_text: effective_desc.clone(),
                         ..SpanPayload::default()
                     },
                 });
@@ -217,7 +214,6 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                         param_name: Some(p.name.clone()),
                         param_type: p.type_annotation.clone(),
                         param_default: p.default.clone(),
-                        description_text: effective_desc.clone(),
                         ..SpanPayload::default()
                     },
                 });
