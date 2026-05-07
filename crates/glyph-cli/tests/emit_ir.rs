@@ -490,7 +490,7 @@ fn emit_ir_conforms_to_schema_full_skill() {
 }
 
 #[test]
-fn ir_branch_carries_predicate_shape_from_classification() {
+fn predicate_shape_reflects_predicate_token_classification() {
     let source = r#"block helper()
     description: "A helper block."
     flow:

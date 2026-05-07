@@ -957,8 +957,9 @@ pub fn lower_with_imports(
         .into_iter()
         .map(|(name, (rendered, _tag))| (name, rendered))
         .collect();
-    // Closes the lower.rs:953-961 TODO. Imported consts join same-file consts;
-    // same-file wins on collision (defensive — analyze rejects collisions).
+    // Closes the previously-noted "imported consts not merged" TODO.
+    // Imported consts join same-file consts; same-file wins on collision
+    // (defensive — analyze rejects collisions).
     for (name, rendered) in imported_texts.iter() {
         merged
             .entry(name.clone())
