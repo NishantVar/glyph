@@ -79,15 +79,15 @@ Top-level building blocks (column 0):
   the file. Single-string shorthand: when a block body is exactly one
   instruction string and no other sub-sections, `flow:` may be omitted.
 
-- `export block <name>(<params>) -> Type` — importable, self-contained
+- `export block <name>(<params>) [-> Type]` — importable, self-contained
   block. Hard rules:
-    * Return type required when the block produces a meaningful return
+    * A return type is required when the block produces a meaningful return
       value; omit `->` entirely when it does not (no `-> None`).
     * Every parameter must have a default. A required parameter without a
       default is a hard compile error (no LLM repair).
-    * Must end with an explicit `return`. Even instruction-only blocks
-      should `return none`.
-    * Must be closed: behavior depends only on declared inputs, local
+    * The block must end with an explicit `return`. Even instruction-only
+      blocks should `return none`.
+    * The block must be closed: behavior depends only on declared inputs, local
       bindings, explicit imports, same-file declarations, the standard
       library, and declared constraints/effects.
 
@@ -253,8 +253,8 @@ Block trigger predicate — `BLOCKNAME.applies()`
   imported block, hard error.
 
 `return`
-- Exactly one `return` per `flow:`, and it must be the last statement at
-  the top level (not inside `if`/`elif`/`else`).
+- At most one `return` per `flow:`, and when present it must be the last
+  statement at the top level (not inside `if`/`elif`/`else`).
 - `return` is forbidden inside branch arms — there is no early return
   in MVP.
 - `export block` requires an explicit `return` (even `return none`). For
@@ -380,8 +380,8 @@ The standard library is compiler-embedded under the reserved virtual
 prefix `@glyph/`. Three entries:
 
 - `subagent(task) -> Agent` — author-facing. Spawns a delegated agent.
-- `send(agent: Agent, message) -> None` — author-facing. Messages a
-  running subagent. Use UFCS for readability:
+- `send(agent: Agent, message)` — author-facing. Messages a running
+  subagent and has no meaningful return value. Use UFCS for readability:
   `agent.send("...")` desugars to `send(agent, "...")`.
 - `load` — compiler-internal; not for author use.
 
@@ -414,8 +414,8 @@ A library file is just a `.glyph` with no `skill`. It contains
 Preferences are ordinary constants
 - There is no `pref(...)` call form, no `reads_prefs` effect, no ambient
   lookup. A preference is just an `export const`.
-- The compiler infers the value kind from the literal. Default values
-  are mandatory on every constant declaration in a library.
+- The compiler infers the value kind from the literal. An RHS value is
+  mandatory on every constant declaration in a library.
 - A consumer imports normally:
       import "./prefs.glyph" { preserve_existing_patterns }
 - Preferences may also serve as parameter defaults (resolved at compile
@@ -586,7 +586,13 @@ Multi-file skill with library and preferences:
         flow:
             "List directories and files under {scope}."
             "Identify source modules and their relationships."
-            return "A summary of the repo layout."
+            return <"summary of the repo layout">
+
+    export block has_test_suite(scope = ".")
+        description: "The project has an established test suite with meaningful coverage."
+        flow:
+            "Inspect {scope} for test configuration and existing tests."
+            return none
 
     // fix_bug.glyph
     import "./prefs.glyph" { preserve_existing_patterns, safety_first }
@@ -604,7 +610,7 @@ Multi-file skill with library and preferences:
             "Identify the root cause from {ctx} before proposing a fix."
             "Apply the smallest possible patch."
             "Verify the fix resolves the issue and runs the test suite cleanly."
-            return "A short summary of what was changed and why."
+            return <"short summary of what was changed and why">
 
 Subagent delegation:
 
@@ -628,9 +634,9 @@ Strings:  "inline"   \"\"\"block\"\"\"   no interpolation; only `{name}` slots i
 Top-level declarations:
     skill <name>(<params>) [-> Type]
     block <name>(<params>) [-> Type]
-    export block <name>(<params>) -> Type     # default required on every param; explicit return required
+    export block <name>(<params>) [-> Type]   # default required on every param; explicit return required
     const <name> = "..." | <int> | <float> | bare-name | qualified-name
-    export const (same RHS forms; default required)
+    export const <name> = "..." | <int> | <float> | bare-name | qualified-name
     import "<path>" as <alias>                 # whole-module
     import "<path>" { name, name as alias }    # selective
     import "@glyph/std" { subagent, send }     # stdlib
@@ -654,7 +660,7 @@ Flow statement forms:
     receiver.method(args)            # UFCS desugars to method(receiver, args)
     Alias.callee(args)               # qualified call
     call(args) with "modifier"       # site modifier
-    bare_name                        # name reference (resolves to const/block/import/binding)
+    bare_block_name                  # shorthand call; string constants need a marker
     "inline instruction"
     context <name|"string">          # context marker
     require / avoid / must … <name|"string">   # constraint marker
@@ -666,7 +672,7 @@ Conditions:
     a and b | a or b | (a or b) and c | block_name.applies()
 
 Stdlib type:  Agent
-Stdlib calls: subagent(task) -> Agent ;   send(agent: Agent, message) -> None
+Stdlib calls: subagent(task) -> Agent ;   send(agent: Agent, message)
 
 Values: "..."  \"\"\"...\"\"\"  3  -1  0.8  true  false  none
 """

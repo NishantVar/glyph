@@ -86,15 +86,15 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
     the file. Single-string shorthand: when a block body is exactly one
     instruction string and no other sub-sections, `flow:` may be omitted.
 
-  - `export block <name>(<params>) -> Type` — importable, self-contained
+  - `export block <name>(<params>) [-> Type]` — importable, self-contained
     block. Hard rules:
-      * Return type required when the block produces a meaningful return
+      * A return type is required when the block produces a meaningful return
         value; omit `->` entirely when it does not (no `-> None`).
       * Every parameter must have a default. A required parameter without a
         default is a hard compile error (no LLM repair).
-      * Must end with an explicit `return`. Even instruction-only blocks
-        should `return none`.
-      * Must be closed: behavior depends only on declared inputs, local
+      * The block must end with an explicit `return`. Even instruction-only
+        blocks should `return none`.
+      * The block must be closed: behavior depends only on declared inputs, local
         bindings, explicit imports, same-file declarations, the standard
         library, and declared constraints/effects.
 
@@ -260,8 +260,8 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
     imported block, hard error.
 
   `return`
-  - Exactly one `return` per `flow:`, and it must be the last statement at
-    the top level (not inside `if`/`elif`/`else`).
+  - At most one `return` per `flow:`, and when present it must be the last
+    statement at the top level (not inside `if`/`elif`/`else`).
   - `return` is forbidden inside branch arms — there is no early return
     in MVP.
   - `export block` requires an explicit `return` (even `return none`). For
@@ -387,8 +387,8 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
   prefix `@glyph/`. Three entries:
 
   - `subagent(task) -> Agent` — author-facing. Spawns a delegated agent.
-  - `send(agent: Agent, message) -> None` — author-facing. Messages a
-    running subagent. Use UFCS for readability:
+  - `send(agent: Agent, message)` — author-facing. Messages a running
+    subagent and has no meaningful return value. Use UFCS for readability:
     `agent.send("...")` desugars to `send(agent, "...")`.
   - `load` — compiler-internal; not for author use.
 
@@ -421,8 +421,8 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
   Preferences are ordinary constants
   - There is no `pref(...)` call form, no `reads_prefs` effect, no ambient
     lookup. A preference is just an `export const`.
-  - The compiler infers the value kind from the literal. Default values
-    are mandatory on every constant declaration in a library.
+  - The compiler infers the value kind from the literal. An RHS value is
+    mandatory on every constant declaration in a library.
   - A consumer imports normally:
         import "./prefs.glyph" { preserve_existing_patterns }
   - Preferences may also serve as parameter defaults (resolved at compile
@@ -593,7 +593,13 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
           flow:
               "List directories and files under {scope}."
               "Identify source modules and their relationships."
-              return "A summary of the repo layout."
+              return <"summary of the repo layout">
+
+      export block has_test_suite(scope = ".")
+          description: "The project has an established test suite with meaningful coverage."
+          flow:
+              "Inspect {scope} for test configuration and existing tests."
+              return none
 
       // fix_bug.glyph
       import "./prefs.glyph" { preserve_existing_patterns, safety_first }
@@ -611,7 +617,7 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
               "Identify the root cause from {ctx} before proposing a fix."
               "Apply the smallest possible patch."
               "Verify the fix resolves the issue and runs the test suite cleanly."
-              return "A short summary of what was changed and why."
+              return <"short summary of what was changed and why">
 
   Subagent delegation:
 
@@ -635,9 +641,9 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
   Top-level declarations:
       skill <name>(<params>) [-> Type]
       block <name>(<params>) [-> Type]
-      export block <name>(<params>) -> Type     # default required on every param; explicit return required
+      export block <name>(<params>) [-> Type]   # default required on every param; explicit return required
       const <name> = "..." | <int> | <float> | bare-name | qualified-name
-      export const (same RHS forms; default required)
+      export const <name> = "..." | <int> | <float> | bare-name | qualified-name
       import "<path>" as <alias>                 # whole-module
       import "<path>" { name, name as alias }    # selective
       import "@glyph/std" { subagent, send }     # stdlib
@@ -661,7 +667,7 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
       receiver.method(args)            # UFCS desugars to method(receiver, args)
       Alias.callee(args)               # qualified call
       call(args) with "modifier"       # site modifier
-      bare_name                        # name reference (resolves to const/block/import/binding)
+      bare_block_name                  # shorthand call; string constants need a marker
       "inline instruction"
       context <name|"string">          # context marker
       require / avoid / must … <name|"string">   # constraint marker
@@ -673,7 +679,7 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
       a and b | a or b | (a or b) and c | block_name.applies()
 
   Stdlib type:  Agent
-  Stdlib calls: subagent(task) -> Agent ;   send(agent: Agent, message) -> None
+  Stdlib calls: subagent(task) -> Agent ;   send(agent: Agent, message)
 
   Values: "..."  """..."""  3  -1  0.8  true  false  none
 
@@ -694,17 +700,17 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
 
 - You must indent every body with exactly 4 spaces. Tabs are a hard error and there are no braces or `end` keywords.
 - You must never use `String`, `Int`, `Float`, `Bool`, or `None` as a type annotation in author-facing source. Use named domain types (`BranchName`, `Severity`, `Confirmation`) instead.
-- You must never build strings with `${...}`, `+` concatenation, or any template syntax other than `{name}` parameter slots inside instruction-bearing strings.
+- You must never build strings with `${...}`, `+` concatenation, or any other template syntax. The only template-like form is `{name}` parameter slots, legal solely inside instruction-bearing strings.
 - You must never write the agent-facing Markdown prose by hand. The Expand pass produces the prose; the author writes structure and intent only.
 - You must ensure every skill file contains exactly one `skill` declaration. Library files contain zero. Two `skill` declarations in one file is a hard error.
-- You must place exactly one `return` per `flow:`, as the last statement at the top level — never inside an `if`/`elif`/`else` branch arm.
+- You must place at most one `return` per `flow:`, and when present it must be the last statement at the top level — never inside an `if`/`elif`/`else` branch arm.
 - You must give every parameter on an `export block` a default value. A required-without-default parameter is a hard error with no LLM repair.
 - You must end every `export block` with an explicit `return` statement (use `return none` if there is no meaningful return value).
 - You must never place `return` inside an `if`/`elif`/`else` branch arm. There is no early return in MVP — `return` is restricted to the top level of `flow:` and must be last.
 - You must never use `{name}` parameter slots in `description:` bodies, parameter defaults, or any string that is not instruction-bearing. Slots are legal only inside `flow:` instruction strings, string-valued constant bodies, constraint texts, and string arguments to stdlib calls.
 - Reach for the smallest viable surface — `skill`, `require`/`avoid`, `flow:`, inline strings, calls, and `with`. Promote to `block`, named `const`, or types only when they pay for themselves.
 - When you do annotate a type, give it a domain name that tells an agent what role the value plays (`BranchName`, `Plan`, `Diagnosis`) — not a primitive-feeling label.
-- Any block consulted via `BLOCKNAME.applies()` carries a `description:` — that description is the predicate the agent matches against current context. Missing description on an imported block is a hard error.
+- Ensure any block consulted via `BLOCKNAME.applies()` carries a `description:` — that description is the predicate the agent matches against current context. Missing description on an imported block is a hard error.
 - After running the compiler, review the source diff. Repair may have inserted `generated const` / `generated block` definitions, hoisted markers into `constraints:`, or generated a missing `description:`. Promote anything you want to harden by renaming `generated …` to `const` / `block`.
 - Avoid writing a bare string-valued constant name in `flow:` without a marker. Wrap it with `context`/`require`/`avoid`/`must`, or convert it into a `block` if it really represents an instruction sequence.
 - Avoid reaching for `must` / `must avoid` for everyday rules. Reserve hard markers for genuinely non-negotiable constraints; default to soft `require` / `avoid`.

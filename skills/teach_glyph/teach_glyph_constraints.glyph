@@ -11,13 +11,13 @@ export const four_space_indentation = "Indent every body with exactly 4 spaces. 
 
 export const primitive_type_names_in_source = "use `String`, `Int`, `Float`, `Bool`, or `None` as a type annotation in author-facing source. Use named domain types (`BranchName`, `Severity`, `Confirmation`) instead."
 
-export const string_interpolation = "build strings with `${...}`, `+` concatenation, or any template syntax other than `{name}` parameter slots inside instruction-bearing strings."
+export const string_interpolation = "build strings with `${...}`, `+` concatenation, or any other template syntax. The only template-like form is `{name}` parameter slots, legal solely inside instruction-bearing strings."
 
 export const hand_written_agent_prose = "write the agent-facing Markdown prose by hand. The Expand pass produces the prose; the author writes structure and intent only."
 
 export const one_skill_per_skill_file = "ensure every skill file contains exactly one `skill` declaration. Library files contain zero. Two `skill` declarations in one file is a hard error."
 
-export const single_top_level_return = "place exactly one `return` per `flow:`, as the last statement at the top level — never inside an `if`/`elif`/`else` branch arm."
+export const single_top_level_return = "place at most one `return` per `flow:`, and when present it must be the last statement at the top level — never inside an `if`/`elif`/`else` branch arm."
 
 export const defaults_on_export_block_params = "give every parameter on an `export block` a default value. A required-without-default parameter is a hard error with no LLM repair."
 
@@ -33,7 +33,7 @@ export const novice_kernel_first = "Reach for the smallest viable surface — `s
 
 export const descriptive_domain_types = "When you do annotate a type, give it a domain name that tells an agent what role the value plays (`BranchName`, `Plan`, `Diagnosis`) — not a primitive-feeling label."
 
-export const description_on_applies_blocks = "Any block consulted via `BLOCKNAME.applies()` carries a `description:` — that description is the predicate the agent matches against current context. Missing description on an imported block is a hard error."
+export const description_on_applies_blocks = "Ensure any block consulted via `BLOCKNAME.applies()` carries a `description:` — that description is the predicate the agent matches against current context. Missing description on an imported block is a hard error."
 
 export const review_of_repair_output = "After running the compiler, review the source diff. Repair may have inserted `generated const` / `generated block` definitions, hoisted markers into `constraints:`, or generated a missing `description:`. Promote anything you want to harden by renaming `generated …` to `const` / `block`."
 
