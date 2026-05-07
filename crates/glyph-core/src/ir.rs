@@ -3,6 +3,7 @@
 use crate::kind_infer::TypeTag;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct NodeId(pub u32);
@@ -255,12 +256,24 @@ pub enum Polarity {
     Avoid,
 }
 
+/// Per-compilation-unit map of type name → canonical description.
+/// Built during lowering from same-file `TypeDecl`s plus selectively-imported
+/// `export type` decls (Phase B.7). Consumed by the emitter for per-param
+/// type-level lookup (spec §7.1) and the return-prose fold (spec §8.4).
+#[derive(Clone, Debug, Default)]
+pub struct TypeRegistry {
+    pub descriptions: HashMap<String, String>,
+}
+
 /// Single arena per file. Lower allocates IDs in pre-order traversal.
 #[derive(Debug, Default)]
 pub struct IrArena {
     nodes: Vec<IrNode>,
     /// The root skill, if any.
     root_skill: Option<NodeId>,
+    /// Type-description registry built from same-file `type` decls.
+    /// Cross-file imports folded in by Phase B.7.
+    pub type_registry: TypeRegistry,
 }
 
 impl IrArena {

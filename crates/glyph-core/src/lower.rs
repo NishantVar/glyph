@@ -410,6 +410,19 @@ pub fn lower_with_imports(
         }
     }
 
+    // Build the TypeRegistry from same-file `type` decls. Cross-file imports
+    // are folded in via Phase B.7; for now, only same-file decls populate.
+    // TODO(B.7): fold imported `export type` decls into the registry.
+    let mut type_registry = crate::ir::TypeRegistry::default();
+    for d in &file.decls {
+        if let Decl::TypeDecl(t) = d {
+            type_registry.descriptions.insert(
+                t.node.name.clone(),
+                t.node.description.node.clone(),
+            );
+        }
+    }
+
     // Find the skill declaration (exactly one in walking skeleton).
     let skill: &Skill = file
         .decls
@@ -789,6 +802,7 @@ pub fn lower_with_imports(
         }
     }
     arena.set_root_skill(skill_id);
+    arena.type_registry = type_registry;
 
     Ok(arena)
 }
