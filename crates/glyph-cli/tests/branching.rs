@@ -158,8 +158,8 @@ skill foo()
     let md = std::fs::read_to_string(dir.path().join("foo.md"))
         .expect("foo.md should be produced");
     assert!(
-        md.contains("the change requires regenerating multi-line prose"),
-        "compiled md = {}",
+        md.contains("Decide whether the change requires regenerating multi-line prose, beyond a localised wording or value swap applies and, if so:"),
+        "expected single-arm opener with const prose; got:\n{}",
         md
     );
 }

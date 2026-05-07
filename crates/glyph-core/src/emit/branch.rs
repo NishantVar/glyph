@@ -20,6 +20,9 @@ pub fn is_pure_predicate(br: &IrBranch) -> bool {
 
 pub fn extract_predicate_token(condition: &str) -> Option<(String, ConditionTokenKind)> {
     // Strip trailing `:` — the parser includes it in the condition string.
+    // TODO: strip the trailing `:` once at IR construction time
+    // (lower.rs / parse.rs) so consumers (analyze, expand, emit)
+    // don't each have to redo this work. See expand.rs near line 187 for the same TODO.
     let trimmed = condition.trim().trim_end_matches(':').trim();
 
     // Form 1: .applies() — "name.applies()"
@@ -108,7 +111,12 @@ fn emit_pure_predicate(s: &mut Scaffold, arena: &IrArena, br: &IrBranch, step_nu
 fn resolve_predicate_prose(token: &str, kind: ConditionTokenKind, br: &IrBranch) -> String {
     match kind {
         ConditionTokenKind::PredicateLiteral => token.to_string(),
-        _ => {
+        // extract_predicate_token only returns predicate kinds; Boolean/Numeric/Operator
+        // are filtered out before this function is reached.
+        ConditionTokenKind::Boolean | ConditionTokenKind::Numeric | ConditionTokenKind::Operator => {
+            unreachable!("non-predicate token reached resolve_predicate_prose")
+        }
+        ConditionTokenKind::PredicateApplies | ConditionTokenKind::PredicateConst => {
             let lookup_key = lookup_key_for_token(token, kind);
             br.resolved_predicates
                 .as_ref()
