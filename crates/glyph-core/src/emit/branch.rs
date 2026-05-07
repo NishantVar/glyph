@@ -70,6 +70,56 @@ pub fn strip_trailing_period(s: &str) -> &str {
     s.trim_end().trim_end_matches('.')
 }
 
+/// Render a condition by walking its classified tokens and substituting
+/// predicate tokens with their resolved values from `resolved_predicates`.
+/// Operand tokens, operators, parens, and unknown tokens pass through verbatim.
+///
+/// For `PredicateApplies`: lookup key is the receiver name (`name.applies()` →
+/// `name`), matching `branch.rs::lookup_key_for_token`.
+///
+/// For `PredicateConst`: lookup key is the bare token text.
+///
+/// For `PredicateLiteral`: emit the literal text with surrounding quotes
+/// stripped (matches the existing `extract_predicate_token` contract for
+/// quoted literals).
+fn render_substituted_condition(
+    classification: &crate::condition::ConditionClassification,
+    resolved_predicates: &std::collections::BTreeMap<String, String>,
+) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(classification.tokens.len());
+    for tok in &classification.tokens {
+        if tok.is_comparison_operand {
+            parts.push(tok.text.clone());
+            continue;
+        }
+        match tok.kind {
+            ConditionTokenKind::PredicateApplies => {
+                let key = tok.text.trim_end_matches(".applies()");
+                parts.push(
+                    resolved_predicates
+                        .get(key)
+                        .cloned()
+                        .unwrap_or_else(|| tok.text.clone()),
+                );
+            }
+            ConditionTokenKind::PredicateConst => {
+                parts.push(
+                    resolved_predicates
+                        .get(&tok.text)
+                        .cloned()
+                        .unwrap_or_else(|| tok.text.clone()),
+                );
+            }
+            ConditionTokenKind::PredicateLiteral => {
+                let inner = tok.text.trim_start_matches('"').trim_end_matches('"');
+                parts.push(inner.to_string());
+            }
+            _ => parts.push(tok.text.clone()),
+        }
+    }
+    parts.join(" ")
+}
+
 pub fn emit_to_scaffold(
     s: &mut Scaffold,
     arena: &IrArena,
@@ -87,23 +137,35 @@ pub fn emit_to_scaffold(
 fn emit_pure_predicate(s: &mut Scaffold, arena: &IrArena, br: &IrBranch, step_num: usize) {
     let single_arm = br.elif_branches.is_empty() && br.else_body.is_none();
     if single_arm {
-        let (token, kind) = extract_predicate_token(&br.condition).unwrap_or_else(|| {
-            (
-                br.condition.trim().to_string(),
-                ConditionTokenKind::PredicateConst,
-            )
-        });
-        let desc = resolve_predicate_prose(&token, kind, br);
-        let desc = strip_trailing_period(&desc);
+        let desc_owned = render_condition_for_arm(
+            &br.condition,
+            br.classification.as_ref(),
+            br.resolved_predicates.as_ref(),
+        );
+        let desc = strip_trailing_period(&desc_owned);
         s.push_literal(format!(
             "{step_num}. {SINGLE_ARM_OPENER_PREFIX}{desc}{SINGLE_ARM_OPENER_TAIL}\n"
         ));
         emit_lettered_substeps(s, arena, &br.then_body);
     } else {
         s.push_literal(format!("{step_num}. {MULTI_ARM_OPENER}\n"));
-        emit_predicate_arm_header_and_body(s, arena, br, &br.condition, &br.then_body);
+        emit_predicate_arm_header_and_body(
+            s,
+            arena,
+            br,
+            &br.condition,
+            br.classification.as_ref(),
+            &br.then_body,
+        );
         for elif in &br.elif_branches {
-            emit_predicate_arm_header_and_body(s, arena, br, &elif.condition, &elif.body);
+            emit_predicate_arm_header_and_body(
+                s,
+                arena,
+                br,
+                &elif.condition,
+                elif.classification.as_ref(),
+                &elif.body,
+            );
         }
         if let Some(else_body) = &br.else_body {
             s.push_literal("   Otherwise:\n");
@@ -112,20 +174,46 @@ fn emit_pure_predicate(s: &mut Scaffold, arena: &IrArena, br: &IrBranch, step_nu
     }
 }
 
-fn resolve_predicate_prose(token: &str, kind: ConditionTokenKind, br: &IrBranch) -> String {
+/// Render the natural-language description of a condition for use inside an
+/// arm header. When classification + resolved_predicates are present, walks
+/// every token and substitutes predicate tokens (Task 8). Otherwise falls
+/// back to the legacy single-token extraction path — preserved so emit still
+/// works on JSON-loaded IR (where `classification` is `#[serde(skip)]`).
+fn render_condition_for_arm(
+    condition: &str,
+    classification: Option<&crate::condition::ConditionClassification>,
+    resolved_predicates: Option<&std::collections::BTreeMap<String, String>>,
+) -> String {
+    if let (Some(c), Some(rp)) = (classification, resolved_predicates) {
+        return render_substituted_condition(c, rp);
+    }
+    let (token, kind) = extract_predicate_token(condition).unwrap_or_else(|| {
+        (
+            condition.trim().to_string(),
+            ConditionTokenKind::PredicateConst,
+        )
+    });
+    resolve_predicate_prose_legacy(&token, kind, resolved_predicates)
+}
+
+/// Legacy variant of the predicate prose resolver that doesn't require a full
+/// `IrBranch` — only `resolved_predicates`. Used by the JSON-loaded fallback
+/// path (where `IrBranch.classification` is `#[serde(skip)]` and absent).
+fn resolve_predicate_prose_legacy(
+    token: &str,
+    kind: ConditionTokenKind,
+    resolved_predicates: Option<&std::collections::BTreeMap<String, String>>,
+) -> String {
     match kind {
         ConditionTokenKind::PredicateLiteral => token.to_string(),
-        // extract_predicate_token only returns predicate kinds; Boolean/Numeric/Operator
-        // are filtered out before this function is reached.
         ConditionTokenKind::Boolean
         | ConditionTokenKind::Numeric
         | ConditionTokenKind::Operator => {
-            unreachable!("non-predicate token reached resolve_predicate_prose")
+            unreachable!("non-predicate token reached resolve_predicate_prose_legacy")
         }
         ConditionTokenKind::PredicateApplies | ConditionTokenKind::PredicateConst => {
             let lookup_key = lookup_key_for_token(token, kind);
-            br.resolved_predicates
-                .as_ref()
+            resolved_predicates
                 .and_then(|m| m.get(lookup_key))
                 .cloned()
                 .unwrap_or_else(|| lookup_key.to_string())
@@ -138,16 +226,12 @@ fn emit_predicate_arm_header_and_body(
     arena: &IrArena,
     br: &IrBranch,
     condition: &str,
+    classification: Option<&crate::condition::ConditionClassification>,
     body: &[NodeId],
 ) {
-    let (token, kind) = extract_predicate_token(condition).unwrap_or_else(|| {
-        (
-            condition.trim().to_string(),
-            ConditionTokenKind::PredicateConst,
-        )
-    });
-    let desc = resolve_predicate_prose(&token, kind, br);
-    let desc = strip_trailing_period(&desc);
+    let desc_owned =
+        render_condition_for_arm(condition, classification, br.resolved_predicates.as_ref());
+    let desc = strip_trailing_period(&desc_owned);
     s.push_literal(format!("   If {desc}:\n"));
     emit_lettered_substeps(s, arena, body);
 }

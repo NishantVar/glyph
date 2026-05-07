@@ -283,3 +283,73 @@ skill foo()
         md
     );
 }
+
+fn compile_and_read_md(filename: &str, source: &str) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let src_path = dir.path().join(filename);
+    std::fs::write(&src_path, source).unwrap();
+    let result = run_compile(src_path.clone());
+    assert!(
+        result.status.success(),
+        "compile failed: {:?}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let md_path = src_path.with_extension("md");
+    std::fs::read_to_string(&md_path)
+        .unwrap_or_else(|_| panic!("missing emitted markdown at {md_path:?}"))
+}
+
+#[test]
+fn emit_or_composed_applies_substitutes_both_descriptions() {
+    // Block descriptions intentionally omit trailing periods so the existing
+    // `strip_trailing_period` post-processing doesn't shave the second arm's
+    // tail. The emit-level fix being verified here is that BOTH predicate
+    // tokens are substituted, not just one (Finding 3 / codex bug).
+    let source = r#"block fast_mode()
+    description: "Fast processing path"
+    flow:
+        "Fast work."
+
+block slow_mode()
+    description: "Slow processing path"
+    flow:
+        "Slow work."
+
+skill main()
+    description: "Test."
+    flow:
+        if fast_mode.applies() or slow_mode.applies()
+            "Either path."
+"#;
+    let md = compile_and_read_md("or_compound_emit.glyph", source);
+    assert!(
+        md.contains("Fast processing path") && md.contains("Slow processing path"),
+        "both block descriptions must appear in emitted markdown:\n{md}"
+    );
+    assert!(
+        md.contains(" or "),
+        "or-operator must pass through verbatim:\n{md}"
+    );
+}
+
+#[test]
+fn emit_or_composed_string_consts_substitutes_both_bodies() {
+    let source = r#"const big = "the change is big"
+const small = "the change is small"
+
+skill main()
+    description: "Test."
+    flow:
+        if big or small
+            "Either."
+"#;
+    let md = compile_and_read_md("or_consts_emit.glyph", source);
+    assert!(
+        md.contains("the change is big") && md.contains("the change is small"),
+        "both const bodies must appear:\n{md}"
+    );
+    assert!(
+        md.contains(" or "),
+        "or-operator must pass through verbatim:\n{md}"
+    );
+}
