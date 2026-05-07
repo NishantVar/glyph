@@ -1,0 +1,45 @@
+================================================================================
+Basic type decl with string-literal description
+================================================================================
+
+type RepoContext = <"the inspected repo state">
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (type_decl
+    name: (identifier)
+    description: (param_description_form
+      (string_literal
+        (string_content)))))
+
+================================================================================
+Export type decl
+================================================================================
+
+export type RiskLevel = <"one of: low, medium, high">
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (type_decl
+    name: (identifier)
+    description: (param_description_form
+      (string_literal
+        (string_content)))))
+
+================================================================================
+Type decl with block-string description
+================================================================================
+
+type Long = <"""line1
+line2""">
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (type_decl
+    name: (identifier)
+    description: (param_description_form
+      (block_string
+        (block_string_content)))))

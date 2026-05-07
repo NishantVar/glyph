@@ -29,6 +29,7 @@ module.exports = grammar({
         $.const_declaration,
         $.generated_const_declaration,
         $.generated_block_declaration,
+        $.type_decl,
       ),
 
     // ── imports ────────────────────────────────────────────────────
@@ -166,6 +167,17 @@ module.exports = grammar({
         $._indent,
         $._shorthand_body,
         $._dedent,
+      ),
+
+    // ── type declarations ──────────────────────────────────────────
+    type_decl: ($) =>
+      seq(
+        optional("export"),
+        "type",
+        field("name", $.identifier),
+        "=",
+        field("description", $.param_description_form),
+        $._newline,
       ),
 
     // ── parameters ─────────────────────────────────────────────────
