@@ -39,3 +39,61 @@ skill summarize_dir(scope = ".", target)
               (interpolation
                 (identifier))
               (string_content))))))))
+
+================================================================================
+Param with inline description (standalone, default + desc, typed + desc)
+================================================================================
+
+skill foo(
+    a = <"the description">,
+    b = "x" <"with default and desc">,
+    c: Path = <"typed required with desc">,
+    d: Path = "y" <"typed default with desc">,
+)
+    description: "test"
+    flow:
+        "step"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        default: (param_description_form
+          (string_literal
+            (string_content))))
+      (parameter
+        name: (identifier)
+        default: (string_literal
+          (string_content))
+        default: (param_description_form
+          (string_literal
+            (string_content))))
+      (parameter
+        name: (identifier)
+        (type_annotation
+          type: (type_identifier))
+        default: (param_description_form
+          (string_literal
+            (string_content))))
+      (parameter
+        name: (identifier)
+        (type_annotation
+          type: (type_identifier))
+        default: (string_literal
+          (string_content))
+        default: (param_description_form
+          (string_literal
+            (string_content)))))
+    (declaration_body
+      (description_section
+        content: (string_literal
+          (string_content)))
+      (flow_section
+        (flow_statement
+          (inline_instruction
+            (string_literal
+              (string_content))))))))

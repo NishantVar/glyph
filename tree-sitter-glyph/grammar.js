@@ -192,6 +192,9 @@ module.exports = grammar({
 
     _parameter_default: ($) =>
       choice(
+        $.param_description_form,
+        seq($.string_literal, $.param_description_form),
+        seq($.block_string, $.param_description_form),
         $.string_literal,
         $.block_string,
         $.integer_literal,
@@ -474,6 +477,9 @@ module.exports = grammar({
 
     output_target_description: ($) =>
       seq("<", $.string_literal, ">"),
+
+    param_description_form: ($) =>
+      seq("<", choice($.string_literal, $.block_string), ">"),
 
     // ── variable binding ───────────────────────────────────────────
     variable_binding: ($) =>
