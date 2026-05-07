@@ -6,7 +6,7 @@
 use crate::ast::{
     BlockDecl, ConstDecl, ConstValue, ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl,
     DuplicateSubsection, ElifBranch, ExportBlockDecl, FlowStmt, ImportDecl, ImportKind, ImportName,
-    Param, ReturnExpr, Skill, SourceFile,
+    Param, ReturnExpr, Skill, SourceFile, TypeDecl,
 };
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::output_target::{OutputTargetExpr, OutputTargetParseError};
@@ -746,6 +746,10 @@ impl<'a> Parser<'a> {
                     let d = self.parse_const_decl()?;
                     decls.push(Decl::Const(d));
                 }
+                "type" => {
+                    let d = self.parse_type_decl(false)?;
+                    decls.push(Decl::TypeDecl(d));
+                }
                 "generated" => {
                     // TODO(#81 follow-up): enforce placement order per
                     // language-surface.md §3.6 line 342 / §3.7 line 375 (all
@@ -796,7 +800,7 @@ impl<'a> Parser<'a> {
                         _ => {
                             return Err(ParseError::Unexpected {
                                 span: self.peek().span,
-                                message: "expected `block` or `const` after `export`".into(),
+                                message: "expected `block`, `const`, or `type` after `export`".into(),
                             });
                         }
                     };
@@ -810,11 +814,16 @@ impl<'a> Parser<'a> {
                             let d = self.parse_export_const()?;
                             decls.push(Decl::Const(d));
                         }
+                        "type" => {
+                            self.pos += 1; // consume `export`
+                            let d = self.parse_type_decl(true)?;
+                            decls.push(Decl::TypeDecl(d));
+                        }
                         _ => {
                             return Err(ParseError::Unexpected {
                                 span: self.peek().span,
                                 message: format!(
-                                    "expected `block` or `const` after `export`, found `{}`",
+                                    "expected `block`, `const`, or `type` after `export`, found `{}`",
                                     next_kw
                                 ),
                             });
@@ -3237,6 +3246,43 @@ impl<'a> Parser<'a> {
             },
             span,
         ))
+    }
+
+    /// Parse `type Name = <"…">`.
+    ///
+    /// `exported` is `true` if the `export` keyword was already consumed by
+    /// the dispatch site. Position must be at the `type` keyword token.
+    fn parse_type_decl(&mut self, exported: bool) -> Result<Spanned<TypeDecl>, ParseError> {
+        let (_, kw_span) = self.expect_ident(Some("type"))?;
+
+        // Peek the name token; reject reserved keywords.
+        if let TokenKind::Ident(ref s) = self.peek().kind {
+            if is_reserved(s) {
+                return Err(ParseError::Unexpected {
+                    span: self.peek().span,
+                    message: format!(
+                        "`{}` is a reserved keyword and cannot be used as a type name [G::parse::reserved-keyword-as-name]",
+                        s
+                    ),
+                });
+            }
+        }
+        let (name, _) = self.expect_ident(None)?;
+
+        self.expect(&TokenKind::Equals)?;
+
+        if !matches!(self.peek().kind, TokenKind::LAngle) {
+            return Err(ParseError::Unexpected {
+                span: self.peek().span,
+                message: "expected `<\"…\">` description after `=` in type declaration".into(),
+            });
+        }
+        let description = self.parse_param_description()?;
+
+        let end = description.span.end;
+        let span = Span::new(kw_span.file_id, kw_span.start, end);
+
+        Ok(Spanned::new(TypeDecl { name, description, exported }, span))
     }
 
     /// Parse `generated const NAME = "<string>"` — string-only RHS per
@@ -5994,5 +6040,40 @@ skill test_skill(x = <\"\"\"line1\nline2\"\"\">)
             "param description must register `<` as consumed; got: {:?}",
             ids
         );
+    }
+}
+
+#[cfg(test)]
+mod type_decl_tests {
+    //! Phase B.3 — parser support for `type Name = <"…">` and
+    //! `export type Name = <"…">` top-level declarations.
+
+    use super::*;
+    use crate::ast::Decl;
+
+    #[test]
+    fn parse_type_decl_basic() {
+        let src = r#"type RepoContext = <"the inspected repo state">"#;
+        let (file, _) = parse(src, 0).expect("parse should succeed");
+        let td = match &file.decls[0] {
+            Decl::TypeDecl(t) => &t.node,
+            _ => panic!("expected TypeDecl, got {:?}", &file.decls[0]),
+        };
+        assert_eq!(td.name, "RepoContext");
+        assert_eq!(td.description.node, "the inspected repo state");
+        assert!(!td.exported);
+    }
+
+    #[test]
+    fn parse_export_type_decl() {
+        let src = r#"export type RiskLevel = <"one of: low, medium, high">"#;
+        let (file, _) = parse(src, 0).expect("parse should succeed");
+        let td = match &file.decls[0] {
+            Decl::TypeDecl(t) => &t.node,
+            _ => panic!("expected TypeDecl, got {:?}", &file.decls[0]),
+        };
+        assert_eq!(td.name, "RiskLevel");
+        assert_eq!(td.description.node, "one of: low, medium, high");
+        assert!(td.exported);
     }
 }
