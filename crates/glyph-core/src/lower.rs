@@ -370,7 +370,7 @@ fn lower_flow_body(
                         predicate_shape: predicate_shape_from(
                             elif.condition_classification.as_ref(),
                         ),
-                        classification: None,
+                        classification: elif.condition_classification.clone(),
                     });
                 }
                 let ir_else = if let Some(eb) = else_body {
@@ -388,7 +388,7 @@ fn lower_flow_body(
                     else_body: ir_else,
                     resolved_predicates: None,
                     predicate_shape: predicate_shape_from(condition_classification.as_ref()),
-                    classification: None,
+                    classification: condition_classification.clone(),
                 });
                 ids.push(branch_id);
             }
@@ -835,7 +835,7 @@ pub fn lower_with_imports(
                         predicate_shape: predicate_shape_from(
                             elif.condition_classification.as_ref(),
                         ),
-                        classification: None,
+                        classification: elif.condition_classification.clone(),
                     });
                 }
                 let ir_else = if let Some(eb) = else_body {
@@ -859,7 +859,7 @@ pub fn lower_with_imports(
                     else_body: ir_else,
                     resolved_predicates: None,
                     predicate_shape: predicate_shape_from(condition_classification.as_ref()),
-                    classification: None,
+                    classification: condition_classification.clone(),
                 });
                 step_ids.push(branch_id);
             }
@@ -953,15 +953,18 @@ pub fn lower_with_imports(
     // Persist all const declarations (name → rendered body) for use by
     // downstream passes (Expand resolves bare-identifier predicate tokens
     // against this map). TypeTag is dropped — Expand only needs body text.
-    //
-    // TODO: imported consts (in `imported_texts`) are not merged here.
-    // `PredicateConst` lookups for imported names will silently fail to
-    // resolve. Either merge imported_texts at this point, or surface a
-    // diagnostic in Analyze when an imported const is used as a predicate.
-    arena.consts = consts
+    let mut merged: BTreeMap<String, String> = consts
         .into_iter()
         .map(|(name, (rendered, _tag))| (name, rendered))
         .collect();
+    // Closes the lower.rs:953-961 TODO. Imported consts join same-file consts;
+    // same-file wins on collision (defensive — analyze rejects collisions).
+    for (name, rendered) in imported_texts.iter() {
+        merged
+            .entry(name.clone())
+            .or_insert_with(|| rendered.clone());
+    }
+    arena.consts = merged;
     arena.type_registry = type_registry;
 
     Ok(arena)

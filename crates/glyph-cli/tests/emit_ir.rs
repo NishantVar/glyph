@@ -488,3 +488,69 @@ fn emit_ir_conforms_to_schema_full_skill() {
         assert!(c["text"].is_string());
     }
 }
+
+#[test]
+fn ir_branch_carries_predicate_shape_from_classification() {
+    let source = r#"block helper()
+    description: "A helper block."
+    flow:
+        "Do helper work."
+
+skill main()
+    description: "A test skill."
+    flow:
+        if helper.applies()
+            "Do work."
+"#;
+    let v = compile_and_read_ir("classification_propagation.glyph", source);
+    let flow = v["skill"]["flow"].as_array().unwrap();
+    let branch = flow.iter().find(|n| n["kind"] == "branch").unwrap();
+    let shape = &branch["predicate_shape"];
+    assert_eq!(shape["has_predicate_token"], true);
+    assert_eq!(shape["has_boolean_token"], false);
+    assert_eq!(shape["has_compositional_operator"], false);
+}
+
+#[test]
+fn imported_string_const_resolves_in_arena_consts() {
+    let dir = tempfile::tempdir().unwrap();
+    let imported_path = dir.path().join("imported.glyph");
+    std::fs::write(
+        &imported_path,
+        r#"export const big_change = "the change is big"
+"#,
+    )
+    .unwrap();
+    let main_path = dir.path().join("main.glyph");
+    std::fs::write(
+        &main_path,
+        r#"import "./imported.glyph" { big_change }
+
+skill main()
+    description: "A test skill."
+    flow:
+        if big_change
+            "Do work."
+"#,
+    )
+    .unwrap();
+
+    // Compile the whole directory so the multi-file pipeline resolves the
+    // import edge and routes through `lower_with_imports`. (Single-file compile
+    // on this branch does not walk imports.)
+    let result = run_compile_emit_ir(dir.path());
+    assert!(
+        result.status.success(),
+        "compile failed: {:?}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let ir_path = ir_json_path(&main_path);
+    let content = std::fs::read_to_string(&ir_path).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+    let flow = v["skill"]["flow"].as_array().unwrap();
+    let branch = flow.iter().find(|n| n["kind"] == "branch").unwrap();
+    let rp = &branch["resolved_predicates"];
+    assert!(rp.is_object(), "resolved_predicates should be populated");
+    assert_eq!(rp["big_change"], "the change is big");
+}
