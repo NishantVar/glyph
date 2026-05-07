@@ -132,3 +132,34 @@ fn applies_on_non_block_corpus_fires_diagnostic() {
         ids
     );
 }
+
+#[test]
+fn pure_predicate_const_single_arm_emits_natural_prose() {
+    let src = r#"
+const complex_change = "the change requires regenerating multi-line prose, beyond a localised wording or value swap"
+
+skill foo()
+    description: "test"
+    flow:
+        if complex_change:
+            "stop and recommend full compile"
+"#;
+    let dir = tempfile::tempdir().unwrap();
+    let src_path = dir.path().join("foo.glyph");
+    std::fs::write(&src_path, src).unwrap();
+
+    let result = run_compile(src_path);
+    assert!(
+        result.status.success(),
+        "foo.glyph should compile; stderr={}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+
+    let md = std::fs::read_to_string(dir.path().join("foo.md"))
+        .expect("foo.md should be produced");
+    assert!(
+        md.contains("the change requires regenerating multi-line prose"),
+        "compiled md = {}",
+        md
+    );
+}

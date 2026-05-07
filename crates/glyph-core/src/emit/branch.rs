@@ -19,7 +19,8 @@ pub fn is_pure_predicate(br: &IrBranch) -> bool {
 }
 
 pub fn extract_predicate_token(condition: &str) -> Option<(String, ConditionTokenKind)> {
-    let trimmed = condition.trim();
+    // Strip trailing `:` — the parser includes it in the condition string.
+    let trimmed = condition.trim().trim_end_matches(':').trim();
 
     // Form 1: .applies() — "name.applies()"
     if trimmed.ends_with(".applies()") {
@@ -73,26 +74,19 @@ pub fn emit_to_scaffold(
     step_num: usize,
     next_span_id: &mut u32,
 ) {
-    // Internal helpers still named `*_applies` — renamed/extended in Task 4.4.
     if is_pure_predicate(br) {
-        emit_pure_applies(s, arena, br, step_num);
+        emit_pure_predicate(s, arena, br, step_num);
     } else {
         emit_mixed_condition(s, arena, br, step_num, next_span_id);
     }
 }
 
-fn emit_pure_applies(s: &mut Scaffold, arena: &IrArena, br: &IrBranch, step_num: usize) {
+fn emit_pure_predicate(s: &mut Scaffold, arena: &IrArena, br: &IrBranch, step_num: usize) {
     let single_arm = br.elif_branches.is_empty() && br.else_body.is_none();
     if single_arm {
         let (token, kind) = extract_predicate_token(&br.condition)
             .unwrap_or_else(|| (br.condition.trim().to_string(), ConditionTokenKind::PredicateConst));
-        let lookup_key = lookup_key_for_token(&token, kind);
-        let desc = br
-            .resolved_predicates
-            .as_ref()
-            .and_then(|m| m.get(lookup_key))
-            .cloned()
-            .unwrap_or_else(|| lookup_key.to_string());
+        let desc = resolve_predicate_prose(&token, kind, br);
         let desc = strip_trailing_period(&desc);
         s.push_literal(format!(
             "{step_num}. {SINGLE_ARM_OPENER_PREFIX}{desc}{SINGLE_ARM_OPENER_TAIL}\n"
@@ -100,9 +94,9 @@ fn emit_pure_applies(s: &mut Scaffold, arena: &IrArena, br: &IrBranch, step_num:
         emit_lettered_substeps(s, arena, &br.then_body);
     } else {
         s.push_literal(format!("{step_num}. {MULTI_ARM_OPENER}\n"));
-        emit_applies_arm_header_and_body(s, arena, br, &br.condition, &br.then_body);
+        emit_predicate_arm_header_and_body(s, arena, br, &br.condition, &br.then_body);
         for elif in &br.elif_branches {
-            emit_applies_arm_header_and_body(s, arena, br, &elif.condition, &elif.body);
+            emit_predicate_arm_header_and_body(s, arena, br, &elif.condition, &elif.body);
         }
         if let Some(else_body) = &br.else_body {
             s.push_literal("   Otherwise:\n");
@@ -111,7 +105,21 @@ fn emit_pure_applies(s: &mut Scaffold, arena: &IrArena, br: &IrBranch, step_num:
     }
 }
 
-fn emit_applies_arm_header_and_body(
+fn resolve_predicate_prose(token: &str, kind: ConditionTokenKind, br: &IrBranch) -> String {
+    match kind {
+        ConditionTokenKind::PredicateLiteral => token.to_string(),
+        _ => {
+            let lookup_key = lookup_key_for_token(token, kind);
+            br.resolved_predicates
+                .as_ref()
+                .and_then(|m| m.get(lookup_key))
+                .cloned()
+                .unwrap_or_else(|| lookup_key.to_string())
+        }
+    }
+}
+
+fn emit_predicate_arm_header_and_body(
     s: &mut Scaffold,
     arena: &IrArena,
     br: &IrBranch,
@@ -120,13 +128,7 @@ fn emit_applies_arm_header_and_body(
 ) {
     let (token, kind) = extract_predicate_token(condition)
         .unwrap_or_else(|| (condition.trim().to_string(), ConditionTokenKind::PredicateConst));
-    let lookup_key = lookup_key_for_token(&token, kind);
-    let desc = br
-        .resolved_predicates
-        .as_ref()
-        .and_then(|m| m.get(lookup_key))
-        .cloned()
-        .unwrap_or_else(|| lookup_key.to_string());
+    let desc = resolve_predicate_prose(&token, kind, br);
     let desc = strip_trailing_period(&desc);
     s.push_literal(format!("   If {desc}:\n"));
     emit_lettered_substeps(s, arena, body);
