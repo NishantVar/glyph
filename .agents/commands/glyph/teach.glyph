@@ -5,7 +5,7 @@
 // sibling library files; each entry is imported by name and listed
 // under `context:` (bare) or `constraints:` (with polarity).
 
-import "../skills/glyph/context.glyph" {
+import "../../skills/glyph/context.glyph" {
     glyph_overview,
     file_kinds,
     layout_rules,
@@ -23,7 +23,7 @@ import "../skills/glyph/context.glyph" {
     quick_reference,
 }
 
-import "../skills/glyph/constraints.glyph" {
+import "../../skills/glyph/constraints.glyph" {
     four_space_indentation,
     primitive_type_names_in_source,
     string_interpolation,
@@ -43,7 +43,7 @@ import "../skills/glyph/constraints.glyph" {
     deeply_nested_calls,
 }
 
-import "../skills/glyph/passes.glyph" {
+import "../../skills/glyph/passes.glyph" {
     factor_long_instructions_and_texts,
     sort_declarations,
     compile_and_iterate,

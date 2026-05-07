@@ -19,7 +19,6 @@ use codespan_reporting::diagnostic::{Diagnostic as CrDiag, Label, Severity};
 use codespan_reporting::files::SimpleFiles;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 use glyph_core::diagnostic::{Classification, DiagBag, Diagnostic};
-use glyph_core::CompileOutcome;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -376,67 +375,10 @@ fn run_compile(
         return run_compile_directory(path, format, emit_ir, strict, enable_effects);
     }
 
-    // Single-file compile (existing behavior).
-    let source = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("glyph: cannot read `{}`: {}", path.display(), e);
-            return ExitCode::from(3);
-        }
-    };
-
-    let label = path.display().to_string();
-    let outcome = match glyph_core::compile_source_with_effects(&source, 0, &label, enable_effects)
-    {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("glyph: compile failed: {:?}", e);
-            return ExitCode::from(1);
-        }
-    };
-
-    match outcome {
-        CompileOutcome::Compiled {
-            markdown,
-            diagnostics,
-            arena,
-        } => {
-            let code = diagnostics.exit_code();
-            // In strict mode, repairable diagnostics (exit 2) become hard
-            // errors (exit 1) and no `.md` output is written.
-            if strict && code == 2 {
-                emit_diagnostics(&diagnostics, &label, &source, format);
-                return ExitCode::from(1);
-            }
-            let out_path = compiled_output_path(&path);
-            if let Err(e) = glyph_core::atomic_write(&out_path, &markdown) {
-                eprintln!("glyph: cannot write `{}`: {}", out_path.display(), e);
-                return ExitCode::from(3);
-            }
-            if emit_ir {
-                let source_file = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                if let Some(ir_json) =
-                    glyph_core::emit_ir::serialize_ir_json(&arena, source_file, enable_effects)
-                {
-                    let ir_path = ir_json_output_path(&path);
-                    if let Err(e) = glyph_core::atomic_write(&ir_path, &ir_json) {
-                        eprintln!("glyph: cannot write `{}`: {}", ir_path.display(), e);
-                        return ExitCode::from(3);
-                    }
-                }
-            }
-            emit_diagnostics(&diagnostics, &label, &source, format);
-            ExitCode::from(code)
-        }
-        CompileOutcome::Diagnostics(bag) => {
-            let code = bag.exit_code();
-            emit_diagnostics(&bag, &label, &source, format);
-            if strict && code == 2 {
-                return ExitCode::from(1);
-            }
-            ExitCode::from(code)
-        }
-    }
+    // Single-file compile: walk the import closure, then dispatch through the
+    // shared pipeline runner so the analyzer sees imported names.
+    let files = glyph_core::compute_import_closure(&path, enable_effects);
+    run_pipeline_on_files(&files, format, emit_ir, strict, enable_effects)
 }
 
 /// Directory-mode compile: collect all `.glyph` files, build DAG, compile
@@ -453,13 +395,25 @@ fn run_compile_directory(
         Err(code) => return code,
     };
 
+    run_pipeline_on_files(&files, format, emit_ir, strict, enable_effects)
+}
+
+/// Compile a pre-collected list of `.glyph` files through the directory
+/// pipeline and translate the build result into a CLI exit code. Shared by
+/// single-file and directory modes.
+fn run_pipeline_on_files(
+    files: &[PathBuf],
+    format: OutputFormat,
+    emit_ir: bool,
+    strict: bool,
+    enable_effects: bool,
+) -> ExitCode {
     if files.is_empty() {
         return ExitCode::from(0);
     }
 
-    let result = glyph_core::compile_directory_with_options(&files, emit_ir, enable_effects);
+    let result = glyph_core::compile_directory_with_options(files, emit_ir, enable_effects);
 
-    // Emit diagnostics and stderr notes for each file outcome.
     for (file_path, outcome) in &result.outcomes {
         match outcome {
             glyph_core::FileOutcome::Compiled { diagnostics } => {
@@ -488,7 +442,6 @@ fn run_compile_directory(
                     file_path.display(),
                     failed_dep.display(),
                 );
-                // Stale .md note (per pipeline.md §Partial Failure Policy §3).
                 let stale_path = file_path
                     .parent()
                     .unwrap_or_else(|| std::path::Path::new("."))
