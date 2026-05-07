@@ -1098,6 +1098,17 @@ fn check_one_file(
 
     // Run Phase 2 with import-augmented name sets.
     let mut registry = domain_registry::Registry::new();
+    // Task 6: this caller is on the check-only recursive walker
+    // (`check_file_recursive`) and only sees imported NAMES — no rendered
+    // bodies and no inferred types. The classifier accepts empty maps and
+    // falls back to its same-file-consts behaviour, treating each imported
+    // name as a String predicate. Multi-file compiles route through the
+    // `compile_source_with_resolved_imports` site below, which DOES pass
+    // the full ResolvedImports.
+    let empty_text_values: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    let empty_const_types: std::collections::BTreeMap<String, kind_infer::TypeTag> =
+        std::collections::BTreeMap::new();
     let _ = analyze::analyze_with_imports(
         &file,
         0,
@@ -1113,6 +1124,8 @@ fn check_one_file(
         &mut registry,
         &imported_block_return_types,
         &imported_block_params,
+        &empty_text_values,
+        &empty_const_types,
     );
 
     // Unused import detection.
@@ -2080,6 +2093,11 @@ fn compile_source_with_resolved_imports(
         &mut registry,
         &resolved_imports.block_return_types,
         &resolved_imports.block_params,
+        // Task 6: rendered import bodies + inferred types reach the
+        // classifier so a bare imported name in a branch condition lands
+        // in the correct ConditionTokenKind variant per its TypeTag.
+        &resolved_imports.text_values,
+        &resolved_imports.text_value_types,
     );
     if bag.has_error() || bag.has_repairable() {
         return Ok(CompileOutcome::Diagnostics(bag));

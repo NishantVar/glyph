@@ -161,6 +161,49 @@ pub struct ConditionContext<'a> {
     pub bindings: HashSet<&'a str>,
 }
 
+/// Walk same-file decls and imported-const data into a single
+/// `consts: name → TypeTag` table. Extracted from `for_decl` so callers that
+/// already hold a borrow on `&mut file.decls` can pre-compute the table once
+/// (via [`collect_consts_for_file`]) and feed it to
+/// [`ConditionContext::for_decl_with_consts`] without re-borrowing the file.
+pub fn collect_consts_for_file<'a>(
+    file: &'a crate::ast::SourceFile,
+    imported_texts: &'a BTreeMap<String, String>,
+    imported_const_types: &'a BTreeMap<String, crate::kind_infer::TypeTag>,
+) -> HashMap<&'a str, crate::kind_infer::TypeTag> {
+    let mut consts: HashMap<&'a str, crate::kind_infer::TypeTag> = HashMap::new();
+
+    // Same-file consts.
+    for decl in &file.decls {
+        if let crate::ast::Decl::Const(spanned) = decl {
+            let name: &'a str = &spanned.node.name;
+            let value = &spanned.node.value;
+            let lit = match value {
+                crate::ast::ConstValue::String(s) => crate::kind_infer::Literal::String(s.clone()),
+                crate::ast::ConstValue::Int(s) | crate::ast::ConstValue::Float(s) => {
+                    crate::kind_infer::Literal::Number(s.clone())
+                }
+                crate::ast::ConstValue::Bool(s) => crate::kind_infer::Literal::Bool(s.clone()),
+            };
+            consts.insert(name, crate::kind_infer::infer_primitive(&lit));
+        }
+    }
+
+    // Imported consts: ensure every imported name has a TypeTag entry.
+    // Prefer the explicit imported_const_types when present; fall back to
+    // String when only the rendered body is available (existing behavior).
+    for name in imported_texts.keys() {
+        let tag = imported_const_types
+            .get(name)
+            .cloned()
+            .unwrap_or(crate::kind_infer::TypeTag::String);
+        let key: &'a str = name.as_str();
+        consts.entry(key).or_insert(tag);
+    }
+
+    consts
+}
+
 impl<'a> ConditionContext<'a> {
     /// Build a context for an enclosing decl. Caller passes:
     /// - `file`: same-file decls (used to find same-file consts).
@@ -178,38 +221,21 @@ impl<'a> ConditionContext<'a> {
         enclosing_params: &'a [crate::ast::Param],
         enclosing_flow: &'a [crate::ast::FlowStmt],
     ) -> Self {
-        let mut consts: HashMap<&'a str, crate::kind_infer::TypeTag> = HashMap::new();
+        let consts = collect_consts_for_file(file, imported_texts, imported_const_types);
+        Self::for_decl_with_consts(consts, enclosing_params, enclosing_flow)
+    }
 
-        // Same-file consts.
-        for decl in &file.decls {
-            if let crate::ast::Decl::Const(spanned) = decl {
-                let name: &'a str = &spanned.node.name;
-                let value = &spanned.node.value;
-                let lit = match value {
-                    crate::ast::ConstValue::String(s) => {
-                        crate::kind_infer::Literal::String(s.clone())
-                    }
-                    crate::ast::ConstValue::Int(s) | crate::ast::ConstValue::Float(s) => {
-                        crate::kind_infer::Literal::Number(s.clone())
-                    }
-                    crate::ast::ConstValue::Bool(s) => crate::kind_infer::Literal::Bool(s.clone()),
-                };
-                consts.insert(name, crate::kind_infer::infer_primitive(&lit));
-            }
-        }
-
-        // Imported consts: ensure every imported name has a TypeTag entry.
-        // Prefer the explicit imported_const_types when present; fall back to
-        // String when only the rendered body is available (existing behavior).
-        for name in imported_texts.keys() {
-            let tag = imported_const_types
-                .get(name)
-                .cloned()
-                .unwrap_or(crate::kind_infer::TypeTag::String);
-            let key: &'a str = name.as_str();
-            consts.entry(key).or_insert(tag);
-        }
-
+    /// Variant of [`for_decl`] used by callers that already hold the consts
+    /// table. Necessary on the `analyze` mutable-iteration path: the outer
+    /// `for decl in &mut file.decls` mutably borrows `file.decls`, so we
+    /// cannot re-call `for_decl` (which immutably borrows the file) inside
+    /// the loop. Caller pre-computes consts via
+    /// [`collect_consts_for_file`] before entering the mutable loop.
+    pub fn for_decl_with_consts(
+        consts: HashMap<&'a str, crate::kind_infer::TypeTag>,
+        enclosing_params: &'a [crate::ast::Param],
+        enclosing_flow: &'a [crate::ast::FlowStmt],
+    ) -> Self {
         // Params with string default. `Param.default` is a pre-rendered
         // String including the surrounding quotes for string literals
         // (see ast.rs:215-221). Detect a string default by leading `"`,
@@ -759,5 +785,46 @@ mod tests {
         let ctx = ConditionContext::for_decl(&file, &imports, &types, &[], &[]);
         let c = classify_condition("imported_big", &ctx);
         assert_eq!(c.tokens[0].kind, ConditionTokenKind::PredicateConst);
+    }
+
+    /// Task 6 — `for_decl_with_consts` and `for_decl` must produce equivalent
+    /// classification results when fed the same inputs. The two constructors
+    /// are semantic peers; only the borrow-shape differs.
+    #[test]
+    fn for_decl_and_for_decl_with_consts_produce_equivalent_context() {
+        let (file, mut imports, mut types) =
+            ctx_inputs(&[("complex_change", "the change is complex")]);
+        imports.insert(
+            "imported_big".to_string(),
+            "imported description".to_string(),
+        );
+        types.insert(
+            "imported_big".to_string(),
+            crate::kind_infer::TypeTag::String,
+        );
+
+        let consts = collect_consts_for_file(&file, &imports, &types);
+        let ctx_a = ConditionContext::for_decl(&file, &imports, &types, &[], &[]);
+        let ctx_b = ConditionContext::for_decl_with_consts(consts, &[], &[]);
+
+        for cond in [
+            "complex_change",
+            "imported_big",
+            "complex_change or imported_big",
+        ] {
+            let a = classify_condition(cond, &ctx_a);
+            let b = classify_condition(cond, &ctx_b);
+            let kinds_a: Vec<_> = a.tokens.iter().map(|t| t.kind).collect();
+            let kinds_b: Vec<_> = b.tokens.iter().map(|t| t.kind).collect();
+            assert_eq!(kinds_a, kinds_b, "kinds differ for `{cond}`");
+            assert_eq!(
+                a.has_predicate_token, b.has_predicate_token,
+                "predicate flag differs for `{cond}`"
+            );
+            assert_eq!(
+                a.has_boolean_token, b.has_boolean_token,
+                "boolean flag differs for `{cond}`"
+            );
+        }
     }
 }

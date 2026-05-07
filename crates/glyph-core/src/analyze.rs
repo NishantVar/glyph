@@ -1461,7 +1461,13 @@ pub fn analyze_with_diagnostics(
     }
 
     // Task 2.4: annotate every Branch/ElifBranch with a ConditionClassification.
-    annotate_file_branches(&mut file);
+    // No imports in scope here — pass empty maps so the classifier reduces
+    // to the same-file case (consts, params, bindings only).
+    let empty_text_values: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    let empty_const_types: std::collections::BTreeMap<String, crate::kind_infer::TypeTag> =
+        std::collections::BTreeMap::new();
+    annotate_file_branches(&mut file, &empty_text_values, &empty_const_types);
 
     // Task 3.1: emit G::analyze::condition-non-boolean-non-predicate for
     // numeric-kinded tokens in condition position.
@@ -2040,6 +2046,14 @@ pub fn analyze_with_imports(
     registry: &mut crate::domain_registry::Registry,
     imported_block_return_types: &HashMap<String, Spanned<String>>,
     imported_block_params: &HashMap<String, Vec<crate::ast::Param>>,
+    // Task 6 — rendered import bodies + their inferred TypeTags. Threaded
+    // into the condition classifier (`condition::ConditionContext`) so a
+    // bare-imported-name in a branch condition lands in `PredicateConst`
+    // (String) vs `Boolean` / `Numeric` (Bool/Int/Float) per the imported
+    // const's actual kind. Empty maps give MVP behaviour (every imported
+    // name treated as String) — see `condition::collect_consts_for_file`.
+    imported_text_values: &std::collections::BTreeMap<String, String>,
+    imported_const_types: &std::collections::BTreeMap<String, crate::kind_infer::TypeTag>,
 ) -> SourceFile {
     // Issue #109 chunk 3 — Analyze invariant. Enforced on the import-aware
     // path too so multi-file compiles get identical guarantees. See
@@ -2383,8 +2397,10 @@ pub fn analyze_with_imports(
     }
 
     // Task 2.4: annotate every Branch/ElifBranch with a ConditionClassification.
+    // Task 6: thread imported-const data through so PredicateConst lands on
+    // String-typed imported consts that appear bare in condition position.
     let mut annotated = file.clone();
-    annotate_file_branches(&mut annotated);
+    annotate_file_branches(&mut annotated, imported_text_values, imported_const_types);
 
     // Task 3.1: emit G::analyze::condition-non-boolean-non-predicate for
     // numeric-kinded tokens in condition position.
@@ -3307,28 +3323,31 @@ fn check_nested_branches(
 // ---------------------------------------------------------------------------
 // Condition classifier
 // ---------------------------------------------------------------------------
+//
+// Task 6: the local `classify_condition` / `classify_token` were retired in
+// favour of `crate::condition::classify_condition` (the single classification
+// authority — see `design/data-flow.md`). Analyze now consults the shared
+// classifier with a `ConditionContext` built once per enclosing decl, and
+// `check_file_numeric_conditions` reads the cached `condition_classification`
+// populated by `annotate_file_branches` instead of re-tokenizing.
 
-use crate::condition::{tokenize_condition, ConditionClassification, ConditionTokenKind};
-
-const COMPOSITIONAL_OPERATORS: &[&str] = &["not", "and"];
+use crate::condition::ConditionClassification;
 
 // ---------------------------------------------------------------------------
-// Branch annotation walker (Task 2.4)
+// Branch annotation walker (Task 2.4 + Task 6 Decl::Block extension)
 // ---------------------------------------------------------------------------
 
-/// Recursively annotate every `FlowStmt::Branch` (and their `elif` arms) in
-/// `flow` with a `ConditionClassification`.
+/// Recursively walk `flow` and (a) classify every `Branch`/`ElifBranch`
+/// condition via the shared `condition::classify_condition` and (b) store the
+/// result on the AST node's `condition_classification` slot. Reused for both
+/// `Decl::Skill` and `Decl::Block` flows.
 ///
-/// `texts` must already contain the file-level const bindings.
-/// `params_with_string_default` and `bindings` should be built from the
-/// enclosing skill's signature / flow.  For the MVP they may be empty — the
-/// classifier still handles the `"big"` → `PredicateConst` case via `texts`.
-fn annotate_branch_classifications<'a>(
-    flow: &mut Vec<FlowStmt>,
-    texts: &HashMap<&'a str, (String, crate::kind_infer::TypeTag)>,
-    params_with_string_default: &HashSet<&'a str>,
-    bindings: &HashSet<&'a str>,
-    block_decls: &HashMap<&'a str, &'a BlockDecl>,
+/// `Decl::ExportBlock` flow walking is OUT OF SCOPE — `ExportBlockDecl` only
+/// carries `flow_strings: Vec<String>` (no structured `FlowStmt`), so there
+/// are no branch nodes to classify there. See design spec Out of Scope §7.
+fn annotate_branch_classifications(
+    flow: &mut [FlowStmt],
+    ctx: &crate::condition::ConditionContext,
 ) {
     for stmt in flow.iter_mut() {
         if let FlowStmt::Branch {
@@ -3339,364 +3358,233 @@ fn annotate_branch_classifications<'a>(
             else_body,
         } = stmt
         {
-            *condition_classification = Some(classify_condition(
-                condition,
-                texts,
-                params_with_string_default,
-                bindings,
-                block_decls,
-            ));
+            *condition_classification = Some(crate::condition::classify_condition(condition, ctx));
             for elif in elif_branches.iter_mut() {
-                elif.condition_classification = Some(classify_condition(
-                    &elif.condition,
-                    texts,
-                    params_with_string_default,
-                    bindings,
-                    block_decls,
-                ));
-                annotate_branch_classifications(
-                    &mut elif.body,
-                    texts,
-                    params_with_string_default,
-                    bindings,
-                    block_decls,
-                );
+                elif.condition_classification =
+                    Some(crate::condition::classify_condition(&elif.condition, ctx));
+                annotate_branch_classifications(&mut elif.body, ctx);
             }
-            annotate_branch_classifications(
-                then_body,
-                texts,
-                params_with_string_default,
-                bindings,
-                block_decls,
-            );
+            annotate_branch_classifications(then_body, ctx);
             if let Some(eb) = else_body {
-                annotate_branch_classifications(
-                    eb,
-                    texts,
-                    params_with_string_default,
-                    bindings,
-                    block_decls,
-                );
+                annotate_branch_classifications(eb, ctx);
             }
         }
     }
 }
 
-/// Build the file-level owned-key `texts` backing store mapping each const
-/// name to its `(body, TypeTag)`. Callers convert this to the `&str`-keyed
-/// shape that `classify_condition` / `annotate_branch_classifications`
-/// consume; that conversion must happen in the caller's scope so the `&str`
-/// references stay tied to a binding the caller owns.
-fn build_const_texts(file: &SourceFile) -> HashMap<String, (String, crate::kind_infer::TypeTag)> {
-    file.decls
-        .iter()
-        .filter_map(|d| match d {
-            crate::ast::Decl::Const(c) => {
-                let name = c.node.name.clone();
-                let (body, literal) = match &c.node.value {
-                    crate::ast::ConstValue::String(s) => {
-                        (s.clone(), crate::kind_infer::Literal::String(s.clone()))
-                    }
-                    crate::ast::ConstValue::Int(s) => {
-                        (s.clone(), crate::kind_infer::Literal::Number(s.clone()))
-                    }
-                    crate::ast::ConstValue::Float(s) => {
-                        (s.clone(), crate::kind_infer::Literal::Number(s.clone()))
-                    }
-                    crate::ast::ConstValue::Bool(s) => {
-                        (s.clone(), crate::kind_infer::Literal::Bool(s.clone()))
-                    }
-                };
-                let tag = crate::kind_infer::infer_primitive(&literal);
-                Some((name, (body, tag)))
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-/// Annotate every `Branch` node in each `Skill`'s flow inside a `SourceFile`.
+/// Annotate every `Branch`/`ElifBranch` node in each `Decl::Skill` AND
+/// `Decl::Block` flow inside a `SourceFile`.
 ///
-/// Called once at the end of `analyze_with_diagnostics` (and `analyze_with_imports`)
-/// after all semantic diagnostics have been emitted.
-fn annotate_file_branches(file: &mut SourceFile) {
-    // Build the texts map with owned keys so the borrow of `file.decls` ends
-    // before the mutable iteration below begins.
-    let owned_texts = build_const_texts(file);
-    let texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = owned_texts
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.clone()))
-        .collect();
+/// Pre-Task-6 only walked `Decl::Skill`, so a branch inside a private `block`
+/// flow was emitted to IR with the all-false default `predicate_shape`. The
+/// borrow-checker concern: `ConditionContext::for_decl` takes `&'a SourceFile`
+/// AND `&'a [Param]`/`&'a [FlowStmt]` from the enclosing decl — we cannot
+/// hold those borrows while mutating `flow.condition_classification` inside
+/// the same decl. Instead we pre-bake everything the classifier consults
+/// (consts table, params-with-string-default set) into owned strings BEFORE
+/// the mutable walk, then construct `ConditionContext` from references that
+/// are independent of the AST nodes we're mutating.
+fn annotate_file_branches(
+    file: &mut SourceFile,
+    imported_text_values: &std::collections::BTreeMap<String, String>,
+    imported_const_types: &std::collections::BTreeMap<String, crate::kind_infer::TypeTag>,
+) {
+    // Pre-bake the consts table with OWNED string keys so its lifetime is
+    // independent of `file.decls`. We can't use `&str` keys from `file.decls`
+    // and then mutate `file.decls` afterwards — the keys would dangle from
+    // the borrow checker's perspective even though the actual string data
+    // doesn't move.
+    let mut consts_owned: std::collections::HashMap<String, crate::kind_infer::TypeTag> =
+        std::collections::HashMap::new();
+    {
+        let borrowed = crate::condition::collect_consts_for_file(
+            file,
+            imported_text_values,
+            imported_const_types,
+        );
+        for (k, v) in borrowed {
+            consts_owned.insert(k.to_string(), v);
+        }
+    }
 
-    let empty_params: HashSet<&str> = HashSet::new();
-    let empty_bindings: HashSet<&str> = HashSet::new();
-    let empty_block_decls: HashMap<&str, &BlockDecl> = HashMap::new();
+    // Pre-bake (params_with_string_default) for every Skill / Block by index,
+    // again with owned strings so we can release the immutable borrow before
+    // the mutable walk. `bindings` is currently always empty (the AST has no
+    // binding-form `FlowStmt` variant yet — see condition::ConditionContext
+    // doc) so we don't bake anything for it.
+    let mut per_decl_params: Vec<std::collections::HashSet<String>> =
+        Vec::with_capacity(file.decls.len());
+    for decl in &file.decls {
+        let params: &[crate::ast::Param] = match decl {
+            Decl::Skill(s) => &s.node.params,
+            Decl::Block(b) => &b.node.params,
+            _ => &[],
+        };
+        let mut set: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for p in params {
+            if p.default_is_name_ref {
+                continue;
+            }
+            if let Some(d) = &p.default {
+                if d.starts_with('"') {
+                    set.insert(p.name.clone());
+                }
+            }
+        }
+        per_decl_params.push(set);
+    }
 
-    for decl in file.decls.iter_mut() {
-        if let crate::ast::Decl::Skill(spanned) = decl {
-            annotate_branch_classifications(
-                &mut spanned.node.flow,
-                &texts,
-                &empty_params,
-                &empty_bindings,
-                &empty_block_decls,
-            );
+    // Build a per-call context whose lifetime is tied to the local owned
+    // tables, NOT to `file.decls`. This is what frees us to mutate
+    // `flow.condition_classification` inside the loop.
+    for (idx, decl) in file.decls.iter_mut().enumerate() {
+        match decl {
+            Decl::Skill(spanned) => {
+                let consts: std::collections::HashMap<&str, crate::kind_infer::TypeTag> =
+                    consts_owned
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.clone()))
+                        .collect();
+                let params_set: std::collections::HashSet<&str> =
+                    per_decl_params[idx].iter().map(|s| s.as_str()).collect();
+                let ctx = crate::condition::ConditionContext {
+                    consts,
+                    params_with_string_default: params_set,
+                    bindings: std::collections::HashSet::new(),
+                };
+                annotate_branch_classifications(&mut spanned.node.flow, &ctx);
+            }
+            Decl::Block(spanned) => {
+                let consts: std::collections::HashMap<&str, crate::kind_infer::TypeTag> =
+                    consts_owned
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.clone()))
+                        .collect();
+                let params_set: std::collections::HashSet<&str> =
+                    per_decl_params[idx].iter().map(|s| s.as_str()).collect();
+                let ctx = crate::condition::ConditionContext {
+                    consts,
+                    params_with_string_default: params_set,
+                    bindings: std::collections::HashSet::new(),
+                };
+                annotate_branch_classifications(&mut spanned.node.flow, &ctx);
+            }
+            // `Decl::ExportBlock` has only `flow_strings: Vec<String>` — no
+            // structured FlowStmt::Branch nodes to annotate. See design spec
+            // Out of Scope §7.
+            _ => {}
         }
     }
 }
 
-/// Walk every `Branch`/`ElifBranch` condition in `flow` and push
-/// `G::analyze::condition-non-boolean-non-predicate` for any condition that
-/// contains a `Numeric`-kinded token.
+/// Walk a flow body and push
+/// `G::analyze::condition-non-boolean-non-predicate` for every Branch /
+/// ElifBranch whose cached `condition_classification` reports a numeric
+/// bare-condition token. Reads the classification populated by
+/// `annotate_file_branches`; never re-classifies.
 fn check_flow_numeric_conditions(
     flow: &[FlowStmt],
     span: crate::span::Span,
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
-    texts: &HashMap<&str, (String, crate::kind_infer::TypeTag)>,
-    empty_params: &HashSet<&str>,
-    empty_bindings: &HashSet<&str>,
-    empty_block_decls: &HashMap<&str, &BlockDecl>,
 ) {
     for stmt in flow {
-        match stmt {
-            FlowStmt::Branch {
-                condition,
-                then_body,
-                elif_branches,
-                else_body,
-                ..
-            } => {
-                let c = classify_condition(
-                    condition,
-                    texts,
-                    empty_params,
-                    empty_bindings,
-                    empty_block_decls,
-                );
-                if c.has_numeric_bare_condition {
-                    bag.push(
-                        Diagnostic {
-                            id: "G::analyze::condition-non-boolean-non-predicate".into(),
-                            classification: Classification::Error,
-                            message: "condition expression must be boolean or a string predicate"
-                                .into(),
-                            span: SourceSpan::from_byte_span(file_label, span, line_index),
-                            related: Vec::new(),
-                            hints: vec![
-                                "Bind to a boolean (e.g., a Bool-returning call), use a string predicate const, or compare with ==. Glyph does not implicitly truth-test integers."
-                                    .into(),
-                            ],
-                        },
-                        span,
-                    );
-                }
-                for elif in elif_branches {
-                    let ec = classify_condition(
-                        &elif.condition,
-                        texts,
-                        empty_params,
-                        empty_bindings,
-                        empty_block_decls,
-                    );
-                    if ec.has_numeric_bare_condition {
-                        bag.push(
-                            Diagnostic {
-                                id: "G::analyze::condition-non-boolean-non-predicate".into(),
-                                classification: Classification::Error,
-                                message:
-                                    "condition expression must be boolean or a string predicate"
-                                        .into(),
-                                span: SourceSpan::from_byte_span(file_label, span, line_index),
-                                related: Vec::new(),
-                                hints: vec![
-                                    "Bind to a boolean (e.g., a Bool-returning call), use a string predicate const, or compare with ==. Glyph does not implicitly truth-test integers."
-                                        .into(),
-                                ],
-                            },
-                            span,
-                        );
-                    }
-                    check_flow_numeric_conditions(
-                        &elif.body,
-                        span,
-                        file_label,
-                        line_index,
-                        bag,
-                        texts,
-                        empty_params,
-                        empty_bindings,
-                        empty_block_decls,
-                    );
-                }
-                check_flow_numeric_conditions(
-                    then_body,
-                    span,
-                    file_label,
-                    line_index,
-                    bag,
-                    texts,
-                    empty_params,
-                    empty_bindings,
-                    empty_block_decls,
-                );
-                if let Some(eb) = else_body {
-                    check_flow_numeric_conditions(
-                        eb,
-                        span,
-                        file_label,
-                        line_index,
-                        bag,
-                        texts,
-                        empty_params,
-                        empty_bindings,
-                        empty_block_decls,
-                    );
-                }
+        if let FlowStmt::Branch {
+            condition_classification,
+            then_body,
+            elif_branches,
+            else_body,
+            ..
+        } = stmt
+        {
+            if condition_classification
+                .as_ref()
+                .map_or(false, |c| c.has_numeric_bare_condition)
+            {
+                push_numeric_condition_diag(span, file_label, line_index, bag);
             }
-            _ => {}
+            for elif in elif_branches {
+                if elif
+                    .condition_classification
+                    .as_ref()
+                    .map_or(false, |c| c.has_numeric_bare_condition)
+                {
+                    push_numeric_condition_diag(span, file_label, line_index, bag);
+                }
+                check_flow_numeric_conditions(&elif.body, span, file_label, line_index, bag);
+            }
+            check_flow_numeric_conditions(then_body, span, file_label, line_index, bag);
+            if let Some(eb) = else_body {
+                check_flow_numeric_conditions(eb, span, file_label, line_index, bag);
+            }
         }
     }
 }
 
-/// Emit `G::analyze::condition-non-boolean-non-predicate` for every skill in
-/// `file` that has a numeric-kinded token in a branch condition.
+fn push_numeric_condition_diag(
+    span: crate::span::Span,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    bag.push(
+        Diagnostic {
+            id: "G::analyze::condition-non-boolean-non-predicate".into(),
+            classification: Classification::Error,
+            message: "condition expression must be boolean or a string predicate".into(),
+            span: SourceSpan::from_byte_span(file_label, span, line_index),
+            related: Vec::new(),
+            hints: vec![
+                "Bind to a boolean (e.g., a Bool-returning call), use a string predicate const, or compare with ==. Glyph does not implicitly truth-test integers."
+                    .into(),
+            ],
+        },
+        span,
+    );
+}
+
+/// Emit `G::analyze::condition-non-boolean-non-predicate` for every skill AND
+/// private block in `file` that has a numeric-kinded token in a branch
+/// condition.
 ///
 /// Called once at the end of `analyze_with_diagnostics` and
 /// `analyze_with_imports` after `annotate_file_branches`, so the classifier
-/// results are already populated.
+/// results are already populated. Task 6 extends this to walk `Decl::Block`
+/// in addition to `Decl::Skill` (closes Finding 1: a numeric-bare condition
+/// inside a private block's flow used to slip past analyze).
 fn check_file_numeric_conditions(
     file: &SourceFile,
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
 ) {
-    let owned_texts = build_const_texts(file);
-    let texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = owned_texts
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.clone()))
-        .collect();
-
-    // Allocate the empty params/bindings/block_decls collections ONCE here so
-    // the recursive walker doesn't re-allocate at every nesting level.
-    let empty_params: HashSet<&str> = HashSet::new();
-    let empty_bindings: HashSet<&str> = HashSet::new();
-    let empty_block_decls: HashMap<&str, &BlockDecl> = HashMap::new();
-
     for decl in &file.decls {
-        if let crate::ast::Decl::Skill(spanned) = decl {
-            check_flow_numeric_conditions(
-                &spanned.node.flow,
-                spanned.span,
-                file_label,
-                line_index,
-                bag,
-                &texts,
-                &empty_params,
-                &empty_bindings,
-                &empty_block_decls,
-            );
+        match decl {
+            Decl::Skill(spanned) => {
+                check_flow_numeric_conditions(
+                    &spanned.node.flow,
+                    spanned.span,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+            }
+            Decl::Block(spanned) => {
+                check_flow_numeric_conditions(
+                    &spanned.node.flow,
+                    spanned.span,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+            }
+            // `Decl::ExportBlock` flow walking deferred per design spec Out
+            // of Scope §7 — `ExportBlockDecl.flow_strings` carries no
+            // structured FlowStmt::Branch.
+            _ => {}
         }
     }
-}
-
-pub fn classify_condition<'a>(
-    condition: &str,
-    texts: &HashMap<&'a str, (String, crate::kind_infer::TypeTag)>,
-    params_with_string_default: &HashSet<&'a str>,
-    bindings: &HashSet<&'a str>,
-    block_decls: &HashMap<&'a str, &'a BlockDecl>,
-) -> ConditionClassification {
-    let mut tokens = Vec::new();
-    let mut has_boolean = false;
-    let mut has_predicate = false;
-    let mut has_composition = false;
-    let mut has_numeric = false;
-
-    // The parser stores conditions with a trailing ` :` (e.g., `"big :"` for
-    // `if big:`).  Strip it before tokenizing so downstream classifiers don't
-    // see `:` as an unknown/Boolean token.
-    let trimmed = condition.trim().trim_end_matches(':').trim_end();
-
-    for tok in tokenize_condition(trimmed) {
-        let kind = classify_token(
-            &tok,
-            texts,
-            params_with_string_default,
-            bindings,
-            block_decls,
-        );
-        match kind {
-            ConditionTokenKind::Boolean => has_boolean = true,
-            ConditionTokenKind::Numeric => has_numeric = true,
-            ConditionTokenKind::PredicateApplies
-            | ConditionTokenKind::PredicateConst
-            | ConditionTokenKind::PredicateLiteral => has_predicate = true,
-            ConditionTokenKind::Operator => {
-                if COMPOSITIONAL_OPERATORS.contains(&tok.as_str()) {
-                    has_composition = true;
-                }
-            }
-        }
-        tokens.push(crate::condition::ClassifiedConditionToken {
-            text: tok.to_string(),
-            kind,
-            is_comparison_operand: false, // Task 6 replaces this whole function
-        });
-    }
-
-    ConditionClassification {
-        tokens,
-        has_boolean_token: has_boolean,
-        has_predicate_token: has_predicate,
-        has_compositional_operator: has_composition,
-        has_comparison_operator: false, // Task 6 introduces position-aware tracking
-        has_numeric_bare_condition: has_numeric,
-    }
-}
-
-fn classify_token<'a>(
-    tok: &str,
-    texts: &HashMap<&'a str, (String, crate::kind_infer::TypeTag)>,
-    params_with_string_default: &HashSet<&'a str>,
-    bindings: &HashSet<&'a str>,
-    _block_decls: &HashMap<&'a str, &'a BlockDecl>,
-) -> ConditionTokenKind {
-    if matches!(tok, "and" | "or" | "not" | "==" | "(" | ")") {
-        return ConditionTokenKind::Operator;
-    }
-    if tok.starts_with('"') {
-        return ConditionTokenKind::PredicateLiteral;
-    }
-    if tok.contains(".applies()") {
-        // Syntactic classification: any `NAME.applies()` form is PredicateApplies.
-        // Semantic validation (receiver must be a known block) is done by
-        // `check_applies_in_condition`, not here.
-        return ConditionTokenKind::PredicateApplies;
-    }
-    // Numeric literal: integer or float token.
-    // `f64::from_str` accepts every well-formed integer literal too.
-    if tok.parse::<f64>().is_ok() {
-        return ConditionTokenKind::Numeric;
-    }
-    if let Some((_body, tag)) = texts.get(tok) {
-        return match tag {
-            crate::kind_infer::TypeTag::String => ConditionTokenKind::PredicateConst,
-            crate::kind_infer::TypeTag::Bool => ConditionTokenKind::Boolean,
-            crate::kind_infer::TypeTag::Int | crate::kind_infer::TypeTag::Float => {
-                ConditionTokenKind::Numeric
-            }
-            _ => ConditionTokenKind::Boolean,
-        };
-    }
-    if params_with_string_default.contains(tok) {
-        return ConditionTokenKind::PredicateConst;
-    }
-    if bindings.contains(tok) {
-        return ConditionTokenKind::Boolean;
-    }
-    ConditionTokenKind::Boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -4757,6 +4645,8 @@ skill current() -> BranchName
             &mut registry,
             &HashMap::new(),
             &HashMap::new(),
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
         );
         let entry = registry
             .lookup("Report")
@@ -5250,6 +5140,8 @@ const accuracy = "Be accurate."
             &mut registry,
             &HashMap::new(),
             &HashMap::new(),
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
         );
 
         let diags = collision_diags(&bag);
@@ -5352,6 +5244,8 @@ const accuracy = "Be accurate."
             &mut registry,
             &imported_block_return_types,
             &HashMap::new(),
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -5441,6 +5335,8 @@ const accuracy = "Be accurate."
             &mut registry,
             &imported_block_return_types,
             &HashMap::new(),
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -5518,6 +5414,8 @@ const accuracy = "Be accurate."
             &mut registry,
             &HashMap::new(),
             &HashMap::new(),
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -5693,6 +5591,8 @@ const accuracy = "Be accurate."
             &mut registry,
             &imported_block_return_types,
             &HashMap::new(),
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -5924,6 +5824,8 @@ const accuracy = "Be accurate."
             &mut registry,
             &imported_block_return_types,
             &HashMap::new(),
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -6099,6 +6001,8 @@ const accuracy = "Be accurate."
             &mut registry,
             &HashMap::new(),
             &HashMap::new(),
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
         );
 
         assert!(
@@ -6186,6 +6090,8 @@ const accuracy = "Be accurate."
             &mut registry,
             &HashMap::new(),
             &HashMap::new(),
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
         );
 
         let diags = undefined_call_diags(&bag);
@@ -6509,6 +6415,60 @@ skill foo()
             kinds,
             vec![crate::condition::ConditionTokenKind::PredicateConst]
         );
+    }
+
+    /// Task 6 — Decl::Block flow walking: `annotate_file_branches` must visit
+    /// branches inside private `block` declarations and populate their
+    /// `condition_classification`. Pre-fix the walker only covered
+    /// `Decl::Skill`, so the IR JSON's `predicate_shape` for a block-flow
+    /// branch was the all-false default.
+    #[test]
+    fn block_flow_predicate_classified_via_predicate_shape() {
+        let src = r#"
+const big_change = "the change is big"
+
+block helper()
+    description: "A helper block."
+    flow:
+        if big_change
+            "Significant work."
+        else
+            "Minor work."
+
+skill main()
+    description: "Test."
+    flow:
+        helper()
+"#;
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let file =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
+
+        let helper = file
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                crate::ast::Decl::Block(b) if b.node.name == "helper" => Some(&b.node),
+                _ => None,
+            })
+            .expect("helper block must be present in AST");
+        let classification = match &helper.flow[0] {
+            crate::ast::FlowStmt::Branch {
+                condition_classification,
+                ..
+            } => condition_classification.as_ref(),
+            other => panic!("expected branch, got {:?}", other),
+        };
+        let c = classification
+            .expect("block-flow branch must have condition_classification populated by analyze");
+        assert!(
+            c.has_predicate_token,
+            "big_change is a String const → PredicateConst token expected"
+        );
+        assert!(!c.has_boolean_token);
+        assert!(!c.has_compositional_operator);
     }
 
     #[test]
@@ -7185,106 +7145,12 @@ mod validate_call_tests {
     }
 }
 
-#[cfg(test)]
-mod classify_condition_tests {
-    use super::*;
-    use crate::condition::ConditionTokenKind as K;
-    use std::collections::{HashMap, HashSet};
-
-    fn empty_blocks<'a>() -> HashMap<&'a str, &'a BlockDecl> {
-        HashMap::new()
-    }
-
-    #[test]
-    fn classifies_pure_applies_call() {
-        let blocks: HashMap<&str, &BlockDecl> = HashMap::new();
-        let texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = HashMap::new();
-        let params: HashSet<&str> = HashSet::new();
-        let bindings: HashSet<&str> = HashSet::new();
-        let c = classify_condition("my_block.applies()", &texts, &params, &bindings, &blocks);
-        let kinds: Vec<_> = c.tokens.iter().map(|t| t.kind).collect();
-        assert_eq!(kinds, vec![K::PredicateApplies]);
-        assert!(c.is_pure_predicate());
-    }
-
-    #[test]
-    fn classifies_string_kinded_const_as_predicate_const() {
-        let blocks = empty_blocks();
-        let mut texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = HashMap::new();
-        texts.insert(
-            "complex_change",
-            (
-                "the change is complex".into(),
-                crate::kind_infer::TypeTag::String,
-            ),
-        );
-        let params: HashSet<&str> = HashSet::new();
-        let bindings: HashSet<&str> = HashSet::new();
-        let c = classify_condition("complex_change", &texts, &params, &bindings, &blocks);
-        let kinds: Vec<_> = c.tokens.iter().map(|t| t.kind).collect();
-        assert_eq!(kinds, vec![K::PredicateConst]);
-        assert!(c.is_pure_predicate());
-    }
-
-    #[test]
-    fn classifies_inline_string_literal_as_predicate_literal() {
-        let blocks = empty_blocks();
-        let texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = HashMap::new();
-        let params: HashSet<&str> = HashSet::new();
-        let bindings: HashSet<&str> = HashSet::new();
-        let c = classify_condition("\"the user opted in\"", &texts, &params, &bindings, &blocks);
-        let kinds: Vec<_> = c.tokens.iter().map(|t| t.kind).collect();
-        assert_eq!(kinds, vec![K::PredicateLiteral]);
-        assert!(c.is_pure_predicate());
-    }
-
-    #[test]
-    fn classifies_bool_kinded_const_as_boolean() {
-        let blocks = empty_blocks();
-        let mut texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = HashMap::new();
-        texts.insert(
-            "is_dry_run",
-            ("true".into(), crate::kind_infer::TypeTag::Bool),
-        );
-        let params: HashSet<&str> = HashSet::new();
-        let bindings: HashSet<&str> = HashSet::new();
-        let c = classify_condition("is_dry_run", &texts, &params, &bindings, &blocks);
-        let kinds: Vec<_> = c.tokens.iter().map(|t| t.kind).collect();
-        assert_eq!(kinds, vec![K::Boolean]);
-        assert!(!c.is_pure_predicate());
-    }
-
-    #[test]
-    fn mixed_predicate_const_with_not_is_not_pure() {
-        let blocks = empty_blocks();
-        let mut texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = HashMap::new();
-        texts.insert(
-            "complex_change",
-            (
-                "the change is complex".into(),
-                crate::kind_infer::TypeTag::String,
-            ),
-        );
-        let params: HashSet<&str> = HashSet::new();
-        let bindings: HashSet<&str> = HashSet::new();
-        let c = classify_condition("not complex_change", &texts, &params, &bindings, &blocks);
-        assert!(!c.is_pure_predicate());
-        assert!(c.has_compositional_operator);
-        assert!(c.has_predicate_token);
-    }
-
-    #[test]
-    fn or_combination_of_predicates_stays_pure() {
-        let blocks = empty_blocks();
-        let mut texts: HashMap<&str, (String, crate::kind_infer::TypeTag)> = HashMap::new();
-        texts.insert("a", ("alpha".into(), crate::kind_infer::TypeTag::String));
-        texts.insert("b", ("beta".into(), crate::kind_infer::TypeTag::String));
-        let params: HashSet<&str> = HashSet::new();
-        let bindings: HashSet<&str> = HashSet::new();
-        let c = classify_condition("a or b", &texts, &params, &bindings, &blocks);
-        assert!(c.is_pure_predicate());
-    }
-}
+// `mod classify_condition_tests` retired in Task 6: the tests targeted the
+// local `analyze::classify_condition`, which was deleted when the single
+// classification authority moved to `crate::condition::classify_condition`.
+// Equivalent coverage now lives in `crates/glyph-core/src/condition.rs`
+// (`classify_pure_predicates_pass`, `classify_string_const_is_predicate_const`,
+// etc.).
 
 #[cfg(test)]
 mod param_default_name_ref_tests {

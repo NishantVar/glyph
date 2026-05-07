@@ -245,14 +245,16 @@ fn emit_ir_includes_resolved_predicates_on_branch() {
         "resolved_predicates should be null when no .applies() used"
     );
     // predicate_shape reflects the actual classification from Analyze.
-    // branching.glyph uses `mode == "fast"`: `mode` is an unknown identifier
-    // (not a const/param/binding), so it classifies as Boolean; `"fast"` is a
-    // string literal so it classifies as PredicateLiteral; `==` is an Operator
-    // but not a compositional operator (and/or/not).
+    // branching.glyph uses `mode == "fast"`: per design/data-flow.md §327, the
+    // entire `==` form is a boolean comparison — operands do NOT contribute to
+    // summary flags. Only `==` itself fires `has_boolean_token` (and
+    // `has_comparison_operator`). `mode` and `"fast"` are operands so they
+    // never set `has_predicate_token`. `==` is not a compositional operator
+    // (and/or/not).
     let shape = &branch["predicate_shape"];
     assert!(shape.is_object(), "predicate_shape should be an object");
     assert_eq!(shape["has_boolean_token"], true);
-    assert_eq!(shape["has_predicate_token"], true);
+    assert_eq!(shape["has_predicate_token"], false);
     assert_eq!(shape["has_compositional_operator"], false);
 }
 
@@ -553,4 +555,53 @@ skill main()
     let rp = &branch["resolved_predicates"];
     assert!(rp.is_object(), "resolved_predicates should be populated");
     assert_eq!(rp["big_change"], "the change is big");
+}
+
+/// Task 6 — Decl::Block flow walking: a numeric bare-condition inside a
+/// private block's flow must fire the
+/// `G::analyze::condition-non-boolean-non-predicate` diagnostic. Pre-fix,
+/// `check_file_numeric_conditions` only walked `Decl::Skill`, so the
+/// equivalent condition inside `block helper` slipped past analyze.
+#[test]
+fn block_flow_numeric_condition_fires_diagnostic() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("block_numeric.glyph");
+    std::fs::write(
+        &path,
+        r#"const max_attempts = 3
+
+block helper()
+    description: "A helper block."
+    flow:
+        if max_attempts
+            "Loop."
+        else
+            "Stop."
+
+skill main()
+    description: "Test."
+    flow:
+        helper()
+"#,
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(glyph_bin())
+        .arg("check")
+        .arg(&path)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("failed to spawn glyph");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let ids: Vec<String> = stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|v| v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string()))
+        .collect();
+    assert!(
+        ids.contains(&"G::analyze::condition-non-boolean-non-predicate".to_string()),
+        "expected diagnostic for bare numeric in block flow; got: {:?}",
+        ids
+    );
 }
