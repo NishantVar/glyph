@@ -149,7 +149,7 @@ Parameter type annotations are always optional. When omitted, the compiler infer
 Export blocks that return a meaningful value must declare `-> DomainType` so callers have a clear contract (see `data-flow.md` for the export-block closure rule). Export blocks with no meaningful return omit `->` entirely. In MVP, this contract is nominal:
 
 ```glyph
-// repo_tools.glyph.md
+// repo_tools.glyph
 export block inspect_repo(scope) -> RepoContext
     effects: reads_files, runs_commands
 
@@ -160,8 +160,8 @@ export block inspect_repo(scope) -> RepoContext
 ```
 
 ```glyph
-// fix_bug.glyph.md
-import "./repo_tools.glyph.md" { inspect_repo }
+// fix_bug.glyph
+import "./repo_tools.glyph" { inspect_repo }
 
 skill fix_bug(scope = ".")
     flow:

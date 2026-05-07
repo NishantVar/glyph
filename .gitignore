@@ -8,7 +8,7 @@ __pycache__
 .claude/worktrees
 docs/supwerpowers
 
-# Compiler output emitted next to .glyph.md sources during tests
+# Compiler output emitted next to .glyph sources during tests
 crates/glyph-cli/tests/corpus/**/*.md
-!crates/glyph-cli/tests/corpus/**/*.glyph.md
+!crates/glyph-cli/tests/corpus/**/*.glyph
 index.scip

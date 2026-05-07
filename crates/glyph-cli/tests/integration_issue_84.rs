@@ -11,8 +11,8 @@
 //!
 //! Test set (3 cases — symmetric to the chunk brief):
 //!
-//!   1. **Success — exact match**: `lib.glyph.md` exports
-//!      `block compute() -> Report`; `main.glyph.md`'s skill declares
+//!   1. **Success — exact match**: `lib.glyph` exports
+//!      `block compute() -> Report`; `main.glyph`'s skill declares
 //!      `-> Report` and consumes via `return compute()`. Same canonicalized
 //!      name → `glyph check` exits 0 with no `G::analyze::nominal-mismatch`.
 //!      Also acts as an integration-level regression pin for the chunk-7a
@@ -102,7 +102,7 @@ fn message_of(stdout: &str, id: &str) -> Option<String> {
 fn ac8_cross_file_nominal_match_succeeds_via_binary() {
     let dir = tempfile::tempdir().unwrap();
 
-    let lib_path = dir.path().join("lib.glyph.md");
+    let lib_path = dir.path().join("lib.glyph");
     std::fs::write(
         &lib_path,
         "\
@@ -114,11 +114,11 @@ export block compute() -> Report
     )
     .unwrap();
 
-    let main_path = dir.path().join("main.glyph.md");
+    let main_path = dir.path().join("main.glyph");
     std::fs::write(
         &main_path,
         "\
-import \"./lib.glyph.md\" { compute }
+import \"./lib.glyph\" { compute }
 
 skill main() -> Report
     description: \"Main.\"
@@ -166,7 +166,7 @@ skill main() -> Report
 fn ac8_cross_file_nominal_match_canonicalization_succeeds() {
     let dir = tempfile::tempdir().unwrap();
 
-    let lib_path = dir.path().join("lib.glyph.md");
+    let lib_path = dir.path().join("lib.glyph");
     std::fs::write(
         &lib_path,
         "\
@@ -178,11 +178,11 @@ export block compute() -> Repo_Context
     )
     .unwrap();
 
-    let main_path = dir.path().join("main.glyph.md");
+    let main_path = dir.path().join("main.glyph");
     std::fs::write(
         &main_path,
         "\
-import \"./lib.glyph.md\" { compute }
+import \"./lib.glyph\" { compute }
 
 skill main() -> repocontext
     description: \"Main.\"
@@ -216,7 +216,7 @@ skill main() -> repocontext
 /// Pre-fix: `analyze_with_imports` called `track_flow_usage` only from the
 /// `Decl::Skill` arm. With the `Decl::Block` arm now also threading through
 /// `track_flow_usage` (mirroring the skill arm), the multi-file fixture
-/// below — `main.glyph.md` consumes `imported_foo` exclusively from inside
+/// below — `main.glyph` consumes `imported_foo` exclusively from inside
 /// `block helper() { return imported_foo() }`, with `helper()` called from
 /// `skill main()` — exits 0 cleanly. Pre-fix, exit code was 2 with a
 /// Repairable `unused-import` diagnostic.
@@ -229,7 +229,7 @@ skill main() -> repocontext
 fn ac_codex_pass3_block_flow_import_used_via_binary() {
     let dir = tempfile::tempdir().unwrap();
 
-    let lib_path = dir.path().join("lib.glyph.md");
+    let lib_path = dir.path().join("lib.glyph");
     std::fs::write(
         &lib_path,
         "\
@@ -241,11 +241,11 @@ export block imported_foo() -> Report
     )
     .unwrap();
 
-    let main_path = dir.path().join("main.glyph.md");
+    let main_path = dir.path().join("main.glyph");
     std::fs::write(
         &main_path,
         "\
-import \"./lib.glyph.md\" { imported_foo }
+import \"./lib.glyph\" { imported_foo }
 
 skill main() -> Report
     description: \"Main.\"
@@ -290,7 +290,7 @@ block helper() -> Report
 fn ac_codex_pass4_return_undefined_via_binary() {
     let dir = tempfile::tempdir().unwrap();
 
-    let main_path = dir.path().join("main.glyph.md");
+    let main_path = dir.path().join("main.glyph");
     std::fs::write(
         &main_path,
         "\
@@ -349,7 +349,7 @@ skill main() -> Plan
 fn ac8_cross_file_nominal_mismatch_fires_via_binary() {
     let dir = tempfile::tempdir().unwrap();
 
-    let lib_path = dir.path().join("lib.glyph.md");
+    let lib_path = dir.path().join("lib.glyph");
     std::fs::write(
         &lib_path,
         "\
@@ -361,11 +361,11 @@ export block compute() -> Plan
     )
     .unwrap();
 
-    let main_path = dir.path().join("main.glyph.md");
+    let main_path = dir.path().join("main.glyph");
     std::fs::write(
         &main_path,
         "\
-import \"./lib.glyph.md\" { compute }
+import \"./lib.glyph\" { compute }
 
 skill main() -> Report
     description: \"Main.\"

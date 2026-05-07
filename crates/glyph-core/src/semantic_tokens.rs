@@ -1141,7 +1141,7 @@ mod tests {
 
     #[test]
     fn import_specifier_is_variable() {
-        let src = "import \"./other.glyph.md\" { helper }\n";
+        let src = "import \"./other.glyph\" { helper }\n";
         let tokens = collect_semantic_tokens(src, 0);
         // `import` is a keyword.
         let kw = find_token(&tokens, 0, "import", src).expect("import kw");
@@ -1153,7 +1153,7 @@ mod tests {
 
     #[test]
     fn whole_module_import_alias_is_namespace() {
-        let src = "import \"./other.glyph.md\" as helpers\n";
+        let src = "import \"./other.glyph\" as helpers\n";
         let tokens = collect_semantic_tokens(src, 0);
         let alias = find_token(&tokens, 0, "helpers", src).expect("alias");
         assert_eq!(alias.token_type, SemTokenType::Namespace as u32);

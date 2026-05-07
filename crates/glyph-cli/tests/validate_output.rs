@@ -31,7 +31,7 @@ fn minimal_ir() -> String {
     serde_json::json!({
         "ir_version": 1,
         "compiler": "glyph 0.1.0",
-        "source_file": "test.glyph.md",
+        "source_file": "test.glyph",
         "skill": {
             "node_id": "n0",
             "kind": "skill",
@@ -108,7 +108,7 @@ fn missing_file_exits_three() {
 
 #[test]
 fn compiler_emitted_output_passes_validation() {
-    // Compile a valid .glyph.md file with --emit-ir, then validate-output
+    // Compile a valid .glyph file with --emit-ir, then validate-output
     // against the emitted pair. This tests the acceptance criterion that
     // "compiler's own emitted .md + .ir.json always passes validate-output."
     let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -116,8 +116,8 @@ fn compiler_emitted_output_passes_validation() {
         .join("corpus")
         .join("valid");
 
-    // Find a valid .glyph.md file
-    let glyph_file = corpus_dir.join("update_docs.glyph.md");
+    // Find a valid .glyph file
+    let glyph_file = corpus_dir.join("update_docs.glyph");
     if !glyph_file.exists() {
         panic!(
             "corpus file {:?} not found — test cannot be skipped silently",
@@ -126,7 +126,7 @@ fn compiler_emitted_output_passes_validation() {
     }
 
     let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let tmp_glyph = dir.path().join("update_docs.glyph.md");
+    let tmp_glyph = dir.path().join("update_docs.glyph");
     std::fs::copy(&glyph_file, &tmp_glyph).unwrap();
 
     // Compile with --emit-ir

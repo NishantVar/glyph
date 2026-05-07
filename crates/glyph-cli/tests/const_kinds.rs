@@ -27,7 +27,7 @@ fn compile_fixture(name: &str) -> (tempfile::TempDir, String) {
     let src = corpus_source(name);
     let tmp_src = dir.path().join(name);
     std::fs::copy(&src, &tmp_src).unwrap();
-    let out = dir.path().join(name.replace(".glyph.md", ".md"));
+    let out = dir.path().join(name.replace(".glyph", ".md"));
 
     let result = Command::new(glyph_bin())
         .arg("compile")
@@ -47,7 +47,7 @@ fn compile_fixture(name: &str) -> (tempfile::TempDir, String) {
 
 #[test]
 fn const_string_inlines_into_compiled_md() {
-    let (_d, md) = compile_fixture("const_string.glyph.md");
+    let (_d, md) = compile_fixture("const_string.glyph");
     assert!(
         md.contains("- Hello, world."),
         "expected string const value in ### Constraints, got:\n{}",
@@ -58,7 +58,7 @@ fn const_string_inlines_into_compiled_md() {
 #[test]
 fn const_int_inlines_into_compiled_md() {
     // Inferer's no-`.` → Int rule (kind_infer.rs).
-    let (_d, md) = compile_fixture("const_int.glyph.md");
+    let (_d, md) = compile_fixture("const_int.glyph");
     assert!(
         md.contains("- 3"),
         "expected int const value `3` in ### Constraints, got:\n{}",
@@ -69,7 +69,7 @@ fn const_int_inlines_into_compiled_md() {
 #[test]
 fn const_float_inlines_into_compiled_md() {
     // Inferer's `.`-present → Float rule (kind_infer.rs).
-    let (_d, md) = compile_fixture("const_float.glyph.md");
+    let (_d, md) = compile_fixture("const_float.glyph");
     assert!(
         md.contains("- 0.001"),
         "expected float const value `0.001` in ### Constraints, got:\n{}",
@@ -79,7 +79,7 @@ fn const_float_inlines_into_compiled_md() {
 
 #[test]
 fn const_bool_inlines_into_compiled_md() {
-    let (_d, md) = compile_fixture("const_bool.glyph.md");
+    let (_d, md) = compile_fixture("const_bool.glyph");
     assert!(
         md.contains("- True."),
         "expected bool const value `True.` in ### Constraints, got:\n{}",
@@ -95,7 +95,7 @@ fn const_bool_uppercase_normalizes_to_lowercase() {
     // (`lower::collect_consts`), so the rendered value reaching emit is
     // always lowercase regardless of source-text casing.
     // The four-form renderer (Soft/Require) capitalizes and appends a period.
-    let (_d, md) = compile_fixture("const_bool_uppercase.glyph.md");
+    let (_d, md) = compile_fixture("const_bool_uppercase.glyph");
     assert!(
         md.contains("- True."),
         "expected bool const value normalized to `True.` in ### Constraints, got:\n{}",

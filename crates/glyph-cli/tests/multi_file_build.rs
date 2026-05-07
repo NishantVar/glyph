@@ -1,10 +1,10 @@
 //! Slice 12 integration tests — multi-file build orchestration.
 //!
 //! Covers all five acceptance criteria via the CLI binary:
-//!   1. `glyph compile dir/` processes every `.glyph.md` even if not transitively reached
+//!   1. `glyph compile dir/` processes every `.glyph` even if not transitively reached
 //!   2. Files compile in topological order (libraries before consumers)
-//!   3. Failure in b.glyph.md skips c.glyph.md (which imports it) with the build warning
-//!   4. Stale c.md left untouched on disk after c.glyph.md skip; stderr note emitted
+//!   3. Failure in b.glyph skips c.glyph (which imports it) with the build warning
+//!   4. Stale c.md left untouched on disk after c.glyph skip; stderr note emitted
 //!   5. Build exits 1 if any file failed; partial output present for successful files
 
 use std::path::PathBuf;
@@ -14,19 +14,19 @@ fn glyph_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_glyph"))
 }
 
-/// AC1: `glyph compile dir/` processes every `.glyph.md` even if not transitively reached.
+/// AC1: `glyph compile dir/` processes every `.glyph` even if not transitively reached.
 #[test]
 fn ac1_directory_compile_all_files() {
     let dir = tempfile::tempdir().unwrap();
 
-    std::fs::write(dir.path().join("a.glyph.md"), "\
+    std::fs::write(dir.path().join("a.glyph"), "\
 skill alpha()
     description: \"Alpha.\"
     flow:
         \"Do alpha.\"
 ").unwrap();
 
-    std::fs::write(dir.path().join("b.glyph.md"), "\
+    std::fs::write(dir.path().join("b.glyph"), "\
 skill beta()
     description: \"Beta.\"
     flow:
@@ -56,12 +56,12 @@ skill beta()
 fn ac2_topological_order() {
     let dir = tempfile::tempdir().unwrap();
 
-    std::fs::write(dir.path().join("lib.glyph.md"), "\
+    std::fs::write(dir.path().join("lib.glyph"), "\
 export const greeting = \"Hello.\"
 ").unwrap();
 
-    std::fs::write(dir.path().join("consumer.glyph.md"), "\
-import \"./lib.glyph.md\" { greeting }
+    std::fs::write(dir.path().join("consumer.glyph"), "\
+import \"./lib.glyph\" { greeting }
 
 skill main()
     description: \"Main.\"
@@ -89,13 +89,13 @@ skill main()
     assert!(dir.path().join("consumer.md").exists(), "consumer.md should be produced");
 }
 
-/// AC3: Failure in b.glyph.md skips c.glyph.md (which imports it) with the build warning.
+/// AC3: Failure in b.glyph skips c.glyph (which imports it) with the build warning.
 #[test]
 fn ac3_failure_skips_dependent() {
     let dir = tempfile::tempdir().unwrap();
 
     // a — valid standalone
-    std::fs::write(dir.path().join("a.glyph.md"), "\
+    std::fs::write(dir.path().join("a.glyph"), "\
 skill alpha()
     description: \"Alpha.\"
     flow:
@@ -103,13 +103,13 @@ skill alpha()
 ").unwrap();
 
     // b — broken
-    std::fs::write(dir.path().join("b.glyph.md"), "\
+    std::fs::write(dir.path().join("b.glyph"), "\
 this is broken!!!
 ").unwrap();
 
     // c — imports b
-    std::fs::write(dir.path().join("c.glyph.md"), "\
-import \"./b.glyph.md\" { something }
+    std::fs::write(dir.path().join("c.glyph"), "\
+import \"./b.glyph\" { something }
 
 skill gamma()
     description: \"Gamma.\"
@@ -140,7 +140,7 @@ skill gamma()
     );
 }
 
-/// AC4: Stale c.md left untouched on disk after c.glyph.md skip; stderr note emitted.
+/// AC4: Stale c.md left untouched on disk after c.glyph skip; stderr note emitted.
 #[test]
 fn ac4_stale_md_untouched_with_note() {
     let dir = tempfile::tempdir().unwrap();
@@ -149,13 +149,13 @@ fn ac4_stale_md_untouched_with_note() {
     std::fs::write(dir.path().join("c.md"), stale_content).unwrap();
 
     // b — broken
-    std::fs::write(dir.path().join("b.glyph.md"), "\
+    std::fs::write(dir.path().join("b.glyph"), "\
 this is broken!!!
 ").unwrap();
 
     // c — imports b, will be skipped
-    std::fs::write(dir.path().join("c.glyph.md"), "\
-import \"./b.glyph.md\" { something }
+    std::fs::write(dir.path().join("c.glyph"), "\
+import \"./b.glyph\" { something }
 
 skill gamma()
     description: \"Gamma.\"
@@ -189,14 +189,14 @@ skill gamma()
 fn ac5_exit_1_partial_output() {
     let dir = tempfile::tempdir().unwrap();
 
-    std::fs::write(dir.path().join("good.glyph.md"), "\
+    std::fs::write(dir.path().join("good.glyph"), "\
 skill good()
     description: \"Good.\"
     flow:
         \"Do good.\"
 ").unwrap();
 
-    std::fs::write(dir.path().join("bad.glyph.md"), "\
+    std::fs::write(dir.path().join("bad.glyph"), "\
 this is broken!!!
 ").unwrap();
 

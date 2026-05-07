@@ -1,4 +1,4 @@
-import "./nonexistent.glyph.md" { something }
+import "./nonexistent.glyph" { something }
 
 skill main()
     description: "Main."

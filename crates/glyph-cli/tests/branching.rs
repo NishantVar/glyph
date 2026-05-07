@@ -50,14 +50,14 @@ fn stdout_diagnostic_ids(output: &Output) -> Vec<String> {
 // AC1: valid branching file compiles successfully with lettered sub-steps.
 #[test]
 fn branching_corpus_compiles_with_lettered_substeps() {
-    let src = corpus_path("valid", "branching.glyph.md");
+    let src = corpus_path("valid", "branching.glyph");
     let out = corpus_path("valid", "branching.md");
     let _ = std::fs::remove_file(&out);
 
     let result = run_compile(src);
     assert!(
         result.status.success(),
-        "branching.glyph.md should compile; stderr={:?}",
+        "branching.glyph should compile; stderr={:?}",
         String::from_utf8_lossy(&result.stderr),
     );
 
@@ -70,7 +70,7 @@ fn branching_corpus_compiles_with_lettered_substeps() {
 // AC7: applies-no-parens corpus file fires the right diagnostic.
 #[test]
 fn applies_no_parens_corpus_fires_diagnostic() {
-    let src = corpus_path("invalid", "applies_no_parens.glyph.md");
+    let src = corpus_path("invalid", "applies_no_parens.glyph");
     let result = run_check_json(src);
     assert_eq!(result.status.code(), Some(1), "applies-no-parens is an error");
     let ids = stdout_diagnostic_ids(&result);
@@ -84,7 +84,7 @@ fn applies_no_parens_corpus_fires_diagnostic() {
 // AC7: applies-with-args corpus file fires the right diagnostic.
 #[test]
 fn applies_with_args_corpus_fires_diagnostic() {
-    let src = corpus_path("invalid", "applies_with_args.glyph.md");
+    let src = corpus_path("invalid", "applies_with_args.glyph");
     let result = run_check_json(src);
     assert_eq!(result.status.code(), Some(1), "applies-with-args is an error");
     let ids = stdout_diagnostic_ids(&result);
@@ -98,7 +98,7 @@ fn applies_with_args_corpus_fires_diagnostic() {
 // AC7: applies-on-non-block corpus file fires the right diagnostic.
 #[test]
 fn applies_on_non_block_corpus_fires_diagnostic() {
-    let src = corpus_path("invalid", "applies_on_non_block.glyph.md");
+    let src = corpus_path("invalid", "applies_on_non_block.glyph");
     let result = run_check_json(src);
     assert_eq!(result.status.code(), Some(1), "applies-on-non-block is an error");
     let ids = stdout_diagnostic_ids(&result);

@@ -135,7 +135,7 @@
 ; modifiers; only the ten new primitives get Glyph-prefixed captures.
 
 ; Context strings — in `context:` body and in `context <string>` markers
-; (which appear inside `flow:` per the canonical `flow_context.glyph.md`
+; (which appear inside `flow:` per the canonical `flow_context.glyph`
 ; example). Visually muted to read as "background knowledge".
 (context_section (string_literal) @glyph.context.string @string)
 (context_section (block_string) @glyph.context.string @string)

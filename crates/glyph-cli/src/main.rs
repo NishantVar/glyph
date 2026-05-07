@@ -1,7 +1,7 @@
 //! Glyph CLI binary.
 //!
 //! Usage:
-//!   glyph compile <path-to.glyph.md> [--format pretty|json]
+//!   glyph compile <path-to.glyph> [--format pretty|json]
 //!   glyph check   <path-or-dir>      [--format pretty|json]
 //!
 //! Exit codes (per `design/build-foundation.md` §A6):
@@ -37,10 +37,10 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Compile `.glyph.md` source file(s) into Markdown next to the source.
+    /// Compile `.glyph` source file(s) into Markdown next to the source.
     ///
     /// Accepts a single file or a directory. When given a directory, all
-    /// `.glyph.md` files are compiled in topological order with partial failure
+    /// `.glyph` files are compiled in topological order with partial failure
     /// (skip-dependents, leave stale `.md`, exit 1 if any file fails).
     Compile {
         /// Path to the source file or directory.
@@ -62,7 +62,7 @@ enum Command {
     ///
     /// Reports all diagnostics (errors / repairable / warnings) without continuing
     /// to Lower/Validate/Expand/Emit. **Writes no output files.** Accepts either a
-    /// single `.glyph.md` file or a directory (recursively walked for `*.glyph.md`).
+    /// single `.glyph` file or a directory (recursively walked for `*.glyph`).
     /// See `design/cli.md` §`glyph check`.
     Check {
         /// Path to the source file or directory.
@@ -88,7 +88,7 @@ enum Command {
         #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
         format: OutputFormat,
     },
-    /// Run Phase 3a deterministic source rewrites. Rewrites `.glyph.md` files
+    /// Run Phase 3a deterministic source rewrites. Rewrites `.glyph` files
     /// in place. Analogous to `rustfmt` / `gofmt`.
     Fmt {
         /// Path to the source file or directory.
@@ -219,7 +219,7 @@ fn run_fmt(path: PathBuf, check: bool, enable_effects: bool) -> ExitCode {
 }
 
 /// Run `glyph check <path>` over `path`. If `path` is a directory, walks it
-/// recursively for `*.glyph.md` files (sorted by path for byte-stable output)
+/// recursively for `*.glyph` files (sorted by path for byte-stable output)
 /// and processes each one. The aggregate exit code follows the same
 /// `1`-wins-over-`2` rule as a single-file check (per `design/cli.md`
 /// §Multi-File Behavior).
@@ -233,7 +233,7 @@ fn run_check(path: PathBuf, format: OutputFormat, strict: bool, enable_effects: 
     };
 
     if files.is_empty() {
-        // Directory with no `.glyph.md` files inside — nothing to check, exit
+        // Directory with no `.glyph` files inside — nothing to check, exit
         // cleanly. (A missing single file would have errored in
         // `collect_glyph_sources`.)
         return ExitCode::from(0);
@@ -273,12 +273,12 @@ fn combine_exit_codes(a: u8, b: u8) -> u8 {
     }
 }
 
-/// Collect every `.glyph.md` source file under `path`.
+/// Collect every `.glyph` source file under `path`.
 ///
 /// - If `path` is a single file, returns `vec![path]` (regardless of extension —
 ///   surfacing extension issues is the parser's job, not the CLI's).
 /// - If `path` is a directory, walks it recursively and returns every entry
-///   ending in `.glyph.md`, sorted by path for deterministic output.
+///   ending in `.glyph`, sorted by path for deterministic output.
 /// - Anything else (missing path, IO error) returns `Err(ExitCode 3)`.
 fn collect_glyph_sources(path: &std::path::Path) -> Result<Vec<PathBuf>, ExitCode> {
     let metadata = match std::fs::metadata(path) {
@@ -323,7 +323,7 @@ fn collect_glyph_sources(path: &std::path::Path) -> Result<Vec<PathBuf>, ExitCod
                 if ft.is_dir() {
                     stack.push(p);
                 } else if ft.is_file() {
-                    if p.to_string_lossy().ends_with(".glyph.md") {
+                    if p.to_string_lossy().ends_with(".glyph") {
                         out.push(p);
                     }
                 }
@@ -409,7 +409,7 @@ fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool,
     }
 }
 
-/// Directory-mode compile: collect all `.glyph.md` files, build DAG, compile
+/// Directory-mode compile: collect all `.glyph` files, build DAG, compile
 /// in topological order with partial failure.
 fn run_compile_directory(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool, enable_effects: bool) -> ExitCode {
     let files = match collect_glyph_sources(&path) {
@@ -442,7 +442,7 @@ fn run_compile_directory(path: PathBuf, format: OutputFormat, emit_ir: bool, str
                 let file_name = file_path.file_name()
                     .and_then(|s| s.to_str())
                     .unwrap_or("unknown");
-                let out_name = file_name.strip_suffix(".glyph.md")
+                let out_name = file_name.strip_suffix(".glyph")
                     .map(|s| format!("{}.md", s))
                     .unwrap_or_else(|| file_name.to_string());
                 eprintln!(
@@ -567,22 +567,22 @@ fn locate_byte(source: &str, line: u32, col: u32) -> usize {
     source.len().saturating_sub(1)
 }
 
-/// Map `foo.glyph.md` → `foo.ir.json` next to the source file.
+/// Map `foo.glyph` → `foo.ir.json` next to the source file.
 fn ir_json_output_path(input: &std::path::Path) -> PathBuf {
     let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
     let file_name = input.file_name().and_then(|s| s.to_str()).unwrap_or("");
     let stem = file_name
-        .strip_suffix(".glyph.md")
+        .strip_suffix(".glyph")
         .unwrap_or_else(|| file_name.strip_suffix(".md").unwrap_or(file_name));
     parent.join(format!("{}.ir.json", stem))
 }
 
-/// Map `foo.glyph.md` → `foo.md` next to the source file.
+/// Map `foo.glyph` → `foo.md` next to the source file.
 fn compiled_output_path(input: &std::path::Path) -> PathBuf {
     let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
     let file_name = input.file_name().and_then(|s| s.to_str()).unwrap_or("");
     let stem = file_name
-        .strip_suffix(".glyph.md")
+        .strip_suffix(".glyph")
         .unwrap_or_else(|| file_name.strip_suffix(".md").unwrap_or(file_name));
     parent.join(format!("{}.md", stem))
 }

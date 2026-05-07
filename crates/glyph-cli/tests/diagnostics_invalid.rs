@@ -1,8 +1,8 @@
 //! Slice 2 integration tests — diagnostic infrastructure end-to-end.
 //!
 //! Covers the six acceptance criteria from the slice spec:
-//!   1. `glyph compile invalid/empty.glyph.md` exits 1 with `G::parse::empty-file`
-//!   2. `glyph compile invalid/empty_flow.glyph.md` exits 1 with `G::parse::empty-flow`
+//!   1. `glyph compile invalid/empty.glyph` exits 1 with `G::parse::empty-file`
+//!   2. `glyph compile invalid/empty_flow.glyph` exits 1 with `G::parse::empty-flow`
 //!   3. `--format json` produces JSON diagnostics on stdout
 //!   4. Pretty output renders span, message, and source caret to stderr
 //!   5. Re-running over identical input produces byte-identical JSON
@@ -57,7 +57,7 @@ fn assert_contains_diagnostic_id(stdout: &str, id: &str) {
 
 #[test]
 fn empty_file_exits_one_with_empty_file_diagnostic() {
-    let result = run_compile("empty.glyph.md", "json");
+    let result = run_compile("empty.glyph", "json");
     assert_eq!(
         result.status.code(),
         Some(1),
@@ -71,7 +71,7 @@ fn empty_file_exits_one_with_empty_file_diagnostic() {
 
 #[test]
 fn empty_flow_exits_one_with_empty_flow_diagnostic() {
-    let result = run_compile("empty_flow.glyph.md", "json");
+    let result = run_compile("empty_flow.glyph", "json");
     assert_eq!(
         result.status.code(),
         Some(1),
@@ -85,7 +85,7 @@ fn empty_flow_exits_one_with_empty_flow_diagnostic() {
 
 #[test]
 fn json_format_produces_ndjson_on_stdout() {
-    let result = run_compile("empty.glyph.md", "json");
+    let result = run_compile("empty.glyph", "json");
     let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
     let trimmed = stdout.trim_end_matches('\n');
     assert!(!trimmed.is_empty(), "expected diagnostic on stdout");
@@ -117,7 +117,7 @@ fn json_format_produces_ndjson_on_stdout() {
 
 #[test]
 fn pretty_format_renders_to_stderr() {
-    let result = run_compile("empty.glyph.md", "pretty");
+    let result = run_compile("empty.glyph", "pretty");
     assert_eq!(result.status.code(), Some(1));
     // stdout should be empty (or carry no diagnostics) under pretty mode.
     let stdout = String::from_utf8_lossy(&result.stdout).to_string();
@@ -149,8 +149,8 @@ fn pretty_format_renders_to_stderr() {
 #[test]
 fn json_output_is_byte_identical_across_runs() {
     // Run twice over the same fixture; the NDJSON stream must be byte-identical.
-    let first = run_compile("empty_flow.glyph.md", "json").stdout;
-    let second = run_compile("empty_flow.glyph.md", "json").stdout;
+    let first = run_compile("empty_flow.glyph", "json").stdout;
+    let second = run_compile("empty_flow.glyph", "json").stdout;
     assert_eq!(
         first, second,
         "JSON output must be byte-identical across runs"
@@ -159,7 +159,7 @@ fn json_output_is_byte_identical_across_runs() {
 
 #[test]
 fn empty_flow_does_not_emit_md_file() {
-    let _ = run_compile("empty_flow.glyph.md", "json");
+    let _ = run_compile("empty_flow.glyph", "json");
     let unwanted = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("corpus")

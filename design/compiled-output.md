@@ -1,6 +1,6 @@
 # Glyph Compiled Output
 
-This document defines the shape of compiled Markdown files that the Glyph compiler emits. It covers the MVP output format: a `.glyph.md` source file compiles into a same-basename `.md` file that serves as the executing agent's skill instructions. Compilation is parameterless — parameters appear as named slots resolved by the consuming LLM at runtime.
+This document defines the shape of compiled Markdown files that the Glyph compiler emits. It covers the MVP output format: a `.glyph` source file compiles into a same-basename `.md` file that serves as the executing agent's skill instructions. Compilation is parameterless — parameters appear as named slots resolved by the consuming LLM at runtime.
 
 ## Guiding Principles
 
@@ -12,11 +12,11 @@ This document defines the shape of compiled Markdown files that the Glyph compil
 
 ## Parameterless Compilation
 
-MVP compilation is parameterless. `glyph compile skill.glyph.md` produces one `.md` file per source file, regardless of how the skill will be invoked. Parameters are not resolved at compile time — they appear in the compiled output as named slots that the consuming LLM resolves from user context at runtime.
+MVP compilation is parameterless. `glyph compile skill.glyph` produces one `.md` file per source file, regardless of how the skill will be invoked. Parameters are not resolved at compile time — they appear in the compiled output as named slots that the consuming LLM resolves from user context at runtime.
 
 Practical consequences:
 
-- The `.glyph.md` source is the authoring artifact; it is what authors share, import, and version.
+- The `.glyph` source is the authoring artifact; it is what authors share, import, and version.
 - The `.md` compiled output is a single, stable artifact per source file. There is no argument-dependent variation.
 - The compiled file contains a `## Parameters` section listing each parameter with its name, a brief description, and either a default value or a `(required)` marker. Steps and Constraints may reference parameters by name using `{param}` syntax.
 - The consuming LLM reads the Parameters section, resolves each parameter from the user's request context (falling back to the listed default if one is provided, or asking the user when a required parameter cannot be inferred), and executes the Steps with those values in mind.
@@ -160,7 +160,7 @@ Word counts are checked in Expand Step 1 after the callee's prose is resolved �
 
 Conditions are checked top-to-bottom; the first `referenced` or `external` trigger wins. The tier is a property of the *(callee, skill)* pair — a block called once in skill A might inline, but the same block called twice in skill B gets a procedure section.
 
-**Library file emission.** Library files emit standalone procedure `.md` files for `export block` declarations whose expanded prose is >= 150 words (i.e., above the Tier 1 inline threshold). The library's Phase 7 writes these to a subdirectory named after the source file (e.g., `repo_tools.glyph.md` → `repo_tools/inspect-repo.md`). Export blocks below the threshold emit nothing from the library — consumers inline them. Note: a procedure `.md` may exist on disk but go unused at a consumer call site that projects the block as Tier 2 (same-file procedure) rather than Tier 3 — this is intentional, not an error. See `language-surface.md` §File-Level Rules for the full library emission model.
+**Library file emission.** Library files emit standalone procedure `.md` files for `export block` declarations whose expanded prose is >= 150 words (i.e., above the Tier 1 inline threshold). The library's Phase 7 writes these to a subdirectory named after the source file (e.g., `repo_tools.glyph` → `repo_tools/inspect-repo.md`). Export blocks below the threshold emit nothing from the library — consumers inline them. Note: a procedure `.md` may exist on disk but go unused at a consumer call site that projects the block as Tier 2 (same-file procedure) rather than Tier 3 — this is intentional, not an error. See `language-surface.md` §File-Level Rules for the full library emission model.
 
 #### Same-File Procedure Sections
 
@@ -237,7 +237,7 @@ effects: [reads_files]
 - Do not introduce new abstractions during the review.
 ```
 
-**File output path:** Procedure files are placed in a subdirectory named after the source file. The procedure filename is the **kebab-case** form of the export block's `snake_case` identifier (each `_` → `-`, no other transformation). E.g., `review_tools.glyph.md` containing `export block review_code(...)` produces `review_tools/review-code.md`. The `.glyph` infix from the source filename is dropped for compiled artifacts: source files are `*.glyph.md`, compiled outputs (top-level skills and procedure files alike) are `*.md`. The same kebab-case rule governs both the on-disk filename and the H3 heading inside same-file procedure sections (see §Same-File Procedure Sections), so a given block always renders under a single canonical name regardless of projection tier.
+**File output path:** Procedure files are placed in a subdirectory named after the source file. The procedure filename is the **kebab-case** form of the export block's `snake_case` identifier (each `_` → `-`, no other transformation). E.g., `review_tools.glyph` containing `export block review_code(...)` produces `review_tools/review-code.md`. The `.glyph` infix from the source filename is dropped for compiled artifacts: source files are `*.glyph`, compiled outputs (top-level skills and procedure files alike) are `*.md`. The same kebab-case rule governs both the on-disk filename and the H3 heading inside same-file procedure sections (see §Same-File Procedure Sections), so a given block always renders under a single canonical name regardless of projection tier.
 
 **Referencing from Steps (locked template):** The Step prose for an `external_file` Call is the locked template `Load and follow the procedure in \`{procedure_path}\`.`. The `{procedure_path}` is substituted from `IrCall.procedure_path`. The deterministic emitter renders this verbatim; there is no LLM involvement for the top-level case. When inside a conditional branch arm, the same locked template is emitted as a sub-step within the arm's prose:
 
@@ -357,7 +357,7 @@ Most authoring machinery does not survive into compiled output:
 - **Parameters** resolve to concrete values during expand. No variable names survive.
 - **No provenance markers.** No comments like `<!-- expanded from repo_tools.unrelated_edits -->`.
 
-Only imports actually used by the skill are inlined; unused imports are dead code excluded from output. The compiler auto-removes unused import declarations from the source `.glyph.md` file (source-to-source fix, not silent omission).
+Only imports actually used by the skill are inlined; unused imports are dead code excluded from output. The compiler auto-removes unused import declarations from the source `.glyph` file (source-to-source fix, not silent omission).
 
 **Self-containment is tiered.** Skills projected entirely at Tier 1 (inline) and Tier 2 (same-file procedure) are fully self-contained — one `.md` file with no external dependencies. Skills with Tier 3 (external file) projections depend on the referenced procedure files existing at the expected relative paths. The compiler produces all files in a single build; deployment requires shipping the output directory, not just a single file.
 
@@ -371,7 +371,7 @@ Only imports actually used by the skill are inlined; unused imports are dead cod
 
 ## Complete Example
 
-Source (`fix_bug.glyph.md`) — novice-kernel form, most definitions will be materialized by the repair pass:
+Source (`fix_bug.glyph`) — novice-kernel form, most definitions will be materialized by the repair pass:
 
 ```glyph
 skill fix_bug(scope = ".")
@@ -389,7 +389,7 @@ skill fix_bug(scope = ".")
         return summarize_changes()
 ```
 
-After the repair pass (`fix_bug.glyph.md`, same file — repair appends generated declarations):
+After the repair pass (`fix_bug.glyph`, same file — repair appends generated declarations):
 
 ```glyph
 skill fix_bug(scope = ".")

@@ -75,7 +75,7 @@ fn assert_has_diagnostic_id(stdout: &str, id: &str) {
 
 #[test]
 fn skill_with_params_compiles_and_emits_parameters_section() {
-    let src = fixture("valid", "with_params.glyph.md");
+    let src = fixture("valid", "with_params.glyph");
     // Clean any previous artifact.
     let out = src.with_file_name("with_params.md");
     let _ = std::fs::remove_file(&out);
@@ -120,7 +120,7 @@ fn export_block_without_default_compiles_cleanly() {
     // default. The retired rule `G::analyze::missing-param-default` no
     // longer fires; an export block declared without a default value for a
     // parameter compiles successfully.
-    let src = fixture("valid", "export_block_no_default.glyph.md");
+    let src = fixture("valid", "export_block_no_default.glyph");
     // Clean any previous artifact.
     let out = src.with_file_name("export_block_no_default.md");
     let _ = std::fs::remove_file(&out);
@@ -149,7 +149,7 @@ fn missing_required_arg_at_call_site_emits_analyze_diagnostic() {
     // callee identifier (line 5 in the fixture), not the enclosing skill
     // header (line 1) — otherwise a skill with multiple calls cannot tell
     // the IDE which call is broken.
-    let src = fixture("invalid", "missing_required_arg.glyph.md");
+    let src = fixture("invalid", "missing_required_arg.glyph");
     let result = run_compile(src, "json");
     assert_eq!(
         result.status.code(),
@@ -182,7 +182,7 @@ fn export_block_missing_required_arg_at_call_site_emits_analyze_diagnostic() {
     // surfaces `G::analyze::missing-required-arg` (hard error → exit 1)
     // at the call site span — mirrors the private-`block` behavior wired
     // by Slice 1 (#104).
-    let src = fixture("invalid", "export_block_missing_required_arg.glyph.md");
+    let src = fixture("invalid", "export_block_missing_required_arg.glyph");
     let result = run_compile(src, "json");
     assert_eq!(
         result.status.code(),
@@ -214,7 +214,7 @@ fn return_call_missing_required_arg_emits_analyze_diagnostic() {
     // required parameter must surface `G::analyze::missing-required-arg`,
     // not silently compile. Pre-fix the FlowStmt::Return arm only ran the
     // undefined-call + nominal-mismatch checks.
-    let src = fixture("invalid", "return_call_missing_required_arg.glyph.md");
+    let src = fixture("invalid", "return_call_missing_required_arg.glyph");
     let result = run_compile(src, "json");
     assert_eq!(
         result.status.code(),
@@ -232,7 +232,7 @@ fn branch_call_missing_required_arg_emits_analyze_diagnostic() {
     // Codex P2 follow-up to #105: a call inside an `if` branch body must
     // run the same required-arg check as a top-level call. Pre-fix the
     // branch-body walker only verified name resolution.
-    let src = fixture("invalid", "branch_call_missing_required_arg.glyph.md");
+    let src = fixture("invalid", "branch_call_missing_required_arg.glyph");
     let result = run_compile(src, "json");
     assert_eq!(
         result.status.code(),
@@ -252,7 +252,7 @@ fn return_to_same_file_export_block_with_type_mismatch_emits_nominal_mismatch() 
     // check against the export-block's return type. Pre-fix the
     // local_callee_return_types map was built from `Decl::Block` only,
     // so export-block returns silently skipped the check.
-    let src = fixture("invalid", "return_export_block_nominal_mismatch.glyph.md");
+    let src = fixture("invalid", "return_export_block_nominal_mismatch.glyph");
     let result = run_compile(src, "json");
     assert_eq!(
         result.status.code(),
@@ -267,7 +267,7 @@ fn return_to_same_file_export_block_with_type_mismatch_emits_nominal_mismatch() 
 
 #[test]
 fn unknown_param_slot_emits_analyze_diagnostic() {
-    let src = fixture("invalid", "unknown_param_slot.glyph.md");
+    let src = fixture("invalid", "unknown_param_slot.glyph");
     let result = run_compile(src, "json");
     assert_eq!(
         result.status.code(),
@@ -282,7 +282,7 @@ fn unknown_param_slot_emits_analyze_diagnostic() {
 
 #[test]
 fn slot_in_description_emits_repairable_parse_diagnostic() {
-    let src = fixture("repairable", "slot_in_description.glyph.md");
+    let src = fixture("repairable", "slot_in_description.glyph");
     let result = run_check(src, "json");
     assert_eq!(
         result.status.code(),

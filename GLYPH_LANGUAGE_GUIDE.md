@@ -6,7 +6,7 @@ This is the single document an author needs to write a skill in Glyph. It teache
 
 ## 1. What Glyph Is
 
-Glyph is a small DSL for **authoring agent skills**. You write a structured `.glyph.md` source file. The Glyph compiler turns it into a flat, explicit Markdown skill (`.md`) that a coding agent can follow at runtime.
+Glyph is a small DSL for **authoring agent skills**. You write a structured `.glyph` source file. The Glyph compiler turns it into a flat, explicit Markdown skill (`.md`) that a coding agent can follow at runtime.
 
 - The source form is for humans: structured, readable, like a tiny program.
 - The compiled form is for agents: explicit prose with sections like `## Parameters`, `### Context`, `### Steps`, `### Constraints`.
@@ -22,7 +22,7 @@ Two things to internalize early:
 
 ## 2. Files
 
-A Glyph source file is named `<basename>.glyph.md`. There are exactly two file kinds:
+A Glyph source file is named `<basename>.glyph`. There are exactly two file kinds:
 
 | File kind | Contents | Compiled output |
 |---|---|---|
@@ -199,7 +199,7 @@ Two forms.
 **Whole-module:**
 
 ```glyph
-import "./repo_tools.glyph.md" as repo_tools
+import "./repo_tools.glyph" as repo_tools
 
 ctx = repo_tools.inspect_repo(scope)
 ```
@@ -207,14 +207,14 @@ ctx = repo_tools.inspect_repo(scope)
 **Selective:**
 
 ```glyph
-import "./prefs.glyph.md" { preserve_existing_patterns, validation_strictness }
-import "./repo_tools.glyph.md" { inspect_repo as inspect, has_test_suite }
+import "./prefs.glyph" { preserve_existing_patterns, validation_strictness }
+import "./repo_tools.glyph" { inspect_repo as inspect, has_test_suite }
 ```
 
 For long lists, the brace body may span multiple lines. A trailing comma is allowed:
 
 ```glyph
-import "./glyph_authoring_passes.glyph.md" {
+import "./glyph_authoring_passes.glyph" {
     factor_long_instructions_and_texts,
     sort_declarations,
     compile_and_iterate,
@@ -496,7 +496,7 @@ plan = make_plan(
 ### 8.2 Qualified callees (whole-module imports)
 
 ```glyph
-import "./repo_tools.glyph.md" as repo_tools
+import "./repo_tools.glyph" as repo_tools
 
 ctx = repo_tools.inspect_repo(scope)
 ```
@@ -880,10 +880,10 @@ A skill that spawns a subagent declares `spawns_agent`. It does **not** inherit 
 
 ### 13.1 Library file shape
 
-A library file is just a `.glyph.md` with no `skill`. Example: a preferences file.
+A library file is just a `.glyph` with no `skill`. Example: a preferences file.
 
 ```glyph
-// prefs.glyph.md
+// prefs.glyph
 export const preserve_existing_patterns = "Prefer the repository's existing patterns…"
 export const safety_first = "Never execute destructive operations without explicit confirmation."
 export const validation_strictness = 2
@@ -893,7 +893,7 @@ export const default_temperature = 0.7
 A consumer imports normally:
 
 ```glyph
-import "./prefs.glyph.md" { preserve_existing_patterns, validation_strictness }
+import "./prefs.glyph" { preserve_existing_patterns, validation_strictness }
 
 skill fix_bug(scope = ".")
     require preserve_existing_patterns
@@ -908,7 +908,7 @@ There is no `pref(...)` call form, no `reads_prefs` effect, no ambient lookup. A
 Preferences may also serve as **parameter defaults**:
 
 ```glyph
-import "./prefs.glyph.md" { default_temperature }
+import "./prefs.glyph" { default_temperature }
 
 skill summarize(temperature: Temperature = default_temperature)
     flow:
@@ -973,7 +973,7 @@ You don't need to know the exact projection to write a skill — but knowing the
 
 ## 15. The Authoring Loop
 
-When you run the compiler on your `.glyph.md`:
+When you run the compiler on your `.glyph`:
 
 1. **Parse** — checks indentation, syntax, declarations.
 2. **Analyze** — resolves names, checks closure, infers effects, validates types.
@@ -1115,13 +1115,13 @@ block summarize_changes()
 ### 18.3 Multi-file skill with library and preferences
 
 ```glyph
-// prefs.glyph.md
+// prefs.glyph
 export text preserve_existing_patterns = "Prefer the repository's existing patterns and helpers."
 export text safety_first = "Never execute destructive operations without explicit confirmation."
 ```
 
 ```glyph
-// repo_tools.glyph.md
+// repo_tools.glyph
 export block inspect_repo(scope = ".") -> RepoContext
     description: "Inspect the repository structure and identify key files."
     flow:
@@ -1138,9 +1138,9 @@ export block has_test_suite() -> Bool
 ```
 
 ```glyph
-// fix_bug.glyph.md
-import "./prefs.glyph.md" { preserve_existing_patterns, safety_first }
-import "./repo_tools.glyph.md" { inspect_repo, has_test_suite }
+// fix_bug.glyph
+import "./prefs.glyph" { preserve_existing_patterns, safety_first }
+import "./repo_tools.glyph" { inspect_repo, has_test_suite }
 
 skill fix_bug(scope = ".")
     description: "Debug and fix a bug with minimal, targeted changes."
@@ -1179,7 +1179,7 @@ skill investigate(scope = ".")
 ## 19. Quick Reference Card
 
 ```
-File:        <name>.glyph.md           — skill file (one `skill`) or library file (no `skill`)
+File:        <name>.glyph           — skill file (one `skill`) or library file (no `skill`)
 Indent:      4 spaces, significant; no tabs
 Comments:    // line comments only
 Strings:     "inline"   """block"""   no interpolation; only `{name}` slots in instruction strings

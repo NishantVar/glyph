@@ -1,10 +1,10 @@
-// convert_md_to_glyph.glyph.md
+// convert_md_to_glyph.glyph
 //
 // Skill that reverse-maps a compiled Glyph output (`.md`) back into Glyph
-// source (`.glyph.md`). Pulls the language reference and authoring rules
+// source (`.glyph`). Pulls the language reference and authoring rules
 // from sibling library files by per-const import.
 
-import "./teach_glyph_context.glyph.md" {
+import "./teach_glyph_context.glyph" {
     glyph_overview,
     file_kinds,
     layout_rules,
@@ -22,7 +22,7 @@ import "./teach_glyph_context.glyph.md" {
     quick_reference,
 }
 
-import "./teach_glyph_constraints.glyph.md" {
+import "./teach_glyph_constraints.glyph" {
     four_space_indentation,
     primitive_type_names_in_source,
     string_interpolation,
@@ -42,7 +42,7 @@ import "./teach_glyph_constraints.glyph.md" {
     deeply_nested_calls,
 }
 
-import "./glyph_authoring_passes.glyph.md" {
+import "./glyph_authoring_passes.glyph" {
     factor_long_instructions_and_texts,
     sort_declarations,
     compile_and_iterate,
@@ -98,7 +98,7 @@ skill convert_md_to_glyph(source_md, target_glyph)
         factor_long_instructions_and_texts()
         sort_declarations()
         compile_and_iterate(target_glyph)
-        return <"path to the produced .glyph.md file">
+        return <"path to the produced .glyph file">
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Conversion-procedure blocks — each block is one logical phase of reverse-

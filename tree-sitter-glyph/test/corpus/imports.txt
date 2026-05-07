@@ -2,7 +2,7 @@
 Whole-module import with alias
 ================================================================================
 
-import "./repo_tools.glyph.md" as repo_tools
+import "./repo_tools.glyph" as repo_tools
 
 skill main()
     description: "x"
@@ -36,7 +36,7 @@ skill main()
 Selective import (single-line)
 ================================================================================
 
-import "./prefs.glyph.md" { preserve_existing_patterns }
+import "./prefs.glyph" { preserve_existing_patterns }
 
 skill foo()
     flow:
@@ -66,7 +66,7 @@ skill foo()
 Selective import with multi-line list and alias
 ================================================================================
 
-import "./safety.glyph.md" {
+import "./safety.glyph" {
     unrelated_edits,
     preserve_existing_patterns as existing_patterns,
     validate_before_success,

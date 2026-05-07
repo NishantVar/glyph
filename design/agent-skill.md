@@ -103,19 +103,19 @@ All fixes are idempotent and comment-preserving. After fmt, if the file was chan
 
 ## Phase 3b: Repair Guidance
 
-When `glyph compile` exits with code 2, stdout contains NDJSON — one JSON object per file per line, each with a `diagnostics` array. The agent reads these and edits the source `.glyph.md` file to fix them, then re-invokes the compiler.
+When `glyph compile` exits with code 2, stdout contains NDJSON — one JSON object per file per line, each with a `diagnostics` array. The agent reads these and edits the source `.glyph` file to fix them, then re-invokes the compiler.
 
 The agent receives diagnostics in this shape (via `--format json`):
 
 ```json
 {
-  "file": "path/to/foo.glyph.md",
+  "file": "path/to/foo.glyph",
   "diagnostics": [
     {
       "id": "G::analyze::undefined-name",
       "classification": "repairable",
       "message": "bare name 'preserve_existing_patterns' does not resolve",
-      "span": { "file": "foo.glyph.md", "start": {"line": 3, "col": 5}, "end": {"line": 3, "col": 33} },
+      "span": { "file": "foo.glyph", "start": {"line": 3, "col": 5}, "end": {"line": 3, "col": 33} },
       "hints": ["Add a 'const' or 'generated const' declaration for this name."]
     }
   ]
@@ -330,7 +330,7 @@ Key points for the agent:
 
 The agent skill is a plain Markdown file (e.g., `glyph-compile.skill.md`) that a coding agent loads. It encodes the workflow state machine, repair patterns, and Step 2 rules from this document as agent instructions.
 
-The skill is **not** a `.glyph.md` file. It does not compile itself. Dogfooding (authoring the skill in Glyph) is a post-MVP goal.
+The skill is **not** a `.glyph` file. It does not compile itself. Dogfooding (authoring the skill in Glyph) is a post-MVP goal.
 
 The skill references the `glyph` CLI binary and expects it to be on `PATH`. It does not import any libraries, call any APIs, or depend on any specific LLM provider.
 

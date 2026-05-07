@@ -209,7 +209,7 @@ mod tests {
     /// to ship a one-character-off-by-one bug to every Glyph user.
     #[test]
     fn single_character_span_end_col_conversion() {
-        let s = span("f.glyph.md", 5, 7, 5, 7);
+        let s = span("f.glyph", 5, 7, 5, 7);
         let r = source_span_to_range(&s);
         assert_eq!(r.start, Position { line: 4, character: 6 });
         assert_eq!(r.end, Position { line: 4, character: 7 });
@@ -219,7 +219,7 @@ mod tests {
     /// LSP wants `[3:4, 3:7)`.
     #[test]
     fn multi_character_single_line_span() {
-        let s = span("f.glyph.md", 3, 5, 3, 7);
+        let s = span("f.glyph", 3, 5, 3, 7);
         let r = source_span_to_range(&s);
         assert_eq!(r.start, Position { line: 2, character: 4 });
         assert_eq!(r.end, Position { line: 2, character: 7 });
@@ -229,7 +229,7 @@ mod tests {
     /// LSP: `[0:0, 2:4)`.
     #[test]
     fn multi_line_span() {
-        let s = span("f.glyph.md", 1, 1, 3, 4);
+        let s = span("f.glyph", 1, 1, 3, 4);
         let r = source_span_to_range(&s);
         assert_eq!(r.start, Position { line: 0, character: 0 });
         assert_eq!(r.end, Position { line: 2, character: 4 });
@@ -250,7 +250,7 @@ mod tests {
         let d = Diagnostic::error(
             "G::parse::tab-indent",
             "tab character used for indentation",
-            span("f.glyph.md", 2, 1, 2, 1),
+            span("f.glyph", 2, 1, 2, 1),
         );
         let lsp = diagnostic_to_lsp(&d);
         assert_eq!(
@@ -279,7 +279,7 @@ mod tests {
         let d = Diagnostic::error(
             "G::analyze::undefined-name",
             "`x` is not a declared `text` in this file",
-            span("f.glyph.md", 10, 5, 10, 5),
+            span("f.glyph", 10, 5, 10, 5),
         );
         let lsp = diagnostic_to_lsp(&d);
         assert_eq!(
@@ -303,7 +303,7 @@ mod tests {
         let d = Diagnostic::error(
             "G::analyze::missing-required-arg",
             "call to `bar()` is missing required argument `x`",
-            span("f.glyph.md", 4, 9, 4, 13),
+            span("f.glyph", 4, 9, 4, 13),
         );
         let lsp = diagnostic_to_lsp(&d);
         assert_eq!(
@@ -323,7 +323,7 @@ mod tests {
             id: "G::analyze::unused-import".into(),
             classification: Classification::Repairable,
             message: "imported name `foo` is never used".into(),
-            span: span("f.glyph.md", 1, 1, 1, 20),
+            span: span("f.glyph", 1, 1, 1, 20),
             related: Vec::new(),
             hints: vec!["remove the unused import".into()],
         };
@@ -366,12 +366,12 @@ mod tests {
     fn related_spans_become_related_information() {
         // Use absolute paths so `file_label_to_url` succeeds without filesystem prerequisites.
         let primary = SourceSpan {
-            file: "/tmp/main.glyph.md".into(),
+            file: "/tmp/main.glyph".into(),
             start: LineCol { line: 1, col: 1 },
             end: LineCol { line: 1, col: 5 },
         };
         let other = SourceSpan {
-            file: "/tmp/main.glyph.md".into(),
+            file: "/tmp/main.glyph".into(),
             start: LineCol { line: 5, col: 1 },
             end: LineCol { line: 5, col: 5 },
         };

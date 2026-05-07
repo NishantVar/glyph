@@ -29,7 +29,7 @@ fn ndjson_contains_id(stdout: &str, id: &str) -> bool {
 #[test]
 fn descriptive_form_empty_emits_malformed_output_target() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("empty_desc.glyph.md");
+    let path = dir.path().join("empty_desc.glyph");
     std::fs::write(
         &path,
         "\
@@ -59,7 +59,7 @@ skill s() -> Confirmation
 #[test]
 fn descriptive_form_unterminated_produces_no_structured_diagnostic() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("unterminated_desc.glyph.md");
+    let path = dir.path().join("unterminated_desc.glyph");
     std::fs::write(
         &path,
         // The closing `">` is intentionally absent — the newline terminates
@@ -81,7 +81,7 @@ fn descriptive_form_unterminated_produces_no_structured_diagnostic() {
 #[test]
 fn descriptive_form_in_non_terminal_position_emits_outside_return() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("outside_return_desc.glyph.md");
+    let path = dir.path().join("outside_return_desc.glyph");
     std::fs::write(
         &path,
         "\

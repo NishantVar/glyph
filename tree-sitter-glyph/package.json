@@ -14,7 +14,7 @@
   "tree-sitter": [
     {
       "scope": "source.glyph",
-      "file-types": ["glyph", "glyph.md"],
+      "file-types": ["glyph"],
       "highlights": "queries/highlights.scm"
     }
   ]

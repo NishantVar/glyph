@@ -49,7 +49,7 @@ fn ir_json_path(source: &Path) -> PathBuf {
         .unwrap()
         .to_str()
         .unwrap()
-        .strip_suffix(".glyph.md")
+        .strip_suffix(".glyph")
         .unwrap();
     parent.join(format!("{}.ir.json", stem))
 }
@@ -61,7 +61,7 @@ fn md_path(source: &Path) -> PathBuf {
         .unwrap()
         .to_str()
         .unwrap()
-        .strip_suffix(".glyph.md")
+        .strip_suffix(".glyph")
         .unwrap();
     parent.join(format!("{}.md", stem))
 }
@@ -69,7 +69,7 @@ fn md_path(source: &Path) -> PathBuf {
 #[test]
 fn output_target_compile_and_emit_ir_shape() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("current.glyph.md");
+    let path = dir.path().join("current.glyph");
     std::fs::write(
         &path,
         "\
@@ -113,7 +113,7 @@ skill current() -> BranchName
 #[test]
 fn inline_block_output_contract_survives_emit_ir() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("inline_block.glyph.md");
+    let path = dir.path().join("inline_block.glyph");
     std::fs::write(
         &path,
         "\
@@ -153,7 +153,7 @@ skill current()
 #[test]
 fn export_block_accepts_output_target_identifier_form() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("lib.glyph.md");
+    let path = dir.path().join("lib.glyph");
     std::fs::write(
         &path,
         "\
@@ -179,7 +179,7 @@ export block compute() -> ResultName
 fn output_target_diagnostics_surface_through_check() {
     let dir = tempfile::tempdir().unwrap();
 
-    let malformed = dir.path().join("malformed.glyph.md");
+    let malformed = dir.path().join("malformed.glyph");
     std::fs::write(
         &malformed,
         "\
@@ -198,7 +198,7 @@ skill malformed()
         "expected malformed-output-target diagnostic, got:\n{stdout}"
     );
 
-    let trailing = dir.path().join("trailing.glyph.md");
+    let trailing = dir.path().join("trailing.glyph");
     std::fs::write(
         &trailing,
         "\
@@ -217,7 +217,7 @@ skill trailing()
         "expected malformed-output-target diagnostic for trailing text, got:\n{stdout}"
     );
 
-    let outside = dir.path().join("outside.glyph.md");
+    let outside = dir.path().join("outside.glyph");
     std::fs::write(
         &outside,
         "\
@@ -237,7 +237,7 @@ skill outside() -> BranchName
         "expected output-target-outside-return diagnostic, got:\n{stdout}"
     );
 
-    let export_outside = dir.path().join("export_outside.glyph.md");
+    let export_outside = dir.path().join("export_outside.glyph");
     std::fs::write(
         &export_outside,
         "\
@@ -257,7 +257,7 @@ export block outside() -> BranchName
         "expected export block output-target-outside-return diagnostic, got:\n{stdout}"
     );
 
-    let shadow = dir.path().join("shadow.glyph.md");
+    let shadow = dir.path().join("shadow.glyph");
     std::fs::write(
         &shadow,
         "\
@@ -282,7 +282,7 @@ skill shadow() -> BranchName
 #[test]
 fn placeholder_string_return_check_then_fmt_then_check_clean() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("placeholder.glyph.md");
+    let path = dir.path().join("placeholder.glyph");
     std::fs::write(
         &path,
         "\
@@ -329,7 +329,7 @@ skill current() -> BranchName
 #[test]
 fn emit_ir_descriptive_output_contract_shape() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("diagnose.glyph.md");
+    let path = dir.path().join("diagnose.glyph");
     std::fs::write(
         &path,
         "\

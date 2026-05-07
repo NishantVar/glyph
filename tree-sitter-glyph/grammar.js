@@ -212,7 +212,7 @@ module.exports = grammar({
     // still contain `effects:` lines pending a separate cleanup. If
     // the grammar treats those lines as plain syntax errors, the
     // recovery cascade can swallow adjacent lines (notably in
-    // `repo_tools.glyph.md` where `effects:` appears as the first
+    // `repo_tools.glyph` where `effects:` appears as the first
     // body line, polluting the inline-instruction string parse and
     // breaking `tree-sitter highlight`). We therefore recognise the
     // line structurally (`effects:` followed by a comma-separated

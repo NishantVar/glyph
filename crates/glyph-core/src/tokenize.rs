@@ -1,6 +1,6 @@
 //! Hand-rolled tokenizer (Phase 1, sub-step A/B).
 //!
-//! Walking-skeleton scope: just enough to tokenize `update_docs.glyph.md`.
+//! Walking-skeleton scope: just enough to tokenize `update_docs.glyph`.
 //! Two-phase approach per `design/build-foundation.md` §A2:
 //!   - Phase A: line-oriented pre-processing (compute indent levels, strip comments).
 //!   - Phase B: token-level scanning within each line.
@@ -597,7 +597,7 @@ mod tests {
     #[test]
     fn tokenize_accepts_zero_dot_float() {
         // `0.001` is a leading-zero float (allowed — single `0` followed by
-        // `.` and digits). Mirrors the existing `const_float.glyph.md`
+        // `.` and digits). Mirrors the existing `const_float.glyph`
         // fixture which uses `0.001`.
         let src = "const x = 0.001\n";
         let (toks, _) = tokenize(src, 0).expect("`0.001` should tokenize");

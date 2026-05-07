@@ -28,7 +28,7 @@ Source-level parameters may be duck-typed. The IR resolves each parameter to an 
 Skills may depend on user or project preferences such as terminal multiplexer, communication style, validation strictness, preferred tools, or project conventions. In Glyph, these are ordinary `export const` declarations in a preferences file, imported like any other name.
 
 ```glyph
-import "./prefs.glyph.md" { terminal_mux, validation_strictness }
+import "./prefs.glyph" { terminal_mux, validation_strictness }
 
 skill open_terminal()
     flow:
@@ -121,7 +121,7 @@ plan = make_plan(
 A callee is either a bare identifier resolved through the standard name resolution order (see `values-and-names.md`), or a single-level qualified name where the left side is a whole-module import alias:
 
 ```glyph
-import "./repo_tools.glyph.md" as repo_tools
+import "./repo_tools.glyph" as repo_tools
 
 ctx = repo_tools.inspect_repo(scope)
 repo_tools.validate_changes(ctx)
@@ -427,7 +427,7 @@ Return type annotations (e.g. `-> Plan`) are **advisory only** in MVP. The compi
 
 ### Exported Block Closure
 
-Only `export block` declarations may be imported by other `.glyph.md` files. The compiler enforces that every exported block is closed before it can be compiled as an importable unit.
+Only `export block` declarations may be imported by other `.glyph` files. The compiler enforces that every exported block is closed before it can be compiled as an importable unit.
 
 A closed exported block may depend on:
 

@@ -46,12 +46,12 @@ Bars referenced below come from `design/mvp-acceptance.md` §5 (exit criteria).
 
 ### What to build
 
-Two-crate Cargo workspace (`glyph-cli` + `glyph-core`) per `build-foundation.md` §A1. Implement the minimum tokenizer, hand-rolled recursive-descent parser, loose AST, Phase 2 Analyze (trivial pass-through), Phase 4 Lower (assigns node IDs, builds arena), Phase 5 Validate (trivial), Phase 6 Step 1 (passthrough — bare-name/inline-string handling for the kernel), and Phase 7 Emit. Wire `glyph compile <file>` to run all phases and write `<name>.md` next to the source. End-to-end success path only — exit 0, zero diagnostics emitted. `update_docs.glyph.md` from `mvp-acceptance.md` §1 compiles to byte-identical golden snapshot. Includes `Span`, `Spanned<T>`, `LineIndex`, `IrArena`, `NodeId` per `build-foundation.md` §A3/A4. `insta` snapshot test framework wired in `glyph-cli/tests/`. Emit knows the `### Context` H3 exists in the compiled-output spec (`compiled-output.md`) but the walking skeleton's `update_docs.glyph.md` declares no `context:`, so the section is omitted from the golden snapshot.
+Two-crate Cargo workspace (`glyph-cli` + `glyph-core`) per `build-foundation.md` §A1. Implement the minimum tokenizer, hand-rolled recursive-descent parser, loose AST, Phase 2 Analyze (trivial pass-through), Phase 4 Lower (assigns node IDs, builds arena), Phase 5 Validate (trivial), Phase 6 Step 1 (passthrough — bare-name/inline-string handling for the kernel), and Phase 7 Emit. Wire `glyph compile <file>` to run all phases and write `<name>.md` next to the source. End-to-end success path only — exit 0, zero diagnostics emitted. `update_docs.glyph` from `mvp-acceptance.md` §1 compiles to byte-identical golden snapshot. Includes `Span`, `Spanned<T>`, `LineIndex`, `IrArena`, `NodeId` per `build-foundation.md` §A3/A4. `insta` snapshot test framework wired in `glyph-cli/tests/`. Emit knows the `### Context` H3 exists in the compiled-output spec (`compiled-output.md`) but the walking skeleton's `update_docs.glyph` declares no `context:`, so the section is omitted from the golden snapshot.
 
 ### Acceptance criteria
 
 - [ ] `cargo build` produces `glyph` binary
-- [ ] `glyph compile tests/corpus/valid/update_docs.glyph.md` exits 0
+- [ ] `glyph compile tests/corpus/valid/update_docs.glyph` exits 0
 - [ ] Emitted `update_docs.md` matches golden snapshot from `mvp-acceptance.md` §1 byte-for-byte
 - [ ] Re-running the compile produces byte-identical output
 - [ ] `insta` snapshot harness present and used by the walking-skeleton test
@@ -70,8 +70,8 @@ Full `Diagnostic` shape per `diagnostics.md` (id, classification, message, span,
 
 ### Acceptance criteria
 
-- [ ] `glyph compile invalid/empty.glyph.md` exits 1 with `G::parse::empty-file`
-- [ ] `glyph compile invalid/empty_flow.glyph.md` exits 1 with `G::parse::empty-flow`
+- [ ] `glyph compile invalid/empty.glyph` exits 1 with `G::parse::empty-file`
+- [ ] `glyph compile invalid/empty_flow.glyph` exits 1 with `G::parse::empty-flow`
 - [ ] `--format json` produces a JSON array of diagnostics on stdout
 - [ ] Pretty output renders span, message, and source caret to stderr
 - [ ] Re-running over identical input produces byte-identical JSON (sorted, BTreeMap)
@@ -90,7 +90,7 @@ Full `Diagnostic` shape per `diagnostics.md` (id, classification, message, span,
 
 ### Acceptance criteria
 
-- [ ] `glyph check valid/update_docs.glyph.md` exits 0 with no files written
+- [ ] `glyph check valid/update_docs.glyph` exits 0 with no files written
 - [ ] `glyph check repairable/<file>` exits 2 with diagnostics on stdout (JSON) or stderr (pretty)
 - [ ] `glyph check invalid/<file>` exits 1
 - [ ] Subcommand parsing accepts file or directory paths
@@ -124,7 +124,7 @@ Skill parameters with defaults per `language-surface.md`. `{param}` slot recogni
 
 ### What to build
 
-`text`/`int`/`float` declarations (private and `export` variants reserved for #13). Constraint markers (`require`, `avoid`, `must`, `must avoid`) at body level and inside `constraints:` sections. Body-level marker hoisting in Phase 4 Lower (per `pipeline.md` §Phase 4 — IR-only normalization, distinct from `glyph fmt` which does it source-side). Role inference for `Constraint`. Strength/polarity assignment per `ir-and-semantics.md` §2. `### Constraints` rendering in Phase 7 with mechanical (non-LLM) phrasing — Step 1 hands resolved text directly to Emit. `valid/constraint_only.glyph.md` test (skill with constraints but no flow → omit `### Steps`).
+`text`/`int`/`float` declarations (private and `export` variants reserved for #13). Constraint markers (`require`, `avoid`, `must`, `must avoid`) at body level and inside `constraints:` sections. Body-level marker hoisting in Phase 4 Lower (per `pipeline.md` §Phase 4 — IR-only normalization, distinct from `glyph fmt` which does it source-side). Role inference for `Constraint`. Strength/polarity assignment per `ir-and-semantics.md` §2. `### Constraints` rendering in Phase 7 with mechanical (non-LLM) phrasing — Step 1 hands resolved text directly to Emit. `valid/constraint_only.glyph` test (skill with constraints but no flow → omit `### Steps`).
 
 **Context (parallel pipeline).** Implement the `Context` IR role and `ContextNode` (`ir-schema.md`, `ir-and-semantics.md`). The `context:` sub-section parses on `skill`/`block`/`export block` bodies; the `context` marker is legal at body level and as a flow statement (per `data-flow.md` §Statement Forms). Lower hoists body-level and flow-top-level `context` markers into the declaration's `context: [ContextNode]` list (deduped by canonical text); branch-scoped `context` markers stay inline (parallel handling to constraints). `text` declarations referenced inside `context:` resolve the same way as inside `constraints:` — placement, not declaration kind, decides the role (`primitives.md` §`text` duality). Phase 7 Emit renders the declaration's `context` list as `### Context` (bulleted, before `### Steps`); the section is conditional and omitted when no context is declared. `### Context` alone is not sufficient — at least one of `### Steps` or `### Constraints` must still be present. `{param}` slots inside `context:` body content emit `G::parse::param-slot-in-non-instruction-string` (same restriction as `description:`).
 
@@ -134,7 +134,7 @@ Diagnostics: `G::analyze::undefined-name`, `G::analyze::ambiguous-role`, `G::ana
 
 ### Acceptance criteria
 
-- [ ] `valid/constraint_only.glyph.md` compiles, emits `### Constraints` only (no `### Steps`)
+- [ ] `valid/constraint_only.glyph` compiles, emits `### Constraints` only (no `### Steps`)
 - [ ] `require accuracy` + same-file `text accuracy = "..."` resolves and renders the text content
 - [ ] Body-level `avoid X` is hoisted into the IR's `constraints` list during Lower
 - [ ] A skill with a `context:` sub-section emits `### Context` before `### Steps` in compiled output
@@ -212,13 +212,13 @@ Effect inference walking the call graph per `ir-and-semantics.md` §3. Author-de
 
 ### What to build
 
-`if`/`elif`/`else` parsing inside `flow:`. Branch-condition `==` is **not** a value-level operator — it's branch-syntax-only and does **not** trigger `G::parse::operator-in-expression` (see `mvp-acceptance.md` §2.1 note on `branching.glyph.md`). Phase 4 builds `Branch { condition, then_body, elif_branches, else_body }`. Phase 6 Step 1 emits one numbered Step for the branch chain, with lettered sub-steps per arm (`a.`, `b.`, `c.`, reset per arm). Constraint markers inside branch bodies stay inline (per `pipeline.md` §Phase 4); `context` markers inside branch bodies stay inline by the same rule (parallel to constraints — they render as part of the conditional Step prose, never surface in `### Context`). Diagnostics: `G::parse::nested-flow`, `G::analyze::nested-branch`, `G::validate::malformed-branch`, `G::parse::operator-in-expression`.
+`if`/`elif`/`else` parsing inside `flow:`. Branch-condition `==` is **not** a value-level operator — it's branch-syntax-only and does **not** trigger `G::parse::operator-in-expression` (see `mvp-acceptance.md` §2.1 note on `branching.glyph`). Phase 4 builds `Branch { condition, then_body, elif_branches, else_body }`. Phase 6 Step 1 emits one numbered Step for the branch chain, with lettered sub-steps per arm (`a.`, `b.`, `c.`, reset per arm). Constraint markers inside branch bodies stay inline (per `pipeline.md` §Phase 4); `context` markers inside branch bodies stay inline by the same rule (parallel to constraints — they render as part of the conditional Step prose, never surface in `### Context`). Diagnostics: `G::parse::nested-flow`, `G::analyze::nested-branch`, `G::validate::malformed-branch`, `G::parse::operator-in-expression`.
 
 **Block trigger predicate** per `ir-and-semantics.md` §Block Trigger Predicate. Parse `BLOCKNAME.applies()` (and `module_alias.block_name.applies()`) as a zero-arity special form recognised only in `if`/`elif` condition position — NOT general UFCS. Receiver must resolve to a same-file `block`/`export block` or an imported block. Phase 4 records the call shape; Phase 6 Step 1 populates a `applies_descriptions: { block_name → resolved_description }` side-map on the `Branch` IR node by looking up each `.applies()` receiver's `description:` (depends on #15 description parsing). The `condition` field stays a `String`; no new `Expression` variant. Compiled output projects pure-applies arms via the §Description-Driven Branch Projection rules in `compiled-output.md` (Step 1 emits the description-keyed shape; full prose reshape is Step 2's job, validated by #30). New diagnostics: `G::parse::applies-no-parens` (error — receiver written without `()`), `G::parse::applies-with-args` (error — `.applies(...)` called with arguments), `G::analyze::applies-on-non-block` (error — receiver is `text`/import-alias/parameter), `G::analyze::applies-on-undescribed-block` (repairable for same-file blocks per `repair.md` §9; error for imported blocks).
 
 ### Acceptance criteria
 
-- [ ] `valid/branching.glyph.md` compiles; output uses lettered sub-steps per arm
+- [ ] `valid/branching.glyph` compiles; output uses lettered sub-steps per arm
 - [ ] `==` in `if` condition does NOT trigger `operator-in-expression`
 - [ ] `nested-branch` fires when a branch is nested inside a branch
 - [ ] `malformed-branch` Validate diag has unit test
@@ -255,11 +255,11 @@ Effect inference walking the call graph per `ir-and-semantics.md` §3. Author-de
 
 ### What to build
 
-`import "./path.glyph.md" { name1, name2 }` parsing and whole-module imports. Path resolution. Cross-file name resolution in Phase 2 (importer reads dependency's validated IR). Cycle rejection in Phase 1. Effects propagation across imports per `data-flow.md` §Effect Propagation. Diagnostics: `G::analyze::missing-file`, `G::analyze::circular-import`, `G::analyze::import-private`, `G::analyze::import-skill`, `G::analyze::duplicate-import` (repairable), `G::analyze::unused-import` (repairable).
+`import "./path.glyph" { name1, name2 }` parsing and whole-module imports. Path resolution. Cross-file name resolution in Phase 2 (importer reads dependency's validated IR). Cycle rejection in Phase 1. Effects propagation across imports per `data-flow.md` §Effect Propagation. Diagnostics: `G::analyze::missing-file`, `G::analyze::circular-import`, `G::analyze::import-private`, `G::analyze::import-skill`, `G::analyze::duplicate-import` (repairable), `G::analyze::unused-import` (repairable).
 
 ### Acceptance criteria
 
-- [ ] `fix_bug.glyph.md` resolves names imported from `prefs.glyph.md` and `repo_tools.glyph.md`
+- [ ] `fix_bug.glyph` resolves names imported from `prefs.glyph` and `repo_tools.glyph`
 - [ ] Circular-import path is included in the diagnostic message
 - [ ] Importing a private (non-exported) name fails with `import-private`
 - [ ] Importing a skill (not a block/text) fails with `import-skill`
@@ -274,14 +274,14 @@ Effect inference walking the call graph per `ir-and-semantics.md` §3. Author-de
 
 ### What to build
 
-DAG construction in Phase 1 across all in-scope `.glyph.md` files. Topological sort. Strictly serial compilation (no `rayon`, no async — per `build-foundation.md` §A5). Dependency-readiness gate (importer's Phase 2 only after dependency's Phase 5). Directory-mode (`glyph compile dir/`) compiles every file in scope unconditionally — no reachability filter. Partial failure policy per `pipeline.md` §Partial Failure Policy: skip-dependents, leave-stale-`.md`, partial-output, exit 1 if any file fails. Diagnostic: `G::build::skipped-due-to-failed-import` (warning).
+DAG construction in Phase 1 across all in-scope `.glyph` files. Topological sort. Strictly serial compilation (no `rayon`, no async — per `build-foundation.md` §A5). Dependency-readiness gate (importer's Phase 2 only after dependency's Phase 5). Directory-mode (`glyph compile dir/`) compiles every file in scope unconditionally — no reachability filter. Partial failure policy per `pipeline.md` §Partial Failure Policy: skip-dependents, leave-stale-`.md`, partial-output, exit 1 if any file fails. Diagnostic: `G::build::skipped-due-to-failed-import` (warning).
 
 ### Acceptance criteria
 
-- [ ] `glyph compile dir/` processes every `.glyph.md` even if not transitively reached
+- [ ] `glyph compile dir/` processes every `.glyph` even if not transitively reached
 - [ ] Files compile in topological order (libraries before consumers)
-- [ ] Failure in `b.glyph.md` skips `c.glyph.md` (which imports it) with the build warning
-- [ ] Stale `c.md` left untouched on disk after `c.glyph.md` skip; stderr note emitted
+- [ ] Failure in `b.glyph` skips `c.glyph` (which imports it) with the build warning
+- [ ] Stale `c.md` left untouched on disk after `c.glyph` skip; stderr note emitted
 - [ ] Build exits 1 if any file failed; partial output present for successful files
 
 ---
@@ -297,8 +297,8 @@ Library detection: file with zero `skill` declarations. `export block`, `export 
 
 ### Acceptance criteria
 
-- [ ] `prefs.glyph.md` (export-text-only) compiles to zero `.md`, exit 0
-- [ ] `repo_tools.glyph.md` compiles; large export blocks queued for procedure-file emission (Slice 15 lands the actual file write)
+- [ ] `prefs.glyph` (export-text-only) compiles to zero `.md`, exit 0
+- [ ] `repo_tools.glyph` compiles; large export blocks queued for procedure-file emission (Slice 15 lands the actual file write)
 - [ ] Closure-violation fires when export block references private free variables
 - [ ] Library with zero exports → `no-exports-in-library` (error)
 - [ ] Sibling exports visited in source order (deterministic on-disk output)
@@ -316,7 +316,7 @@ Phase 6 Step 1 promotes a Call to Tier 2 when callee meets the same-file procedu
 
 ### Acceptance criteria
 
-- [ ] `valid/explicit_blocks.glyph.md` (4+ statement private block) emits a `### Procedure: <name>` section
+- [ ] `valid/explicit_blocks.glyph` (4+ statement private block) emits a `### Procedure: <name>` section
 - [ ] Caller's `### Steps` cites the procedure by name
 - [ ] Procedure section ordering is deterministic
 - [ ] Tier 1 callee (small block) still inlines (regression check)
@@ -330,11 +330,11 @@ Phase 6 Step 1 promotes a Call to Tier 2 when callee meets the same-file procedu
 
 ### What to build
 
-Standalone procedure `.md` files for export blocks above the Tier 1 threshold per `pipeline.md` §Phase 7. Subdirectory naming: `repo_tools.glyph.md` with `export block inspect_repo` → `repo_tools/inspect-repo.md`. `kind: procedure` frontmatter to distinguish from skills. Caller (in another file) references the procedure file path at runtime — compiled `.md` is no longer fully self-contained for Tier 3.
+Standalone procedure `.md` files for export blocks above the Tier 1 threshold per `pipeline.md` §Phase 7. Subdirectory naming: `repo_tools.glyph` with `export block inspect_repo` → `repo_tools/inspect-repo.md`. `kind: procedure` frontmatter to distinguish from skills. Caller (in another file) references the procedure file path at runtime — compiled `.md` is no longer fully self-contained for Tier 3.
 
 ### Acceptance criteria
 
-- [ ] `repo_tools.glyph.md` emits `repo_tools/inspect-repo.md` and `repo_tools/run-tests.md`
+- [ ] `repo_tools.glyph` emits `repo_tools/inspect-repo.md` and `repo_tools/run-tests.md`
 - [ ] Procedure files carry `kind: procedure` in frontmatter
 - [ ] Consumer's compiled `.md` references the procedure files at the conventional path
 - [ ] Re-running produces byte-identical procedure files
@@ -378,7 +378,7 @@ JSON written through `.tmp` (uses #16 infra). BTreeMap discipline throughout.
 
 ### Acceptance criteria
 
-- [ ] `glyph compile foo.glyph.md --emit-ir` writes `foo.ir.json` next to `foo.md`
+- [ ] `glyph compile foo.glyph --emit-ir` writes `foo.ir.json` next to `foo.md`
 - [ ] JSON byte-identical across runs
 - [ ] Includes `site_modifier` for `with`-modified calls
 - [ ] Includes `projection_mode` for every Call node (inline / same-file / external)
@@ -427,7 +427,7 @@ Phase 3a deterministic source rewrites per `cli.md` §`glyph fmt` and `pipeline.
 
 ### Acceptance criteria
 
-- [ ] `glyph fmt foo.glyph.md` rewrites tabs to 4 spaces in place
+- [ ] `glyph fmt foo.glyph` rewrites tabs to 4 spaces in place
 - [ ] Body-level constraint markers move into a `constraints:` section
 - [ ] Body-level and flow-top-level `context` markers move into a `context:` section (creating it if absent)
 - [ ] Branch-scoped `context` / constraint markers are NOT rewritten (stay inline in the branch)
@@ -489,7 +489,7 @@ Stdlib name resolution as the last fallback in Phase 2 (after same-file → impo
 
 ### What to build
 
-The 5-skill project under `tests/corpus/multi-file/` per `mvp-acceptance.md` §3: `prefs.glyph.md`, `repo_tools.glyph.md`, `fix_bug.glyph.md`, `review_pr.glyph.md`, `update_docs.glyph.md`. End-to-end test asserts:
+The 5-skill project under `tests/corpus/multi-file/` per `mvp-acceptance.md` §3: `prefs.glyph`, `repo_tools.glyph`, `fix_bug.glyph`, `review_pr.glyph`, `update_docs.glyph`. End-to-end test asserts:
 - DAG order respected: leaves before consumers
 - Cross-file name resolution works
 - All five files exit 0

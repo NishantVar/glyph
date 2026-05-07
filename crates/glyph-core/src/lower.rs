@@ -1,6 +1,6 @@
 //! Phase 4 (Lower) — converts the loose AST into the typed IR arena.
 //!
-//! Walking-skeleton scope: handles only the constructs in `update_docs.glyph.md`.
+//! Walking-skeleton scope: handles only the constructs in `update_docs.glyph`.
 //! Per `design/build-foundation.md` §A4, IDs are allocated in pre-order source
 //! traversal starting at `n0`.
 
@@ -1017,7 +1017,7 @@ block make_plan() -> Plan
         \"compute the plan\"
 ";
         let arena = lower_skill(src);
-        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph.md", false)
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph", false)
             .expect("arena should serialize");
         let v: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
         // Find the call inside skill.flow[*] with target == "make_plan".
@@ -1048,7 +1048,7 @@ skill make_report() -> Report
         \"do work\"
 ";
         let arena = lower_skill(src);
-        let json_str = crate::emit_ir::serialize_ir_json(&arena, "make_report.glyph.md", false)
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "make_report.glyph", false)
             .expect("arena with root skill should serialize");
         let v: serde_json::Value =
             serde_json::from_str(&json_str).expect("emitter output should parse as JSON");
@@ -1082,7 +1082,7 @@ skill greet() -> String
         let skill = root_skill(&arena);
         assert_eq!(skill.return_type, Some(TypeTag::String));
 
-        let json_str = crate::emit_ir::serialize_ir_json(&arena, "greet.glyph.md", false)
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "greet.glyph", false)
             .expect("arena should serialize");
         let v: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
         assert_eq!(v["skill"]["return_type"], serde_json::json!("string"));
@@ -1101,7 +1101,7 @@ skill drive()
         let arena = lower_skill(src);
         assert!(root_skill(&arena).return_type.is_none());
 
-        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph.md", false)
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph", false)
             .expect("arena should serialize");
         let v: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
         assert_eq!(v["skill"]["return_type"], serde_json::Value::Null);
@@ -1123,7 +1123,7 @@ skill drive()
         let call = find_call(&arena, "unresolved_target");
         assert!(call.return_type.is_none());
 
-        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph.md", false)
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph", false)
             .expect("arena should serialize");
         let v: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
         let flow = v["skill"]["flow"].as_array().expect("flow array");
@@ -1144,7 +1144,7 @@ skill drive()
     #[test]
     fn cross_file_call_lowers_to_none_today_d17_regression_pin() {
         let src = "\
-import \"./lib.glyph.md\" { do_thing }
+import \"./lib.glyph\" { do_thing }
 
 skill main()
     flow:
@@ -1158,7 +1158,7 @@ skill main()
              return_type must be None at the lower layer"
         );
 
-        let json_str = crate::emit_ir::serialize_ir_json(&arena, "main.glyph.md", false)
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "main.glyph", false)
             .expect("arena should serialize");
         let v: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
         let flow = v["skill"]["flow"].as_array().expect("flow array");
@@ -1276,7 +1276,7 @@ skill drive() -> List
              generic-type-name warning is the user-facing channel, not lower."
         );
 
-        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph.md", false)
+        let json_str = crate::emit_ir::serialize_ir_json(&arena, "drive.glyph", false)
             .expect("arena should serialize");
         let v: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
         assert_eq!(

@@ -4,7 +4,7 @@ This document is the single authoritative reference for Glyph source syntax: dec
 
 ## 1. Overview
 
-A `.glyph.md` file is a Glyph source module. It is either a **skill file** (contains exactly one `skill` declaration, compiles to a same-basename `.md`) or a **library file** (contains zero `skill` declarations, may emit standalone procedure `.md` files for qualifying `export block` declarations — see §File-Level Rules). The entire file is Glyph source; there is no Markdown passthrough. Markdown structure lives in the compiled output, not in the source.
+A `.glyph` file is a Glyph source module. It is either a **skill file** (contains exactly one `skill` declaration, compiles to a same-basename `.md`) or a **library file** (contains zero `skill` declarations, may emit standalone procedure `.md` files for qualifying `export block` declarations — see §File-Level Rules). The entire file is Glyph source; there is no Markdown passthrough. Markdown structure lives in the compiled output, not in the source.
 
 A skill file contains one `skill` declaration plus supporting imports, value-binding declarations (`const`), blocks, and exported blocks. A library file contains only imports, value-binding declarations, and blocks (some exported) — no skill. Both file types compile through the same 7-phase pipeline. The MVP base declaration kinds are `skill`, `block`, and `const`, with `export` as visibility modifier on value-binding and block kinds, and `generated` as repair-authorship modifier on both `const` and `block`.
 
@@ -22,11 +22,11 @@ Glyph source optimizes for easy readability, easy maintenance, and forgiving aut
 
 ### File-Level Rules
 
-A `.glyph.md` file is a unit of compilation. The following rules apply at the file level:
+A `.glyph` file is a unit of compilation. The following rules apply at the file level:
 
 - **Non-empty.** A file containing only whitespace or comments emits `G::parse::empty-file` (error). There is nothing to compile.
 - **At most one `skill` declaration per file.** A file may contain zero or one `skill` declarations. A second `skill` in the same file emits `G::parse::multiple-skills` (error). The reason is pragmatic: compiled output is named after the skill (`<skill_name>.md`), and most coding-agent ecosystems expect one skill per file (e.g., `SKILL.md`). Multi-skill files would collide on output naming. Cross-skill composition is via `import`, not by co-locating skills in one source file.
-- **Library files (zero `skill` declarations).** A file containing only `import`, `const`, and `block` / `export block` declarations — no `skill` — is a **library file** (e.g., `prefs.glyph.md`, `repo_tools.glyph.md`). Library files are consumed by sibling skill files via `import`. Formal rules:
+- **Library files (zero `skill` declarations).** A file containing only `import`, `const`, and `block` / `export block` declarations — no `skill` — is a **library file** (e.g., `prefs.glyph`, `repo_tools.glyph`). Library files are consumed by sibling skill files via `import`. Formal rules:
 
   - **At least one `export` declaration required.** A file with zero skills AND zero exports has no consumer-visible contribution. This emits `G::analyze::no-exports-in-library` (error). Private helpers (`block`, `const`) alongside exports are fine — they support the exports internally.
   - **Compilation.** Library files compile through the same 7-phase pipeline as skill files. The DAG-driven multi-file compile (see `pipeline.md` §Multi-File Compilation Order) runs Phases 1–7 on every file in dependency order; a library file is a DAG node like any other, it just has no `skill` to project.
@@ -34,16 +34,16 @@ A `.glyph.md` file is a unit of compilation. The following rules apply at the fi
 
     | Declaration | Emits standalone `.md`? | Mechanism |
     |---|---|---|
-    | `export block` whose expanded prose is **>= 150 words** (above the Tier 1 inline threshold; see `compiled-output.md` §Three-Tier Block Projection) | **Yes** — one procedure `.md` per qualifying block | Library's own Phase 7 emits it into a subdirectory named after the source file (e.g., `repo_tools.glyph.md` → `repo_tools/inspect-repo.md`) |
+    | `export block` whose expanded prose is **>= 150 words** (above the Tier 1 inline threshold; see `compiled-output.md` §Three-Tier Block Projection) | **Yes** — one procedure `.md` per qualifying block | Library's own Phase 7 emits it into a subdirectory named after the source file (e.g., `repo_tools.glyph` → `repo_tools/inspect-repo.md`) |
     | `export block` whose expanded prose is **< 150 words** (Tier 1 — small, inlinable) | **No** — consumers inline the body at each call site | No emission from the library |
     | `export const` | **No** — compile-time constants, always inlined into consumers | No emission |
     | Private `block`, `const`, `import` | **No** — contribute to other compilations only | Validation only |
 
-  - **Empty emission is normal.** A library file that compiles successfully but produces zero `.md` files (e.g., `prefs.glyph.md` with only `export const` declarations) is not an error or warning. It contributes names and values to consumers through the validated IR.
-  - **Zero consumers.** In DAG-driven compilation, unreferenced library files are never visited — no diagnostic. If a user explicitly compiles a library file (`glyph compile prefs.glyph.md`), it compiles and emits whatever qualifies, succeeding silently even if zero files are produced.
+  - **Empty emission is normal.** A library file that compiles successfully but produces zero `.md` files (e.g., `prefs.glyph` with only `export const` declarations) is not an error or warning. It contributes names and values to consumers through the validated IR.
+  - **Zero consumers.** In DAG-driven compilation, unreferenced library files are never visited — no diagnostic. If a user explicitly compiles a library file (`glyph compile prefs.glyph`), it compiles and emits whatever qualifies, succeeding silently even if zero files are produced.
   - **Tier ownership.** Whether an `export block` qualifies for a standalone procedure `.md` is a property of the block itself, decided when the library compiles. Whether a *specific call site* in a consumer inlines that block or references the procedure file is a per-call-site decision in the consumer's Expand Step 1 (the `ResolvedCall.projection_mode` field in `ir-schema.md`). A procedure `.md` may exist but go unused at a call site that projects the block as Tier 1 (inline) or Tier 2 (same-file procedure) — this is intentional, not an error.
   - **Consumer guarantees.** DAG order (libraries compile before consumers) ensures procedure `.md` files exist before consumers reference them via `load`. If a library failed to compile, the consumer's Phase 5 (Validate) catches the missing dependency.
-  - **Mixed library files.** A file exporting both `export block` and `export const` declarations is common (e.g., a `repo_tools.glyph.md` exporting both procedures and constants). The emission rules apply per-declaration — blocks may emit procedure files while constants are inlined. No special handling needed.
+  - **Mixed library files.** A file exporting both `export block` and `export const` declarations is common (e.g., a `repo_tools.glyph` exporting both procedures and constants). The emission rules apply per-declaration — blocks may emit procedure files while constants are inlined. No special handling needed.
 - **Skill body must contain at least one of `flow:` (with statements) or `constraints:` (with markers).** A skill with empty `description:`, no `flow:`, no `constraints:`, no `effects:` emits `G::analyze::empty-skill-body` (error). A constraint-only skill (no `flow:` at all, but `constraints:` present) is **legal** — its compiled output omits `### Steps` per `compiled-output.md`. An empty `flow:` body (header present but zero statements) emits `G::parse::empty-flow` (error); the author should either remove the header or add a statement.
 
 ### 2.1 Significant Indentation
@@ -278,7 +278,7 @@ Never execute destructive operations without confirmation.
 
 ### 3.5 `import`
 
-Brings exported declarations from another `.glyph.md` file into scope. Two forms.
+Brings exported declarations from another `.glyph` file into scope. Two forms.
 
 **Grammar -- whole-module:**
 
@@ -299,9 +299,9 @@ import "<path>" {
 **Example:**
 
 ```glyph
-import "./repo_tools.glyph.md" as repo_tools
+import "./repo_tools.glyph" as repo_tools
 
-import "./coding_agent_safety.glyph.md" {
+import "./coding_agent_safety.glyph" {
     unrelated_edits,
     preserve_existing_patterns as existing_patterns,
     validate_before_success,
@@ -453,7 +453,7 @@ Glyph source may contain shorthand, omitted annotations, named constants, import
 Source-level takeaways that shape authoring:
 
 - Deterministic parsing and analysis run first; the LLM repair pass runs only when repairable diagnostics remain and is bounded by re-parse + re-analyze cycles.
-- Repair is source-to-source: it may rewrite your `.glyph.md`, materialize `generated const` / `generated block` definitions, add minimal markers, and fix structural issues. It does not expand shorthand into agent-facing prose.
+- Repair is source-to-source: it may rewrite your `.glyph`, materialize `generated const` / `generated block` definitions, add minimal markers, and fix structural issues. It does not expand shorthand into agent-facing prose.
 - Lower converts the repaired source into the typed IR (resolving positional args to named, desugaring nested calls, filling defaults, propagating effects).
 - Expand is parameterless: compilation produces one `.md` output per source file. Parameters appear in a `## Parameters` section with defaults; the consuming LLM resolves them from context at runtime. `{param}` references in Steps and Constraints are preserved as named slots.
 

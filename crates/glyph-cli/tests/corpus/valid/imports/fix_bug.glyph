@@ -1,5 +1,5 @@
-import "./prefs.glyph.md" { preserve_existing_patterns }
-import "./repo_tools.glyph.md" { inspect_repo }
+import "./prefs.glyph" { preserve_existing_patterns }
+import "./repo_tools.glyph" { inspect_repo }
 
 skill fix_bug(scope = ".")
     description: "Fix a bug in the codebase."

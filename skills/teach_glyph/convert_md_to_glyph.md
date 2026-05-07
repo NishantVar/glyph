@@ -13,7 +13,7 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
 ### Context
 
 - Glyph is a small DSL for authoring agent skills. The author writes a
-structured `.glyph.md` source file. The Glyph compiler turns it into a
+structured `.glyph` source file. The Glyph compiler turns it into a
 flat, explicit Markdown skill (`.md`) that a coding agent can follow at
 runtime.
 
@@ -34,7 +34,7 @@ Two things to internalize:
 2. There is no string interpolation. Values flow through parameters and
    call arguments. A `{name}` token in instruction strings is a name
    reference (parameter or local binding), not template substitution.
-- A Glyph source file is named `<basename>.glyph.md`. There are exactly two
+- A Glyph source file is named `<basename>.glyph`. There are exactly two
 file kinds:
 
 - Skill file: contains exactly one `skill` declaration plus optional
@@ -383,7 +383,7 @@ Effect boundary at subagent spawns
 - A skill that spawns a subagent declares `spawns_agent`. It does NOT
   inherit the spawned skill's effects — the spawned skill is a separate
   compilation unit with its own effect surface.
-- A library file is just a `.glyph.md` with no `skill`. It contains
+- A library file is just a `.glyph` with no `skill`. It contains
 `import`, value bindings, `block`, and `export …` declarations.
 
 Preferences are ordinary constants
@@ -392,7 +392,7 @@ Preferences are ordinary constants
 - The compiler infers the value kind from the literal. Default values
   are mandatory on every constant declaration in a library.
 - A consumer imports normally:
-      import "./prefs.glyph.md" { preserve_existing_patterns }
+      import "./prefs.glyph" { preserve_existing_patterns }
 - Preferences may also serve as parameter defaults (resolved at compile
   time; the literal value appears in the compiled `## Parameters`
   section).
@@ -542,11 +542,11 @@ With branching, blocks, and `.applies()`:
 
 Multi-file skill with library and preferences:
 
-    // prefs.glyph.md
+    // prefs.glyph
     export const preserve_existing_patterns = "Prefer the repository's existing patterns and helpers."
     export const safety_first = "Never execute destructive operations without explicit confirmation."
 
-    // repo_tools.glyph.md
+    // repo_tools.glyph
     export block inspect_repo(scope = ".") -> RepoContext
         description: "Inspect the repository structure and identify key files."
         flow:
@@ -554,9 +554,9 @@ Multi-file skill with library and preferences:
             "Identify source modules and their relationships."
             return "A summary of the repo layout."
 
-    // fix_bug.glyph.md
-    import "./prefs.glyph.md" { preserve_existing_patterns, safety_first }
-    import "./repo_tools.glyph.md" { inspect_repo, has_test_suite }
+    // fix_bug.glyph
+    import "./prefs.glyph" { preserve_existing_patterns, safety_first }
+    import "./repo_tools.glyph" { inspect_repo, has_test_suite }
 
     skill fix_bug(scope = ".")
         description: "Debug and fix a bug with minimal, targeted changes."
@@ -583,7 +583,7 @@ Subagent delegation:
             researcher.send("Begin with the entrypoint and trace data flow downstream.")
             researcher.send("Surface every assumption you make.")
             return researcher
-- File:     <name>.glyph.md           — skill file (one `skill`) or library file (no `skill`)
+- File:     <name>.glyph           — skill file (one `skill`) or library file (no `skill`)
 Indent:   4 spaces, significant; no tabs
 Comments: // line comments only
 Strings:  "inline"   """block"""   no interpolation; only `{name}` slots in instruction strings
@@ -644,7 +644,7 @@ Values: "..."  """..."""  3  -1  0.8  true  false  none
 7. Write the assembled skill, blocks, and any extracted const constants to {target_glyph}. This is a verbose first draft — factoring and sorting will tidy it up next.
 8. Scan every instruction string in `flow:` bodies. For any string longer than 10 words, extract it into a named `block` (or `export block` if it must be reachable from another file) and replace the inline string with a call to that block. Pick a verb-phrase name that describes the step's intent. Scan every inline string used as a marker body (`require`/`avoid`/`must`/`must avoid`/`context`) or as a `context:` entry. For any string longer than 10 words, extract it into a named `const` constant (or `export const` if another file imports it) and replace the inline string with a bare-name reference. Skip `description:` strings — leave them inline.
 9. Reorder top-level declarations in the file so that the single `skill` declaration appears first, every `block` and `export block` follows it, and every `const` and `export const` constant comes last. Preserve `import` statements at the very top of the file, above the `skill` declaration.
-10. Run the Glyph compiler on {target} and read the diagnostics. If the compiler exits with repairable diagnostics (exit 2), run `glyph fmt` on {target}. If `glyph fmt` changes the file, re-invoke the compiler and re-evaluate the diagnostics. Treat errors as required fixes. If repairable diagnostics remain after `glyph fmt`, treat them as informational — the LLM repair pass will rewrite the source. Treat warnings as advisory. Review the source diff after the LLM repair pass. If repair inserted `generated text` or `generated block` definitions, decide whether each is acceptable as-is or should be promoted to hand-authored by renaming `generated text` to `text` and `generated block` to `block`. Iterate on remaining diagnostics until the file compiles cleanly with the intended structure, and return path to the produced .glyph.md file as your result.
+10. Run the Glyph compiler on {target} and read the diagnostics. If the compiler exits with repairable diagnostics (exit 2), run `glyph fmt` on {target}. If `glyph fmt` changes the file, re-invoke the compiler and re-evaluate the diagnostics. Treat errors as required fixes. If repairable diagnostics remain after `glyph fmt`, treat them as informational — the LLM repair pass will rewrite the source. Treat warnings as advisory. Review the source diff after the LLM repair pass. If repair inserted `generated text` or `generated block` definitions, decide whether each is acceptable as-is or should be promoted to hand-authored by renaming `generated text` to `text` and `generated block` to `block`. Iterate on remaining diagnostics until the file compiles cleanly with the intended structure, and return path to the produced .glyph file as your result.
 
 ### Constraints
 

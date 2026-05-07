@@ -31,14 +31,14 @@ Rules:
 - MVP pref values are string, integer, or float literals. The compiler infers the value kind from the literal on the right side.
 - **A default value is mandatory.** Every preference declaration must include the `= <literal>` assignment. An `export const tone` without a right-hand side is a parse error. This ensures every preference has a known fallback — both for the current compile-time inlining model and for any future runtime-slot mechanism.
 - The literal on the right-hand side is the **final value** in MVP. An override mechanism (project config file, CLI flags, env vars) is deferred; see `todo.md`.
-- Any `.glyph.md` file may declare preferences. A dedicated prefs file is conventional, not required.
+- Any `.glyph` file may declare preferences. A dedicated prefs file is conventional, not required.
 
 ## Importing a Preference
 
 Preferences are imported like any other exported name, using the import forms defined in `language-surface.md` and the resolution rules in `imports.md`:
 
 ```glyph
-import "./prefs.glyph.md" { tone, terminal_mux, validation_strictness }
+import "./prefs.glyph" { tone, terminal_mux, validation_strictness }
 
 skill write_summary()
     flow:
@@ -48,7 +48,7 @@ skill write_summary()
 Or with a whole-module alias:
 
 ```glyph
-import "./prefs.glyph.md" as prefs
+import "./prefs.glyph" as prefs
 
 skill write_summary()
     flow:
@@ -60,7 +60,7 @@ At compile time the preference value is inlined into the compiled Markdown, iden
 Preferences may also be used directly as **parameter defaults** on `skill` and `export block` declarations (per `language-surface.md` §3.8). For example:
 
 ```glyph
-import "./prefs.glyph.md" { default_temperature }
+import "./prefs.glyph" { default_temperature }
 
 skill summarize(temperature: Temperature = default_temperature)
     flow:
@@ -87,7 +87,7 @@ An `export block` that reads a preference does so through an explicit import. Th
 
 ## Library File Semantics
 
-A prefs file like `prefs.glyph.md` is a library file under the rules in `language-surface.md` §File-Level Rules. It has zero `skill` declarations and only `export const` declarations. Under the library emission model:
+A prefs file like `prefs.glyph` is a library file under the rules in `language-surface.md` §File-Level Rules. It has zero `skill` declarations and only `export const` declarations. Under the library emission model:
 
 - **It emits zero `.md` files.** Constants are always inlined into consumers at compile time — they never meet a tier threshold for standalone procedure files.
 - **It compiles successfully.** Zero output is not an error. The file contributes names and values to consumers through the validated IR.

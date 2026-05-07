@@ -56,12 +56,12 @@ fn assert_has_diagnostic_id(stdout: &str, id: &str) {
     );
 }
 
-// --- Acceptance criterion 1: constraint_only.glyph.md compiles, emits
+// --- Acceptance criterion 1: constraint_only.glyph compiles, emits
 // ### Constraints only (no ### Steps) ---
 
 #[test]
 fn constraint_only_compiles_with_constraints_no_steps() {
-    let src = fixture("valid", "constraint_only.glyph.md");
+    let src = fixture("valid", "constraint_only.glyph");
     let out = src.with_file_name("constraint_only.md");
     let _ = std::fs::remove_file(&out);
 
@@ -91,11 +91,11 @@ fn constraint_only_compiles_with_constraints_no_steps() {
 
 #[test]
 fn require_text_resolves_and_renders_constraint() {
-    // update_docs.glyph.md has `require accuracy` + `const accuracy = "..."`.
+    // update_docs.glyph has `require accuracy` + `const accuracy = "..."`.
     // Copy to tempdir to avoid parallel-test races on the shared output file.
     let dir = tempfile::tempdir().unwrap();
-    let src = fixture("valid", "update_docs.glyph.md");
-    let tmp_src = dir.path().join("update_docs.glyph.md");
+    let src = fixture("valid", "update_docs.glyph");
+    let tmp_src = dir.path().join("update_docs.glyph");
     std::fs::copy(&src, &tmp_src).unwrap();
     let out = dir.path().join("update_docs.md");
 
@@ -114,11 +114,11 @@ fn require_text_resolves_and_renders_constraint() {
 
 #[test]
 fn body_level_avoid_hoists_to_constraints_section() {
-    // update_docs.glyph.md has `avoid stale_references` at body level.
+    // update_docs.glyph has `avoid stale_references` at body level.
     // Copy to tempdir to avoid parallel-test races on the shared output file.
     let dir = tempfile::tempdir().unwrap();
-    let src = fixture("valid", "update_docs.glyph.md");
-    let tmp_src = dir.path().join("update_docs.glyph.md");
+    let src = fixture("valid", "update_docs.glyph");
+    let tmp_src = dir.path().join("update_docs.glyph");
     std::fs::copy(&src, &tmp_src).unwrap();
     let out = dir.path().join("update_docs.md");
 
@@ -145,8 +145,8 @@ fn body_level_avoid_hoists_to_constraints_section() {
 fn context_section_emits_before_steps() {
     // Copy to tempdir to avoid parallel-test races on the shared output file.
     let dir = tempfile::tempdir().unwrap();
-    let src = fixture("valid", "with_context.glyph.md");
-    let tmp_src = dir.path().join("with_context.glyph.md");
+    let src = fixture("valid", "with_context.glyph");
+    let tmp_src = dir.path().join("with_context.glyph");
     std::fs::copy(&src, &tmp_src).unwrap();
     let out = dir.path().join("with_context.md");
 
@@ -175,8 +175,8 @@ fn context_section_emits_before_steps() {
 fn text_in_context_resolves_to_string() {
     // Copy to tempdir to avoid parallel-test races on the shared output file.
     let dir = tempfile::tempdir().unwrap();
-    let src = fixture("valid", "with_context.glyph.md");
-    let tmp_src = dir.path().join("with_context.glyph.md");
+    let src = fixture("valid", "with_context.glyph");
+    let tmp_src = dir.path().join("with_context.glyph");
     std::fs::copy(&src, &tmp_src).unwrap();
     let out = dir.path().join("with_context.md");
 
@@ -200,7 +200,7 @@ fn text_in_context_resolves_to_string() {
 
 #[test]
 fn body_level_context_hoists_to_context_section() {
-    let src = fixture("valid", "body_context.glyph.md");
+    let src = fixture("valid", "body_context.glyph");
     let out = src.with_file_name("body_context.md");
     let _ = std::fs::remove_file(&out);
 
@@ -237,7 +237,7 @@ fn body_level_context_hoists_to_context_section() {
 
 #[test]
 fn flow_top_level_context_hoists_to_context_section() {
-    let src = fixture("valid", "flow_context.glyph.md");
+    let src = fixture("valid", "flow_context.glyph");
     let out = src.with_file_name("flow_context.md");
     let _ = std::fs::remove_file(&out);
 
@@ -280,7 +280,7 @@ fn flow_top_level_context_hoists_to_context_section() {
 
 #[test]
 fn param_slot_in_context_fires_diagnostic() {
-    let src = fixture("repairable", "slot_in_context.glyph.md");
+    let src = fixture("repairable", "slot_in_context.glyph");
     let result = run_check(src, "json");
     assert_eq!(
         result.status.code(),
@@ -297,7 +297,7 @@ fn param_slot_in_context_fires_diagnostic() {
 
 #[test]
 fn bare_name_in_flow_fires_text_in_flow_diagnostic() {
-    let src = fixture("repairable", "bare_name_in_flow.glyph.md");
+    let src = fixture("repairable", "bare_name_in_flow.glyph");
     let result = run_check(src, "json");
     assert_eq!(
         result.status.code(),
@@ -314,7 +314,7 @@ fn bare_name_in_flow_fires_text_in_flow_diagnostic() {
 
 #[test]
 fn undefined_constraint_name_fires_undefined_name_diagnostic() {
-    let src = fixture("invalid", "undefined_constraint_name.glyph.md");
+    let src = fixture("invalid", "undefined_constraint_name.glyph");
     let result = run_compile(src, "json");
     assert_eq!(
         result.status.code(),
@@ -329,7 +329,7 @@ fn undefined_constraint_name_fires_undefined_name_diagnostic() {
 
 #[test]
 fn missing_description_fires_repairable_diagnostic() {
-    let src = fixture("repairable", "missing_description.glyph.md");
+    let src = fixture("repairable", "missing_description.glyph");
     let result = run_check(src, "json");
     assert_eq!(
         result.status.code(),
@@ -352,7 +352,7 @@ fn missing_description_fires_repairable_diagnostic() {
 
 #[test]
 fn bare_text_name_at_body_level_fires_ambiguous_role() {
-    let src = fixture("repairable", "ambiguous_role.glyph.md");
+    let src = fixture("repairable", "ambiguous_role.glyph");
     let result = run_check(src, "json");
     assert_eq!(
         result.status.code(),

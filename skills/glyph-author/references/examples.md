@@ -1,6 +1,6 @@
 # Glyph Examples
 
-Five annotated examples covering the full authoring surface. Each is a complete `.glyph.md` file you could drop into a project; comments call out which form is being demonstrated.
+Five annotated examples covering the full authoring surface. Each is a complete `.glyph` file you could drop into a project; comments call out which form is being demonstrated.
 
 ---
 
@@ -9,7 +9,7 @@ Five annotated examples covering the full authoring surface. Each is a complete 
 A single-purpose skill with parameters, body-level constraints, and a short flow.
 
 ```glyph
-// File: update_docs.glyph.md
+// File: update_docs.glyph
 skill update_docs(scope = ".")
     description: "Use when the user asks to refresh documentation in a scope."
 
@@ -37,9 +37,9 @@ Notes:
 Demonstrates `import`, locals, named arguments, and call-site framing.
 
 ```glyph
-// File: fix_bug.glyph.md
-import "./repo_tools.glyph.md" as repo_tools
-import "./prefs.glyph.md" { validation_strictness }
+// File: fix_bug.glyph
+import "./repo_tools.glyph" as repo_tools
+import "./prefs.glyph" { validation_strictness }
 
 const root_cause_before_fix = """
 Identify the root cause before proposing or applying a fix.
@@ -79,7 +79,7 @@ Notes:
 Demonstrates `if`/`elif`/`else`, condition forms, and a constraint that applies only inside one branch.
 
 ```glyph
-// File: review_pr.glyph.md
+// File: review_pr.glyph
 skill review_pr(pr_id, depth = "standard")
     effects: reads_files, runs_commands
 
@@ -113,7 +113,7 @@ Notes:
 A library file (zero `skill`s) shipping reusable constants and a procedure.
 
 ```glyph
-// File: prefs.glyph.md
+// File: prefs.glyph
 export const safety_rules = """
 Never execute destructive operations without confirmation.
 """
@@ -152,7 +152,7 @@ Notes:
 Demonstrates spawning a subagent and following up via UFCS.
 
 ```glyph
-// File: investigate.glyph.md
+// File: investigate.glyph
 import "@glyph/std" { subagent, send }
 
 skill investigate(area)
@@ -182,7 +182,7 @@ Notes:
 Demonstrates the four name forms working together: `{name}` for in-string references, `name` for ordinary identifiers, and `<name>` / `<"description">` for outputs the agent must synthesize from prose-guided work.
 
 ```glyph
-// File: cleanup_branches.glyph.md
+// File: cleanup_branches.glyph
 const stale_age_days = 60
 
 skill cleanup_branches(repo_path, dry_run = true)

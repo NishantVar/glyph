@@ -73,7 +73,7 @@ fn classification_of(stdout: &str, id: &str) -> Option<String> {
 #[test]
 fn ac7_none_return_parse_then_fmt_then_reparse_clean() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("foo.glyph.md");
+    let path = dir.path().join("foo.glyph");
     std::fs::write(
         &path,
         "skill foo() -> None\n    description: \"d\"\n    flow:\n        \"x\"\n",
@@ -144,7 +144,7 @@ fn ac7_none_return_parse_then_fmt_then_reparse_clean() {
 #[test]
 fn ac7_export_block_missing_return_type_end_to_end() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("missing_arrow.glyph.md");
+    let path = dir.path().join("missing_arrow.glyph");
     std::fs::write(
         &path,
         "\

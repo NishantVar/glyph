@@ -269,7 +269,7 @@ Resolution behaviour for the `@glyph/` namespace:
 - Any other `@glyph/*` path (e.g., `@glyph/foo`, `@glyph/std/extra`) fires `G::imports::unknown-stdlib-module` (error). The MVP recognises exactly one virtual module under this prefix.
 - The `@glyph/` prefix is reserved for compiler-shipped modules and never collides with filesystem paths: a real on-disk file named `@glyph` is not consulted.
 
-This follows the same pattern as the `@glyph/prefs` namespace sketched in `preferences.md` and `todo.md`. Post-MVP, when the stdlib grows beyond a handful of entries, the compiler may migrate to real `.glyph.md` files shipped at a well-known path. The import syntax stays the same — only the resolution mechanism changes.
+This follows the same pattern as the `@glyph/prefs` namespace sketched in `preferences.md` and `todo.md`. Post-MVP, when the stdlib grows beyond a handful of entries, the compiler may migrate to real `.glyph` files shipped at a well-known path. The import syntax stays the same — only the resolution mechanism changes.
 
 ### Explicit Import Required
 
@@ -308,6 +308,6 @@ The `import "@glyph/std" { subagent }` statement compiles away like all imports 
 - **Shared state between agents.** Shared memory, channels, or structured data exchange between agents. MVP agents communicate via `send` (prose messages) only.
 - **Agent completion / await.** An explicit mechanism to block until a subagent finishes and retrieve its result. For MVP, completion is implicit in prose: subsequent steps that reference an agent's output naturally imply the agent has finished.
 - **Stdlib expansion.** Additional entries (common constraint texts, utility blocks) may be added post-MVP if patterns emerge from real usage. The stdlib should grow conservatively.
-- **`@glyph/` namespace resolution.** For MVP, stdlib is compiler-embedded (see §Distribution and Resolution). Post-MVP, if the stdlib migrates to real `.glyph.md` files, the resolution mechanism (environment variable, compiler config, well-known path) becomes an implementation decision.
+- **`@glyph/` namespace resolution.** For MVP, stdlib is compiler-embedded (see §Distribution and Resolution). Post-MVP, if the stdlib migrates to real `.glyph` files, the resolution mechanism (environment variable, compiler config, well-known path) becomes an implementation decision.
 - **General collection types.** Lists, sets, maps, and other collections are not part of MVP. A general collection type system is deferred.
 - **Concurrency primitive.** A guaranteed-concurrent spawn primitive (e.g. a future `parallel`) is deferred. MVP relies on the consuming agent's discretion when multiple `subagent(...)` calls appear.

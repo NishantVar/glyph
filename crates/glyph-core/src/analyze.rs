@@ -74,7 +74,7 @@ pub enum ResolutionKind {
     /// The name token of an `import "<path>" { name }` clause itself.
     Import,
     /// `@glyph/std` member (`subagent`, `send`). The LSP returns `null` for
-    /// these — they have no `.glyph.md` source to jump to.
+    /// these — they have no `.glyph` source to jump to.
     Stdlib,
 }
 
@@ -3451,7 +3451,7 @@ mod tests {
     use super::*;
 
     fn check_ids(src: &str) -> Vec<String> {
-        crate::check_source(src, 0, "test.glyph.md")
+        crate::check_source(src, 0, "test.glyph")
             .iter()
             .map(|d| d.id.clone())
             .collect()
@@ -3465,7 +3465,7 @@ skill current() -> BranchName
     flow:
         return \"<current_branch>\"
 ";
-        let bag = crate::check_source(src, 0, "test.glyph.md");
+        let bag = crate::check_source(src, 0, "test.glyph");
         let ids: Vec<String> = bag.iter().map(|d| d.id.clone()).collect();
         assert!(
             ids.iter()
@@ -3483,7 +3483,7 @@ skill diagnose() -> Confirmation
     flow:
         return \"<root cause and severity>\"
 ";
-        let bag = crate::check_source(src, 0, "test.glyph.md");
+        let bag = crate::check_source(src, 0, "test.glyph");
         let ids: Vec<String> = bag.iter().map(|d| d.id.clone()).collect();
         assert!(
             ids.iter()
@@ -3595,7 +3595,7 @@ skill current() -> BranchName
             source,
             span,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &text_names,
@@ -3634,7 +3634,7 @@ skill current() -> BranchName
             "TestResult",
             "my_call",
             span,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
         );
@@ -3707,7 +3707,7 @@ skill current() -> BranchName
         // missing-effects fires whenever there are inferred effects and no declared effects.
         let mut bag_on = DiagBag::new();
         let mut registry_on = crate::domain_registry::Registry::new();
-        analyze_with_diagnostics(file.clone(), 0, "test.glyph.md", &li, &mut bag_on, &mut registry_on);
+        analyze_with_diagnostics(file.clone(), 0, "test.glyph", &li, &mut bag_on, &mut registry_on);
         let ids_on: Vec<&str> = bag_on.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids_on.contains(&"G::analyze::missing-effects"),
@@ -3718,7 +3718,7 @@ skill current() -> BranchName
         // Verifying the diagnostic fires (effects tracking is always active).
         let mut bag_off = DiagBag::new();
         let mut registry_off = crate::domain_registry::Registry::new();
-        analyze_with_diagnostics(file, 0, "test.glyph.md", &li, &mut bag_off, &mut registry_off);
+        analyze_with_diagnostics(file, 0, "test.glyph", &li, &mut bag_off, &mut registry_off);
         let ids_off: Vec<&str> = bag_off.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids_off.contains(&"G::analyze::missing-effects"),
@@ -3739,7 +3739,7 @@ skill current() -> BranchName
             "int",
             "my_param",
             span,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
         );
@@ -3775,7 +3775,7 @@ skill current() -> BranchName
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -3803,7 +3803,7 @@ skill current() -> BranchName
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -3826,7 +3826,7 @@ skill current() -> BranchName
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -3850,7 +3850,7 @@ skill current() -> BranchName
         let _ = analyze_with_imports(
             &file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &HashSet::new(),
@@ -3881,7 +3881,7 @@ skill current() -> BranchName
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -3916,7 +3916,7 @@ skill current() -> BranchName
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -3950,7 +3950,7 @@ skill current() -> BranchName
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -3995,8 +3995,8 @@ block validate_plan()
         let file = parse_for_resolutions(src);
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
-        let path = PathBuf::from("test.glyph.md");
-        let (_file, res) = analyze_with_resolutions(file, 0, "test.glyph.md", &path, &line_index, &mut bag, false);
+        let path = PathBuf::from("test.glyph");
+        let (_file, res) = analyze_with_resolutions(file, 0, "test.glyph", &path, &line_index, &mut bag, false);
         let block_res = res.iter().find(|r| r.kind == ResolutionKind::Block);
         assert!(block_res.is_some(), "expected a Block resolution, got: {:?}", res);
         let r = block_res.unwrap();
@@ -4020,8 +4020,8 @@ const accuracy = "Be accurate."
         let file = parse_for_resolutions(src);
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
-        let path = PathBuf::from("t.glyph.md");
-        let (_, res) = analyze_with_resolutions(file, 0, "t.glyph.md", &path, &line_index, &mut bag, false);
+        let path = PathBuf::from("t.glyph");
+        let (_, res) = analyze_with_resolutions(file, 0, "t.glyph", &path, &line_index, &mut bag, false);
         let text_res = res.iter().find(|r| r.kind == ResolutionKind::Text);
         assert!(text_res.is_some(), "expected a Text resolution, got: {:?}", res);
         let r = text_res.unwrap();
@@ -4039,8 +4039,8 @@ const accuracy = "Be accurate."
         let file = parse_for_resolutions(src);
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
-        let path = PathBuf::from("t.glyph.md");
-        let (_, res) = analyze_with_resolutions(file, 0, "t.glyph.md", &path, &line_index, &mut bag, false);
+        let path = PathBuf::from("t.glyph");
+        let (_, res) = analyze_with_resolutions(file, 0, "t.glyph", &path, &line_index, &mut bag, false);
         assert!(
             !res.iter().any(|r| r.kind == ResolutionKind::Block),
             "unresolved call should produce no Block resolution, got: {:?}",
@@ -4061,7 +4061,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -4108,7 +4108,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -4169,7 +4169,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -4203,7 +4203,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -4233,7 +4233,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -4276,7 +4276,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -4315,7 +4315,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -4341,7 +4341,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -4376,7 +4376,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -4404,7 +4404,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_imports(
             &file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &HashSet::new(),
@@ -4442,7 +4442,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -4512,7 +4512,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_imports(
             &file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &HashSet::new(),
@@ -4601,7 +4601,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_imports(
             &file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &HashSet::new(),
@@ -4646,7 +4646,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -4684,7 +4684,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_imports(
             &file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &HashSet::new(),
@@ -4723,7 +4723,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -4751,7 +4751,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -4781,7 +4781,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -4809,7 +4809,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -4839,7 +4839,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -4889,7 +4889,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_imports(
             &file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &HashSet::new(),
@@ -4936,7 +4936,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -4995,7 +4995,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -5044,7 +5044,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -5090,7 +5090,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -5144,7 +5144,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_imports(
             &file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &HashSet::new(),
@@ -5193,7 +5193,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -5241,7 +5241,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -5284,7 +5284,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -5325,7 +5325,7 @@ const accuracy = "Be accurate."
         // returns, `used` must contain `imported_foo`. The integration-level
         // pin (parse → analyze → unused-import suppression) lives in the
         // CLI suite as `ac_codex_pass3_block_flow_import_used_via_binary`.
-        let src = "import \"./lib.glyph.md\" { imported_foo }\n\nskill main()\n    description: \"Main.\"\n    flow:\n        helper()\n\nblock helper()\n    description: \"Helper.\"\n    flow:\n        return imported_foo()\n";
+        let src = "import \"./lib.glyph\" { imported_foo }\n\nskill main()\n    description: \"Main.\"\n    flow:\n        helper()\n\nblock helper()\n    description: \"Helper.\"\n    flow:\n        return imported_foo()\n";
         let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
@@ -5337,7 +5337,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_imports(
             &file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &HashSet::new(),
@@ -5391,7 +5391,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -5430,7 +5430,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_imports(
             &file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &HashSet::new(),
@@ -5469,7 +5469,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -5501,7 +5501,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -5529,7 +5529,7 @@ const accuracy = "Be accurate."
         let _ = analyze_with_diagnostics(
             file,
             0,
-            "test.glyph.md",
+            "test.glyph",
             &line_index,
             &mut bag,
             &mut registry,
@@ -5568,8 +5568,8 @@ skill main()
         let file = parse_for_resolutions(src);
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
-        let path = PathBuf::from("t.glyph.md");
-        let (_, res) = analyze_with_resolutions(file, 0, "t.glyph.md", &path, &line_index, &mut bag, false);
+        let path = PathBuf::from("t.glyph");
+        let (_, res) = analyze_with_resolutions(file, 0, "t.glyph", &path, &line_index, &mut bag, false);
         let stdlib_count = res.iter().filter(|r| r.kind == ResolutionKind::Stdlib).count();
         assert_eq!(stdlib_count, 2, "expected 2 Stdlib resolutions, got: {:?}", res);
     }
@@ -5577,7 +5577,7 @@ skill main()
     #[test]
     fn collect_cross_file_resolutions_records_imported_block_call() {
         // Importer references an imported block by its local name.
-        let src = r#"import "./repo_tools.glyph.md" { inspect_repo }
+        let src = r#"import "./repo_tools.glyph" { inspect_repo }
 
 skill main()
     description: "main."
@@ -5589,7 +5589,7 @@ skill main()
         // Build a target table mirroring what `lib::check_source_with_resolutions`
         // would produce after parsing the dependency.
         let mut targets: HashMap<String, ImportTarget> = HashMap::new();
-        let dep_path = PathBuf::from("/tmp/repo_tools.glyph.md");
+        let dep_path = PathBuf::from("/tmp/repo_tools.glyph");
         targets.insert(
             "inspect_repo".to_string(),
             ImportTarget {
@@ -5672,7 +5672,7 @@ skill main()
         let line_index = crate::span::LineIndex::new(src);
         let mut bag = crate::diagnostic::DiagBag::new();
         let file = crate::parse::parse_with_diagnostics_opts(
-            src, 0, "test.glyph.md", &line_index, &mut bag, true,
+            src, 0, "test.glyph", &line_index, &mut bag, true,
         )
         .expect("parse with effects enabled");
         let signals = crate::analyze::fmt_signals(&file);
@@ -5767,7 +5767,7 @@ mod unmerged_duplicate_subsection_tests {
         let li = LineIndex::new(source);
         let mut bag = DiagBag::new();
         let mut registry = crate::domain_registry::Registry::new();
-        analyze_with_diagnostics(file, 0, "test.glyph.md", &li, &mut bag, &mut registry);
+        analyze_with_diagnostics(file, 0, "test.glyph", &li, &mut bag, &mut registry);
         bag
     }
 
@@ -5821,7 +5821,7 @@ skill the_skill()
     flow:
         \"do work\"
 ";
-        let bag = crate::check_source(src, 0, "test.glyph.md");
+        let bag = crate::check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
 
         assert!(
@@ -5864,7 +5864,7 @@ block foo()
     flow:
         \"Do something.\"
 ";
-        let bag = crate::check_source(src, 0, "test.glyph.md");
+        let bag = crate::check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
 
         assert!(
@@ -5897,7 +5897,7 @@ export block foo() -> Report
         \"Do something.\"
         return <result>
 ";
-        let bag = crate::check_source(src, 0, "test.glyph.md");
+        let bag = crate::check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
 
         assert!(
@@ -5970,7 +5970,7 @@ export block foo() -> Report
             &params,
             &[],
             Span::new(0, 0, 1),
-            "test.glyph.md",
+            "test.glyph",
             &li,
         );
         assert_eq!(diags.len(), 1);
@@ -5992,7 +5992,7 @@ export block foo() -> Report
             &params,
             &["v1".to_string()],
             Span::new(0, 0, 1),
-            "test.glyph.md",
+            "test.glyph",
             &li,
         );
         assert!(diags.is_empty(), "expected no diagnostics, got {:?}", diags);
@@ -6007,7 +6007,7 @@ export block foo() -> Report
             &params,
             &[],
             Span::new(0, 0, 1),
-            "test.glyph.md",
+            "test.glyph",
             &li,
         );
         assert!(diags.is_empty(), "expected no diagnostics, got {:?}", diags);
@@ -6034,7 +6034,7 @@ export block foo() -> Report
             &mixed_params(),
             &[],
             Span::new(0, 0, 1),
-            "test.glyph.md",
+            "test.glyph",
             &li,
         );
         let msgs = missing_arg_names(&diags);
@@ -6051,7 +6051,7 @@ export block foo() -> Report
             &mixed_params(),
             &["v1".to_string()],
             Span::new(0, 0, 1),
-            "test.glyph.md",
+            "test.glyph",
             &li,
         );
         let msgs = missing_arg_names(&diags);
@@ -6071,7 +6071,7 @@ export block foo() -> Report
             &mixed_params(),
             &["v1".to_string(), "v2".to_string()],
             Span::new(0, 0, 1),
-            "test.glyph.md",
+            "test.glyph",
             &li,
         );
         let msgs = missing_arg_names(&diags);

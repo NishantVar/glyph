@@ -21,7 +21,7 @@ See [`design/glyph-lsp.md`](../../design/glyph-lsp.md) for the full design.
   previously-published dep URIs get a clearing publish.
 - **Go-to-definition (M2):** jumps to `block` / `text` / `export block`
   declarations and `{param}` slots in flow inline strings. Cross-file
-  imports follow the `import "./<rel>.glyph.md" { name }` clause and jump
+  imports follow the `import "./<rel>.glyph" { name }` clause and jump
   to the declaration in the imported file. Stdlib targets (`subagent`,
   `send`) and unresolvable identifiers return `null`.
 - **Semantic tokens (M3 Phase B):** `textDocument/semanticTokens/full`.
@@ -83,7 +83,7 @@ if not configs.glyph then
       root_dir = lspconfig.util.root_pattern(
         ".git",
         "Cargo.toml",
-        "*.glyph.md"
+        "*.glyph"
       ),
       single_file_support = true,
       init_options = {
@@ -98,10 +98,7 @@ lspconfig.glyph.setup({})
 
 vim.filetype.add({
   extension = {
-    ["glyph.md"] = "glyph",
-  },
-  pattern = {
-    [".*%.glyph%.md"] = "glyph",
+    ["glyph"] = "glyph",
   },
 })
 ```
@@ -112,7 +109,7 @@ vim.filetype.add({
 2. Confirm `glyph lsp` is on `PATH`: `which glyph && glyph --help | grep lsp`
 3. Drop the snippet above into `~/.config/nvim/lua/plugins/glyph.lua`
    (or your existing LSP config file).
-4. Open a `.glyph.md` file in nvim (e.g. one of the corpus fixtures under
+4. Open a `.glyph` file in nvim (e.g. one of the corpus fixtures under
    `crates/glyph-cli/tests/corpus/invalid/`).
 5. Run `:LspInfo`. Expect to see `glyph` listed as attached, with `cmd`
    resolving to your `glyph` binary.
@@ -151,10 +148,10 @@ With the same setup:
 4. With a parameter slot like `"Inspect {scope} for issues."` in `flow:`
    and `skill main(scope = ".")`, place the cursor inside `{scope}` and
    press `gd` — jumps to the `scope = "."` parameter in the header.
-5. Open `crates/glyph-cli/tests/corpus/valid/imports/fix_bug.glyph.md` —
+5. Open `crates/glyph-cli/tests/corpus/valid/imports/fix_bug.glyph` —
    place the cursor inside the `inspect_repo` call in the flow block and
    press `gd`. The cursor should jump to the `export block inspect_repo`
-   declaration in the sibling file `repo_tools.glyph.md` (cross-file).
+   declaration in the sibling file `repo_tools.glyph` (cross-file).
 6. On a stdlib reference (`subagent` imported via `@glyph/std`) or any
    unresolvable name, `gd` reports "no definition found" — the LSP
    returns `null` (per design §10.D).

@@ -2,7 +2,7 @@
 //
 // Spawns `<glyph.serverPath> lsp` (default `glyph lsp`) over stdio and
 // hands the connection to vscode-languageclient. The server provides:
-//   - publishDiagnostics on save (and on open) for `.glyph.md` buffers
+//   - publishDiagnostics on save (and on open) for `.glyph` buffers
 //   - textDocument/definition (same-file + cross-file imports)
 //   - textDocument/semanticTokens/full (M3)
 //
@@ -40,16 +40,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const clientOptions: LanguageClientOptions = {
     documentSelector: [
       { scheme: "file", language: "glyph" },
-      { scheme: "file", pattern: "**/*.glyph.md" },
+      { scheme: "file", pattern: "**/*.glyph" },
     ],
     initializationOptions: {
       enableEffects,
     },
     synchronize: {
-      // Re-lint when an edit is saved to a `.glyph.md` file outside the
+      // Re-lint when an edit is saved to a `.glyph` file outside the
       // currently active editor (e.g., import target edited in another
       // pane). The save-only behavior matches design §10.C.
-      fileEvents: vscode.workspace.createFileSystemWatcher("**/*.glyph.md"),
+      fileEvents: vscode.workspace.createFileSystemWatcher("**/*.glyph"),
     },
   };
 

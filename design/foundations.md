@@ -29,7 +29,7 @@ Each item is 1-2 sentences; detailed rules live in the linked design docs.
 
 9. **Authoring and execution are separate.** Source Glyph exists for humans; compiled output exists for agents. The compiler handles flattening, expansion, defaults, and target-specific generation.
 
-10. **Compiled output is parameterized, with tiered self-containment.** Compilation is parameterless — `glyph compile skill.glyph.md` produces one `.md` file per skill, with parameters as named `{param}` slots resolved by the consuming LLM at runtime. Simple skills are fully self-contained in one file. Complex skills may reference separately compiled procedure files for imported blocks that are large, conditional, or shared across skills — the compiler decides the projection tier (inline, same-file procedure section, or external procedure file) based on callee complexity, conditionality, and reuse. See `compiled-output.md` for the three-tier projection model.
+10. **Compiled output is parameterized, with tiered self-containment.** Compilation is parameterless — `glyph compile skill.glyph` produces one `.md` file per skill, with parameters as named `{param}` slots resolved by the consuming LLM at runtime. Simple skills are fully self-contained in one file. Complex skills may reference separately compiled procedure files for imported blocks that are large, conditional, or shared across skills — the compiler decides the projection tier (inline, same-file procedure section, or external procedure file) based on callee complexity, conditionality, and reuse. See `compiled-output.md` for the three-tier projection model.
 
 11. **Reliability beats elegance in compiled output.** Compiled agent instructions favor explicitness and followability over compression.
 

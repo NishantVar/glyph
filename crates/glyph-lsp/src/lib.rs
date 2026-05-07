@@ -407,7 +407,7 @@ impl LanguageServer for Backend {
             off >= r.use_span.start && off < r.use_span.end
         }) {
             // §10.D: stdlib targets return null. The user sees no jump,
-            // which matches "subagent has no .glyph.md to open."
+            // which matches "subagent has no .glyph to open."
             if r.kind == ResolutionKind::Stdlib {
                 return Ok(None);
             }
@@ -639,7 +639,7 @@ mod tests {
     flow:
         "Inspect {scope} for issues."
 "#;
-        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph.md", false)
+        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false)
             .expect("parse");
         // Find the byte offset of the `s` inside `{scope}`.
         let off = src.find("{scope}").unwrap() as u32 + 1; // inside the braces
@@ -659,7 +659,7 @@ mod tests {
     flow:
         "Use {missing} here."
 "#;
-        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph.md", false)
+        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false)
             .expect("parse");
         let off = src.find("{missing}").unwrap() as u32 + 1;
         assert!(resolve_param_slot(src, &view.ast, off).is_none());
@@ -673,7 +673,7 @@ mod tests {
     flow:
         "Inspect things."
 "#;
-        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph.md", false)
+        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false)
             .expect("parse");
         let off = src.find("Inspect").unwrap() as u32 + 2;
         assert!(resolve_param_slot(src, &view.ast, off).is_none());
@@ -698,7 +698,7 @@ mod tests {
 block validate_plan()
     "Check the plan."
 "#;
-        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph.md", false)
+        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false)
             .expect("parse");
         // Cursor inside the `validate_plan` call-site (first occurrence —
         // the second is the `block` declaration's name token).
@@ -727,7 +727,7 @@ block validate_plan()
 
 const accuracy = "Be accurate."
 "#;
-        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph.md", false)
+        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false)
             .expect("parse");
         // Cursor inside `accuracy` after `require`.
         let off = src.find("require accuracy").unwrap() as u32 + "require ".len() as u32 + 1;
@@ -752,7 +752,7 @@ skill main()
     flow:
         subagent()
 "#;
-        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph.md", false)
+        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false)
             .expect("parse");
         // Cursor inside the `subagent` call-site. Skip the import line.
         let off = src.find("subagent()").unwrap() as u32 + 2;
@@ -775,7 +775,7 @@ skill main()
 block validate_plan()
     "Check the plan."
 "#;
-        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph.md", false)
+        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false)
             .expect("parse");
         // Cursor on a leading-whitespace position (start of the indented line).
         let off = src.find("    description").unwrap() as u32;
@@ -797,12 +797,12 @@ block validate_plan()
         // Lay out the corpus in a tempdir so `resolve_import_path` can
         // canonicalize the dependency path.
         let dir = tempfile::tempdir().expect("tempdir");
-        let dep_path = dir.path().join("repo_tools.glyph.md");
+        let dep_path = dir.path().join("repo_tools.glyph");
         let dep_src = "export block inspect_repo(scope = \".\")\n    description: \"Inspect.\"\n    flow:\n        \"Examine.\"\n";
         std::fs::write(&dep_path, dep_src).expect("write dep");
 
-        let importer_path = dir.path().join("fix_bug.glyph.md");
-        let importer_src = "import \"./repo_tools.glyph.md\" { inspect_repo }\n\nskill fix_bug(scope = \".\")\n    description: \"Fix.\"\n    flow:\n        inspect_repo(scope)\n";
+        let importer_path = dir.path().join("fix_bug.glyph");
+        let importer_src = "import \"./repo_tools.glyph\" { inspect_repo }\n\nskill fix_bug(scope = \".\")\n    description: \"Fix.\"\n    flow:\n        inspect_repo(scope)\n";
         std::fs::write(&importer_path, importer_src).expect("write importer");
 
         let view = glyph_core::check_source_with_resolutions_at_path(
@@ -841,7 +841,7 @@ block validate_plan()
     #[test]
     fn cross_file_diagnostic_attributable_to_dep_uri() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let dep_path = dir.path().join("dep.glyph.md");
+        let dep_path = dir.path().join("dep.glyph");
         // Dep has its own diagnostic (`require ghost` → undefined-name).
         let dep_text = "\
 export const alpha = \"alpha.\"
@@ -854,9 +854,9 @@ skill dep_skill()
 ";
         std::fs::write(&dep_path, dep_text).expect("write dep");
 
-        let importer_path = dir.path().join("main.glyph.md");
+        let importer_path = dir.path().join("main.glyph");
         let importer_src = "\
-import \"./dep.glyph.md\" { alpha }
+import \"./dep.glyph\" { alpha }
 
 skill main()
     description: \"main.\"

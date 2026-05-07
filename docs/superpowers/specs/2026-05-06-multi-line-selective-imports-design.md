@@ -120,4 +120,4 @@ them, but if the plan or PR references them, refresh the line numbers.
 - Indent-style enforcement inside the brace list.
 - Generalizing the `"expected ',' or '}'"` diagnostic improvement to other
   comma-separated lists.
-- Touching the existing `convert_md_to_glyph.glyph.md` authoring file.
+- Touching the existing `convert_md_to_glyph.glyph` authoring file.
