@@ -230,7 +230,8 @@ Calls
 - Nested calls are legal but read better with intermediate named bindings.
 
 Branching — `if` / `elif` / `else`
-- Python-style colon-terminated headers, significant indentation.
+- Headers are bare keyword + condition with no trailing colon;
+  significant indentation marks the arm body.
 - Allowed conditions: boolean identifier or binding; boolean-returning
   call; single-level dot access (`ctx.has_tests`); `not`; equality
   (`==`) / inequality (`!=`); `and` / `or`; parenthesized grouping;
@@ -552,15 +553,15 @@ With branching, blocks, and `.applies()`:
         flow:
             inspect_repo(scope) with "focus on the area where the bug was reported"
 
-            if deep_investigation.applies():
+            if deep_investigation.applies()
                 "Trace symptoms across multiple subsystems."
                 "Gather extensive evidence from logs, tests, and code."
-            else:
+            else
                 identify_root_cause()
 
-            if has_test_suite.applies():
+            if has_test_suite.applies()
                 "Run the existing test suite to establish a baseline."
-            else:
+            else
                 "Manually verify the fix by inspecting the changed code paths."
 
             patch_minimally()
@@ -605,7 +606,7 @@ Multi-file skill with library and preferences:
 
         flow:
             ctx = inspect_repo(scope) with "focus on where the bug was reported"
-            if has_test_suite.applies():
+            if has_test_suite.applies()
                 "Run tests to establish a baseline before any change."
             "Identify the root cause from {ctx} before proposing a fix."
             "Apply the smallest possible patch."
@@ -664,7 +665,7 @@ Flow statement forms:
     "inline instruction"
     context <name|"string">          # context marker
     require / avoid / must … <name|"string">   # constraint marker
-    if <cond>:                        elif <cond>:    else:
+    if <cond>                         elif <cond>     else
     return <expr>                    # exactly one, top-level, last
 
 Conditions:

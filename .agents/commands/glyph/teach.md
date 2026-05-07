@@ -1,11 +1,10 @@
 ---
-name: convert_md_to_glyph
-description: Convert an existing compiled-form skill at `source_md` into a Glyph source file at `target`.
+name: teach
+description: Author or edit a Glyph source file (.glyph) at `target` for a task described by the user.
 ---
 
 ## Parameters
 
-- **source_md** (required)
 - **target** (required)
 
 ## Instructions
@@ -237,7 +236,8 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
   - Nested calls are legal but read better with intermediate named bindings.
 
   Branching — `if` / `elif` / `else`
-  - Python-style colon-terminated headers, significant indentation.
+  - Headers are bare keyword + condition with no trailing colon;
+    significant indentation marks the arm body.
   - Allowed conditions: boolean identifier or binding; boolean-returning
     call; single-level dot access (`ctx.has_tests`); `not`; equality
     (`==`) / inequality (`!=`); `and` / `or`; parenthesized grouping;
@@ -559,15 +559,15 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
           flow:
               inspect_repo(scope) with "focus on the area where the bug was reported"
 
-              if deep_investigation.applies():
+              if deep_investigation.applies()
                   "Trace symptoms across multiple subsystems."
                   "Gather extensive evidence from logs, tests, and code."
-              else:
+              else
                   identify_root_cause()
 
-              if has_test_suite.applies():
+              if has_test_suite.applies()
                   "Run the existing test suite to establish a baseline."
-              else:
+              else
                   "Manually verify the fix by inspecting the changed code paths."
 
               patch_minimally()
@@ -612,7 +612,7 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
 
           flow:
               ctx = inspect_repo(scope) with "focus on where the bug was reported"
-              if has_test_suite.applies():
+              if has_test_suite.applies()
                   "Run tests to establish a baseline before any change."
               "Identify the root cause from {ctx} before proposing a fix."
               "Apply the smallest possible patch."
@@ -671,7 +671,7 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
       "inline instruction"
       context <name|"string">          # context marker
       require / avoid / must … <name|"string">   # constraint marker
-      if <cond>:                        elif <cond>:    else:
+      if <cond>                         elif <cond>     else
       return <expr>                    # exactly one, top-level, last
 
   Conditions:
@@ -685,16 +685,15 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
 
 ### Steps
 
-1. Read the file at {source_md}. Split the YAML frontmatter from the Markdown body. Within the body, locate the `## Parameters`, `### Context`, `### Steps`, and `### Constraints` sub-sections — note which are present and which are absent.
-2. Use the frontmatter `name`, `description`, and parameter list (if present) to author the `skill <name>(params)` declaration line and its `description:` sub-section. Recover parameter names from the `## Parameters` section when the frontmatter does not list them. Do not invent parameters that are not in the source.
-3. Follow the extract-branches-into-procedures procedure below.
-4. Map each remaining top-level context bullet to a `context:` entry on the skill. Use inline strings at this stage; the factoring pass will promote them to `const` constants where appropriate.
-5. Map each remaining top-level constraint bullet to a `constraints:` entry on the skill. Recover polarity from the bullet's leading verb (`Always` / `Must` / `Never` / `Avoid` / `Prefer` / `Consider`) and pick the matching marker (`require` / `must` / `must avoid` / `avoid`). Use inline strings; factoring will promote them later.
-6. Map the remaining top-level numbered steps to instruction strings inside `flow:` in their original order. Branch sites already became `if PROCNAME.applies()` calls during extraction — leave them alone here. If the final step describes what the skill produces, lift that into a top-level `return <"description">` statement at the end of `flow:` rather than restating it as another instruction.
-7. Write the assembled skill, blocks, and any extracted const constants to {target}. This is a verbose first draft — factoring and sorting will tidy it up next.
-8. Scan every instruction string in `flow:` bodies. For any string longer than 10 words, extract it into a named `block` (or `export block` if it must be reachable from another file) and replace the inline string with a call to that block. Pick a verb-phrase name that describes the step's intent. Scan every inline string used as a marker body (`require`/`avoid`/`must`/`must avoid`/`context`) or as a `context:` entry. For any string longer than 10 words, extract it into a named `const` constant (or `export const` if another file imports it) and replace the inline string with a bare-name reference. Skip `description:` strings — leave them inline.
-9. Reorder top-level declarations in the file so that the single `skill` declaration appears first, every `block` and `export block` follows it, and every `const` and `export const` constant comes last. Preserve `import` statements at the very top of the file, above the `skill` declaration.
-10. Run the Glyph compiler on {target} and read the diagnostics. If the compiler exits with repairable diagnostics (exit 2), run `glyph fmt` on {target}. If `glyph fmt` changes the file, re-invoke the compiler and re-evaluate the diagnostics. Treat errors as required fixes. If repairable diagnostics remain after `glyph fmt`, treat them as informational — the LLM repair pass will rewrite the source. Treat warnings as advisory. Review the source diff after the LLM repair pass. If repair inserted `generated const` or `generated block` definitions, decide whether each is acceptable as-is or should be promoted to hand-authored by renaming `generated const` to `const` and `generated block` to `block`. Iterate on remaining diagnostics until the file compiles cleanly with the intended structure, and return the path to the produced .glyph file as your result.
+1. Read the user's request and identify the skill's purpose, the runtime parameters it will need, and any task-specific constraints. If {target} is an existing `.glyph` file, read it first and treat the task as an edit. Otherwise, plan to create a new file at {target}.
+2. Decide the file kind: a skill file with exactly one `skill` declaration, or a library file with zero `skill` declarations and at least one `export block` or `export const`.
+3. Write the declaration header. For `skill`, parameters may have no defaults (the agent extracts them from user context at runtime). For `export block`, every parameter must have a default. For return types, use a named domain type (`Plan`, `BranchName`, `Diagnosis`) or omit `->` entirely when there is no meaningful return value — never `String`/`Int`/`Float`/`Bool`/`None`.
+4. Add `description:` as a single-line routing string, or as a bare-name reference to a same-file `const` constant. No `{name}` slots inside `description:`. Choose constraints. Use `require` / `avoid` for soft rules and `must` / `must avoid` for genuinely non-negotiable ones. Each marker carries either a bare-name reference to a same-file `const` constant or an inline string. Add `context:` entries for background facts the agent should keep in mind at runtime — bare-name references to string-valued `const` constants, inline strings, or `context`-prefixed markers.
+5. Write `flow:` as an ordered sequence of instruction strings, bindings, calls (bare, qualified, or UFCS), and branches. Use `with "..."` to specialize a single call site. Use `if`/`elif`/`else` with `BLOCKNAME.applies()` for description-driven dispatch. Reference parameters and local bindings inside instruction strings with `{name}` slots — only where the surrounding string is instruction-bearing. End `flow:` with at most one top-level `return`, placed last (never inside a branch arm). Use `return <name>` or `return <"description">` only when the value is synthesized by the agent from prose; otherwise prefer a normal binding. For `export block`, the `return` must be explicit even when returning `none`.
+6. Promote any inline string that repeats into a `const` constant. Promote any instruction sequence that repeats into a `block` (or `export block` if another file needs it).
+7. Scan every instruction string in `flow:` bodies. For any string longer than 10 words, extract it into a named `block` (or `export block` if it must be reachable from another file) and replace the inline string with a call to that block. Pick a verb-phrase name that describes the step's intent. Scan every inline string used as a marker body (`require`/`avoid`/`must`/`must avoid`/`context`) or as a `context:` entry. For any string longer than 10 words, extract it into a named `const` constant (or `export const` if another file imports it) and replace the inline string with a bare-name reference. Skip `description:` strings — leave them inline.
+8. Reorder top-level declarations in the file so that the single `skill` declaration appears first, every `block` and `export block` follows it, and every `const` and `export const` constant comes last. Preserve `import` statements at the very top of the file, above the `skill` declaration.
+9. Run the Glyph compiler on {target} and read the diagnostics. If the compiler exits with repairable diagnostics (exit 2), run `glyph fmt` on {target}. If `glyph fmt` changes the file, re-invoke the compiler and re-evaluate the diagnostics. Treat errors as required fixes. If repairable diagnostics remain after `glyph fmt`, treat them as informational — the LLM repair pass will rewrite the source. Treat warnings as advisory. Review the source diff after the LLM repair pass. If repair inserted `generated const` or `generated block` definitions, decide whether each is acceptable as-is or should be promoted to hand-authored by renaming `generated const` to `const` and `generated block` to `block`. Iterate on remaining diagnostics until the file compiles cleanly with the intended structure, and return the path to the authored or updated .glyph file as your result.
 
 ### Constraints
 
@@ -715,12 +714,4 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
 - Avoid writing a bare string-valued constant name in `flow:` without a marker. Wrap it with `context`/`require`/`avoid`/`must`, or convert it into a `block` if it really represents an instruction sequence.
 - Avoid reaching for `must` / `must avoid` for everyday rules. Reserve hard markers for genuinely non-negotiable constraints; default to soft `require` / `avoid`.
 - Avoid stacking nested calls (`apply(merge(base, overlay(ctx)))`). Nested calls are legal but read and visualize better as named intermediate bindings.
-
-### Procedure: extract-branches-into-procedures
-
-1. Scan the steps, context bullets, and constraint bullets for conditional language — phrases like `if`, `when`, `for the case where`, `depending on whether`, or any wording that signals one path applies under one condition and a different path under another. Distinguish real control flow from hedging advice (e.g. `if you see X, consider Y` inside a single step is usually not a branch).
-2. For each branch you find, define a new `block` whose body holds the entire branch arm — its steps, its context bullets, and its constraint bullets — and replace the original branch site in the parent flow with an `if PROCNAME.applies()` chain that dispatches by description.
-3. Set each new block's `description:` to the predicate prose of its arm so `.applies()` can match against runtime context.
-4. For each context bullet and constraint bullet that came along inside an extracted arm, classify the wording. If it reads as a file-wide rule, hoist it to the parent skill's `context:` / `constraints:`. If it reads as scoped to this branch, leave it inside the procedure's own `context:` / `constraints:`. If the wording is ambiguous, ask the user.
-5. Recurse on each newly created block: scan its body for nested branches and apply the same extraction. Stop when no block contains conditional language.
 

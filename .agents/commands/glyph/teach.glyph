@@ -1,11 +1,11 @@
-// teach_glyph.glyph
+// teach.glyph
 //
 // Skill that teaches a coding agent how to author Glyph source files.
 // Pulls in the Glyph language reference and the authoring rules from
 // sibling library files; each entry is imported by name and listed
 // under `context:` (bare) or `constraints:` (with polarity).
 
-import "./teach_glyph_context.glyph" {
+import "../skills/glyph/context.glyph" {
     glyph_overview,
     file_kinds,
     layout_rules,
@@ -23,7 +23,7 @@ import "./teach_glyph_context.glyph" {
     quick_reference,
 }
 
-import "./teach_glyph_constraints.glyph" {
+import "../skills/glyph/constraints.glyph" {
     four_space_indentation,
     primitive_type_names_in_source,
     string_interpolation,
@@ -43,13 +43,13 @@ import "./teach_glyph_constraints.glyph" {
     deeply_nested_calls,
 }
 
-import "./glyph_authoring_passes.glyph" {
+import "../skills/glyph/passes.glyph" {
     factor_long_instructions_and_texts,
     sort_declarations,
     compile_and_iterate,
 }
 
-skill teach_glyph(target)
+skill teach(target)
     description: "Author or edit a Glyph source file (.glyph) at `target` for a task described by the user."
 
     context:
