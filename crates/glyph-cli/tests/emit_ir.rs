@@ -244,11 +244,15 @@ fn emit_ir_includes_resolved_predicates_on_branch() {
         branch["resolved_predicates"].is_null(),
         "resolved_predicates should be null when no .applies() used"
     );
-    // predicate_shape should always be present with default false values.
+    // predicate_shape reflects the actual classification from Analyze.
+    // branching.glyph uses `mode == "fast"`: `mode` is an unknown identifier
+    // (not a const/param/binding), so it classifies as Boolean; `"fast"` is a
+    // string literal so it classifies as PredicateLiteral; `==` is an Operator
+    // but not a compositional operator (and/or/not).
     let shape = &branch["predicate_shape"];
     assert!(shape.is_object(), "predicate_shape should be an object");
-    assert_eq!(shape["has_boolean_token"], false);
-    assert_eq!(shape["has_predicate_token"], false);
+    assert_eq!(shape["has_boolean_token"], true);
+    assert_eq!(shape["has_predicate_token"], true);
     assert_eq!(shape["has_compositional_operator"], false);
 }
 

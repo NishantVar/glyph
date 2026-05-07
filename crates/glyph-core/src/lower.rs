@@ -10,13 +10,29 @@ use crate::ast::{
 };
 use crate::domain_registry::canonicalize_identifier;
 use crate::ir::{
-    IrArena, IrBlock, IrBranch, IrCall, IrConstraint, IrContext, IrElifBranch, IrInlineInstruction,
-    IrNode, IrOutputContract, IrParam, IrSkill, NodeId, OutputSource, OutputTargetForm, Polarity,
-    Role, Strength,
+    BranchPredicateShape, IrArena, IrBlock, IrBranch, IrCall, IrConstraint, IrContext,
+    IrElifBranch, IrInlineInstruction, IrNode, IrOutputContract, IrParam, IrSkill, NodeId,
+    OutputSource, OutputTargetForm, Polarity, Role, Strength,
 };
 use crate::kind_infer::{infer_primitive, Literal as KindLiteral, TypeTag};
 use crate::output_target::OutputTargetExpr;
 use std::collections::BTreeMap;
+
+/// Map an AST `ConditionClassification` (optional) into an IR `BranchPredicateShape`.
+/// Returns an all-false shape when no classification is present (e.g. in
+/// nodes produced before Analyze runs, or in test fixtures).
+fn predicate_shape_from(
+    c: &Option<crate::condition::ConditionClassification>,
+) -> BranchPredicateShape {
+    let Some(c) = c else {
+        return BranchPredicateShape::default();
+    };
+    BranchPredicateShape {
+        has_boolean_token: c.has_boolean_token,
+        has_predicate_token: c.has_predicate_token,
+        has_compositional_operator: c.has_compositional_operator,
+    }
+}
 
 /// Map an identifier in type-position (the `<DomainType>` half of a
 /// `-> <DomainType>` annotation) to its `TypeTag`. Six built-in names match
@@ -332,7 +348,7 @@ fn lower_flow_body(
                 then_body,
                 elif_branches,
                 else_body,
-                ..
+                condition_classification,
             } => {
                 let branch_id = NodeId(arena.len() as u32);
                 // Reserve a slot for the Branch node.
@@ -349,7 +365,7 @@ fn lower_flow_body(
                     ir_elifs.push(IrElifBranch {
                         condition: elif.condition.clone(),
                         body: elif_ids,
-                        predicate_shape: crate::ir::BranchPredicateShape::default(),
+                        predicate_shape: predicate_shape_from(&elif.condition_classification),
                     });
                 }
                 let ir_else = if let Some(eb) = else_body {
@@ -366,7 +382,7 @@ fn lower_flow_body(
                     elif_branches: ir_elifs,
                     else_body: ir_else,
                     resolved_predicates: None,
-                    predicate_shape: crate::ir::BranchPredicateShape::default(),
+                    predicate_shape: predicate_shape_from(condition_classification),
                 });
                 ids.push(branch_id);
             }
@@ -706,7 +722,7 @@ pub fn lower_with_imports(
                 then_body,
                 elif_branches,
                 else_body,
-                ..
+                condition_classification,
             } => {
                 let branch_id = NodeId(arena.len() as u32);
                 // Reserve a placeholder slot.
@@ -724,7 +740,7 @@ pub fn lower_with_imports(
                     ir_elifs.push(IrElifBranch {
                         condition: elif.condition.clone(),
                         body: elif_ids,
-                        predicate_shape: crate::ir::BranchPredicateShape::default(),
+                        predicate_shape: predicate_shape_from(&elif.condition_classification),
                     });
                 }
                 let ir_else = if let Some(eb) = else_body {
@@ -747,7 +763,7 @@ pub fn lower_with_imports(
                     elif_branches: ir_elifs,
                     else_body: ir_else,
                     resolved_predicates: None,
-                    predicate_shape: crate::ir::BranchPredicateShape::default(),
+                    predicate_shape: predicate_shape_from(condition_classification),
                 });
                 step_ids.push(branch_id);
             }
@@ -1703,5 +1719,58 @@ mod unmerged_extras_invariant_tests {
         };
         // Should panic via debug_assert! before producing an IrArena.
         let _ = lower(&file);
+    }
+}
+
+#[cfg(test)]
+mod predicate_shape_lower_tests {
+    //! Task 2.5 — verifies that `ConditionClassification` (written by Analyze)
+    //! flows through Lower into `IrBranch.predicate_shape`.
+    use super::*;
+    use crate::analyze::analyze_with_diagnostics;
+    use crate::diagnostic::DiagBag;
+    use crate::domain_registry::Registry;
+    use crate::ir::IrNode;
+    use crate::parse;
+    use crate::span::LineIndex;
+
+    fn parse_analyze_lower(src: &str) -> IrArena {
+        let (file, _) = parse::parse(src, 0).expect("source should parse");
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let mut registry = Registry::new();
+        let analyzed = analyze_with_diagnostics(file, 0, "test", &line_index, &mut bag, &mut registry);
+        lower(&analyzed).expect("source should lower")
+    }
+
+    fn root_skill(arena: &IrArena) -> &IrSkill {
+        let root = arena.root_skill().expect("arena should have a root skill");
+        match arena.get(root) {
+            IrNode::Skill(s) => s,
+            other => panic!("root_skill node was not Skill: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lower_copies_classification_into_ir_predicate_shape() {
+        let src = r#"
+const big = "a big change"
+
+skill foo()
+    description: "test"
+    flow:
+        if big:
+            "stop"
+"#;
+        let arena = parse_analyze_lower(src);
+        let skill = root_skill(&arena);
+        let step_id = skill.steps[0];
+        let branch = match arena.get(step_id) {
+            IrNode::Branch(b) => b,
+            _ => panic!("expected branch"),
+        };
+        assert!(branch.predicate_shape.has_predicate_token);
+        assert!(!branch.predicate_shape.has_boolean_token);
+        assert!(!branch.predicate_shape.has_compositional_operator);
     }
 }
