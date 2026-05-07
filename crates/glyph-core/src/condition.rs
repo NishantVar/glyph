@@ -244,6 +244,155 @@ impl<'a> ConditionContext<'a> {
     }
 }
 
+/// Classify a single tokenized term against the surrounding context.
+/// Mirrors the dispatch in `analyze.rs::classify_token` (Task 6 rewires the
+/// analyze caller to consult this version).
+fn classify_token(tok: &str, ctx: &ConditionContext) -> ConditionTokenKind {
+    if matches!(tok, "and" | "or" | "not" | "==" | "(" | ")") {
+        return ConditionTokenKind::Operator;
+    }
+    if tok.starts_with('"') {
+        return ConditionTokenKind::PredicateLiteral;
+    }
+    if tok.contains(".applies()") {
+        // Syntactic classification: any `NAME.applies()` form is PredicateApplies.
+        // Semantic validation (receiver must be a known block) is done by
+        // `check_applies_in_condition`, not here.
+        return ConditionTokenKind::PredicateApplies;
+    }
+    // Numeric literal: integer or float token. `f64::from_str` accepts every
+    // well-formed integer literal too.
+    if tok.parse::<f64>().is_ok() {
+        return ConditionTokenKind::Numeric;
+    }
+    if let Some(tag) = ctx.consts.get(tok) {
+        return match tag {
+            crate::kind_infer::TypeTag::String => ConditionTokenKind::PredicateConst,
+            crate::kind_infer::TypeTag::Bool => ConditionTokenKind::Boolean,
+            crate::kind_infer::TypeTag::Int | crate::kind_infer::TypeTag::Float => {
+                ConditionTokenKind::Numeric
+            }
+            _ => ConditionTokenKind::Boolean,
+        };
+    }
+    if ctx.params_with_string_default.contains(tok) {
+        return ConditionTokenKind::PredicateConst;
+    }
+    if ctx.bindings.contains(tok) {
+        return ConditionTokenKind::Boolean;
+    }
+    ConditionTokenKind::Boolean
+}
+
+/// Walk left from `end` (the immediate left neighbour of `==`). If `end` is
+/// `)`, walk back to the matching `(`. Else return `end`. Unbalanced parens
+/// fall back to the immediate neighbour; malformed conditions are caught by
+/// other analyze rules.
+fn match_paren_left(raw: &[String], end: usize) -> usize {
+    if raw[end] != ")" {
+        return end;
+    }
+    let mut depth = 1;
+    let mut i = end;
+    while i > 0 {
+        i -= 1;
+        match raw[i].as_str() {
+            ")" => depth += 1,
+            "(" => {
+                depth -= 1;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            _ => {}
+        }
+    }
+    end
+}
+
+fn match_paren_right(raw: &[String], start: usize) -> usize {
+    if raw[start] != "(" {
+        return start;
+    }
+    let mut depth = 1;
+    let mut i = start;
+    while i + 1 < raw.len() {
+        i += 1;
+        match raw[i].as_str() {
+            "(" => depth += 1,
+            ")" => {
+                depth -= 1;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            _ => {}
+        }
+    }
+    start
+}
+
+/// The single classifier. Replaces the three ad-hoc tokenize-and-classify
+/// sites in analyze.rs, expand.rs, and emit/stub_fill.rs.
+pub fn classify_condition(condition: &str, ctx: &ConditionContext) -> ConditionClassification {
+    // Canonical trailing-`:` strip. Closes existing TODOs in expand.rs:187
+    // and emit/branch.rs:23-25.
+    let trimmed = condition.trim().trim_end_matches(':').trim();
+    let raw = tokenize_condition(trimmed);
+
+    let kinds: Vec<ConditionTokenKind> = raw.iter().map(|t| classify_token(t, ctx)).collect();
+
+    let mut is_operand = vec![false; raw.len()];
+    for (i, tok) in raw.iter().enumerate() {
+        if tok == "==" {
+            if i > 0 {
+                let lhs_end = i - 1;
+                let lhs_start = match_paren_left(&raw, lhs_end);
+                for j in lhs_start..=lhs_end {
+                    is_operand[j] = true;
+                }
+            }
+            if i + 1 < raw.len() {
+                let rhs_start = i + 1;
+                let rhs_end = match_paren_right(&raw, rhs_start);
+                for j in rhs_start..=rhs_end {
+                    is_operand[j] = true;
+                }
+            }
+        }
+    }
+
+    let mut tokens = Vec::with_capacity(raw.len());
+    let mut summary = ConditionClassification::default();
+    for (i, (text, kind)) in raw.into_iter().zip(kinds.iter().copied()).enumerate() {
+        let operand = is_operand[i];
+        if !operand {
+            match kind {
+                ConditionTokenKind::Boolean => summary.has_boolean_token = true,
+                ConditionTokenKind::Numeric => summary.has_numeric_bare_condition = true,
+                ConditionTokenKind::PredicateApplies
+                | ConditionTokenKind::PredicateConst
+                | ConditionTokenKind::PredicateLiteral => summary.has_predicate_token = true,
+                ConditionTokenKind::Operator => {
+                    if matches!(text.as_str(), "and" | "not") {
+                        summary.has_compositional_operator = true;
+                    } else if text == "==" {
+                        summary.has_boolean_token = true;
+                        summary.has_comparison_operator = true;
+                    }
+                }
+            }
+        }
+        tokens.push(ClassifiedConditionToken {
+            text,
+            kind,
+            is_comparison_operand: operand,
+        });
+    }
+    summary.tokens = tokens;
+    summary
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,5 +542,167 @@ mod tests {
             tokenize_condition("name.applies()or other"),
             vec!["name.applies()", "or", "other"]
         );
+    }
+
+    use crate::ast::{ConstDecl, ConstValue, Decl, SourceFile};
+    use crate::span::{Span, Spanned};
+
+    fn const_decl(name: &str, body: &str) -> Decl {
+        Decl::Const(Spanned::new(
+            ConstDecl {
+                name: name.to_string(),
+                value: ConstValue::String(body.to_string()),
+                exported: false,
+                generated: false,
+            },
+            Span::new(0, 0, 0),
+        ))
+    }
+
+    fn ctx_inputs(
+        pairs: &[(&'static str, &'static str)],
+    ) -> (
+        SourceFile,
+        BTreeMap<String, String>,
+        BTreeMap<String, crate::kind_infer::TypeTag>,
+    ) {
+        let decls = pairs
+            .iter()
+            .map(|(name, body)| const_decl(name, body))
+            .collect();
+        let file = SourceFile { decls };
+        (file, BTreeMap::new(), BTreeMap::new())
+    }
+
+    #[test]
+    fn classify_pure_predicates_pass() {
+        let (file, imports, types) = ctx_inputs(&[("complex_change", "the change is complex")]);
+        let ctx = ConditionContext::for_decl(&file, &imports, &types, &[], &[]);
+
+        let cases = [
+            "a.applies()",
+            "complex_change",
+            "\"the user opted in\"",
+            "a.applies() or b.applies()",
+            "a.applies() or \"literal\"",
+        ];
+        for cond in cases {
+            let c = classify_condition(cond, &ctx);
+            assert!(c.is_pure_predicate(), "pure predicate failed for: {cond}");
+        }
+    }
+
+    #[test]
+    fn classify_or_does_not_disqualify_pure() {
+        let (file, imports, types) = ctx_inputs(&[("big", "is big"), ("small", "is small")]);
+        let ctx = ConditionContext::for_decl(&file, &imports, &types, &[], &[]);
+        assert!(classify_condition("big or small", &ctx).is_pure_predicate());
+    }
+
+    #[test]
+    fn classify_and_disqualifies_pure() {
+        let (file, imports, types) = ctx_inputs(&[("big", "is big"), ("small", "is small")]);
+        let ctx = ConditionContext::for_decl(&file, &imports, &types, &[], &[]);
+        assert!(!classify_condition("big and small", &ctx).is_pure_predicate());
+    }
+
+    #[test]
+    fn classify_eq_disqualifies_pure_and_marks_operands() {
+        let (file, imports, types) = ctx_inputs(&[]);
+        let ctx = ConditionContext::for_decl(&file, &imports, &types, &[], &[]);
+        let c = classify_condition("risk == \"high\"", &ctx);
+        assert!(!c.is_pure_predicate());
+        assert!(c.has_comparison_operator);
+
+        let texts: Vec<(&str, bool)> = c
+            .tokens
+            .iter()
+            .map(|t| (t.text.as_str(), t.is_comparison_operand))
+            .collect();
+        assert!(texts.contains(&("risk", true)));
+        assert!(texts.contains(&("\"high\"", true)));
+    }
+
+    #[test]
+    fn classify_eq_with_paren_operand_marks_full_group() {
+        let (file, imports, types) = ctx_inputs(&[]);
+        let ctx = ConditionContext::for_decl(&file, &imports, &types, &[], &[]);
+        let c = classify_condition("risk == (\"high\")", &ctx);
+        for t in &c.tokens {
+            if matches!(t.text.as_str(), "(" | "\"high\"" | ")") {
+                assert!(t.is_comparison_operand, "{} should be an operand", t.text);
+            }
+        }
+        assert!(!c.has_predicate_token);
+    }
+
+    #[test]
+    fn classify_eq_with_paren_on_left_marks_full_group() {
+        let (file, imports, types) = ctx_inputs(&[]);
+        let ctx = ConditionContext::for_decl(&file, &imports, &types, &[], &[]);
+        let c = classify_condition("(\"high\") == risk", &ctx);
+        for t in &c.tokens {
+            if matches!(t.text.as_str(), "(" | "\"high\"" | ")") {
+                assert!(t.is_comparison_operand, "{} should be an operand", t.text);
+            }
+        }
+        assert!(!c.has_predicate_token);
+    }
+
+    #[test]
+    fn classify_eq_unbalanced_falls_back_to_immediate_neighbour() {
+        let (file, imports, types) = ctx_inputs(&[]);
+        let ctx = ConditionContext::for_decl(&file, &imports, &types, &[], &[]);
+        let c = classify_condition("risk == ) malformed", &ctx);
+        let close_paren = c.tokens.iter().find(|t| t.text == ")").unwrap();
+        assert!(close_paren.is_comparison_operand);
+    }
+
+    #[test]
+    fn classify_param_with_string_default_is_predicate_const() {
+        let (file, imports, types) = ctx_inputs(&[]);
+        let mut ctx = ConditionContext::for_decl(&file, &imports, &types, &[], &[]);
+        ctx.params_with_string_default.insert("risk");
+        let c = classify_condition("risk", &ctx);
+        assert_eq!(c.tokens.len(), 1);
+        assert_eq!(c.tokens[0].kind, ConditionTokenKind::PredicateConst);
+        assert!(c.is_pure_predicate());
+    }
+
+    #[test]
+    fn classify_numeric_bare_condition_flag() {
+        let (file, imports, types) = ctx_inputs(&[]);
+        let ctx = ConditionContext::for_decl(&file, &imports, &types, &[], &[]);
+        assert!(classify_condition("5", &ctx).has_numeric_bare_condition);
+        assert!(!classify_condition("max_attempts == 3", &ctx).has_numeric_bare_condition);
+        assert!(classify_condition("x == 3 and 5", &ctx).has_numeric_bare_condition);
+    }
+
+    #[test]
+    fn classify_string_const_is_predicate_const() {
+        let (file, imports, types) = ctx_inputs(&[("complex", "is complex")]);
+        let ctx = ConditionContext::for_decl(&file, &imports, &types, &[], &[]);
+        let c = classify_condition("complex", &ctx);
+        assert_eq!(c.tokens.len(), 1);
+        assert_eq!(c.tokens[0].kind, ConditionTokenKind::PredicateConst);
+        assert!(c.is_pure_predicate());
+    }
+
+    #[test]
+    fn classify_imported_string_const_is_predicate_const() {
+        let mut imports: BTreeMap<String, String> = BTreeMap::new();
+        imports.insert(
+            "imported_big".to_string(),
+            "imported description".to_string(),
+        );
+        let mut types: BTreeMap<String, crate::kind_infer::TypeTag> = BTreeMap::new();
+        types.insert(
+            "imported_big".to_string(),
+            crate::kind_infer::TypeTag::String,
+        );
+        let file = SourceFile { decls: vec![] };
+        let ctx = ConditionContext::for_decl(&file, &imports, &types, &[], &[]);
+        let c = classify_condition("imported_big", &ctx);
+        assert_eq!(c.tokens[0].kind, ConditionTokenKind::PredicateConst);
     }
 }
