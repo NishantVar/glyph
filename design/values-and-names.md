@@ -163,7 +163,7 @@ If two declarations in different files or scopes use different casings for the s
 
 The following are reserved keywords and cannot be used as identifiers:
 
-`skill`, `block`, `export`, `import`, `const`, `flow`, `call`, `if`, `elif`, `else`, `return`, `true`, `false`, `none`, `effects`, `constraints`, `inputs`, `outputs`, `when_to_use`, `description`, `as`, `generated`, `input`, `output`, `must`, `require`, `avoid`, `context`, `and`, `or`, `not`.
+`skill`, `block`, `export`, `import`, `const`, `type`, `flow`, `call`, `if`, `elif`, `else`, `return`, `true`, `false`, `none`, `effects`, `constraints`, `inputs`, `outputs`, `when_to_use`, `description`, `as`, `generated`, `input`, `output`, `must`, `require`, `avoid`, `context`, `and`, `or`, `not`.
 
 This list grows with the language. New keywords should be added conservatively.
 
@@ -201,6 +201,10 @@ Examples of conflicts that produce hard errors:
 - An import collides with a same-file declaration.
 
 The author's fix is always to rename one of the conflicting names. This is cheap, obvious, and permanent.
+
+**Type names share the universal value namespace — there is no separate type namespace.** A name introduced by a `type` decl (see `types.md`, Explicit `type` Declarations section) participates in the same flat scope as `const`, `block`, `export block`, parameters, and import aliases. `type Foo` therefore collides with any other in-scope `Foo` and is a hard error under the same no-shadowing rule.
+
+The canonical pairing of `type Foo` with `-> Foo` annotations is **not** a collision: the `type` decl attaches a description to the same nominal type the `-> Foo` annotation references. Implicit type registration via first use of `-> Foo` and an explicit `type Foo` decl coexist; only conflicting bindings of the same name (`type Foo` vs `const Foo`, etc.) are rejected.
 
 ### Generated Definitions Must Be Visible
 

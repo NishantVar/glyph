@@ -34,7 +34,7 @@ use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::ir::IrNode;
 use crate::ir::OutputTargetForm;
 use crate::output_target::OutputTargetExpr;
-use crate::span::{LineIndex, Span};
+use crate::span::{LineIndex, Span, Spanned};
 
 #[derive(Debug)]
 pub enum CompileError {
@@ -501,6 +501,10 @@ pub struct ExportedNames {
     /// the cross-file counterpart of `lower::block_callee_output_form` /
     /// `export_block_callee_output_form` for same-file callees.
     pub block_output_contracts: HashMap<String, OutputTargetForm>,
+    /// Phase B.7: per-exported `type` decl description text, keyed by the type's
+    /// name. Consumer files fold these into their `TypeRegistry` for cross-file
+    /// type-level description lookup at emit time. Same-file decls take precedence.
+    pub types: HashMap<String, String>,
 }
 
 /// Extract the exported names from a parsed source file.
@@ -513,6 +517,7 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
         block_return_types: HashMap::new(),
         block_params: HashMap::new(),
         block_output_contracts: HashMap::new(),
+        types: HashMap::new(),
     };
     for decl in &file.decls {
         match decl {
@@ -557,6 +562,15 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
                 exports.skills.insert(s.node.name.clone());
             }
             Decl::Import(_) => {}
+            Decl::TypeDecl(t) => {
+                if t.node.exported {
+                    exports
+                        .types
+                        .insert(t.node.name.clone(), t.node.description.node.clone());
+                } else {
+                    exports.privates.insert(t.node.name.clone());
+                }
+            }
         }
     }
     exports
@@ -798,6 +812,12 @@ fn check_one_file(
     // Collect imported names for cross-file resolution.
     let mut imported_texts: HashSet<String> = HashSet::new();
     let mut imported_blocks: HashSet<String> = HashSet::new();
+    // Phase B.7: imported `export type` names (consumer-local spelling).
+    // Used to mark `param.type_annotation` references as "used" so the
+    // `G::analyze::unused-import` check passes. Not threaded into
+    // `analyze_with_imports` — the analyzer doesn't yet validate type
+    // annotations; that comes in a later phase.
+    let mut imported_types: HashSet<String> = HashSet::new();
     let mut seen_import_paths: HashMap<PathBuf, Span> = HashMap::new();
     let mut used_import_names: HashSet<String> = HashSet::new();
     let mut all_import_names: Vec<(String, Span)> = Vec::new();
@@ -974,6 +994,12 @@ fn check_one_file(
                             {
                                 imported_block_params.insert(local.to_string(), params.clone());
                             }
+                        } else if dep_exports.types.contains_key(&imp_name.name.node) {
+                            // Phase B.7: a selectively imported `export type`
+                            // name. Recorded so the `unused-import` post-pass
+                            // can recognise param `type_annotation` references
+                            // as a use.
+                            imported_types.insert(local.to_string());
                         } else {
                             bags.entry(key.clone()).or_default().push(
                                 Diagnostic::error(
@@ -1017,7 +1043,55 @@ fn check_one_file(
                             imported_block_params.insert(qualified, params.clone());
                         }
                     }
+                    // Phase B.7: prefix imported `export type` names under
+                    // `alias.name` so the unused-import post-pass recognises
+                    // whole-module-style param `type_annotation` references.
+                    for t in dep_exports.types.keys() {
+                        imported_types.insert(format!("{}.{}", alias, t));
+                    }
                 }
+            }
+        }
+    }
+
+    // A param `type_annotation` or header `-> ReturnType` referencing an
+    // imported type counts as a "use" of that import so
+    // `G::analyze::unused-import` does not fire. Selective only: whole-module
+    // type imports (`import "..." as M; p: M.T`) inherit the same
+    // alias-vs-qualified-name parity as whole-module text/block imports and
+    // are parking-lot-deferred per the typed-params spec — when that's
+    // resolved here, also fix it for texts and blocks in
+    // `track_skill_usage` / `track_flow_usage`.
+    for decl in &file.decls {
+        let (params, return_type): (&[ast::Param], Option<&Spanned<String>>) = match decl {
+            Decl::Skill(s) => (&s.node.params, s.node.return_type.as_ref()),
+            Decl::Block(b) => (&b.node.params, b.node.return_type.as_ref()),
+            Decl::ExportBlock(b) => (&b.node.params, b.node.return_type.as_ref()),
+            _ => continue,
+        };
+        for p in params {
+            if let Some(ta) = &p.type_annotation {
+                if imported_types.contains(&ta.node) {
+                    used_import_names.insert(ta.node.clone());
+                }
+            }
+            // A `name_ref` parameter default that resolves to an imported
+            // const counts as a use of that import — symmetric with the
+            // type_annotation branch above. The lower-side resolver
+            // (`resolve_param_default`) already accepts this shape; without
+            // this branch, `unused-import` fires on imports that are only
+            // referenced by a default value.
+            if p.default_is_name_ref {
+                if let Some(raw) = p.default.as_deref() {
+                    if imported_texts.contains(raw) {
+                        used_import_names.insert(raw.to_string());
+                    }
+                }
+            }
+        }
+        if let Some(rt) = return_type {
+            if imported_types.contains(&rt.node) {
+                used_import_names.insert(rt.node.clone());
             }
         }
     }
@@ -1068,16 +1142,7 @@ pub struct BuildResult {
     /// Per-file outcomes, keyed by the source path.
     pub outcomes: Vec<(PathBuf, FileOutcome)>,
     /// Overall exit code for the build (0 = all ok, 1 = any failure/skip).
-    ///
-    /// Retained for backwards compatibility. The CLI ignores this field and
-    /// computes its own exit code by aggregating per-file `DiagBag`s plus
-    /// `io_errors` (see `compute_pipeline_exit_code` in glyph-cli).
     pub exit_code: u8,
-    /// Filesystem write failures encountered while emitting `.md` or
-    /// `.ir.json` outputs. Empty on success. Populated by
-    /// `compile_directory_with_options`; the CLI surfaces these as exit 3
-    /// with priority over diagnostic-derived exit codes.
-    pub io_errors: Vec<IoFailure>,
 }
 
 /// Per-file outcome in a multi-file build.
@@ -1089,98 +1154,6 @@ pub enum FileOutcome {
     Failed { diagnostics: DiagBag },
     /// File was skipped because a transitive dependency failed.
     Skipped { failed_dep: PathBuf },
-}
-
-/// A filesystem write failure surfaced by the build pipeline.
-#[derive(Debug)]
-pub struct IoFailure {
-    /// Path the pipeline tried to write.
-    pub path: PathBuf,
-    /// Which output kind failed.
-    pub kind: IoFailureKind,
-    /// Display-only error message; owned, no lifetime ties to `std::io::Error`.
-    pub error: String,
-}
-
-/// Kind of output whose write failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IoFailureKind {
-    /// `.md` (compiled output, including Tier-3 procedure files).
-    Md,
-    /// `.ir.json` sidecar (only emitted under `--emit-ir`).
-    IrJson,
-}
-
-/// DFS-walk the import graph from a single entry file and return the canonical
-/// paths of every reachable `.glyph` file (entry inclusive), sorted for
-/// determinism.
-///
-/// Used by the CLI to seed the directory pipeline from a single-file entry,
-/// matching the DAG-closure contract in `design/cli.md:17`.
-///
-/// Behaviour:
-/// - If `entry` does not canonicalize (e.g. missing file), returns
-///   `vec![entry.to_path_buf()]` so the pipeline can surface the proper
-///   missing-file diagnostic.
-/// - Skips `@glyph/...` stdlib imports (compiler-embedded, not on disk).
-/// - Read errors on transitive files are silently skipped (the pipeline will
-///   re-encounter and diagnose them).
-/// - Parse failures during walking are tolerated — the throw-away `DiagBag`
-///   here is discarded; the pipeline re-parses each file with its own bag.
-/// - The visited-set guarantees termination on cycles. No cycle diagnostic is
-///   emitted from the walker (see spec non-goals).
-///
-/// `enable_effects` is threaded into the parse so an `effects:` sub-section in
-/// any closure file does not halt parse mid-way under `--enable-effects`.
-pub fn compute_import_closure(entry: &Path, enable_effects: bool) -> Vec<PathBuf> {
-    let canonical_entry = match entry.canonicalize() {
-        Ok(p) => p,
-        Err(_) => return vec![entry.to_path_buf()],
-    };
-
-    let mut visited: HashSet<PathBuf> = HashSet::new();
-    let mut out: Vec<PathBuf> = Vec::new();
-    let mut stack: Vec<PathBuf> = vec![canonical_entry];
-
-    while let Some(current) = stack.pop() {
-        if !visited.insert(current.clone()) {
-            continue;
-        }
-        out.push(current.clone());
-
-        let source = match std::fs::read_to_string(&current) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let label = current.display().to_string();
-        let line_index = LineIndex::new(&source);
-        let mut throwaway = DiagBag::new();
-        let parsed = parse::parse_with_diagnostics_opts(
-            &source,
-            0,
-            &label,
-            &line_index,
-            &mut throwaway,
-            enable_effects,
-        );
-
-        if let Some(file) = parsed {
-            for decl in &file.decls {
-                if let Decl::Import(import_spanned) = decl {
-                    if import_spanned.node.path.starts_with("@glyph/") {
-                        continue;
-                    }
-                    if let Some(resolved) = resolve_import_path(&current, &import_spanned.node.path)
-                    {
-                        stack.push(resolved);
-                    }
-                }
-            }
-        }
-    }
-
-    out.sort();
-    out
 }
 
 /// Compile all `.glyph` files in `sources` (already collected and sorted).
@@ -1201,7 +1174,6 @@ pub fn compile_directory_with_options(
         return BuildResult {
             outcomes: Vec::new(),
             exit_code: 0,
-            io_errors: Vec::new(),
         };
     }
 
@@ -1313,12 +1285,12 @@ pub fn compile_directory_with_options(
     // Track exported names, text values, and block bodies per file for cross-file resolution.
     let mut file_exports: HashMap<PathBuf, ExportedNames> = HashMap::new();
     let mut file_text_values: HashMap<(PathBuf, String), String> = HashMap::new();
+    let mut file_text_value_types: HashMap<(PathBuf, String), kind_infer::TypeTag> = HashMap::new();
     let mut file_block_bodies: HashMap<(PathBuf, String), String> = HashMap::new();
     let mut file_block_descriptions: HashMap<(PathBuf, String), String> = HashMap::new();
     let mut failed_files: HashSet<PathBuf> = HashSet::new();
     let mut outcomes: Vec<(PathBuf, FileOutcome)> = Vec::new();
     let mut any_failure = false;
-    let mut io_errors: Vec<IoFailure> = Vec::new();
 
     for file in &topo_order {
         // Check if any dependency failed.
@@ -1350,6 +1322,7 @@ pub fn compile_directory_with_options(
             file,
             &file_exports,
             &file_text_values,
+            &file_text_value_types,
             &file_block_bodies,
             &file_block_descriptions,
         );
@@ -1367,6 +1340,7 @@ pub fn compile_directory_with_options(
                     file,
                     &mut file_exports,
                     &mut file_text_values,
+                    &mut file_text_value_types,
                     &mut file_block_bodies,
                     &mut file_block_descriptions,
                 );
@@ -1376,14 +1350,7 @@ pub fn compile_directory_with_options(
                         emit_ir::serialize_ir_json(&arena, source_file, enable_effects)
                     {
                         let ir_path = ir_json_output_path(file);
-                        if let Err(e) = atomic_write(&ir_path, &ir_json) {
-                            io_errors.push(IoFailure {
-                                path: ir_path,
-                                kind: IoFailureKind::IrJson,
-                                error: e.to_string(),
-                            });
-                            any_failure = true;
-                        }
+                        atomic_write(&ir_path, &ir_json).ok();
                     }
                 }
                 outcomes.push((file.clone(), FileOutcome::Compiled { diagnostics }));
@@ -1399,6 +1366,7 @@ pub fn compile_directory_with_options(
                     file,
                     &mut file_exports,
                     &mut file_text_values,
+                    &mut file_text_value_types,
                     &mut file_block_bodies,
                     &mut file_block_descriptions,
                 );
@@ -1410,21 +1378,6 @@ pub fn compile_directory_with_options(
                 outcomes.push((
                     file.clone(),
                     FileOutcome::Compiled {
-                        diagnostics: DiagBag::new(),
-                    },
-                ));
-            }
-            Err(CompileError::Write { path, source }) => {
-                io_errors.push(IoFailure {
-                    path: PathBuf::from(path),
-                    kind: IoFailureKind::Md,
-                    error: source.to_string(),
-                });
-                failed_files.insert(file.clone());
-                any_failure = true;
-                outcomes.push((
-                    file.clone(),
-                    FileOutcome::Failed {
                         diagnostics: DiagBag::new(),
                     },
                 ));
@@ -1442,7 +1395,6 @@ pub fn compile_directory_with_options(
     BuildResult {
         outcomes,
         exit_code,
-        io_errors,
     }
 }
 
@@ -1515,6 +1467,92 @@ fn emit_library_procedures(path: &Path, enable_effects: bool) -> Vec<(String, St
     let stem = library_stem(path);
     let mut emitted = Vec::new();
 
+    // Build a local TypeRegistry from same-file `type` decls so the §8.4
+    // templates can resolve type-level descriptions when `-> Foo` matches a
+    // declared type. Imported `export type` descriptions are folded in below
+    // (Codex finding #3): a Tier 3 procedure file's `## Parameters` section
+    // depends on the registry to render the type-description sentence, and
+    // that sentence is just as relevant when `Foo` is `import`-ed from a
+    // sibling library file as when it's declared in this file. Same-file
+    // decls take precedence on name collision (mirrors the local-vs-imported
+    // rule in `lower::lower_with_imports`).
+    let mut local_type_registry = ir::TypeRegistry::default();
+    // Codex finding #2: name_ref parameter defaults must be resolved against
+    // the same const context the consumer-side lower pass uses, otherwise the
+    // procedure file emits `Default: default_scope` instead of the resolved
+    // `"."`. Build text-value and TypeTag maps in the same pass that already
+    // walks imports for type descriptions.
+    let mut imported_texts: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    let mut imported_const_types: std::collections::BTreeMap<String, kind_infer::TypeTag> =
+        std::collections::BTreeMap::new();
+    // Imported entries first, then same-file decls overwrite them.
+    for decl in &parsed.decls {
+        if let Decl::Import(import_spanned) = decl {
+            let import = &import_spanned.node;
+            // `@glyph/std` is compiler-embedded and exports no `type` decls;
+            // skip the filesystem lookup.
+            if import.path.starts_with("@glyph/") {
+                continue;
+            }
+            let resolved = match resolve_import_path(path, &import.path) {
+                Some(r) => r,
+                None => continue,
+            };
+            let dep_source = match std::fs::read_to_string(&resolved) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let dep_parsed = match parse::parse(&dep_source, 0) {
+                Ok((f, _)) => f,
+                Err(_) => continue,
+            };
+            let dep_exports = extract_exports(&dep_parsed);
+            // The dep's exported `const` rendered values + TypeTag, keyed by
+            // the *producer* name. Re-keyed to the consumer-local spelling
+            // below.
+            let dep_consts = lower::collect_consts(&dep_parsed);
+            match &import.kind {
+                ImportKind::Selective(names) => {
+                    for imp_name in names {
+                        let producer = imp_name.name.node.as_str();
+                        let local = imp_name.alias.as_deref().unwrap_or(producer);
+                        if let Some(desc) = dep_exports.types.get(producer) {
+                            // Honour `as` aliasing — the consumer's type
+                            // annotation will spell the type with the local name.
+                            local_type_registry.insert(local, desc.clone());
+                        }
+                        if dep_exports.texts.contains(producer) {
+                            if let Some((rendered, tag)) = dep_consts.get(producer) {
+                                imported_texts.insert(local.to_string(), rendered.clone());
+                                imported_const_types.insert(local.to_string(), tag.clone());
+                            }
+                        }
+                    }
+                }
+                ImportKind::WholeModule { alias } => {
+                    for (type_name, desc) in &dep_exports.types {
+                        local_type_registry
+                            .insert(&format!("{}.{}", alias, type_name), desc.clone());
+                    }
+                    for text_name in &dep_exports.texts {
+                        if let Some((rendered, tag)) = dep_consts.get(text_name) {
+                            let qualified = format!("{}.{}", alias, text_name);
+                            imported_texts.insert(qualified.clone(), rendered.clone());
+                            imported_const_types.insert(qualified, tag.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for decl in &parsed.decls {
+        if let Decl::TypeDecl(t) = decl {
+            local_type_registry.insert(&t.node.name, t.node.description.node.clone());
+        }
+    }
+    let same_file_consts = lower::collect_consts(&parsed);
+
     for decl in &parsed.decls {
         if let Decl::ExportBlock(eb) = decl {
             if eb.node.body_word_count < 150 {
@@ -1524,11 +1562,33 @@ fn emit_library_procedures(path: &Path, enable_effects: bool) -> Vec<(String, St
             let subdir = parent.join(&stem);
             std::fs::create_dir_all(&subdir).ok();
 
-            let params: Vec<(String, Option<String>)> = eb
+            // Resolve name_ref defaults parallel to `eb.node.params` (Codex
+            // finding #2). Stored separately so each ProcedureParam can
+            // borrow from it for the duration of the emit call.
+            let resolved_defaults: Vec<Option<String>> = eb
                 .node
                 .params
                 .iter()
-                .map(|p| (p.name.clone(), p.default.clone()))
+                .map(|p| {
+                    lower::resolve_param_default(
+                        p,
+                        &same_file_consts,
+                        &imported_const_types,
+                        &imported_texts,
+                    )
+                })
+                .collect();
+            let params: Vec<emit::ProcedureParam<'_>> = eb
+                .node
+                .params
+                .iter()
+                .zip(resolved_defaults.iter())
+                .map(|(p, default)| emit::ProcedureParam {
+                    name: p.name.as_str(),
+                    type_annotation: p.type_annotation.as_ref().map(|s| s.node.as_str()),
+                    description: p.description.as_ref().map(|s| s.node.as_str()),
+                    default: default.as_deref(),
+                })
                 .collect();
 
             let desc = eb.node.description.as_deref().unwrap_or("");
@@ -1541,6 +1601,7 @@ fn emit_library_procedures(path: &Path, enable_effects: bool) -> Vec<(String, St
                 }
                 _ => None,
             };
+            let return_type_text = eb.node.return_type.as_ref().map(|s| s.node.clone());
             let markdown = emit::emit_procedure(
                 &eb.node.name,
                 desc,
@@ -1548,6 +1609,8 @@ fn emit_library_procedures(path: &Path, enable_effects: bool) -> Vec<(String, St
                 &params,
                 &eb.node.flow_strings,
                 output_form.as_ref(),
+                return_type_text.as_deref(),
+                &local_type_registry,
                 enable_effects,
             );
 
@@ -1626,6 +1689,11 @@ struct ResolvedImports {
     text_names: HashSet<String>,
     block_names: HashSet<String>,
     text_values: std::collections::BTreeMap<String, String>,
+    /// Inferred `TypeTag` for each imported `const` value present in
+    /// `text_values`. Lets the lower pass re-render name_ref param defaults
+    /// with the correct quoting (string consts wrap in `"…"`; numeric/bool
+    /// pass through verbatim).
+    text_value_types: std::collections::BTreeMap<String, kind_infer::TypeTag>,
     block_bodies: HashMap<String, String>,
     block_descriptions: HashMap<String, String>,
     /// Issue #84 Chunk 4 (D15 / Option-Y): aliased imported-block return
@@ -1642,6 +1710,10 @@ struct ResolvedImports {
     /// nodes so expand- and emit-time gates can read the callee's OC without
     /// an arena lookup.
     block_output_contracts: HashMap<String, OutputTargetForm>,
+    /// Imported `export type` description text, re-keyed by the consumer-side
+    /// local (post-alias / post-prefix) name. Folded into the consumer's
+    /// `TypeRegistry` during lowering.
+    type_descriptions: std::collections::BTreeMap<String, String>,
 }
 
 /// Build the full resolved import data for a consumer file.
@@ -1649,6 +1721,7 @@ fn build_resolved_imports(
     consumer: &Path,
     file_exports: &HashMap<PathBuf, ExportedNames>,
     file_text_values: &HashMap<(PathBuf, String), String>,
+    file_text_value_types: &HashMap<(PathBuf, String), kind_infer::TypeTag>,
     file_block_bodies: &HashMap<(PathBuf, String), String>,
     file_block_descriptions: &HashMap<(PathBuf, String), String>,
 ) -> ResolvedImports {
@@ -1656,11 +1729,13 @@ fn build_resolved_imports(
         text_names: HashSet::new(),
         block_names: HashSet::new(),
         text_values: std::collections::BTreeMap::new(),
+        text_value_types: std::collections::BTreeMap::new(),
         block_bodies: HashMap::new(),
         block_descriptions: HashMap::new(),
         block_return_types: HashMap::new(),
         block_params: HashMap::new(),
         block_output_contracts: HashMap::new(),
+        type_descriptions: std::collections::BTreeMap::new(),
     };
 
     let source = match std::fs::read_to_string(consumer) {
@@ -1701,6 +1776,22 @@ fn build_resolved_imports(
                             {
                                 result.text_values.insert(local.to_string(), val.clone());
                             }
+                            if let Some(tag) = file_text_value_types
+                                .get(&(resolved.clone(), imp_name.name.node.clone()))
+                            {
+                                result
+                                    .text_value_types
+                                    .insert(local.to_string(), tag.clone());
+                            }
+                        }
+                        if let Some(desc) = exports.types.get(&imp_name.name.node) {
+                            // Phase B.7: re-key the producer-side `export type`
+                            // description under the consumer-local name so the
+                            // consumer's `TypeRegistry` resolves it by the
+                            // spelling the consumer actually wrote.
+                            result
+                                .type_descriptions
+                                .insert(local.to_string(), desc.clone());
                         }
                         if exports.blocks.contains(&imp_name.name.node) {
                             result.block_names.insert(local.to_string());
@@ -1755,7 +1846,12 @@ fn build_resolved_imports(
                         let qualified = format!("{}.{}", alias, name);
                         result.text_names.insert(qualified.clone());
                         if let Some(val) = file_text_values.get(&(resolved.clone(), name.clone())) {
-                            result.text_values.insert(qualified, val.clone());
+                            result.text_values.insert(qualified.clone(), val.clone());
+                        }
+                        if let Some(tag) =
+                            file_text_value_types.get(&(resolved.clone(), name.clone()))
+                        {
+                            result.text_value_types.insert(qualified, tag.clone());
                         }
                     }
                     for name in &exports.blocks {
@@ -1796,6 +1892,13 @@ fn build_resolved_imports(
                                 .insert(qualified, form.clone());
                         }
                     }
+                    // Phase B.7: prefix imported `export type` descriptions
+                    // under `alias.name` so the consumer's `TypeRegistry`
+                    // resolves whole-module-style call-site spellings.
+                    for (name, desc) in &exports.types {
+                        let qualified = format!("{}.{}", alias, name);
+                        result.type_descriptions.insert(qualified, desc.clone());
+                    }
                 }
             }
         }
@@ -1808,6 +1911,7 @@ fn extract_and_store_exports(
     file: &Path,
     file_exports: &mut HashMap<PathBuf, ExportedNames>,
     file_text_values: &mut HashMap<(PathBuf, String), String>,
+    file_text_value_types: &mut HashMap<(PathBuf, String), kind_infer::TypeTag>,
     file_block_bodies: &mut HashMap<(PathBuf, String), String>,
     file_block_descriptions: &mut HashMap<(PathBuf, String), String>,
 ) {
@@ -1825,6 +1929,11 @@ fn extract_and_store_exports(
     // chunk 2 / Option C — Text-equivalent observable output). Bool values
     // are normalized to lowercase here per `design/values-and-names.md`
     // §Booleans, mirroring the local `lower::collect_consts` boundary.
+    //
+    // The parallel `file_text_value_types` map carries the inferred
+    // `TypeTag` for each exported const so the consumer-side lower can
+    // re-render name_ref param defaults with the correct quoting (string
+    // consts wrap in `"…"`; numeric/bool pass through verbatim).
     for decl in &parsed.decls {
         if let Decl::Const(c) = decl {
             if c.node.exported {
@@ -1832,7 +1941,16 @@ fn extract_and_store_exports(
                     ast::ConstValue::Bool(s) => s.to_ascii_lowercase(),
                     other => other.rendered().to_string(),
                 };
+                let lit = match &c.node.value {
+                    ast::ConstValue::String(s) => kind_infer::Literal::String(s.clone()),
+                    ast::ConstValue::Int(s) | ast::ConstValue::Float(s) => {
+                        kind_infer::Literal::Number(s.clone())
+                    }
+                    ast::ConstValue::Bool(s) => kind_infer::Literal::Bool(s.clone()),
+                };
+                let tag = kind_infer::infer_primitive(&lit);
                 file_text_values.insert((file.to_path_buf(), c.node.name.clone()), rendered);
+                file_text_value_types.insert((file.to_path_buf(), c.node.name.clone()), tag);
             }
         }
     }
@@ -1859,9 +1977,14 @@ fn compile_file_with_resolved_imports(
     resolved_imports: &ResolvedImports,
     enable_effects: bool,
 ) -> Result<CompileOutcome, CompileError> {
+    // Fast-path single-file compile when there are no imports at all.
+    // Phase B.7: also check `type_descriptions` so a types-only consumer
+    // (no imported texts/blocks/procedure-paths) still routes through the
+    // resolved-imports path that folds imported types into the TypeRegistry.
     if imported_procedure_paths.is_empty()
         && resolved_imports.text_names.is_empty()
         && resolved_imports.block_names.is_empty()
+        && resolved_imports.type_descriptions.is_empty()
     {
         return compile_file_with_effects(path, enable_effects);
     }
@@ -1963,8 +2086,16 @@ fn compile_source_with_resolved_imports(
     }
 
     // Lower with imported text values available for constraint/context resolution.
-    let mut arena = lower::lower_with_imports(&file, &resolved_imports.text_values)
-        .map_err(CompileError::Lower)?;
+    // Phase B.7: also pass imported `export type` descriptions so they can be
+    // folded into the `TypeRegistry` for cross-file type-level description
+    // lookup at emit time.
+    let mut arena = lower::lower_with_imports(
+        &file,
+        &resolved_imports.text_values,
+        &resolved_imports.text_value_types,
+        &resolved_imports.type_descriptions,
+    )
+    .map_err(CompileError::Lower)?;
 
     // Tag imported block calls with resolved body text or Tier 3 procedure paths.
     for node in arena.nodes_mut() {
@@ -1997,6 +2128,14 @@ fn compile_source_with_resolved_imports(
             if c.callee_output_contract.is_none() {
                 if let Some(form) = resolved_imports.block_output_contracts.get(&c.target) {
                     c.callee_output_contract = Some(form.clone());
+                }
+            }
+            // §8.4 return-prose templates need the callee's source-text
+            // `-> Foo` spelling for the `(Foo)` parenthetical. Mirror the OC
+            // hoist above using the consumer-side re-keyed `block_return_types`.
+            if c.callee_return_type_text.is_none() {
+                if let Some(rt) = resolved_imports.block_return_types.get(&c.target) {
+                    c.callee_return_type_text = Some(rt.node.clone());
                 }
             }
         }
@@ -4407,6 +4546,49 @@ skill main()
         );
     }
 
+    /// Codex finding (typed-params follow-up #1): an imported `const` used
+    /// only as a `name_ref` parameter default must count as a use of the
+    /// import. Before the fix, the type-annotation/return-type sweep at
+    /// lib.rs:1064-1083 ignored `default_is_name_ref` defaults, so `risk =
+    /// default_risk` left the import looking unused.
+    #[test]
+    fn imported_const_used_only_as_name_ref_default_does_not_fire_unused_import() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let prefs_path = dir.path().join("prefs.glyph");
+        std::fs::write(
+            &prefs_path,
+            r#"export const default_risk = "low"
+"#,
+        )
+        .unwrap();
+
+        let main_path = dir.path().join("main.glyph");
+        std::fs::write(
+            &main_path,
+            r#"import "./prefs.glyph" { default_risk }
+
+skill demo(risk = default_risk)
+    description: "Demo."
+    flow:
+        "Do work."
+"#,
+        )
+        .unwrap();
+
+        let bag = check_file(&main_path);
+        let unused_for_default_risk = bag
+            .iter()
+            .any(|d| d.id == "G::analyze::unused-import" && d.message.contains("default_risk"));
+        assert!(
+            !unused_for_default_risk,
+            "`risk = default_risk` should mark `default_risk` as used; got diagnostics: {:?}",
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>(),
+        );
+    }
+
     #[test]
     fn missing_import_file_detected() {
         // Missing file produces G::analyze::missing-file.
@@ -5121,6 +5303,162 @@ export block inspect_repo(scope = \".\") -> Path
         );
     }
 
+    #[test]
+    fn tier3_procedure_resolves_imported_export_type_description() {
+        // Codex finding #3 follow-up: a Tier 3 procedure file's `## Parameters`
+        // section depends on the local TypeRegistry to fill in type-level
+        // descriptions when a param has only a `: Foo` annotation (no
+        // per-param `<"…">`). Prior to this fix, the registry was built only
+        // from same-file `type` decls, so an imported `export type Foo = <"X">`
+        // would silently render as `- **scope** (Foo). Default: …` (no
+        // description). This test pins that imported type descriptions are
+        // folded into the registry and surface as the bullet's description.
+        let dir = tempfile::tempdir().unwrap();
+
+        // Library 1: types-only library exporting `RepoPath`.
+        let types_lib_src = "\
+export type RepoPath = <\"absolute path to a repository\">
+";
+        let types_lib_path = dir.path().join("types_lib.glyph");
+        std::fs::write(&types_lib_path, types_lib_src).unwrap();
+
+        // Library 2: imports `RepoPath` and uses it as a param type on a
+        // large export block (>= 150 words → emits a Tier 3 procedure file).
+        let mut long_body = String::new();
+        for i in 0..20 {
+            long_body.push_str(&format!(
+                "        \"Step {} of the inspection: carefully examine the repository structure and contents.\"\n",
+                i + 1
+            ));
+        }
+        let tools_lib_src = format!(
+            "\
+import \"types_lib\" {{ RepoPath }}
+
+export block inspect_repo(scope: RepoPath = \".\") -> Path
+    description: \"Inspect the repository for issues.\"
+    flow:
+{}        return scope
+",
+            long_body
+        );
+        let tools_lib_path = dir.path().join("tools_lib.glyph");
+        std::fs::write(&tools_lib_path, &tools_lib_src).unwrap();
+
+        let sources: Vec<PathBuf> = vec![types_lib_path.clone(), tools_lib_path.clone()];
+        let result = compile_directory(&sources);
+        assert_eq!(result.exit_code, 0, "compile should succeed");
+
+        let proc_path = dir.path().join("tools_lib/inspect-repo.md");
+        assert!(proc_path.exists(), "procedure file should exist");
+        let content = std::fs::read_to_string(&proc_path).unwrap();
+        // Bullet shape per `templates::render_param_bullet` (single-line with
+        // description): `- **name** (Type): desc. Default: X.`
+        assert!(
+            content.contains("**scope** (RepoPath): absolute path to a repository. Default:"),
+            "expected RepoPath description folded into procedure ## Parameters; got:\n{}",
+            content
+        );
+    }
+
+    /// Codex finding #2: a Tier 3 procedure file's `## Parameters` bullet
+    /// must show the *resolved* default value, not the raw `name_ref`. Before
+    /// the fix, `emit_library_procedures` passed `p.default.as_deref()`
+    /// straight from the AST, so a same-file `const default_scope = "."` plus
+    /// `inspect(scope = default_scope)` rendered as `Default: default_scope.`
+    /// — diverging from the consumer-side lower path that resolves to
+    /// `Default: ".".`.
+    #[test]
+    fn tier3_procedure_resolves_same_file_name_ref_default() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut long_body = String::new();
+        for i in 0..20 {
+            long_body.push_str(&format!(
+                "        \"Step {} of the inspection: carefully examine the repository structure and contents.\"\n",
+                i + 1
+            ));
+        }
+        let tools_lib_src = format!(
+            "\
+const default_scope = \".\"
+
+export block inspect(scope = default_scope) -> Path
+    description: \"Inspect the repository for issues.\"
+    flow:
+{}        return scope
+",
+            long_body
+        );
+        let tools_lib_path = dir.path().join("tools_lib.glyph");
+        std::fs::write(&tools_lib_path, &tools_lib_src).unwrap();
+
+        let result = compile_directory(&[tools_lib_path.clone()]);
+        assert_eq!(result.exit_code, 0, "compile should succeed");
+
+        let proc_path = dir.path().join("tools_lib/inspect.md");
+        assert!(proc_path.exists(), "procedure file should exist");
+        let content = std::fs::read_to_string(&proc_path).unwrap();
+        assert!(
+            content.contains("Default: \".\"."),
+            "expected resolved default `.` (string-quoted) in procedure ## Parameters; got:\n{}",
+            content
+        );
+        assert!(
+            !content.contains("Default: default_scope"),
+            "raw name_ref default leaked into procedure file:\n{}",
+            content
+        );
+    }
+
+    /// Companion to `tier3_procedure_resolves_same_file_name_ref_default`:
+    /// the resolver must also reach across imports. A `default_scope`
+    /// imported from a sibling library and used as a name_ref default on a
+    /// Tier 3 export block should render `Default: ".".`.
+    #[test]
+    fn tier3_procedure_resolves_imported_name_ref_default() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let prefs_src = "\
+export const default_scope = \".\"
+";
+        let prefs_path = dir.path().join("prefs.glyph");
+        std::fs::write(&prefs_path, prefs_src).unwrap();
+
+        let mut long_body = String::new();
+        for i in 0..20 {
+            long_body.push_str(&format!(
+                "        \"Step {} of the inspection: carefully examine the repository structure and contents.\"\n",
+                i + 1
+            ));
+        }
+        let tools_lib_src = format!(
+            "\
+import \"./prefs.glyph\" {{ default_scope }}
+
+export block inspect(scope = default_scope) -> Path
+    description: \"Inspect the repository for issues.\"
+    flow:
+{}        return scope
+",
+            long_body
+        );
+        let tools_lib_path = dir.path().join("tools_lib.glyph");
+        std::fs::write(&tools_lib_path, &tools_lib_src).unwrap();
+
+        let result = compile_directory(&[prefs_path.clone(), tools_lib_path.clone()]);
+        assert_eq!(result.exit_code, 0, "compile should succeed");
+
+        let proc_path = dir.path().join("tools_lib/inspect.md");
+        assert!(proc_path.exists(), "procedure file should exist");
+        let content = std::fs::read_to_string(&proc_path).unwrap();
+        assert!(
+            content.contains("Default: \".\"."),
+            "expected resolved imported default `.` in procedure ## Parameters; got:\n{}",
+            content
+        );
+    }
+
     // --- Stdlib (slice 21) tests ---
 
     #[test]
@@ -5776,99 +6114,6 @@ skill main()
                 .map(|d| d.id.clone())
                 .collect::<Vec<_>>(),
             "check_file_partition + merge should equal check_file_with_effects"
-        );
-    }
-}
-
-#[cfg(test)]
-mod compute_import_closure_tests {
-    use super::*;
-
-    fn write_file(path: &Path, content: &str) {
-        std::fs::write(path, content).unwrap();
-    }
-
-    #[test]
-    fn diamond_returns_three_canonical_paths() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = dir.path().join("a.glyph");
-        let b = dir.path().join("b.glyph");
-        let c = dir.path().join("c.glyph");
-        write_file(
-            &a,
-            "import \"./b.glyph\" { x }\n\
-             import \"./c.glyph\" { y }\n\
-             export const z = \"z\"\n",
-        );
-        write_file(
-            &b,
-            "import \"./c.glyph\" { y }\n\
-             export const x = \"x\"\n",
-        );
-        write_file(&c, "export const y = \"y\"\n");
-
-        let closure = compute_import_closure(&a, false);
-        let mut expected = vec![
-            std::fs::canonicalize(&a).unwrap(),
-            std::fs::canonicalize(&b).unwrap(),
-            std::fs::canonicalize(&c).unwrap(),
-        ];
-        expected.sort();
-        assert_eq!(closure, expected);
-    }
-
-    #[test]
-    fn stdlib_only_returns_just_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = dir.path().join("a.glyph");
-        write_file(
-            &a,
-            "import \"@glyph/std\" { describe }\n\
-             export const z = \"z\"\n",
-        );
-        let closure = compute_import_closure(&a, false);
-        assert_eq!(closure, vec![std::fs::canonicalize(&a).unwrap()]);
-    }
-
-    #[test]
-    fn self_cycle_terminates() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = dir.path().join("a.glyph");
-        write_file(
-            &a,
-            "import \"./a.glyph\" { x }\n\
-             export const x = \"x\"\n",
-        );
-        let closure = compute_import_closure(&a, false);
-        assert_eq!(closure, vec![std::fs::canonicalize(&a).unwrap()]);
-    }
-
-    #[test]
-    fn missing_entry_returns_input_path_unchanged() {
-        let closure = compute_import_closure(Path::new("/nonexistent/missing.glyph"), false);
-        assert_eq!(closure, vec![PathBuf::from("/nonexistent/missing.glyph")]);
-    }
-
-    /// Effects-aware parsing: when `enable_effects=false` and the entry file
-    /// uses an `effects:` sub-section, parse halts at the disabled-effects
-    /// diagnostic. The closure walker still returns at least the entry; the
-    /// pipeline is responsible for surfacing the parse error.
-    #[test]
-    fn effects_disabled_still_returns_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = dir.path().join("a.glyph");
-        write_file(
-            &a,
-            "skill demo()\n\
-             \x20\x20\x20\x20description: \"d\"\n\
-             \x20\x20\x20\x20effects:\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20io.write\n",
-        );
-        let closure = compute_import_closure(&a, false);
-        assert!(
-            closure.contains(&std::fs::canonicalize(&a).unwrap()),
-            "closure must include the entry even when parse halts at effects-disabled: got {:?}",
-            closure
         );
     }
 }

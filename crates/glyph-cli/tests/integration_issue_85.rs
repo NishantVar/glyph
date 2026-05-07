@@ -91,9 +91,10 @@ skill current() -> BranchName
     );
 
     let md = std::fs::read_to_string(md_path(&path)).unwrap();
+    // §8.4 row 3: `return <name>` + `-> Foo`, no `type Foo` decl.
     assert!(
-        md.contains("Return current branch as your result."),
-        "compiled Markdown should contain the standalone Identifier return form:\n{md}"
+        md.contains("Produce `current_branch` (`BranchName`)."),
+        "compiled Markdown should contain the §8.4 row-3 sentence:\n{md}"
     );
     assert!(
         !md.contains("<current_branch>"),

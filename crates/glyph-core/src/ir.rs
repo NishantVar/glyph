@@ -3,6 +3,7 @@
 use crate::kind_infer::TypeTag;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct NodeId(pub u32);
@@ -64,6 +65,13 @@ pub struct IrSkill {
     /// serializes IR via the derive.
     #[serde(skip)]
     pub output_contract: Option<NodeId>,
+    /// Source-text spelling of the `-> DomainType` annotation (e.g. `"Diagnosis"`).
+    /// `return_type` above stores the canonicalized `TypeTag::DomainType("diagnosis")`,
+    /// which loses the original casing — but the §8.4 return-prose templates render
+    /// the type as the author wrote it (`` Produce `name` (`Foo`). ``) and look up
+    /// the `TypeRegistry` description by source-text key. `None` mirrors `return_type`.
+    #[serde(skip)]
+    pub return_type_text: Option<String>,
 }
 
 /// Resolved parameter metadata threaded through Phase 6 Step 1 into the
@@ -75,6 +83,10 @@ pub struct IrParam {
     /// Pre-rendered default value (e.g., `"."` including quotes for strings).
     /// `None` indicates a runtime-required skill parameter.
     pub default: Option<String>,
+    /// Lowered from `Param.description` (span dropped — emitter only needs content).
+    pub description: Option<String>,
+    /// Lowered from `Param.type_annotation` (span dropped — emitter only needs content).
+    pub type_annotation: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -131,6 +143,10 @@ pub struct IrBlock {
     /// private block's flow ends with `return <IDENT>`.
     #[serde(skip)]
     pub output_contract: Option<NodeId>,
+    /// Source-text type name; mirrors `IrSkill::return_type_text`. See that
+    /// field's doc for why the canonicalized `return_type` is insufficient.
+    #[serde(skip)]
+    pub return_type_text: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -172,6 +188,14 @@ pub struct IrCall {
     /// without a `return <…>` contract.
     #[serde(skip)]
     pub callee_output_contract: Option<OutputTargetForm>,
+    /// Callee block's source-text `-> DomainType` spelling (e.g. `"Diagnosis"`).
+    /// Mirrors `callee_output_contract`'s plumbing: same-file lower populates
+    /// from the block declaration; cross-file fix-up populates from
+    /// `ResolvedImports::block_return_types`. Used by the §8.4 return-prose
+    /// templates when the callee's contract drives a Tier-1 last step (skill
+    /// has no OC of its own). `None` for stdlib and untyped callees.
+    #[serde(skip)]
+    pub callee_return_type_text: Option<String>,
 }
 
 /// Shape classification for a branch predicate. Populated by Tasks 2.5/2.6.
@@ -279,6 +303,37 @@ pub enum Polarity {
     Avoid,
 }
 
+/// Per-compilation-unit map of type name → canonical description.
+/// Built during lowering from same-file `TypeDecl`s plus selectively-imported
+/// `export type` decls (Phase B.7). Consumed by the emitter for per-param
+/// type-level lookup (spec §7.1) and the return-prose fold (spec §8.4).
+///
+/// Keys are stored in §D6 canonical form (ASCII-lowercase, underscores
+/// stripped) via `canonicalize_identifier`, so `type RepoContext = …` and a
+/// param `ctx: repo_context` resolve to the same description per the language
+/// guide. Always go through `insert` / `get` rather than touching the
+/// underlying map.
+#[derive(Clone, Debug, Default)]
+pub struct TypeRegistry {
+    descriptions: HashMap<String, String>,
+}
+
+impl TypeRegistry {
+    /// Insert a description keyed by `name`. The key is normalized to its
+    /// §D6 canonical form, so subsequent `get` calls match author-spelling
+    /// variants (case + underscores).
+    pub fn insert(&mut self, name: &str, desc: String) {
+        self.descriptions
+            .insert(crate::domain_registry::canonicalize_identifier(name), desc);
+    }
+
+    /// Look up a description by author-spelling, normalized to §D6 form.
+    pub fn get(&self, name: &str) -> Option<&String> {
+        self.descriptions
+            .get(&crate::domain_registry::canonicalize_identifier(name))
+    }
+}
+
 /// Single arena per file. Lower allocates IDs in pre-order traversal.
 #[derive(Debug, Default)]
 pub struct IrArena {
@@ -289,6 +344,9 @@ pub struct IrArena {
     /// body text). Populated by Lower so Expand can resolve `PredicateConst`
     /// branch conditions into `resolved_predicates`.
     pub consts: BTreeMap<String, String>,
+    /// Type-description registry built from same-file `type` decls.
+    /// Cross-file imports folded in by Phase B.7.
+    pub type_registry: TypeRegistry,
 }
 
 impl IrArena {

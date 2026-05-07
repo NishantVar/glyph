@@ -29,6 +29,7 @@ module.exports = grammar({
         $.const_declaration,
         $.generated_const_declaration,
         $.generated_block_declaration,
+        $.type_decl,
       ),
 
     // ── imports ────────────────────────────────────────────────────
@@ -168,6 +169,17 @@ module.exports = grammar({
         $._dedent,
       ),
 
+    // ── type declarations ──────────────────────────────────────────
+    type_decl: ($) =>
+      seq(
+        optional("export"),
+        "type",
+        field("name", $.identifier),
+        "=",
+        field("description", $.param_description_form),
+        $._newline,
+      ),
+
     // ── parameters ─────────────────────────────────────────────────
     parameter_list: ($) =>
       seq("(", optional(commaSep1($.parameter)), ")"),
@@ -192,6 +204,9 @@ module.exports = grammar({
 
     _parameter_default: ($) =>
       choice(
+        $.param_description_form,
+        seq($.string_literal, $.param_description_form),
+        seq($.block_string, $.param_description_form),
         $.string_literal,
         $.block_string,
         $.integer_literal,
@@ -474,6 +489,9 @@ module.exports = grammar({
 
     output_target_description: ($) =>
       seq("<", $.string_literal, ">"),
+
+    param_description_form: ($) =>
+      seq("<", choice($.string_literal, $.block_string), ">"),
 
     // ── variable binding ───────────────────────────────────────────
     variable_binding: ($) =>

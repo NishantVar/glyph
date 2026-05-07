@@ -232,6 +232,16 @@ By-construction-satisfied for scaffolded portions:
 | `G::repair::constraint-scan-malformed` | error | Phase 3c LLM output did not conform to the expected JSON shape after 2 retries with info-rich feedback (`repair.md` §4.10) |
 | `G::repair::predicate-generation-failed` | error | Phase 3 LLM produced an empty or malformed string when generating predicate prose for a condition-position bare name routed to predicate semantics. Non-repairable; the author must add the `const` declaration manually (`repair.md` §6). |
 
+### Type description coherence (Deferred)
+
+Deferred Repair extension — no compiler code exists for these yet. Full contract in `repair.md` §12. All three are gated on the presence of a `type Foo = <"...">` declaration in the same compilation unit; without an anchor, the check does not fire. Each carries an author escape hatch via the line comment `// glyph-allow: <short-id>` (the short ID is the segment after `G::repair::`).
+
+| ID | Classification | Trigger |
+|---|---|---|
+| `G::repair::type-description-conflict` | repairable | A `type Foo = <"X">` decl and a per-param `: Foo = <"Y">` description coexist; LLM judges whether `Y` specializes or contradicts `X` (`repair.md` §12) |
+| `G::repair::default-violates-type-description` | repairable | A `type Foo = <"X">` decl and a `: Foo = literal` default coexist; LLM judges whether the literal satisfies `X` (`repair.md` §12) |
+| `G::repair::return-description-conflict` | repairable | A `type Foo = <"X">` decl and a `-> Foo` block with `return <"Y">` coexist; LLM judges whether `Y` is consistent with `X` (`repair.md` §12) |
+
 ### Expand execution failures (agent-scope)
 
 Step 2 execution-level failures that are the agent's responsibility, independent of structural validation. Phase 6b structural diagnostics (27 IDs) are compiler-scope — see the Validate-output section above.

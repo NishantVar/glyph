@@ -1,9 +1,8 @@
 //! Locked deterministic-emitter templates. Single-grep changes only.
 
+use crate::ir::{OutputTargetForm, TypeRegistry};
+
 pub const EXTERNAL_FILE_TEMPLATE: &str = "Load and follow the procedure in `{path}`.";
-pub const IDENTIFIER_RETURN_SUFFIX: &str = ", and return that as your result.";
-pub const DESCRIPTION_RETURN_SUFFIX_PREFIX: &str = ", and return ";
-pub const DESCRIPTION_RETURN_SUFFIX_TAIL: &str = " as your result.";
 
 pub fn kebab_case(snake: &str) -> String {
     snake.replace('_', "-")
@@ -13,77 +12,146 @@ pub fn external_file_step(path: &str) -> String {
     EXTERNAL_FILE_TEMPLATE.replace("{path}", path)
 }
 
-/// Prepend `"the "` to a `return <"…">` description that reads as a bare
-/// noun phrase, so the locked Description-fold wrappers
-/// (`", and return X as your result."` and `"Return X as your result."`)
-/// produce grammatical prose. Descriptions whose first word is already an
-/// article/demonstrative/possessive/quantifier, a numeric literal, or a
-/// clause-introducing word (wh-words like `what`/`whether`/`how`) are
-/// passed through unchanged — those forms are grammatical without a
-/// determiner, and prepending `"the "` would corrupt them
-/// (e.g. `"return the what to synthesize"`).
-pub fn ensure_determiner(description: &str) -> String {
-    /// Lowercased first words that already make the description fit the
-    /// locked wrapper without a leading article. Articles/demonstratives/
-    /// possessives/quantifiers/numerals already determine the noun phrase;
-    /// wh-words and `if` introduce a clause, which `return X` accepts as
-    /// an object without an article.
-    const LEADING_NO_PREPEND: &[&str] = &[
-        // articles
-        "the", "a", "an", // demonstratives
-        "this", "that", "these", "those", // possessives
-        "my", "your", "our", "their", "his", "her", "its", "whose",
-        // quantifiers / determiners
-        "no", "every", "each", "some", "any", "all", "both", "several", "many", "much", "more",
-        "most", "less", "fewer", // numerals
-        "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-        // wh-words and other clause leaders that take `return X` directly
-        "what", "whether", "why", "how", "who", "whom", "which", "where", "when", "if",
-    ];
-    let first = description.split_whitespace().next().unwrap_or("");
-    if first.is_empty() {
-        return description.to_string();
+/// Pick the effective description for a parameter:
+/// 1. Per-param `<"…">` (highest precedence).
+/// 2. Type-level `type Foo = <"…">` lookup via the registry, when the param
+///    has a `name: Foo` annotation.
+/// 3. None.
+///
+/// Shared by the skill `## Parameters` emitter (`scaffold.rs`) and the Tier 3
+/// procedure-file emitter (`emit_procedure`) so the two paths cannot drift.
+pub fn effective_param_description(
+    per_param: Option<&str>,
+    type_annotation: Option<&str>,
+    type_registry: &TypeRegistry,
+) -> Option<String> {
+    if let Some(d) = per_param {
+        return Some(d.to_string());
     }
-    let first_lc = first.to_ascii_lowercase();
-    let starts_with_digit = first.chars().next().is_some_and(|c| c.is_ascii_digit());
-    if starts_with_digit || LEADING_NO_PREPEND.iter().any(|d| *d == first_lc) {
-        description.to_string()
+    type_annotation.and_then(|t| type_registry.get(t).cloned())
+}
+
+/// Render one `## Parameters` bullet given the four authored fields, returning
+/// the rendered text **including** the trailing newline. Mirrors the three
+/// shapes used by the skill emitter (`scaffold.rs`):
+///
+/// - multi-line: description has a `\n` or exceeds 120 chars.
+/// - single-line with description: `- **name** (Type): desc. Default: X.`
+/// - no description: `- **name** (Type). Default: X.` / `Required.`
+///
+/// The `(Type)` suffix is omitted when `type_annotation` is `None`. The
+/// description is rendered verbatim (caller has already chosen
+/// per-param vs type-level via `effective_param_description`).
+pub fn render_param_bullet(
+    name: &str,
+    type_annotation: Option<&str>,
+    description: Option<&str>,
+    default: Option<&str>,
+) -> String {
+    let type_suffix = match type_annotation {
+        Some(t) => format!(" ({})", t),
+        None => String::new(),
+    };
+    let meta_tail = match default {
+        Some(v) => format!("Default: {}.", v),
+        None => "Required.".to_string(),
+    };
+    match description {
+        Some(desc_text) if desc_text.contains('\n') || desc_text.len() > 120 => {
+            let mut out = format!("- **{}**{}:\n", name, type_suffix);
+            for line in desc_text.lines() {
+                out.push_str(&format!("  {}\n", line));
+            }
+            out.push_str(&format!("  {}\n", meta_tail));
+            out
+        }
+        Some(desc_text) => {
+            let trimmed = desc_text.trim_end_matches('.').trim_end();
+            format!(
+                "- **{}**{}: {}. {}\n",
+                name, type_suffix, trimmed, meta_tail
+            )
+        }
+        None => format!("- **{}**{}. {}\n", name, type_suffix, meta_tail),
+    }
+}
+
+/// Collapse runs of any whitespace (incl. embedded `\n`/`\t` decoded by the
+/// tokenizer) to single spaces. Used by every §8.4 template that splices a
+/// descriptive text into a single-line sentence.
+fn normalize_ws(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Produce the §8.4 "appended sentence" for a return contract, or `None` when
+/// the row is "no appended sentence" (`-> Foo` absent and no descriptive output
+/// target). The eight rows from the spec table:
+///
+/// 1. `return <"X">`                                → `Produce: X.`
+/// 2. `return <name>` + `-> Foo` + `type Foo = <D>` → `` Produce `name` (`Foo`): D. ``
+/// 3. `return <name>` + `-> Foo`, no `type Foo`     → `` Produce `name` (`Foo`). ``
+/// 4. `return <name>`, no `-> Foo`                  → `` Produce `name`. ``
+/// 5. `return expr` + `-> Foo` + `type Foo = <D>`   → `` Return a `Foo`: D. ``
+/// 6. `return expr` + `-> Foo`, no `type Foo`       → `` Return a `Foo`. ``
+/// 7. Return-only body                              → same as the corresponding row above
+/// 8. No `-> Foo` and no descriptive target         → `None`
+///
+/// Caller responsibilities:
+/// - For rows 1-4: pass `output_form = Some(...)`.
+/// - For rows 5-6: pass `output_form = None` (caller's flow ends in plain
+///   `return expr` without an output-target form). The caller is responsible
+///   for not invoking this helper at all when the only "return" is an
+///   identifier path (e.g., `return some_name`) and that path needs a
+///   different rendering strategy.
+pub fn compute_return_sentence(
+    return_type_text: Option<&str>,
+    output_form: Option<&OutputTargetForm>,
+    type_registry: &TypeRegistry,
+) -> Option<String> {
+    match output_form {
+        Some(OutputTargetForm::Description(text)) => {
+            Some(format!("Produce: {}.", normalize_ws(text)))
+        }
+        Some(OutputTargetForm::Identifier(name)) => Some(match return_type_text {
+            Some(t) => match type_registry.get(t) {
+                Some(d) => format!("Produce `{}` (`{}`): {}.", name, t, normalize_ws(d)),
+                None => format!("Produce `{}` (`{}`).", name, t),
+            },
+            None => format!("Produce `{}`.", name),
+        }),
+        None => match return_type_text {
+            Some(t) => Some(match type_registry.get(t) {
+                Some(d) => format!("Return a `{}`: {}.", t, normalize_ws(d)),
+                None => format!("Return a `{}`.", t),
+            }),
+            None => None,
+        },
+    }
+}
+
+/// Append the §8.4 sentence to a Step body. `body` is the rendered last-step
+/// prose without a trailing newline. Callers join the sentence onto the body
+/// after a single space, stripping any trailing period from the body so the
+/// transition reads naturally.
+pub fn append_return_sentence(body: &str, sentence: &str) -> String {
+    let trimmed = body.trim_end().trim_end_matches('.').trim_end();
+    if trimmed.is_empty() {
+        sentence.to_string()
     } else {
-        format!("the {description}")
+        format!("{trimmed}. {sentence}")
     }
-}
-
-/// Append the `Identifier` return-fold suffix to a final-Step body, stripping
-/// any trailing period from the body first so the suffix begins with `, `.
-pub fn append_identifier_suffix(body: &str) -> String {
-    let trimmed = body.trim_end().trim_end_matches('.');
-    format!("{trimmed}{IDENTIFIER_RETURN_SUFFIX}")
-}
-
-/// Append the `Description` return-fold suffix with the description text
-/// substituted in. The description is run through [`ensure_determiner`] so
-/// the locked wrapper reads as a grammatical sentence.
-pub fn append_description_suffix(body: &str, description: &str) -> String {
-    let trimmed = body.trim_end().trim_end_matches('.');
-    let phrase = ensure_determiner(description);
-    format!("{trimmed}{DESCRIPTION_RETURN_SUFFIX_PREFIX}{phrase}{DESCRIPTION_RETURN_SUFFIX_TAIL}")
-}
-
-/// When there is no prior step body to suffix-onto (e.g., a return-only
-/// skill), emit a standalone "Return ... as your result." sentence.
-pub fn standalone_return_identifier(name: &str) -> String {
-    let humanized = name.replace('_', " ");
-    format!("Return {humanized} as your result.")
-}
-
-pub fn standalone_return_description(description: &str) -> String {
-    let phrase = ensure_determiner(description);
-    format!("Return {phrase} as your result.")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::{OutputTargetForm, TypeRegistry};
+
+    fn registry_with(name: &str, desc: &str) -> TypeRegistry {
+        let mut r = TypeRegistry::default();
+        r.insert(name, desc.into());
+        r
+    }
 
     #[test]
     fn kebab_simple() {
@@ -101,126 +169,119 @@ mod tests {
     }
 
     #[test]
-    fn identifier_suffix_strips_trailing_period() {
+    fn row_1_descriptive_target_produces_x() {
+        let form = OutputTargetForm::Description("a structured diagnosis".into());
+        let s = compute_return_sentence(None, Some(&form), &TypeRegistry::default());
+        assert_eq!(s.as_deref(), Some("Produce: a structured diagnosis."));
+    }
+
+    #[test]
+    fn row_2_named_with_type_decl() {
+        let form = OutputTargetForm::Identifier("diagnosis".into());
+        let reg = registry_with("Diagnosis", "root cause and severity");
+        let s = compute_return_sentence(Some("Diagnosis"), Some(&form), &reg);
         assert_eq!(
-            append_identifier_suffix("Run cargo test."),
-            "Run cargo test, and return that as your result."
-        );
-        assert_eq!(
-            append_identifier_suffix("Run cargo test"),
-            "Run cargo test, and return that as your result."
+            s.as_deref(),
+            Some("Produce `diagnosis` (`Diagnosis`): root cause and severity.")
         );
     }
 
     #[test]
-    fn description_suffix_substitutes_text() {
+    fn row_3_named_with_type_no_decl() {
+        let form = OutputTargetForm::Identifier("diagnosis".into());
+        let s = compute_return_sentence(Some("Diagnosis"), Some(&form), &TypeRegistry::default());
+        assert_eq!(s.as_deref(), Some("Produce `diagnosis` (`Diagnosis`)."));
+    }
+
+    #[test]
+    fn row_4_named_no_type() {
+        let form = OutputTargetForm::Identifier("diagnosis".into());
+        let s = compute_return_sentence(None, Some(&form), &TypeRegistry::default());
+        assert_eq!(s.as_deref(), Some("Produce `diagnosis`."));
+    }
+
+    #[test]
+    fn row_5_expr_with_type_decl() {
+        let reg = registry_with("Diagnosis", "root cause and severity");
+        let s = compute_return_sentence(Some("Diagnosis"), None, &reg);
         assert_eq!(
-            append_description_suffix("Run cargo test.", "the test summary"),
-            "Run cargo test, and return the test summary as your result."
+            s.as_deref(),
+            Some("Return a `Diagnosis`: root cause and severity.")
         );
     }
 
     #[test]
-    fn standalone_return_identifier_humanizes_name() {
+    fn row_6_expr_with_type_no_decl() {
+        let s = compute_return_sentence(Some("Diagnosis"), None, &TypeRegistry::default());
+        assert_eq!(s.as_deref(), Some("Return a `Diagnosis`."));
+    }
+
+    #[test]
+    fn row_8_no_type_no_target() {
+        let s = compute_return_sentence(None, None, &TypeRegistry::default());
+        assert!(s.is_none());
+    }
+
+    #[test]
+    fn description_normalizes_whitespace() {
+        let form = OutputTargetForm::Description("a  multi\nline\tdescription".into());
+        let s = compute_return_sentence(None, Some(&form), &TypeRegistry::default()).unwrap();
+        assert_eq!(s, "Produce: a multi line description.");
+    }
+
+    #[test]
+    fn type_level_description_normalizes_whitespace() {
+        let reg = registry_with("Foo", "first  line\nsecond\tline");
+        let s = compute_return_sentence(Some("Foo"), None, &reg).unwrap();
+        assert_eq!(s, "Return a `Foo`: first line second line.");
+    }
+
+    /// Codex finding #3: TypeRegistry keys are §D6 canonical (ASCII-lower +
+    /// strip underscores), so `type RepoContext = …` registered under
+    /// `RepoContext` is reachable via `repo_context`, `REPOCONTEXT`,
+    /// `repo__context`, etc. The look-up site (`compute_return_sentence` and
+    /// `effective_param_description`) must apply the same canonicalization.
+    #[test]
+    fn type_registry_lookup_is_d6_canonical() {
+        let reg = registry_with("RepoContext", "context about this repo");
+        // Sanity: exact spelling resolves.
+        let exact = compute_return_sentence(Some("RepoContext"), None, &reg);
         assert_eq!(
-            standalone_return_identifier("current_branch"),
-            "Return current branch as your result."
+            exact.as_deref(),
+            Some("Return a `RepoContext`: context about this repo.")
+        );
+        // Snake-case variant: canonical form matches the registry key.
+        let snake = compute_return_sentence(Some("repo_context"), None, &reg);
+        assert_eq!(
+            snake.as_deref(),
+            Some("Return a `repo_context`: context about this repo.")
+        );
+        // Per-param annotation lookup uses the same path.
+        let bullet = effective_param_description(None, Some("repo_context"), &reg);
+        assert_eq!(bullet.as_deref(), Some("context about this repo"));
+    }
+
+    #[test]
+    fn append_return_sentence_strips_trailing_period() {
+        assert_eq!(
+            append_return_sentence("Inspect the scope.", "Produce `diagnosis`."),
+            "Inspect the scope. Produce `diagnosis`."
         );
         assert_eq!(
-            standalone_return_identifier("result"),
-            "Return result as your result."
+            append_return_sentence("Inspect the scope", "Produce `diagnosis`."),
+            "Inspect the scope. Produce `diagnosis`."
         );
     }
 
     #[test]
-    fn standalone_return_description_uses_text() {
+    fn append_return_sentence_handles_empty_body() {
         assert_eq!(
-            standalone_return_description("root cause and affected files"),
-            "Return the root cause and affected files as your result."
-        );
-    }
-
-    #[test]
-    fn ensure_determiner_prepends_the_for_bare_noun_phrase() {
-        assert_eq!(
-            ensure_determiner("path to the produced .glyph file"),
-            "the path to the produced .glyph file"
+            append_return_sentence("", "Produce `diagnosis`."),
+            "Produce `diagnosis`."
         );
         assert_eq!(
-            ensure_determiner("root cause and affected files"),
-            "the root cause and affected files"
-        );
-    }
-
-    #[test]
-    fn ensure_determiner_leaves_existing_determiner_alone() {
-        assert_eq!(ensure_determiner("the test summary"), "the test summary");
-        assert_eq!(ensure_determiner("a list of files"), "a list of files");
-        assert_eq!(ensure_determiner("an inventory"), "an inventory");
-        assert_eq!(ensure_determiner("your final answer"), "your final answer");
-        assert_eq!(ensure_determiner("two paths joined"), "two paths joined");
-    }
-
-    /// Regression: descriptive returns that introduce a clause (wh-words,
-    /// `if`) must pass through untouched. `return X` accepts a clause as its
-    /// object in English; prepending `"the"` would corrupt them.
-    #[test]
-    fn ensure_determiner_leaves_wh_clauses_alone() {
-        assert_eq!(
-            ensure_determiner("what to synthesize"),
-            "what to synthesize"
-        );
-        assert_eq!(
-            ensure_determiner("whether the user confirmed"),
-            "whether the user confirmed"
-        );
-        assert_eq!(ensure_determiner("how to proceed"), "how to proceed");
-        assert_eq!(
-            ensure_determiner("why the build failed"),
-            "why the build failed"
-        );
-        assert_eq!(
-            ensure_determiner("which option was selected"),
-            "which option was selected"
-        );
-        assert_eq!(
-            ensure_determiner("if the file was modified"),
-            "if the file was modified"
-        );
-    }
-
-    #[test]
-    fn ensure_determiner_handles_leading_digit() {
-        assert_eq!(
-            ensure_determiner("3 files in priority order"),
-            "3 files in priority order"
-        );
-    }
-
-    #[test]
-    fn ensure_determiner_handles_empty_input() {
-        assert_eq!(ensure_determiner(""), "");
-    }
-
-    #[test]
-    fn ensure_determiner_is_case_insensitive_on_first_word() {
-        assert_eq!(ensure_determiner("The result"), "The result");
-        assert_eq!(ensure_determiner("Your output"), "Your output");
-    }
-
-    #[test]
-    fn append_description_suffix_inserts_determiner() {
-        assert_eq!(
-            append_description_suffix("Run the compiler.", "path to the produced .glyph file"),
-            "Run the compiler, and return the path to the produced .glyph file as your result."
-        );
-    }
-
-    #[test]
-    fn standalone_return_description_inserts_determiner() {
-        assert_eq!(
-            standalone_return_description("path to the produced .glyph file"),
-            "Return the path to the produced .glyph file as your result."
+            append_return_sentence("   ", "Produce `diagnosis`."),
+            "Produce `diagnosis`."
         );
     }
 }

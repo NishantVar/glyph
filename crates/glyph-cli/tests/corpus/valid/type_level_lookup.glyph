@@ -1,0 +1,7 @@
+type RiskLevel = <"one of: low, medium, high">
+
+skill assess(risk: RiskLevel = "medium")
+    description: "Assess change risk."
+    flow:
+        "Inspect the change."
+        "Assign risk."

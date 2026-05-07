@@ -4,9 +4,6 @@
 
 use super::branch::{extract_predicate_token, lookup_key_for_token};
 use super::scaffold::{Chunk, Scaffold, SpanId, SpanKind};
-use super::templates::{
-    ensure_determiner, DESCRIPTION_RETURN_SUFFIX_PREFIX, DESCRIPTION_RETURN_SUFFIX_TAIL,
-};
 use crate::condition::{tokenize_condition, ConditionTokenKind};
 use std::collections::{BTreeMap, HashMap};
 
@@ -16,11 +13,6 @@ pub fn fill(scaffold: &Scaffold) -> HashMap<SpanId, String> {
         if let Chunk::Span(span) = chunk {
             let s = match span.kind {
                 SpanKind::ParamDescription => String::new(),
-                SpanKind::DescriptionReturnFold => {
-                    let desc = span.payload.description_text.clone().unwrap_or_default();
-                    let phrase = ensure_determiner(&desc);
-                    format!("{DESCRIPTION_RETURN_SUFFIX_PREFIX}{phrase}{DESCRIPTION_RETURN_SUFFIX_TAIL}\n")
-                }
                 SpanKind::BranchCondition => {
                     let raw = span
                         .payload

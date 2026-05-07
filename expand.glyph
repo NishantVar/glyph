@@ -2,7 +2,7 @@
 // Encodes llm_expand_pass.md: per-node prose generation, whole-skill
 // calibration, and the discipline rules a span-filling LLM must follow.
 
-skill expand_prose(resolved_ir, scaffold)
+skill expand_prose(resolved_ir: ResolvedIR, scaffold: ScaffoldedMarkdown) -> CompiledMarkdown
     description: "Fill marked prose spans in a scaffolded compiled skill file using its resolved IR, preserving every deterministic structure the emitter laid down."
 
     context:
