@@ -2,7 +2,7 @@
 //! fallback. See `design/expand.md` §3.3.
 
 use crate::emit::scaffold::{Scaffold, SpanId, SpanKind, SpanPayload, SpanRef};
-use crate::ir::{BranchPredicateShape, IrArena, IrBranch, IrNode, NodeId};
+use crate::ir::{IrArena, IrBranch, IrNode, NodeId};
 
 pub const SINGLE_ARM_OPENER_PREFIX: &str = "Decide whether ";
 pub const SINGLE_ARM_OPENER_TAIL: &str = " applies and, if so:";
@@ -10,12 +10,11 @@ pub const MULTI_ARM_OPENER: &str =
     "Decide which of the following applies and follow only that path:";
 
 pub fn is_pure_predicate(br: &IrBranch) -> bool {
-    is_pure_predicate_shape(&br.predicate_shape)
-        && br.elif_branches.iter().all(|e| is_pure_predicate_shape(&e.predicate_shape))
-}
-
-fn is_pure_predicate_shape(s: &BranchPredicateShape) -> bool {
-    s.has_predicate_token && !s.has_boolean_token && !s.has_compositional_operator
+    br.predicate_shape.is_pure_predicate()
+        && br
+            .elif_branches
+            .iter()
+            .all(|e| e.predicate_shape.is_pure_predicate())
 }
 
 pub fn extract_block_name(condition: &str) -> Option<String> {
@@ -36,6 +35,7 @@ pub fn emit_to_scaffold(
     step_num: usize,
     next_span_id: &mut u32,
 ) {
+    // Internal helpers still named `*_applies` — renamed/extended in Task 4.4.
     if is_pure_predicate(br) {
         emit_pure_applies(s, arena, br, step_num);
     } else {
@@ -219,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_condition_is_not_pure_applies() {
+    fn mixed_condition_is_not_pure_predicate() {
         let br = IrBranch {
             node_id: NodeId(0),
             condition: "x == 1".into(),

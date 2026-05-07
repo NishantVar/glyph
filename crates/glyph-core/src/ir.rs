@@ -183,6 +183,12 @@ pub struct BranchPredicateShape {
     pub has_compositional_operator: bool,
 }
 
+impl BranchPredicateShape {
+    pub fn is_pure_predicate(&self) -> bool {
+        self.has_predicate_token && !self.has_boolean_token && !self.has_compositional_operator
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct IrBranch {
     pub node_id: NodeId,

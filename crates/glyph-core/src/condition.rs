@@ -24,6 +24,7 @@ pub struct ConditionClassification {
 }
 
 impl ConditionClassification {
+    // Mirrors `BranchPredicateShape::is_pure_predicate` (crate::ir).
     pub fn is_pure_predicate(&self) -> bool {
         self.has_predicate_token && !self.has_boolean_token && !self.has_compositional_operator
     }
