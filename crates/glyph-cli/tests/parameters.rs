@@ -100,15 +100,15 @@ fn skill_with_params_compiles_and_emits_parameters_section() {
         md
     );
 
-    // Defaulted parameter renders with `(default: ".")`; required parameter
-    // renders with `(required)`.
+    // Defaulted parameter renders with `. Default: <X>.`; required parameter
+    // renders with `. Required.`.
     assert!(
-        md.contains("- **scope** (default: \".\")"),
+        md.contains("- **scope**. Default: \".\"."),
         "expected defaulted scope parameter; got md=\n{}",
         md
     );
     assert!(
-        md.contains("- **target** (required)"),
+        md.contains("- **target**. Required."),
         "expected required target parameter; got md=\n{}",
         md
     );

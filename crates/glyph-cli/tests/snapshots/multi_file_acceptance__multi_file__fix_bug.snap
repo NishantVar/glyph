@@ -9,7 +9,7 @@ description: Debug and fix a bug in the codebase with minimal, targeted changes.
 
 ## Parameters
 
-- **scope** (default: ".")
+- **scope**. Default: ".".
 
 ## Instructions
 
