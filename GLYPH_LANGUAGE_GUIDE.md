@@ -579,8 +579,64 @@ Allowed condition forms:
 | `and` / `or` | `if a and b:`, `if a or b:` |
 | Parenthesized grouping | `if (a or b) and c:` |
 | Block trigger predicate | `if fork_with_plan.applies():` |
+| **Named string predicate** | `if complex_change_required:` — a `const` whose body is the natural-language predicate |
+| **Inline string predicate** | `if "the user has explicitly opted out of compile-on-save":` — a string literal in condition position |
 
 Standard Python precedence: `not` > `and` > `or`. No `<`, `>`, `<=`, `>=`, no arithmetic, no `in` — bind a boolean call result instead.
+
+For the two string predicate forms, the compiler infers the condition kind from the resolved declaration's body: a `const` with a string-literal RHS becomes a natural-language predicate; a string literal in condition position is its own predicate. A non-bool, non-string primitive (e.g., integer `const`) in bare condition position is a hard error — use `==` instead.
+
+**Worked examples:**
+
+```glyph
+// Named string predicate — single arm
+const complex_change_required = "the requested change requires regenerating
+multi-line prose that repair or prose-reshape originally authored, beyond
+a localised wording or value swap"
+
+flow:
+    if complex_change_required:
+        recommend_full_compile()
+```
+
+Compiled output (deterministic, no LLM step):
+
+```md
+N. If the requested change requires regenerating multi-line prose that repair
+   or prose-reshape originally authored, beyond a localised wording or value swap:
+   a. [recommend_full_compile expansion]
+```
+
+```glyph
+// Named string predicates — multi-arm
+flow:
+    if simple_value_swap:
+        apply_inline()
+    elif complex_change_required:
+        recommend_full_compile()
+    else:
+        plan_paired_edit(change)
+```
+
+```glyph
+// Inline string predicate
+flow:
+    if "the user has explicitly opted out of compile-on-save":
+        skip_compile()
+```
+
+Compiled output: `N. If the user has explicitly opted out of compile-on-save: a. [skip_compile expansion]`
+
+Composition with `not`/`and`/`or` works for both forms:
+
+```glyph
+if complex_change_required and not is_dry_run:
+    recommend_full_compile()
+```
+
+When a string-kinded name appears as an `==` operand it is treated as a string equality comparison, not a predicate: `if risk == high_risk_const:` compares strings.
+
+See §8.7 `.applies()` for the form that bundles the predicate and the block body together — `.applies()` is the canonical form when the natural-language description is a `description:` sub-section of the block being dispatched to. Use the named-const or inline-literal forms when the predicate stands on its own without an associated block body.
 
 Branch bodies may contain any flow statement form **except `return`** — `return` is restricted to flow top level (see §8.8).
 
