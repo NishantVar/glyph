@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 /// Returns an all-false shape when no classification is present (e.g. in
 /// nodes produced before Analyze runs, or in test fixtures).
 fn predicate_shape_from(
-    c: &Option<crate::condition::ConditionClassification>,
+    c: Option<&crate::condition::ConditionClassification>,
 ) -> BranchPredicateShape {
     let Some(c) = c else {
         return BranchPredicateShape::default();
@@ -365,7 +365,7 @@ fn lower_flow_body(
                     ir_elifs.push(IrElifBranch {
                         condition: elif.condition.clone(),
                         body: elif_ids,
-                        predicate_shape: predicate_shape_from(&elif.condition_classification),
+                        predicate_shape: predicate_shape_from(elif.condition_classification.as_ref()),
                     });
                 }
                 let ir_else = if let Some(eb) = else_body {
@@ -382,7 +382,7 @@ fn lower_flow_body(
                     elif_branches: ir_elifs,
                     else_body: ir_else,
                     resolved_predicates: None,
-                    predicate_shape: predicate_shape_from(condition_classification),
+                    predicate_shape: predicate_shape_from(condition_classification.as_ref()),
                 });
                 ids.push(branch_id);
             }
@@ -740,7 +740,7 @@ pub fn lower_with_imports(
                     ir_elifs.push(IrElifBranch {
                         condition: elif.condition.clone(),
                         body: elif_ids,
-                        predicate_shape: predicate_shape_from(&elif.condition_classification),
+                        predicate_shape: predicate_shape_from(elif.condition_classification.as_ref()),
                     });
                 }
                 let ir_else = if let Some(eb) = else_body {
@@ -763,7 +763,7 @@ pub fn lower_with_imports(
                     elif_branches: ir_elifs,
                     else_body: ir_else,
                     resolved_predicates: None,
-                    predicate_shape: predicate_shape_from(condition_classification),
+                    predicate_shape: predicate_shape_from(condition_classification.as_ref()),
                 });
                 step_ids.push(branch_id);
             }
