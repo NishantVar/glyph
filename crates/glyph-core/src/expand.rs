@@ -180,19 +180,25 @@ pub fn expand_step1_with_imported_descriptions(
                     }
                     search_from = abs_pos + applies_suffix.len();
                 }
-                // PredicateConst: pure single-token bare identifier → look up in consts.
-                // Only resolves when the condition is a single token of kind
-                // PredicateConst. Mixed/compositional conditions are left for Task 4.5.
+                // PredicateConst: scan every whitespace-separated token for bare
+                // identifier const references, including within mixed conditions.
+                // (Previously only resolved pure single-token conditions; Task 4.5
+                // extends this to mixed/compositional conditions.)
                 // Strip trailing `:` (parser includes it in the condition string).
                 // TODO: strip the trailing `:` once at IR construction time
                 // (lower.rs / parse.rs) so consumers (analyze, expand, emit)
                 // don't each have to redo this work.
                 let cond_stripped = cond.trim_end_matches(':').trim();
-                if let Some((token, ConditionTokenKind::PredicateConst)) =
-                    extract_predicate_token(cond_stripped)
-                {
-                    if let Some(body) = consts_for_lookup.get(&token) {
-                        descs.insert(token, body.clone());
+                for raw_tok in cond_stripped.split_whitespace() {
+                    // Strip trailing punctuation so bare tokens like `big` are
+                    // recognised even if adjacent to a comma or similar.
+                    let tok = raw_tok.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_');
+                    if let Some((token, ConditionTokenKind::PredicateConst)) =
+                        extract_predicate_token(tok)
+                    {
+                        if let Some(body) = consts_for_lookup.get(&token) {
+                            descs.insert(token, body.clone());
+                        }
                     }
                 }
             }

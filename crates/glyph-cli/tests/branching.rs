@@ -163,3 +163,41 @@ skill foo()
         md
     );
 }
+
+#[test]
+fn mixed_predicate_const_with_not_emits_branch_condition_span() {
+    let src = r#"
+const big = "the change is big"
+
+skill foo()
+    description: "test"
+    flow:
+        if big and not "is dry run":
+            "stop"
+"#;
+    let dir = tempfile::tempdir().unwrap();
+    let src_path = dir.path().join("foo.glyph");
+    std::fs::write(&src_path, src).unwrap();
+
+    let result = run_compile(src_path);
+    assert!(
+        result.status.success(),
+        "foo.glyph should compile; stderr={}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+
+    let md = std::fs::read_to_string(dir.path().join("foo.md"))
+        .expect("foo.md should be produced");
+    // After substitution, the BranchCondition span should replace the `big`
+    // const token with its resolved body and strip quotes from the inline literal.
+    assert!(
+        md.contains("the change is big"),
+        "expected resolved const prose in mixed condition; compiled md = {}",
+        md
+    );
+    assert!(
+        md.contains("is dry run"),
+        "expected stripped literal in mixed condition; compiled md = {}",
+        md
+    );
+}
