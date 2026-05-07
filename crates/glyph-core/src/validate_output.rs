@@ -995,31 +995,85 @@ fn collect_local_refs_from_flow(flow: &[Value], names: &mut Vec<String>) {
 }
 
 fn find_curly_refs(md: &str) -> Vec<String> {
+    // Scan the Markdown for `{ident}` runtime-slot tokens, but skip code regions
+    // — inline backtick spans, fenced code blocks, and 4-space-indented blocks —
+    // since their contents are example/literal text, not prose that resolves
+    // against the skill's InputContract.
     let mut refs = Vec::new();
-    let bytes = md.as_bytes();
+    let mut in_fence = false;
+
+    for line in md.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        if line.starts_with("    ") || line.starts_with('\t') {
+            continue;
+        }
+        scan_line_for_curly_refs(line, &mut refs);
+    }
+    refs
+}
+
+fn scan_line_for_curly_refs(line: &str, refs: &mut Vec<String>) {
+    let bytes = line.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
+        if bytes[i] == b'`' {
+            let run_start = i;
+            while i < bytes.len() && bytes[i] == b'`' {
+                i += 1;
+            }
+            let run_len = i - run_start;
+            // Find the next backtick run of the same length to close the span.
+            let mut j = i;
+            let mut closed_at = None;
+            while j < bytes.len() {
+                if bytes[j] == b'`' {
+                    let close_start = j;
+                    while j < bytes.len() && bytes[j] == b'`' {
+                        j += 1;
+                    }
+                    if j - close_start == run_len {
+                        closed_at = Some(j);
+                        break;
+                    }
+                } else {
+                    j += 1;
+                }
+            }
+            if let Some(end) = closed_at {
+                i = end;
+            }
+            // If unclosed, leave i past the opening run; anything after on this
+            // line is treated as prose.
+            continue;
+        }
         if bytes[i] == b'{' {
             let start = i + 1;
             let mut end = start;
-            while end < bytes.len() && bytes[end] != b'}' && bytes[end] != b'\n' {
+            while end < bytes.len() && bytes[end] != b'}' {
                 end += 1;
             }
             if end < bytes.len() && bytes[end] == b'}' {
-                let name = &md[start..end];
-                // Only consider simple identifiers (no spaces, no special chars)
+                let name = &line[start..end];
                 if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
                     if !refs.contains(&name.to_string()) {
                         refs.push(name.to_string());
                     }
                 }
+                i = end + 1;
+            } else {
+                i += 1;
             }
-            i = end + 1;
         } else {
             i += 1;
         }
     }
-    refs
 }
 
 fn collect_param_refs_from_ir(skill: &Value, param_names: &[String]) -> Vec<String> {
@@ -2248,6 +2302,32 @@ mod tests {
         assert!(violations
             .iter()
             .any(|v| v.id == "G::expand::invented-param-ref"));
+    }
+
+    #[test]
+    fn invented_param_ref_skipped_in_code_regions() {
+        // {ident} tokens inside inline backticks, fenced code blocks, and
+        // 4-space-indented blocks are example text, not runtime slots — the
+        // validator must not flag them as invented-param-ref.
+        let md = "## Instructions\n\n### Steps\n\n\
+            1. Inline example like `{ctx}` and ``{name}`` are documentation only.\n\
+            2. A fenced block follows.\n\n\
+            ```\n\
+            block foo({scope})\n\
+                \"Use {scope} here\"\n\
+            ```\n\n\
+            3. An indented block follows.\n\n    \
+            block bar({IDENTIFIER})\n        \
+            \"Reference {IDENTIFIER}\"\n\n\
+            4. Plain prose with no slots.\n";
+        let violations = validate_output(&minimal_ir(), md);
+        assert!(
+            !violations
+                .iter()
+                .any(|v| v.id == "G::expand::invented-param-ref"),
+            "expected no invented-param-ref violations, got: {:?}",
+            violations
+        );
     }
 
     // --- dropped-param-ref ---
