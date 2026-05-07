@@ -30,8 +30,10 @@ Only explicitly exported declarations are importable (foundations: only exports 
 |---|---|---|
 | `export block` | Yes | Selective import or `M.name` call |
 | `export const` | Yes | Selective import or `M.name` reference |
+| `export type` | Yes | Selective import only (`{ Name }`); whole-module qualified type refs deferred |
 | `block` | No -- private | Compile error if named in a selective import |
 | `const` | No -- private | Compile error if named in a selective import |
+| `type` (non-exported) | No -- private | Compile error if named in a selective import |
 | `generated const` | No -- private | Compile error if named in a selective import |
 | `skill` | Special | Accessible only via `M.skill_name` on whole-module imports |
 
@@ -48,6 +50,20 @@ Attempting to selectively import a private `block` or `const` is a compile error
 Library files (zero `skill` declarations) are the primary import targets. They export reusable blocks and constants consumed by skill files. Importing from a library file follows all the same rules as importing from a skill file — selective imports, whole-module imports, collision handling, and effect propagation all apply identically. The only difference: a library file has no `skill` entrypoint, so `M.skill_name` is not available on whole-module imports of a library. Attempting to access a skill entrypoint on a library's whole-module alias is a compile error.
 
 Library files must have at least one `export` declaration (`G::analyze::no-exports-in-library`). See `language-surface.md` §File-Level Rules for the full library compilation and emission model.
+
+`export type` decls count as library exports, parallel to `export const` and `export block` (see `types.md`, Explicit `type` Declarations section). A file containing only `export type` decls satisfies the library-export rule and compiles cleanly with no `## Parameters` or `### Steps` body — type decls are compile-time only and emit no Markdown.
+
+### Selective-Only Imports for Types
+
+Types are imported **selectively only** in MVP:
+
+```glyph
+import "./types.glyph" { RepoContext, Diagnosis }
+```
+
+Whole-module qualified type references — e.g., `types.RepoContext` after `import "./types.glyph" as types` — are deferred. Type slots in MVP accept bare identifiers only; qualified type refs would require new TypeRef grammar and canonical-identity rules. Authors who want to expose types to consumers must use selective import.
+
+A whole-module import of a file that contains `export type` decls remains valid for any `export block` or `export const` it also defines; the type names are simply not reachable through the alias.
 
 ## 3. Name Collision Rules
 
@@ -143,3 +159,4 @@ The importer does not re-check internal closure of the imported block. This keep
 - Cycle-breaking mechanisms (interface-only imports, forward declarations, lazy resolution).
 - Selective import glob or wildcard patterns.
 - Deep qualified access (`a.b.c`) for nested module structures.
+- Whole-module qualified type references (`alias.TypeName` after `import "./types.glyph" as alias`). See `types.md` Deferred section.

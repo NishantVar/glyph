@@ -284,7 +284,7 @@ x: T = "foo" <"typed, with default and description">
 
 Block-strings (`<"""...""">`) are also accepted for multi-line descriptions; they render as a multi-line bullet in the compiled output (see [compiled-output.md](design/compiled-output.md) §`## Parameters`).
 
-A per-param description **wins** over any type-level description provided by `type Foo = <"...">` (see §X — `type` decls land in S2; forward ref, not yet documented). When neither is present, the compiled bullet shows just the name + (optional) type + default-or-required marker.
+A per-param description **wins** over any type-level description provided by a `type Foo = <"...">` decl (see §6.3 below). When neither is present, the compiled bullet shows just the name + (optional) type + default-or-required marker.
 
 ### 6.2 Parameter slots `{name}` in instruction strings
 
@@ -304,6 +304,87 @@ Rules:
 - A `{name}` that doesn't resolve to a parameter or local binding in scope is a hard error.
 - **Parameter references** survive into the compiled Markdown as literal `{name}` slots — the consuming agent fills them at runtime.
 - **Local-binding references** (e.g., `{diagnosis}` after `diagnosis = analyze_error(...)`) are rewritten by the compiler into natural-language cross-references in compiled prose ("...based on the diagnosis from your earlier analysis.").
+
+### 6.3 Type Declarations
+
+Authors may attach a description to a domain type with a top-level `type` decl. This lets the same description carry through every parameter and return slot annotated with that type, instead of repeating per-param `<"...">` text on every slot.
+
+```glyph
+type RepoContext = <"the inspected repo state, including file tree and dependencies">
+type RiskLevel   = <"one of: low, medium, high">
+
+export type Diagnosis = <"root cause analysis including affected files and severity">
+```
+
+Forms:
+
+```
+type        Name = <"...">              // file-private
+export type Name = <"...">              // importable from other files
+```
+
+The RHS uses the same `<"...">` (inline) and `<"""...""">` (block-string) form accepted in per-param `=` slots. The decl has no body, no parameters, and no sub-sections.
+
+**What a `type` decl does.** A `type Foo` decl supplies the default description used wherever `Foo` appears in a parameter type annotation or a return type. The decl itself emits nothing — it does not appear in the compiled Markdown. It only changes what description shows up when the compiler renders a `: Foo` slot or a `-> Foo` return.
+
+Before — without a `type` decl, every slot has to repeat its description:
+
+```glyph
+skill review_changes(
+    ctx: RepoContext = <"the inspected repo state, including file tree and dependencies">,
+    risk: RiskLevel = "medium" <"one of: low, medium, high">,
+)
+```
+
+After — with `type` decls, the slots stay short and the description still appears in the compiled output:
+
+```glyph
+type RepoContext = <"the inspected repo state, including file tree and dependencies">
+type RiskLevel   = <"one of: low, medium, high">
+
+skill review_changes(
+    ctx: RepoContext,
+    risk: RiskLevel = "medium",
+)
+```
+
+Both produce equivalent compiled `## Parameters` bullets — the type-level description fills in for any slot that doesn't supply its own.
+
+**Lookup precedence.** When a slot has its own per-param `<"...">`, that wins over the type-level description. If you want one parameter to override the shared text without changing the type-level description for other slots:
+
+```glyph
+type RiskLevel = <"one of: low, medium, high">
+
+skill fix_bug(
+    risk: RiskLevel = "medium" <"raise to 'high' if fix touches auth or data layer">,
+)
+```
+
+Here `risk`'s compiled description is the per-param override; any other `: RiskLevel` slot in this skill or library still picks up the type-level text.
+
+**Cross-file usage.** `export type` decls are importable selectively:
+
+```glyph
+// types.glyph
+export type RepoContext = <"the inspected repo state, including file tree and dependencies">
+export type Diagnosis   = <"root cause analysis including affected files and severity">
+```
+
+```glyph
+// fix_bug.glyph
+import "./types.glyph" { RepoContext, Diagnosis }
+
+skill fix_bug(scope = ".", ctx: RepoContext)
+    flow:
+        diagnosis = analyze(ctx)
+        return diagnosis
+```
+
+A library file that contains only `export type` decls is a valid library — it satisfies the library-export rule and compiles cleanly with no body. Type imports are **selective only** in MVP; whole-module qualified type refs (e.g., `types.RepoContext` after `import "./types.glyph" as types`) are not supported.
+
+**Naming and collisions.** `type` participates in the same flat namespace as everything else (§10.3 No shadowing): `type Foo` collides with `const Foo`, `block Foo`, an `import` alias `Foo`, or a parameter `Foo` — and is a hard error. The pairing of `type Foo` with `-> Foo` annotations is fine: both refer to the same nominal type.
+
+PascalCase is the recommended convention for type names (§10.5 Types).
 
 ---
 
@@ -737,7 +818,7 @@ MVP expressions support only: literals, bindings, calls, dot access. No `+`, `-`
 
 ### 10.2 Reserved keywords
 
-`skill`, `block`, `export`, `import`, `const`, `flow`, `call`, `if`, `elif`, `else`, `return`, `true`, `false`, `none`, `effects`, `constraints`, `inputs`, `outputs`, `when_to_use`, `description`, `as`, `generated`, `input`, `output`, `must`, `require`, `avoid`, `context`, `and`, `or`, `not`.
+`skill`, `block`, `export`, `import`, `const`, `type`, `flow`, `call`, `if`, `elif`, `else`, `return`, `true`, `false`, `none`, `effects`, `constraints`, `inputs`, `outputs`, `when_to_use`, `description`, `as`, `generated`, `input`, `output`, `must`, `require`, `avoid`, `context`, `and`, `or`, `not`.
 
 Cannot be used as identifiers.
 
@@ -777,7 +858,7 @@ block make_plan(ctx: RepoContext, risk = "medium") -> Plan
 export block validate_changes(files: FileSet, strict = true) -> ValidationResult
 ```
 
-Examples: `RepoContext`, `Plan`, `FailureReport`, `BranchName`, `Severity`, `Confirmation`, `Diagnosis`. They are opaque tags — no structural definition in MVP. Domain types are **implicitly declared by first use** in a `-> Type` position; no separate `type Foo` declaration is required (or supported). The meaning of the type is contextually defined by the `<"description">` at return sites and by the names used in compiled prose.
+Examples: `RepoContext`, `Plan`, `FailureReport`, `BranchName`, `Severity`, `Confirmation`, `Diagnosis`. They are opaque tags — no structural definition in MVP. Domain types are **implicitly declared by first use** in a `-> Type` position, so no `type Foo` declaration is required. An explicit `type Foo = <"...">` decl (§6.3) is optional and only attaches a default description; nominal matching at call boundaries is unchanged either way.
 
 The compiler does **nominal matching** at call boundaries: if the type names match, values are compatible; if they differ, it's an error; if either side is untyped, no check is performed. Two blocks returning the same `-> Type` with different `<"…">` descriptions is fine — descriptions are local to each block and don't participate in nominal matching.
 
@@ -1247,7 +1328,7 @@ Stdlib types: String, Int, Float, Bool, None, Agent
 Stdlib calls: subagent(task) -> Agent ;   send(agent: Agent, message) -> None
 
 Values: "..."  """..."""  3  -1  0.8  true  false  none
-Reserved keywords: skill, block, export, import, text, int, float, flow, call, if, elif, else,
+Reserved keywords: skill, block, export, import, text, int, float, type, flow, call, if, elif, else,
   return, true, false, none, effects, constraints, inputs, outputs, when_to_use, description,
   as, generated, input, output, must, require, avoid, context, and, or, not
 ```

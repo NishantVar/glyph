@@ -85,6 +85,51 @@ Field access such as `result.findings` is not validated against the type in MVP.
 
 Domain type names follow the same identifier rules as all other names: `[a-zA-Z_][a-zA-Z0-9_]*` per `values-and-names.md`, Allowed Characters section. PascalCase is recommended for types. The no-shadowing rule from `values-and-names.md`, No Shadowing section, applies: if a type name collides with a parameter or binding after case normalization, the compiler rejects the program.
 
+### Explicit `type` Declarations
+
+A domain type may also be introduced explicitly with a top-level `type` decl that pairs the type name with a description:
+
+```glyph
+type RepoContext = <"the inspected repo state, including file tree and dependencies">
+type RiskLevel   = <"one of: low, medium, high; severity of the change">
+
+export type Diagnosis = <"root cause analysis including affected files and severity">
+```
+
+Syntax:
+
+```
+type        <Name> = <description>
+export type <Name> = <description>
+```
+
+The RHS uses the same `<"…">` (inline) and `<"""…""">` (block-string) form as per-param descriptions and descriptive output targets. The decl has no body, no parameters, and no sub-sections.
+
+`type` decls live at the top level of a file alongside `const`, `block`, `export block`, and `import`, and are represented in the AST by a dedicated `TypeDecl` node.
+
+**Semantics — what a `type` decl does.** A `type` decl associates a description with a type name. The description is consumed at compile time and surfaces in two places in the compiled output:
+
+1. The `## Parameters` block, when a parameter is annotated `: Foo` and no per-param description is supplied (see `compiled-output.md`).
+2. The closing prose of the final Step in a `-> Foo` block, per the locked return-prose templates (see `compiled-output.md`).
+
+The type decl itself emits no Markdown — `type` decls are compile-time only and do not appear in the compiled `.md`.
+
+`type` decls **complement** implicit declaration. Implicit declaration via first use in `-> Foo` continues to register the nominal type; an explicit `type Foo` decl in the same scope simply attaches a description to that same nominal type. Nominal matching at call boundaries is unchanged.
+
+**Lookup precedence for descriptions.** When the compiler renders a parameter slot or the return prose of a `-> Foo` block, the effective description is computed in priority order:
+
+1. Per-site description (per-param `<"...">` on the slot, or `return <"...">` at the call site) — wins.
+2. The type-level description from a `type Foo` decl in scope (same file or imported) — fallback.
+3. None.
+
+Per-site descriptions therefore override the type-level default; absence of either leaves the slot or return prose without a description.
+
+**Same-file duplicates.** A second `type Foo` decl in the same file is a hard error (`G::analyze::duplicate-type-decl`). A `type` name also participates in the universal value namespace defined in `values-and-names.md`, No Shadowing section: `type Foo` collides with any other in-scope `Foo` (`const Foo`, `block Foo`, `export block Foo`, an `import` alias, or a parameter named `Foo`). The canonical pairing of `type Foo` with `-> Foo` annotations is **not** a collision — both refer to the same nominal type.
+
+**Cross-file usage.** `export type` decls are importable selectively: `import "./types.glyph" { Foo }` brings the type and its description into scope. A library file that contains only `export type` decls (no `skill`, no `export block`, no `export const`) satisfies the library-export rule and compiles cleanly with no body — see `imports.md`.
+
+Whole-module qualified references to types (e.g., `types.Foo` after `import "./types.glyph" as types`) are not supported in MVP; type slots accept bare identifiers only. Authors who need to expose a type to consumers must use selective import. See Deferred for the parking-lot entry.
+
 ## `none` Value (No `None` Type Annotation)
 
 `none` is a reserved keyword and value representing the absence of a value (`values-and-names.md`, None section). It is valid in value positions: `return none`, `result = none`, `effects: none`.
@@ -182,8 +227,8 @@ See `compiled-output.md` for how types surface in the final Markdown.
 
 The following type features are deferred beyond the MVP:
 
-- **Explicit `type` declarations.** A `type Name = { field1, field2 }` declaration form that gives named types an explicit structural shape the compiler can check. MVP uses implicit declaration (first use in `-> Type` creates the type). Explicit declarations are the most likely next addition when cross-file structural validation becomes a real authoring need.
-- **Structural type definitions.** Giving named types an explicit shape (fields, nested types) that the compiler can validate against. Blocked on explicit `type` declarations.
+- **Structural type definitions.** Giving named types an explicit shape (fields, nested types) that the compiler can validate against. The MVP `type Name = <"…">` form attaches only a description to a nominal type; a structural form (e.g., `type Name = { field1, field2 }`) is the most likely next addition when cross-file structural validation becomes a real authoring need.
+- **Whole-module qualified type references.** `import "./types.glyph" as types` followed by `param: types.Foo` or `-> types.Foo`. Type slots in MVP accept bare identifiers only; qualified type refs require new TypeRef grammar, AST shape, and canonical-identity rules. Authors must use selective import (`import "./types.glyph" { Foo }`) until this lands.
 - **Inline structural contracts.** A `name: { findings, severity }` annotation form for duck-typed parameters. Currently, the compiler infers field access from usage but does not expose a source syntax for declaring structural shape inline.
 - **Structural type checking.** Validating that field access like `result.findings` is compatible with the declared or inferred type. The compiler records field access in the IR but does not reject unverifiable access in MVP.
 - **Collection types.** `List[T]`, `Set[T]`, `Map[K, V]`, or similar parameterized types. Existing examples use opaque names like `FileSet` which serve the same documentary purpose without requiring generic type machinery.
