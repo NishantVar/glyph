@@ -7,6 +7,8 @@
 //! This module operates on external files (not the compiler's internal IR),
 //! using `serde_json::Value` to parse the IR JSON.
 
+use crate::condition::{tokenize_condition, ConditionTokenKind};
+use crate::emit::branch::{extract_predicate_token, lookup_key_for_token};
 use crate::emit::templates::kebab_case;
 use serde_json::Value;
 
@@ -1520,26 +1522,87 @@ fn check_resolved_predicates_in_flow(flow: &[Value], md: &str, violations: &mut 
     for node in flow {
         let kind = node.get("kind").and_then(|k| k.as_str()).unwrap_or("");
         if kind == "branch" {
-            // Check if this branch has resolved_predicates
-            if let Some(desc_map) = node.get("resolved_predicates").and_then(|d| d.as_object()) {
-                // When resolved_predicates is populated, the compiled output
-                // must use description-keyed prose, not raw condition expressions.
-                // Verify that none of the block names followed by `.applies()`
-                // survive literally in the markdown.
-                for block_name in desc_map.keys() {
-                    let raw_condition = format!("{}.applies()", block_name);
-                    if md.contains(&raw_condition) {
-                        violations.push(Violation::new(
-                            "G::expand::description-shape-missing",
-                            format!(
-                                "raw condition `{}` survives in output; \
-                                 description-driven branch should use resolved description prose",
-                                raw_condition
-                            ),
-                        ));
+            // Gather all (condition, resolved_predicates) pairs: the branch arm and each elif arm.
+            let mut arms: Vec<(&str, Option<&serde_json::Map<String, Value>>)> = Vec::new();
+            if let Some(cond) = node.get("condition").and_then(|c| c.as_str()) {
+                let rp = node.get("resolved_predicates").and_then(|d| d.as_object());
+                arms.push((cond, rp));
+            }
+            if let Some(elifs) = node.get("elif_branches").and_then(|b| b.as_array()) {
+                for elif in elifs {
+                    if let Some(cond) = elif.get("condition").and_then(|c| c.as_str()) {
+                        let rp = elif.get("resolved_predicates").and_then(|d| d.as_object());
+                        arms.push((cond, rp));
                     }
                 }
             }
+
+            for (condition, resolved_predicates) in &arms {
+                // Negative check (existing): raw `<name>.applies()` must not survive.
+                if let Some(desc_map) = resolved_predicates {
+                    for block_name in desc_map.keys() {
+                        let raw_condition = format!("{}.applies()", block_name);
+                        if md.contains(&raw_condition) {
+                            violations.push(Violation::new(
+                                "G::expand::description-shape-missing",
+                                format!(
+                                    "raw condition `{}` survives in output; \
+                                     description-driven branch should use resolved description prose",
+                                    raw_condition
+                                ),
+                            ));
+                        }
+                    }
+                }
+
+                // Positive check: when predicate_shape.has_predicate_token is true,
+                // the resolved prose for each token must appear in the markdown.
+                //
+                // The condition string carries a trailing `:` from the parser;
+                // strip it before tokenising. See expand.rs ~187 and
+                // emit/branch.rs ~22-25 and emit/stub_fill.rs ~36 for the same strip.
+                let condition_stripped = condition.trim().trim_end_matches(':').trim();
+                for token in tokenize_condition(condition_stripped) {
+                    if let Some((tok, kind)) = extract_predicate_token(&token) {
+                        match kind {
+                            ConditionTokenKind::PredicateApplies
+                            | ConditionTokenKind::PredicateConst => {
+                                if let Some(desc_map) = resolved_predicates {
+                                    let key = lookup_key_for_token(&tok, kind);
+                                    if let Some(prose) =
+                                        desc_map.get(key).and_then(|v| v.as_str())
+                                    {
+                                        if !md.contains(prose) {
+                                            violations.push(Violation::new(
+                                                "G::expand::predicate-prose-missing",
+                                                format!(
+                                                    "predicate `{}` resolved to prose \"{}\", \
+                                                     but that prose was not found in the output",
+                                                    key, prose
+                                                ),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                            ConditionTokenKind::PredicateLiteral => {
+                                // Literal form: the inner text IS the prose; no resolved_predicates lookup.
+                                if !md.contains(&tok) {
+                                    violations.push(Violation::new(
+                                        "G::expand::predicate-prose-missing",
+                                        format!(
+                                            "literal predicate prose \"{}\" was not found in the output",
+                                            tok
+                                        ),
+                                    ));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
             // Recurse into branch bodies
             if let Some(body) = node.get("then_body").and_then(|b| b.as_array()) {
                 check_resolved_predicates_in_flow(body, md, violations);
@@ -3016,6 +3079,22 @@ mod tests {
     fn check_resolved_predicates_accepts_renamed_key() {
         let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"x.applies()","resolved_predicates":{"x.applies()":"the change is large"},"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
         let md = "## Instructions\n\n### Steps\n\n1. If the change is large:\n   a. Stop.\n";
+        let violations = validate_output(ir, md);
+        assert!(violations.is_empty(), "got: {:?}", violations);
+    }
+
+    #[test]
+    fn check_resolved_predicates_accepts_const_form() {
+        let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"big","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":{"big":"the change is big"},"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
+        let md = "## Instructions\n\n### Steps\n\n1. If the change is big:\n   a. Stop.\n";
+        let violations = validate_output(ir, md);
+        assert!(violations.is_empty(), "got: {:?}", violations);
+    }
+
+    #[test]
+    fn check_resolved_predicates_accepts_literal_form() {
+        let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"\"the user opted in\"","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":null,"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
+        let md = "## Instructions\n\n### Steps\n\n1. If the user opted in:\n   a. Skip.\n";
         let violations = validate_output(ir, md);
         assert!(violations.is_empty(), "got: {:?}", violations);
     }

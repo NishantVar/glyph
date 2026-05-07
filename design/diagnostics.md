@@ -207,6 +207,8 @@ By-construction-satisfied for scaffolded portions:
 | `G::expand::procedure-ref-dangling` | error | Step references a procedure name with no matching `### Procedure:` section |
 | `G::expand::procedure-duplicate` | error | Same procedure name appears in two or more `### Procedure:` sections |
 | `G::expand::procedure-order` | error | `### Procedure:` sections not ordered by first reference from `### Steps` |
+| `G::expand::description-shape-missing` | error | A raw `<name>.applies()` condition string survived literally in the output; a description-driven branch must render using the resolved description prose, not the raw trigger expression |
+| `G::expand::predicate-prose-missing` | error | A predicate's resolved prose was not found in the output. Covers all three predicate forms: `.applies()` (prose from block `description:`), const-form (prose from `const` declaration), and literal-form (the quoted text itself). Fired by Phase 6b's positive predicate-prose check |
 
 ### Repair notifications
 
