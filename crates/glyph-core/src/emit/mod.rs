@@ -145,28 +145,62 @@ mod tests {
     fn emit_skips_effects_when_disabled() {
         let arena = arena_with_effects();
         let output = emit(&arena, false);
-        assert!(!output.contains("effects:"), "effects line should be omitted when enable_effects is false");
-        assert!(output.contains("name: test_skill"), "name should still be present");
+        assert!(
+            !output.contains("effects:"),
+            "effects line should be omitted when enable_effects is false"
+        );
+        assert!(
+            output.contains("name: test_skill"),
+            "name should still be present"
+        );
     }
 
     #[test]
     fn emit_includes_effects_when_enabled() {
         let arena = arena_with_effects();
         let output = emit(&arena, true);
-        assert!(output.contains("effects: [fs:write, net:http]"), "effects line should be present when enable_effects is true");
+        assert!(
+            output.contains("effects: [fs:write, net:http]"),
+            "effects line should be present when enable_effects is true"
+        );
     }
 
     #[test]
     fn emit_procedure_skips_effects_when_disabled() {
-        let output = emit_procedure("my_proc", "A procedure.", &["fs:read".to_string()], &[], &["Step one.".into()], None, false);
-        assert!(!output.contains("effects:"), "effects line should be omitted when enable_effects is false");
-        assert!(output.contains("name: my-proc"), "name should still be present");
+        let output = emit_procedure(
+            "my_proc",
+            "A procedure.",
+            &["fs:read".to_string()],
+            &[],
+            &["Step one.".into()],
+            None,
+            false,
+        );
+        assert!(
+            !output.contains("effects:"),
+            "effects line should be omitted when enable_effects is false"
+        );
+        assert!(
+            output.contains("name: my-proc"),
+            "name should still be present"
+        );
     }
 
     #[test]
     fn emit_procedure_includes_effects_when_enabled() {
-        let output = emit_procedure("my_proc", "A procedure.", &["fs:read".to_string()], &[], &["Step one.".into()], None, true);
-        assert!(output.contains("effects: [fs:read]"), "effects line should be present when enable_effects is true");
+        let output = emit_procedure(
+            "my_proc",
+            "A procedure.",
+            &["fs:read".to_string()],
+            &[],
+            &["Step one.".into()],
+            None,
+            true,
+        );
+        assert!(
+            output.contains("effects: [fs:read]"),
+            "effects line should be present when enable_effects is true"
+        );
     }
 
     #[test]

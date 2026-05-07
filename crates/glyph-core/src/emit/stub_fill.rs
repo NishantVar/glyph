@@ -15,11 +15,7 @@ pub fn fill(scaffold: &Scaffold) -> HashMap<SpanId, String> {
             let s = match span.kind {
                 SpanKind::ParamDescription => String::new(),
                 SpanKind::DescriptionReturnFold => {
-                    let desc = span
-                        .payload
-                        .description_text
-                        .clone()
-                        .unwrap_or_default();
+                    let desc = span.payload.description_text.clone().unwrap_or_default();
                     let phrase = ensure_determiner(&desc);
                     format!("{DESCRIPTION_RETURN_SUFFIX_PREFIX}{phrase}{DESCRIPTION_RETURN_SUFFIX_TAIL}\n")
                 }
@@ -28,11 +24,7 @@ pub fn fill(scaffold: &Scaffold) -> HashMap<SpanId, String> {
                     .condition_expression
                     .clone()
                     .unwrap_or_default(),
-                SpanKind::CallBodyShape => span
-                    .payload
-                    .resolved_body
-                    .clone()
-                    .unwrap_or_default(),
+                SpanKind::CallBodyShape => span.payload.resolved_body.clone().unwrap_or_default(),
             };
             out.insert(span.id, s);
         }

@@ -80,11 +80,7 @@ fn message_of(stdout: &str, id: &str) -> Option<String> {
         .filter(|l| !l.is_empty())
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .find(|v| v.get("id").and_then(|x| x.as_str()) == Some(id))
-        .and_then(|v| {
-            v.get("message")
-                .and_then(|x| x.as_str())
-                .map(String::from)
-        })
+        .and_then(|v| v.get("message").and_then(|x| x.as_str()).map(String::from))
 }
 
 /// AC8 success path 1 — exact-name nominal match across files.

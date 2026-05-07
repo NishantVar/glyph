@@ -241,7 +241,11 @@ pub enum FlowStmt {
     /// A call expression: `name()` or `name(arg1, arg2)`, with optional
     /// `with "modifier"` site modifier. `target` carries the source span of
     /// the callee token so the LSP can answer go-to-def (M2).
-    Call { target: Spanned<String>, args: Vec<String>, site_modifier: Option<String> },
+    Call {
+        target: Spanned<String>,
+        args: Vec<String>,
+        site_modifier: Option<String>,
+    },
     /// `return <expr>` — terminal-only at flow root.
     Return(ReturnExpr),
     /// `if`/`elif`/`else` branch chain.
@@ -266,7 +270,10 @@ pub enum ReturnExpr {
     /// `return none` or bare `return` (no expression).
     None,
     /// `return some_call()`. `target` is `Spanned` for go-to-def (M2).
-    Call { target: Spanned<String>, args: Vec<String> },
+    Call {
+        target: Spanned<String>,
+        args: Vec<String>,
+    },
     /// `return some_name` (binding reference). `Spanned` for go-to-def (M2).
     Name(Spanned<String>),
     /// `return "inline string"`.

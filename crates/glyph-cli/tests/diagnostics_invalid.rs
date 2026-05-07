@@ -93,7 +93,9 @@ fn json_format_produces_ndjson_on_stdout() {
     for line in trimmed.lines() {
         let v: serde_json::Value =
             serde_json::from_str(line).expect("each NDJSON line must parse as JSON");
-        let obj = v.as_object().expect("each diagnostic must be a JSON object");
+        let obj = v
+            .as_object()
+            .expect("each diagnostic must be a JSON object");
         for required in ["id", "classification", "message", "span"] {
             assert!(
                 obj.contains_key(required),

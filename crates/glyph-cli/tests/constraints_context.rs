@@ -160,7 +160,9 @@ fn context_section_emits_before_steps() {
     );
 
     let md = std::fs::read_to_string(&out).expect("compiled .md file is missing");
-    let context_idx = md.find("### Context").expect("expected ### Context section");
+    let context_idx = md
+        .find("### Context")
+        .expect("expected ### Context section");
     let steps_idx = md.find("### Steps").expect("expected ### Steps section");
     assert!(
         context_idx < steps_idx,

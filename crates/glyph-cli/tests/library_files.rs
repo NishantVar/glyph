@@ -19,10 +19,14 @@ fn glyph_bin() -> PathBuf {
 fn ac1_export_text_only_library_cli() {
     let dir = tempfile::tempdir().unwrap();
 
-    std::fs::write(dir.path().join("prefs.glyph"), "\
+    std::fs::write(
+        dir.path().join("prefs.glyph"),
+        "\
 export const terminal_mux = \"tmux\"
 export const validation_strictness = \"high\"
-").unwrap();
+",
+    )
+    .unwrap();
 
     let output = Command::new(glyph_bin())
         .arg("compile")
@@ -48,9 +52,13 @@ export const validation_strictness = \"high\"
 fn ac4_no_exports_in_library_cli() {
     let dir = tempfile::tempdir().unwrap();
 
-    std::fs::write(dir.path().join("empty_lib.glyph"), "\
+    std::fs::write(
+        dir.path().join("empty_lib.glyph"),
+        "\
 const private_only = \"This is private.\"
-").unwrap();
+",
+    )
+    .unwrap();
 
     let output = Command::new(glyph_bin())
         .arg("check")
@@ -78,7 +86,9 @@ const private_only = \"This is private.\"
 fn ac3_closure_violation_cli() {
     let dir = tempfile::tempdir().unwrap();
 
-    std::fs::write(dir.path().join("lib.glyph"), "\
+    std::fs::write(
+        dir.path().join("lib.glyph"),
+        "\
 block private_helper()
     \"Do private stuff.\"
 
@@ -86,7 +96,9 @@ export block shared_util(x = \"default\")
     flow:
         private_helper()
         return x
-").unwrap();
+",
+    )
+    .unwrap();
 
     let output = Command::new(glyph_bin())
         .arg("check")

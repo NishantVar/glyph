@@ -29,19 +29,25 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::ast::{Decl, ImportKind, ReturnExpr};
-use crate::ir::OutputTargetForm;
-use crate::output_target::OutputTargetExpr;
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::ir::IrNode;
+use crate::ir::OutputTargetForm;
+use crate::output_target::OutputTargetExpr;
 use crate::span::{LineIndex, Span};
 
 #[derive(Debug)]
 pub enum CompileError {
-    Read { path: String, source: std::io::Error },
+    Read {
+        path: String,
+        source: std::io::Error,
+    },
     Parse(parse::ParseError),
     Lower(lower::LowerError),
     Validate(validate::ValidateError),
-    Write { path: String, source: std::io::Error },
+    Write {
+        path: String,
+        source: std::io::Error,
+    },
 }
 
 /// Outcome of compiling a single source file.
@@ -56,7 +62,11 @@ pub enum CompileError {
 /// rule in `design/build-foundation.md` §A6.
 #[derive(Debug)]
 pub enum CompileOutcome {
-    Compiled { markdown: String, diagnostics: DiagBag, arena: ir::IrArena },
+    Compiled {
+        markdown: String,
+        diagnostics: DiagBag,
+        arena: ir::IrArena,
+    },
     Diagnostics(DiagBag),
 }
 
@@ -89,7 +99,14 @@ pub fn compile_source_with_effects(
     // recompute here to avoid plumbing an extra return value out of `parse`.
     let line_index = LineIndex::new(source);
 
-    let parsed = parse::parse_with_diagnostics_opts(source, file_id, file_label, &line_index, &mut bag, enable_effects);
+    let parsed = parse::parse_with_diagnostics_opts(
+        source,
+        file_id,
+        file_label,
+        &line_index,
+        &mut bag,
+        enable_effects,
+    );
     if !bag.is_empty() && (bag.has_error() || bag.has_repairable()) {
         // Diagnostics block compilation. Surface and stop.
         return Ok(CompileOutcome::Diagnostics(bag));
@@ -108,7 +125,14 @@ pub fn compile_source_with_effects(
     };
 
     let mut registry = domain_registry::Registry::new();
-    let file = analyze::analyze_with_diagnostics(file, file_id, file_label, &line_index, &mut bag, &mut registry);
+    let file = analyze::analyze_with_diagnostics(
+        file,
+        file_id,
+        file_label,
+        &line_index,
+        &mut bag,
+        &mut registry,
+    );
     if bag.has_error() || bag.has_repairable() {
         return Ok(CompileOutcome::Diagnostics(bag));
     }
@@ -116,7 +140,11 @@ pub fn compile_source_with_effects(
     validate::validate(&arena).map_err(CompileError::Validate)?;
     let arena = expand::expand_step1(arena);
     let markdown = emit::emit(&arena, enable_effects);
-    Ok(CompileOutcome::Compiled { markdown, diagnostics: bag, arena })
+    Ok(CompileOutcome::Compiled {
+        markdown,
+        diagnostics: bag,
+        arena,
+    })
 }
 
 /// Run only Phase 1 (Parse) and Phase 2 (Analyze) and return the populated
@@ -132,17 +160,36 @@ pub fn check_source(source: &str, file_id: u32, file_label: &str) -> DiagBag {
 }
 
 /// Check with explicit effects gate.
-pub fn check_source_with_effects(source: &str, file_id: u32, file_label: &str, enable_effects: bool) -> DiagBag {
+pub fn check_source_with_effects(
+    source: &str,
+    file_id: u32,
+    file_label: &str,
+    enable_effects: bool,
+) -> DiagBag {
     let mut bag = DiagBag::new();
     let line_index = LineIndex::new(source);
 
-    let parsed = parse::parse_with_diagnostics_opts(source, file_id, file_label, &line_index, &mut bag, enable_effects);
+    let parsed = parse::parse_with_diagnostics_opts(
+        source,
+        file_id,
+        file_label,
+        &line_index,
+        &mut bag,
+        enable_effects,
+    );
 
     // Phase 2 (Analyze) — slice 4 adds the parameter-related diagnostics
     // (`G::analyze::unknown-param-slot`, `G::analyze::missing-required-arg`).
     if let Some(file) = parsed {
         let mut registry = domain_registry::Registry::new();
-        let _ = analyze::analyze_with_diagnostics(file, file_id, file_label, &line_index, &mut bag, &mut registry);
+        let _ = analyze::analyze_with_diagnostics(
+            file,
+            file_id,
+            file_label,
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
     }
 
     bag
@@ -377,14 +424,22 @@ pub fn compile_file(path: &Path) -> Result<CompileOutcome, CompileError> {
     compile_file_with_effects(path, false)
 }
 
-pub fn compile_file_with_effects(path: &Path, enable_effects: bool) -> Result<CompileOutcome, CompileError> {
+pub fn compile_file_with_effects(
+    path: &Path,
+    enable_effects: bool,
+) -> Result<CompileOutcome, CompileError> {
     let source = std::fs::read_to_string(path).map_err(|e| CompileError::Read {
         path: path.display().to_string(),
         source: e,
     })?;
     let label = path.display().to_string();
     let outcome = compile_source_with_effects(&source, 0, &label, enable_effects)?;
-    if let CompileOutcome::Compiled { ref markdown, ref arena, .. } = outcome {
+    if let CompileOutcome::Compiled {
+        ref markdown,
+        ref arena,
+        ..
+    } = outcome
+    {
         let out_path = compiled_output_path(path);
         let _ = arena; // arena available for --emit-ir; unused in compile_file
         atomic_write(&out_path, markdown).map_err(|e| CompileError::Write {
@@ -540,10 +595,7 @@ pub fn check_file_with_effects(path: &Path, enable_effects: bool) -> DiagBag {
 /// can't be canonicalized, the original (non-canonical) path is used as the
 /// key for the synthetic `missing-file` diagnostic — there is no canonical
 /// path to use.
-pub fn check_file_partition(
-    path: &Path,
-    enable_effects: bool,
-) -> HashMap<PathBuf, DiagBag> {
+pub fn check_file_partition(path: &Path, enable_effects: bool) -> HashMap<PathBuf, DiagBag> {
     let mut bags: HashMap<PathBuf, DiagBag> = HashMap::new();
     let canon = match path.canonicalize() {
         Ok(c) => c,
@@ -622,7 +674,12 @@ fn check_file_recursive(
         let cycle: Vec<String> = stack[pos..]
             .iter()
             .chain(std::iter::once(&path.to_path_buf()))
-            .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
+            .map(|p| {
+                p.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            })
             .collect();
         let cycle_str = cycle.join(" -> ");
         let span = Span::new(0, 0, 0);
@@ -632,7 +689,10 @@ fn check_file_recursive(
                 "G::analyze::circular-import",
                 format!("circular import: {}", cycle_str),
                 SourceSpan::from_byte_span(
-                    path.file_name().unwrap_or_default().to_string_lossy().as_ref(),
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .as_ref(),
                     span,
                     &li,
                 ),
@@ -648,8 +708,19 @@ fn check_file_recursive(
         let source = std::fs::read_to_string(path).ok()?;
         let line_index = LineIndex::new(&source);
         let mut tmp_bag = DiagBag::new();
-        let file_label = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        let parsed = parse::parse_with_diagnostics_opts(&source, 0, &file_label, &line_index, &mut tmp_bag, enable_effects)?;
+        let file_label = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let parsed = parse::parse_with_diagnostics_opts(
+            &source,
+            0,
+            &file_label,
+            &line_index,
+            &mut tmp_bag,
+            enable_effects,
+        )?;
         return Some(extract_exports(&parsed));
     }
 
@@ -663,7 +734,10 @@ fn check_file_recursive(
                     "G::analyze::missing-file",
                     format!("cannot read `{}`", path.display()),
                     SourceSpan::from_byte_span(
-                        path.file_name().unwrap_or_default().to_string_lossy().as_ref(),
+                        path.file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .as_ref(),
                         span,
                         &li,
                     ),
@@ -697,7 +771,11 @@ fn check_one_file(
     visited.insert(key.clone());
     stack.push(key.clone());
 
-    let file_label = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let file_label = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
     let line_index = LineIndex::new(source);
 
     let parsed = parse::parse_with_diagnostics_opts(
@@ -745,16 +823,27 @@ fn check_one_file(
                     match &import.kind {
                         ImportKind::Selective(names) => {
                             for imp_name in names {
-                                let local = imp_name.alias.as_deref().unwrap_or(imp_name.name.node.as_str());
+                                let local = imp_name
+                                    .alias
+                                    .as_deref()
+                                    .unwrap_or(imp_name.name.node.as_str());
                                 all_import_names.push((local.to_string(), import_span));
-                                if imp_name.name.node == "subagent" || imp_name.name.node == "send" {
+                                if imp_name.name.node == "subagent" || imp_name.name.node == "send"
+                                {
                                     imported_blocks.insert(local.to_string());
                                 } else {
                                     bags.entry(key.clone()).or_default().push(
                                         Diagnostic::error(
                                             "G::analyze::import-private",
-                                            format!("`{}` is not exported from `{}`", imp_name.name.node, import.path),
-                                            SourceSpan::from_byte_span(&file_label, import_span, &line_index),
+                                            format!(
+                                                "`{}` is not exported from `{}`",
+                                                imp_name.name.node, import.path
+                                            ),
+                                            SourceSpan::from_byte_span(
+                                                &file_label,
+                                                import_span,
+                                                &line_index,
+                                            ),
                                         ),
                                         import_span,
                                     );
@@ -805,7 +894,11 @@ fn check_one_file(
                         classification: Classification::Repairable,
                         message: format!("duplicate import of `{}`", import.path),
                         span: SourceSpan::from_byte_span(&file_label, import_span, &line_index),
-                        related: vec![SourceSpan::from_byte_span(&file_label, *prev_span, &line_index)],
+                        related: vec![SourceSpan::from_byte_span(
+                            &file_label,
+                            *prev_span,
+                            &line_index,
+                        )],
                         hints: vec!["merge the import lists or remove the duplicate".into()],
                     },
                     import_span,
@@ -825,15 +918,25 @@ fn check_one_file(
             match &import.kind {
                 ImportKind::Selective(names) => {
                     for imp_name in names {
-                        let local = imp_name.alias.as_deref().unwrap_or(imp_name.name.node.as_str());
+                        let local = imp_name
+                            .alias
+                            .as_deref()
+                            .unwrap_or(imp_name.name.node.as_str());
                         all_import_names.push((local.to_string(), import_span));
 
                         if dep_exports.skills.contains(&imp_name.name.node) {
                             bags.entry(key.clone()).or_default().push(
                                 Diagnostic::error(
                                     "G::analyze::import-skill",
-                                    format!("`{}` is a `skill` and cannot be selectively imported", imp_name.name.node),
-                                    SourceSpan::from_byte_span(&file_label, import_span, &line_index),
+                                    format!(
+                                        "`{}` is a `skill` and cannot be selectively imported",
+                                        imp_name.name.node
+                                    ),
+                                    SourceSpan::from_byte_span(
+                                        &file_label,
+                                        import_span,
+                                        &line_index,
+                                    ),
                                 ),
                                 import_span,
                             );
@@ -841,8 +944,15 @@ fn check_one_file(
                             bags.entry(key.clone()).or_default().push(
                                 Diagnostic::error(
                                     "G::analyze::import-private",
-                                    format!("`{}` is not exported from `{}`", imp_name.name.node, import.path),
-                                    SourceSpan::from_byte_span(&file_label, import_span, &line_index),
+                                    format!(
+                                        "`{}` is not exported from `{}`",
+                                        imp_name.name.node, import.path
+                                    ),
+                                    SourceSpan::from_byte_span(
+                                        &file_label,
+                                        import_span,
+                                        &line_index,
+                                    ),
                                 ),
                                 import_span,
                             );
@@ -852,22 +962,30 @@ fn check_one_file(
                             imported_blocks.insert(local.to_string());
                             // Issue #84 Chunk 4: re-key the producer-side
                             // block return type under the consumer-local name.
-                            if let Some(rt) = dep_exports.block_return_types.get(&imp_name.name.node) {
-                                imported_block_return_types
-                                    .insert(local.to_string(), rt.clone());
+                            if let Some(rt) =
+                                dep_exports.block_return_types.get(&imp_name.name.node)
+                            {
+                                imported_block_return_types.insert(local.to_string(), rt.clone());
                             }
                             // PRD #103 / Slice 2 (#105): same re-keying for
                             // the producer-side parameter list.
-                            if let Some(params) = dep_exports.block_params.get(&imp_name.name.node) {
-                                imported_block_params
-                                    .insert(local.to_string(), params.clone());
+                            if let Some(params) = dep_exports.block_params.get(&imp_name.name.node)
+                            {
+                                imported_block_params.insert(local.to_string(), params.clone());
                             }
                         } else {
                             bags.entry(key.clone()).or_default().push(
                                 Diagnostic::error(
                                     "G::analyze::import-private",
-                                    format!("`{}` is not exported from `{}`", imp_name.name.node, import.path),
-                                    SourceSpan::from_byte_span(&file_label, import_span, &line_index),
+                                    format!(
+                                        "`{}` is not exported from `{}`",
+                                        imp_name.name.node, import.path
+                                    ),
+                                    SourceSpan::from_byte_span(
+                                        &file_label,
+                                        import_span,
+                                        &line_index,
+                                    ),
                                 ),
                                 import_span,
                             );
@@ -972,9 +1090,16 @@ pub fn compile_directory(sources: &[PathBuf]) -> BuildResult {
     compile_directory_with_options(sources, false, false)
 }
 
-pub fn compile_directory_with_options(sources: &[PathBuf], emit_ir: bool, enable_effects: bool) -> BuildResult {
+pub fn compile_directory_with_options(
+    sources: &[PathBuf],
+    emit_ir: bool,
+    enable_effects: bool,
+) -> BuildResult {
     if sources.is_empty() {
-        return BuildResult { outcomes: Vec::new(), exit_code: 0 };
+        return BuildResult {
+            outcomes: Vec::new(),
+            exit_code: 0,
+        };
     }
 
     // Phase 1 (partial): parse each file to extract import paths and build the DAG.
@@ -1032,7 +1157,10 @@ pub fn compile_directory_with_options(sources: &[PathBuf], emit_ir: bool, enable
         for dep in deps {
             if file_set.contains(dep) {
                 *in_degree.entry(file.clone()).or_insert(0) += 1;
-                dependents.entry(dep.clone()).or_default().push(file.clone());
+                dependents
+                    .entry(dep.clone())
+                    .or_default()
+                    .push(file.clone());
             }
         }
     }
@@ -1091,33 +1219,58 @@ pub fn compile_directory_with_options(sources: &[PathBuf], emit_ir: bool, enable
     for file in &topo_order {
         // Check if any dependency failed.
         let deps = file_imports.get(file).cloned().unwrap_or_default();
-        let failed_dep = deps.iter().find(|d| file_set.contains(*d) && failed_files.contains(*d));
+        let failed_dep = deps
+            .iter()
+            .find(|d| file_set.contains(*d) && failed_files.contains(*d));
 
         if let Some(fd) = failed_dep {
             // Skip this file — a dependency failed.
             failed_files.insert(file.clone());
             any_failure = true;
-            outcomes.push((file.clone(), FileOutcome::Skipped { failed_dep: fd.clone() }));
+            outcomes.push((
+                file.clone(),
+                FileOutcome::Skipped {
+                    failed_dep: fd.clone(),
+                },
+            ));
             continue;
         }
 
         // Compile the file.
         // Build the imported-block-to-procedure-path mapping for this file.
-        let imported_procedure_paths = build_imported_procedure_paths(
-            file, &file_imports, &procedure_paths,
-        );
+        let imported_procedure_paths =
+            build_imported_procedure_paths(file, &file_imports, &procedure_paths);
 
         // Build full resolved import data from dependency exports.
         let resolved_imports = build_resolved_imports(
-            file, &file_exports, &file_text_values, &file_block_bodies, &file_block_descriptions,
+            file,
+            &file_exports,
+            &file_text_values,
+            &file_block_bodies,
+            &file_block_descriptions,
         );
 
-        match compile_file_with_resolved_imports(file, &imported_procedure_paths, &resolved_imports, enable_effects) {
-            Ok(CompileOutcome::Compiled { diagnostics, arena, .. }) => {
-                extract_and_store_exports(file, &mut file_exports, &mut file_text_values, &mut file_block_bodies, &mut file_block_descriptions);
+        match compile_file_with_resolved_imports(
+            file,
+            &imported_procedure_paths,
+            &resolved_imports,
+            enable_effects,
+        ) {
+            Ok(CompileOutcome::Compiled {
+                diagnostics, arena, ..
+            }) => {
+                extract_and_store_exports(
+                    file,
+                    &mut file_exports,
+                    &mut file_text_values,
+                    &mut file_block_bodies,
+                    &mut file_block_descriptions,
+                );
                 if emit_ir {
                     let source_file = file.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                    if let Some(ir_json) = emit_ir::serialize_ir_json(&arena, source_file, enable_effects) {
+                    if let Some(ir_json) =
+                        emit_ir::serialize_ir_json(&arena, source_file, enable_effects)
+                    {
                         let ir_path = ir_json_output_path(file);
                         atomic_write(&ir_path, &ir_json).ok();
                     }
@@ -1131,13 +1284,24 @@ pub fn compile_directory_with_options(sources: &[PathBuf], emit_ir: bool, enable
             }
             Err(CompileError::Lower(lower::LowerError::NoSkill)) => {
                 // Library file (no skill declaration) — not a failure.
-                extract_and_store_exports(file, &mut file_exports, &mut file_text_values, &mut file_block_bodies, &mut file_block_descriptions);
+                extract_and_store_exports(
+                    file,
+                    &mut file_exports,
+                    &mut file_text_values,
+                    &mut file_block_bodies,
+                    &mut file_block_descriptions,
+                );
                 // Emit procedure files for qualifying export blocks (Tier 3).
                 let emitted = emit_library_procedures(file, enable_effects);
                 for (block_name, rel_path) in emitted {
                     procedure_paths.insert((file.clone(), block_name), rel_path);
                 }
-                outcomes.push((file.clone(), FileOutcome::Compiled { diagnostics: DiagBag::new() }));
+                outcomes.push((
+                    file.clone(),
+                    FileOutcome::Compiled {
+                        diagnostics: DiagBag::new(),
+                    },
+                ));
             }
             Err(_e) => {
                 failed_files.insert(file.clone());
@@ -1149,7 +1313,10 @@ pub fn compile_directory_with_options(sources: &[PathBuf], emit_ir: bool, enable
     }
 
     let exit_code = if any_failure { 1 } else { 0 };
-    BuildResult { outcomes, exit_code }
+    BuildResult {
+        outcomes,
+        exit_code,
+    }
 }
 
 /// Write `content` to `path` atomically: write to `path.tmp`, then rename.
@@ -1187,11 +1354,9 @@ fn ir_json_output_path(input: &Path) -> PathBuf {
 fn compiled_output_path(input: &Path) -> std::path::PathBuf {
     let parent = input.parent().unwrap_or_else(|| Path::new("."));
     let file_name = input.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    let stem = file_name.strip_suffix(".glyph").unwrap_or(
-        file_name
-            .strip_suffix(".md")
-            .unwrap_or(file_name),
-    );
+    let stem = file_name
+        .strip_suffix(".glyph")
+        .unwrap_or(file_name.strip_suffix(".md").unwrap_or(file_name));
     parent.join(format!("{}.md", stem))
 }
 
@@ -1304,7 +1469,10 @@ fn build_imported_procedure_paths(
             match &import.kind {
                 ImportKind::Selective(names) => {
                     for imp_name in names {
-                        let local = imp_name.alias.as_deref().unwrap_or(imp_name.name.node.as_str());
+                        let local = imp_name
+                            .alias
+                            .as_deref()
+                            .unwrap_or(imp_name.name.node.as_str());
                         let key = (resolved.clone(), imp_name.name.node.clone());
                         if let Some(proc_path) = procedure_paths.get(&key) {
                             result.insert(local.to_string(), proc_path.clone());
@@ -1395,20 +1563,31 @@ fn build_resolved_imports(
             match &import.kind {
                 ImportKind::Selective(names) => {
                     for imp_name in names {
-                        let local = imp_name.alias.as_deref().unwrap_or(imp_name.name.node.as_str());
+                        let local = imp_name
+                            .alias
+                            .as_deref()
+                            .unwrap_or(imp_name.name.node.as_str());
                         if exports.texts.contains(&imp_name.name.node) {
                             result.text_names.insert(local.to_string());
-                            if let Some(val) = file_text_values.get(&(resolved.clone(), imp_name.name.node.clone())) {
+                            if let Some(val) = file_text_values
+                                .get(&(resolved.clone(), imp_name.name.node.clone()))
+                            {
                                 result.text_values.insert(local.to_string(), val.clone());
                             }
                         }
                         if exports.blocks.contains(&imp_name.name.node) {
                             result.block_names.insert(local.to_string());
-                            if let Some(body) = file_block_bodies.get(&(resolved.clone(), imp_name.name.node.clone())) {
+                            if let Some(body) = file_block_bodies
+                                .get(&(resolved.clone(), imp_name.name.node.clone()))
+                            {
                                 result.block_bodies.insert(local.to_string(), body.clone());
                             }
-                            if let Some(desc) = file_block_descriptions.get(&(resolved.clone(), imp_name.name.node.clone())) {
-                                result.block_descriptions.insert(local.to_string(), desc.clone());
+                            if let Some(desc) = file_block_descriptions
+                                .get(&(resolved.clone(), imp_name.name.node.clone()))
+                            {
+                                result
+                                    .block_descriptions
+                                    .insert(local.to_string(), desc.clone());
                             }
                             // Issue #84 Chunk 4 (D15 / Option-Y): re-key the
                             // exporter-side block return type under the
@@ -1416,7 +1595,9 @@ fn build_resolved_imports(
                             // chunk-4 check resolves callees by the spelling
                             // the consumer actually wrote.
                             if let Some(rt) = exports.block_return_types.get(&imp_name.name.node) {
-                                result.block_return_types.insert(local.to_string(), rt.clone());
+                                result
+                                    .block_return_types
+                                    .insert(local.to_string(), rt.clone());
                             }
                             // PRD #103 / Slice 2 (#105): re-key the
                             // exporter-side parameter list under the
@@ -1424,13 +1605,17 @@ fn build_resolved_imports(
                             // validation resolves by the spelling the
                             // consumer actually wrote.
                             if let Some(params) = exports.block_params.get(&imp_name.name.node) {
-                                result.block_params.insert(local.to_string(), params.clone());
+                                result
+                                    .block_params
+                                    .insert(local.to_string(), params.clone());
                             }
                             // Issue #85: re-key the exporter-side
                             // output-contract form under the consumer-side
                             // local name so the cross-file Tier-1 fix-up
                             // hoists it onto the IrCall.
-                            if let Some(form) = exports.block_output_contracts.get(&imp_name.name.node) {
+                            if let Some(form) =
+                                exports.block_output_contracts.get(&imp_name.name.node)
+                            {
                                 result
                                     .block_output_contracts
                                     .insert(local.to_string(), form.clone());
@@ -1449,28 +1634,39 @@ fn build_resolved_imports(
                     for name in &exports.blocks {
                         let qualified = format!("{}.{}", alias, name);
                         result.block_names.insert(qualified.clone());
-                        if let Some(body) = file_block_bodies.get(&(resolved.clone(), name.clone())) {
+                        if let Some(body) = file_block_bodies.get(&(resolved.clone(), name.clone()))
+                        {
                             result.block_bodies.insert(qualified.clone(), body.clone());
                         }
-                        if let Some(desc) = file_block_descriptions.get(&(resolved.clone(), name.clone())) {
-                            result.block_descriptions.insert(qualified.clone(), desc.clone());
+                        if let Some(desc) =
+                            file_block_descriptions.get(&(resolved.clone(), name.clone()))
+                        {
+                            result
+                                .block_descriptions
+                                .insert(qualified.clone(), desc.clone());
                         }
                         // Issue #84 Chunk 4 (D15 / Option-Y): whole-module
                         // imports prefix every block name with `alias.` —
                         // mirror the same prefix on return types.
                         if let Some(rt) = exports.block_return_types.get(name) {
-                            result.block_return_types.insert(qualified.clone(), rt.clone());
+                            result
+                                .block_return_types
+                                .insert(qualified.clone(), rt.clone());
                         }
                         // PRD #103 / Slice 2 (#105): mirror the alias prefix
                         // on parameter lists.
                         if let Some(params) = exports.block_params.get(name) {
-                            result.block_params.insert(qualified.clone(), params.clone());
+                            result
+                                .block_params
+                                .insert(qualified.clone(), params.clone());
                         }
                         // Issue #85: mirror the alias prefix on output-contract
                         // forms so cross-file Tier-1 inline calls hoist the
                         // imported callee's OC onto the IrCall.
                         if let Some(form) = exports.block_output_contracts.get(name) {
-                            result.block_output_contracts.insert(qualified, form.clone());
+                            result
+                                .block_output_contracts
+                                .insert(qualified, form.clone());
                         }
                     }
                 }
@@ -1509,10 +1705,7 @@ fn extract_and_store_exports(
                     ast::ConstValue::Bool(s) => s.to_ascii_lowercase(),
                     other => other.rendered().to_string(),
                 };
-                file_text_values.insert(
-                    (file.to_path_buf(), c.node.name.clone()),
-                    rendered,
-                );
+                file_text_values.insert((file.to_path_buf(), c.node.name.clone()), rendered);
             }
         }
     }
@@ -1524,7 +1717,8 @@ fn extract_and_store_exports(
                 file_block_bodies.insert((file.to_path_buf(), eb.node.name.clone()), body_text);
             }
             if let Some(ref desc) = eb.node.description {
-                file_block_descriptions.insert((file.to_path_buf(), eb.node.name.clone()), desc.clone());
+                file_block_descriptions
+                    .insert((file.to_path_buf(), eb.node.name.clone()), desc.clone());
             }
         }
     }
@@ -1538,7 +1732,10 @@ fn compile_file_with_resolved_imports(
     resolved_imports: &ResolvedImports,
     enable_effects: bool,
 ) -> Result<CompileOutcome, CompileError> {
-    if imported_procedure_paths.is_empty() && resolved_imports.text_names.is_empty() && resolved_imports.block_names.is_empty() {
+    if imported_procedure_paths.is_empty()
+        && resolved_imports.text_names.is_empty()
+        && resolved_imports.block_names.is_empty()
+    {
         return compile_file_with_effects(path, enable_effects);
     }
 
@@ -1548,8 +1745,20 @@ fn compile_file_with_resolved_imports(
     })?;
     let label = path.display().to_string();
 
-    let outcome = compile_source_with_resolved_imports(&source, 0, &label, imported_procedure_paths, resolved_imports, enable_effects)?;
-    if let CompileOutcome::Compiled { ref markdown, ref arena, .. } = outcome {
+    let outcome = compile_source_with_resolved_imports(
+        &source,
+        0,
+        &label,
+        imported_procedure_paths,
+        resolved_imports,
+        enable_effects,
+    )?;
+    if let CompileOutcome::Compiled {
+        ref markdown,
+        ref arena,
+        ..
+    } = outcome
+    {
         let out_path = compiled_output_path(path);
         let _ = arena;
         atomic_write(&out_path, markdown).map_err(|e| CompileError::Write {
@@ -1572,7 +1781,14 @@ fn compile_source_with_resolved_imports(
     let mut bag = DiagBag::new();
     let line_index = LineIndex::new(source);
 
-    let parsed = parse::parse_with_diagnostics_opts(source, file_id, file_label, &line_index, &mut bag, enable_effects);
+    let parsed = parse::parse_with_diagnostics_opts(
+        source,
+        file_id,
+        file_label,
+        &line_index,
+        &mut bag,
+        enable_effects,
+    );
     if !bag.is_empty() && (bag.has_error() || bag.has_repairable()) {
         return Ok(CompileOutcome::Diagnostics(bag));
     }
@@ -1600,9 +1816,15 @@ fn compile_source_with_resolved_imports(
     // `Spanned<-> Type>` for every imported (selective + whole-module)
     // exported block, re-keyed under the consumer's local spelling.
     let file = analyze::analyze_with_imports(
-        &file, file_id, file_label, &line_index, &mut bag,
-        &resolved_imports.text_names, &all_imported_blocks,
-        &HashSet::new(), &HashSet::new(),
+        &file,
+        file_id,
+        file_label,
+        &line_index,
+        &mut bag,
+        &resolved_imports.text_names,
+        &all_imported_blocks,
+        &HashSet::new(),
+        &HashSet::new(),
         &mut used_import_names,
         &resolved_imports.block_descriptions,
         &mut registry,
@@ -1614,7 +1836,8 @@ fn compile_source_with_resolved_imports(
     }
 
     // Lower with imported text values available for constraint/context resolution.
-    let mut arena = lower::lower_with_imports(&file, &resolved_imports.text_values).map_err(CompileError::Lower)?;
+    let mut arena = lower::lower_with_imports(&file, &resolved_imports.text_values)
+        .map_err(CompileError::Lower)?;
 
     // Tag imported block calls with resolved body text or Tier 3 procedure paths.
     for node in arena.nodes_mut() {
@@ -1625,7 +1848,10 @@ fn compile_source_with_resolved_imports(
                     c.procedure_path = Some(proc_path.clone());
                 } else if let Some(body) = resolved_imports.block_bodies.get(&c.target) {
                     c.resolved_body = Some(body.clone());
-                } else if resolved_imports.block_output_contracts.contains_key(&c.target) {
+                } else if resolved_imports
+                    .block_output_contracts
+                    .contains_key(&c.target)
+                {
                     // Return-only imported helper: the producer's body is
                     // empty (only `return <…>`), so it isn't in
                     // `block_bodies`. Materialize an empty resolved_body so
@@ -1650,9 +1876,16 @@ fn compile_source_with_resolved_imports(
     }
 
     validate::validate(&arena).map_err(CompileError::Validate)?;
-    let arena = expand::expand_step1_with_imported_descriptions(arena, &resolved_imports.block_descriptions);
+    let arena = expand::expand_step1_with_imported_descriptions(
+        arena,
+        &resolved_imports.block_descriptions,
+    );
     let markdown = emit::emit(&arena, enable_effects);
-    Ok(CompileOutcome::Compiled { markdown, diagnostics: bag, arena })
+    Ok(CompileOutcome::Compiled {
+        markdown,
+        diagnostics: bag,
+        arena,
+    })
 }
 
 #[cfg(test)]
@@ -1697,10 +1930,7 @@ skill main()
         });
         let block = block.expect("block should be present");
         assert_eq!(block.name, "greet");
-        assert_eq!(
-            block.description.as_deref(),
-            Some("Say hello to the user.")
-        );
+        assert_eq!(block.description.as_deref(), Some("Say hello to the user."));
         assert_eq!(block.flow.len(), 1);
     }
 
@@ -1828,7 +2058,10 @@ skill main()
         let file = analyze::analyze(file);
         let arena = lower::lower(&file).expect("should lower");
         // Find the Block IR node and check its description.
-        let block_node = arena.nodes().iter().find(|n| matches!(n, ir::IrNode::Block(_)));
+        let block_node = arena
+            .nodes()
+            .iter()
+            .find(|n| matches!(n, ir::IrNode::Block(_)));
         let block_node = block_node.expect("IrBlock should exist");
         if let ir::IrNode::Block(b) = block_node {
             assert_eq!(b.description.as_deref(), Some("Greet the user warmly."));
@@ -1883,7 +2116,10 @@ skill main()
             ids
         );
         // undefined-call is repairable (Phase 3 Repair generates a block).
-        let diag = bag.iter().find(|d| d.id == "G::analyze::undefined-call").unwrap();
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::undefined-call")
+            .unwrap();
         assert_eq!(
             diag.classification,
             diagnostic::Classification::Repairable,
@@ -1908,7 +2144,11 @@ skill main()
             "expected G::parse::none-with-effects, got: {:?}",
             ids
         );
-        assert_eq!(bag.exit_code(), 1, "none-with-effects should be a hard error");
+        assert_eq!(
+            bag.exit_code(),
+            1,
+            "none-with-effects should be a hard error"
+        );
     }
 
     #[test]
@@ -1960,9 +2200,16 @@ skill main()
             ids
         );
         // Warning only → exit code 0.
-        assert_eq!(bag.exit_code(), 0, "over-declared should exit 0 (warning only)");
+        assert_eq!(
+            bag.exit_code(),
+            0,
+            "over-declared should exit 0 (warning only)"
+        );
         // Classification should be Warning.
-        let diag = bag.iter().find(|d| d.id == "G::analyze::effects-over-declared").unwrap();
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::effects-over-declared")
+            .unwrap();
         assert_eq!(diag.classification, diagnostic::Classification::Warning);
     }
 
@@ -1987,8 +2234,15 @@ skill main()
             "expected missing-effects diagnostic, got: {:?}",
             ids
         );
-        assert_eq!(bag.exit_code(), 2, "missing-effects should be repairable (exit 2)");
-        let diag = bag.iter().find(|d| d.id == "G::analyze::missing-effects").unwrap();
+        assert_eq!(
+            bag.exit_code(),
+            2,
+            "missing-effects should be repairable (exit 2)"
+        );
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::missing-effects")
+            .unwrap();
         assert_eq!(diag.classification, diagnostic::Classification::Repairable);
     }
 
@@ -2003,7 +2257,8 @@ skill main()
     flow:
         \"Do something.\"
 ";
-        let outcome = compile_source_with_effects(src, 0, "test.glyph", true).expect("should compile");
+        let outcome =
+            compile_source_with_effects(src, 0, "test.glyph", true).expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 assert!(
@@ -2065,7 +2320,8 @@ skill main()
         reader()
         writer()
 ";
-        let outcome = compile_source_with_effects(src, 0, "test.glyph", true).expect("should compile");
+        let outcome =
+            compile_source_with_effects(src, 0, "test.glyph", true).expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 assert!(
@@ -2171,7 +2427,8 @@ skill main()
     flow:
         \"Do something.\"
 ";
-        let outcome = compile_source_with_effects(src, 0, "test.glyph", true).expect("should compile");
+        let outcome =
+            compile_source_with_effects(src, 0, "test.glyph", true).expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 assert!(
@@ -2205,7 +2462,11 @@ skill main()
             "expected G::parse::effects-disabled when effects are off, got: {:?}",
             ids
         );
-        assert_eq!(bag.exit_code(), 1, "effects-disabled should be a hard error");
+        assert_eq!(
+            bag.exit_code(),
+            1,
+            "effects-disabled should be a hard error"
+        );
     }
 
     #[test]
@@ -2299,7 +2560,10 @@ skill main()
             ids
         );
         // Should be repairable.
-        let diag = bag.iter().find(|d| d.id == "G::analyze::missing-return").unwrap();
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::missing-return")
+            .unwrap();
         assert_eq!(diag.classification, diagnostic::Classification::Repairable);
     }
 
@@ -2839,8 +3103,8 @@ skill main()
         // AC3: G::parse::return-in-branch — `return` inside a branch context
         // should emit this diagnostic. Since Glyph doesn't have if/elif/else
         // syntax yet, we call check_return_rules directly with in_branch=true.
-        use parse::check_return_rules;
         use ast::{FlowStmt, ReturnExpr};
+        use parse::check_return_rules;
         use span::Span;
 
         let source = "return none\n";
@@ -2961,13 +3225,22 @@ skill main()
             \"Do the default thing.\"
 ";
         let (file, _) = parse::parse(src, 0).expect("should parse");
-        let skill = file.decls.iter().find_map(|d| match d {
-            ast::Decl::Skill(s) => Some(&s.node),
-            _ => None,
-        }).unwrap();
+        let skill = file
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                ast::Decl::Skill(s) => Some(&s.node),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(skill.flow.len(), 1);
         match &skill.flow[0] {
-            ast::FlowStmt::Branch { condition, then_body, elif_branches, else_body } => {
+            ast::FlowStmt::Branch {
+                condition,
+                then_body,
+                elif_branches,
+                else_body,
+            } => {
                 assert_eq!(condition, "mode == \"fast\"");
                 assert_eq!(then_body.len(), 1);
                 assert_eq!(elif_branches.len(), 1);
@@ -3000,17 +3273,49 @@ skill main()
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
                 // Step 1 should be the prepare step.
-                assert!(markdown.contains("1. Prepare the environment."), "markdown:\n{}", markdown);
+                assert!(
+                    markdown.contains("1. Prepare the environment."),
+                    "markdown:\n{}",
+                    markdown
+                );
                 // Step 2 should be the branch with lettered sub-steps.
-                assert!(markdown.contains("2. If mode == \"fast\":"), "markdown:\n{}", markdown);
-                assert!(markdown.contains("   a. Do the fast thing."), "markdown:\n{}", markdown);
-                assert!(markdown.contains("   b. Log performance metrics."), "markdown:\n{}", markdown);
+                assert!(
+                    markdown.contains("2. If mode == \"fast\":"),
+                    "markdown:\n{}",
+                    markdown
+                );
+                assert!(
+                    markdown.contains("   a. Do the fast thing."),
+                    "markdown:\n{}",
+                    markdown
+                );
+                assert!(
+                    markdown.contains("   b. Log performance metrics."),
+                    "markdown:\n{}",
+                    markdown
+                );
                 // elif arm
-                assert!(markdown.contains("   If mode == \"slow\":"), "markdown:\n{}", markdown);
-                assert!(markdown.contains("   a. Do the slow thing."), "markdown:\n{}", markdown);
+                assert!(
+                    markdown.contains("   If mode == \"slow\":"),
+                    "markdown:\n{}",
+                    markdown
+                );
+                assert!(
+                    markdown.contains("   a. Do the slow thing."),
+                    "markdown:\n{}",
+                    markdown
+                );
                 // else arm
-                assert!(markdown.contains("   Otherwise:"), "markdown:\n{}", markdown);
-                assert!(markdown.contains("   a. Do the default thing."), "markdown:\n{}", markdown);
+                assert!(
+                    markdown.contains("   Otherwise:"),
+                    "markdown:\n{}",
+                    markdown
+                );
+                assert!(
+                    markdown.contains("   a. Do the default thing."),
+                    "markdown:\n{}",
+                    markdown
+                );
             }
             CompileOutcome::Diagnostics(bag) => {
                 let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
@@ -3107,7 +3412,10 @@ skill main()
             ids
         );
         // Should be repairable for same-file blocks.
-        let diag = bag.iter().find(|d| d.id == "G::analyze::applies-on-undescribed-block").unwrap();
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::applies-on-undescribed-block")
+            .unwrap();
         assert_eq!(diag.classification, diagnostic::Classification::Repairable);
     }
 
@@ -3241,9 +3549,18 @@ skill main()
             _ => None,
         });
         let branch = branch.expect("should have a Branch node");
-        let descs = branch.applies_descriptions.as_ref().expect("applies_descriptions should be populated");
-        assert_eq!(descs.get("fast_mode").map(|s| s.as_str()), Some("When the user wants fast processing."));
-        assert_eq!(descs.get("slow_mode").map(|s| s.as_str()), Some("When the user wants thorough processing."));
+        let descs = branch
+            .applies_descriptions
+            .as_ref()
+            .expect("applies_descriptions should be populated");
+        assert_eq!(
+            descs.get("fast_mode").map(|s| s.as_str()),
+            Some("When the user wants fast processing.")
+        );
+        assert_eq!(
+            descs.get("slow_mode").map(|s| s.as_str()),
+            Some("When the user wants thorough processing.")
+        );
     }
 
     #[test]
@@ -3415,7 +3732,11 @@ skill main()
             "expected G::parse::with-on-bare-name, got: {:?}",
             ids
         );
-        assert_eq!(bag.exit_code(), 1, "with-on-bare-name should be a hard error");
+        assert_eq!(
+            bag.exit_code(),
+            1,
+            "with-on-bare-name should be a hard error"
+        );
     }
 
     #[test]
@@ -3515,13 +3836,21 @@ skill main()
         inspect_repo(scope) with \"focus on auth\"
 ";
         let (file, _) = parse::parse(src, 0).expect("should parse");
-        let skill = file.decls.iter().find_map(|d| match d {
-            ast::Decl::Skill(s) => Some(&s.node),
-            _ => None,
-        }).unwrap();
+        let skill = file
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                ast::Decl::Skill(s) => Some(&s.node),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(skill.flow.len(), 1);
         match &skill.flow[0] {
-            ast::FlowStmt::Call { target, args, site_modifier } => {
+            ast::FlowStmt::Call {
+                target,
+                args,
+                site_modifier,
+            } => {
                 assert_eq!(target.node, "inspect_repo");
                 assert_eq!(args, &["scope".to_string()]);
                 assert_eq!(site_modifier.as_deref(), Some("focus on auth"));
@@ -3588,21 +3917,31 @@ skill fix_bug()
 
         // prefs.glyph — export const
         let prefs_path = dir.path().join("prefs.glyph");
-        std::fs::write(&prefs_path, r#"export const preserve_existing_patterns = "Prefer existing patterns."
-"#).unwrap();
+        std::fs::write(
+            &prefs_path,
+            r#"export const preserve_existing_patterns = "Prefer existing patterns."
+"#,
+        )
+        .unwrap();
 
         // repo_tools.glyph — export block
         let tools_path = dir.path().join("repo_tools.glyph");
-        std::fs::write(&tools_path, r#"export block inspect_repo(scope = ".")
+        std::fs::write(
+            &tools_path,
+            r#"export block inspect_repo(scope = ".")
     description: "Inspect the repo."
     flow:
         "Examine the repository at {scope}."
         return context
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         // fix_bug.glyph — imports from both
         let fix_path = dir.path().join("fix_bug.glyph");
-        std::fs::write(&fix_path, r#"import "./prefs.glyph" { preserve_existing_patterns }
+        std::fs::write(
+            &fix_path,
+            r#"import "./prefs.glyph" { preserve_existing_patterns }
 import "./repo_tools.glyph" { inspect_repo }
 
 skill fix_bug(scope = ".")
@@ -3611,18 +3950,22 @@ skill fix_bug(scope = ".")
     effects: reads_files
     flow:
         inspect_repo(scope)
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let bag = check_file(&fix_path);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         // Should NOT have undefined-name or undefined-call errors.
         assert!(
             !ids.contains(&"G::analyze::undefined-name"),
-            "imported text should resolve, got: {:?}", ids
+            "imported text should resolve, got: {:?}",
+            ids
         );
         assert!(
             !ids.contains(&"G::analyze::undefined-call"),
-            "imported block should resolve, got: {:?}", ids
+            "imported block should resolve, got: {:?}",
+            ids
         );
     }
 
@@ -3634,34 +3977,48 @@ skill fix_bug(scope = ".")
         let a_path = dir.path().join("a.glyph");
         let b_path = dir.path().join("b.glyph");
 
-        std::fs::write(&a_path, r#"import "./b.glyph" { something }
+        std::fs::write(
+            &a_path,
+            r#"import "./b.glyph" { something }
 
 skill main()
     description: "A."
     flow:
         "Do something."
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
-        std::fs::write(&b_path, r#"import "./a.glyph" { something }
+        std::fs::write(
+            &b_path,
+            r#"import "./a.glyph" { something }
 
 export const something = "Hello."
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let bag = check_file(&a_path);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::circular-import"),
-            "expected circular-import diagnostic, got: {:?}", ids
+            "expected circular-import diagnostic, got: {:?}",
+            ids
         );
         // Check that the cycle path is in the message.
-        let diag = bag.iter().find(|d| d.id == "G::analyze::circular-import").unwrap();
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::circular-import")
+            .unwrap();
         assert!(
             diag.message.contains("a.glyph") && diag.message.contains("b.glyph"),
-            "cycle path should include both files, got: {}", diag.message
+            "cycle path should include both files, got: {}",
+            diag.message
         );
         assert!(
             diag.message.contains("->"),
-            "cycle path should use -> separator, got: {}", diag.message
+            "cycle path should use -> separator, got: {}",
+            diag.message
         );
     }
 
@@ -3671,25 +4028,34 @@ export const something = "Hello."
         let dir = tempfile::tempdir().unwrap();
 
         let lib_path = dir.path().join("lib.glyph");
-        std::fs::write(&lib_path, r#"const private_text = "This is private."
+        std::fs::write(
+            &lib_path,
+            r#"const private_text = "This is private."
 export const public_text = "This is public."
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let main_path = dir.path().join("main.glyph");
-        std::fs::write(&main_path, r#"import "./lib.glyph" { private_text }
+        std::fs::write(
+            &main_path,
+            r#"import "./lib.glyph" { private_text }
 
 skill main()
     description: "Main."
     require private_text
     flow:
         "Do something."
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let bag = check_file(&main_path);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::import-private"),
-            "expected import-private diagnostic, got: {:?}", ids
+            "expected import-private diagnostic, got: {:?}",
+            ids
         );
     }
 
@@ -3699,26 +4065,35 @@ skill main()
         let dir = tempfile::tempdir().unwrap();
 
         let lib_path = dir.path().join("lib.glyph");
-        std::fs::write(&lib_path, r#"skill some_skill()
+        std::fs::write(
+            &lib_path,
+            r#"skill some_skill()
     description: "A skill."
     flow:
         "Do something."
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let main_path = dir.path().join("main.glyph");
-        std::fs::write(&main_path, r#"import "./lib.glyph" { some_skill }
+        std::fs::write(
+            &main_path,
+            r#"import "./lib.glyph" { some_skill }
 
 skill main()
     description: "Main."
     flow:
         "Do something."
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let bag = check_file(&main_path);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::import-skill"),
-            "expected import-skill diagnostic, got: {:?}", ids
+            "expected import-skill diagnostic, got: {:?}",
+            ids
         );
     }
 
@@ -3728,11 +4103,17 @@ skill main()
         let dir = tempfile::tempdir().unwrap();
 
         let lib_path = dir.path().join("lib.glyph");
-        std::fs::write(&lib_path, r#"export const greeting = "Hello."
-"#).unwrap();
+        std::fs::write(
+            &lib_path,
+            r#"export const greeting = "Hello."
+"#,
+        )
+        .unwrap();
 
         let main_path = dir.path().join("main.glyph");
-        std::fs::write(&main_path, r#"import "./lib.glyph" { greeting }
+        std::fs::write(
+            &main_path,
+            r#"import "./lib.glyph" { greeting }
 import "./lib.glyph" { greeting }
 
 skill main()
@@ -3740,15 +4121,21 @@ skill main()
     require greeting
     flow:
         "Do something."
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let bag = check_file(&main_path);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::duplicate-import"),
-            "expected duplicate-import diagnostic, got: {:?}", ids
+            "expected duplicate-import diagnostic, got: {:?}",
+            ids
         );
-        let diag = bag.iter().find(|d| d.id == "G::analyze::duplicate-import").unwrap();
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::duplicate-import")
+            .unwrap();
         assert_eq!(diag.classification, diagnostic::Classification::Repairable);
     }
 
@@ -3758,31 +4145,44 @@ skill main()
         let dir = tempfile::tempdir().unwrap();
 
         let lib_path = dir.path().join("lib.glyph");
-        std::fs::write(&lib_path, r#"export const greeting = "Hello."
+        std::fs::write(
+            &lib_path,
+            r#"export const greeting = "Hello."
 export const farewell = "Goodbye."
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let main_path = dir.path().join("main.glyph");
-        std::fs::write(&main_path, r#"import "./lib.glyph" { greeting, farewell }
+        std::fs::write(
+            &main_path,
+            r#"import "./lib.glyph" { greeting, farewell }
 
 skill main()
     description: "Main."
     require greeting
     flow:
         "Do something."
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let bag = check_file(&main_path);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::unused-import"),
-            "expected unused-import diagnostic, got: {:?}", ids
+            "expected unused-import diagnostic, got: {:?}",
+            ids
         );
-        let diag = bag.iter().find(|d| d.id == "G::analyze::unused-import").unwrap();
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::unused-import")
+            .unwrap();
         assert_eq!(diag.classification, diagnostic::Classification::Repairable);
         assert!(
             diag.message.contains("farewell"),
-            "should mention the unused name, got: {}", diag.message
+            "should mention the unused name, got: {}",
+            diag.message
         );
     }
 
@@ -3799,29 +4199,39 @@ skill main()
         let dir = tempfile::tempdir().unwrap();
 
         let lib_path = dir.path().join("lib.glyph");
-        std::fs::write(&lib_path, r#"export block do_thing()
+        std::fs::write(
+            &lib_path,
+            r#"export block do_thing()
     description: "Do a thing."
     flow:
         "Do it."
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let main_path = dir.path().join("main.glyph");
-        std::fs::write(&main_path, r#"import "./lib.glyph" { do_thing }
+        std::fs::write(
+            &main_path,
+            r#"import "./lib.glyph" { do_thing }
 
 skill main()
     description: "Main."
     flow:
         return do_thing()
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let bag = check_file(&main_path);
-        let unused_for_do_thing = bag.iter().any(|d| {
-            d.id == "G::analyze::unused-import" && d.message.contains("do_thing")
-        });
+        let unused_for_do_thing = bag
+            .iter()
+            .any(|d| d.id == "G::analyze::unused-import" && d.message.contains("do_thing"));
         assert!(
             !unused_for_do_thing,
             "`return do_thing()` should mark `do_thing` as used; got diagnostics: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>(),
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>(),
         );
     }
 
@@ -3836,26 +4246,36 @@ skill main()
         let dir = tempfile::tempdir().unwrap();
 
         let lib_path = dir.path().join("lib.glyph");
-        std::fs::write(&lib_path, r#"export const greeting = "Hello."
-"#).unwrap();
+        std::fs::write(
+            &lib_path,
+            r#"export const greeting = "Hello."
+"#,
+        )
+        .unwrap();
 
         let main_path = dir.path().join("main.glyph");
-        std::fs::write(&main_path, r#"import "./lib.glyph" { greeting }
+        std::fs::write(
+            &main_path,
+            r#"import "./lib.glyph" { greeting }
 
 skill main()
     description: "Main."
     flow:
         return greeting
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let bag = check_file(&main_path);
-        let unused_for_greeting = bag.iter().any(|d| {
-            d.id == "G::analyze::unused-import" && d.message.contains("greeting")
-        });
+        let unused_for_greeting = bag
+            .iter()
+            .any(|d| d.id == "G::analyze::unused-import" && d.message.contains("greeting"));
         assert!(
             !unused_for_greeting,
             "`return greeting` should mark `greeting` as used; got diagnostics: {:?}",
-            bag.iter().map(|d| (d.id.as_str(), d.message.as_str())).collect::<Vec<_>>(),
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>(),
         );
     }
 
@@ -3865,19 +4285,24 @@ skill main()
         let dir = tempfile::tempdir().unwrap();
 
         let main_path = dir.path().join("main.glyph");
-        std::fs::write(&main_path, r#"import "./nonexistent.glyph" { something }
+        std::fs::write(
+            &main_path,
+            r#"import "./nonexistent.glyph" { something }
 
 skill main()
     description: "Main."
     flow:
         "Do something."
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let bag = check_file(&main_path);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::missing-file"),
-            "expected missing-file diagnostic, got: {:?}", ids
+            "expected missing-file diagnostic, got: {:?}",
+            ids
         );
     }
 
@@ -3900,26 +4325,38 @@ skill main()
         let dir = tempfile::tempdir().unwrap();
 
         // Three independent files — none imports the others.
-        std::fs::write(dir.path().join("a.glyph"), "\
+        std::fs::write(
+            dir.path().join("a.glyph"),
+            "\
 skill alpha()
     description: \"Alpha skill.\"
     flow:
         \"Do alpha.\"
-").unwrap();
+",
+        )
+        .unwrap();
 
-        std::fs::write(dir.path().join("b.glyph"), "\
+        std::fs::write(
+            dir.path().join("b.glyph"),
+            "\
 skill beta()
     description: \"Beta skill.\"
     flow:
         \"Do beta.\"
-").unwrap();
+",
+        )
+        .unwrap();
 
-        std::fs::write(dir.path().join("c.glyph"), "\
+        std::fs::write(
+            dir.path().join("c.glyph"),
+            "\
 skill gamma()
     description: \"Gamma skill.\"
     flow:
         \"Do gamma.\"
-").unwrap();
+",
+        )
+        .unwrap();
 
         let sources: Vec<PathBuf> = vec![
             dir.path().join("a.glyph"),
@@ -3947,19 +4384,27 @@ skill gamma()
         let dir = tempfile::tempdir().unwrap();
 
         // lib.glyph — standalone (no skill, just an export const — library)
-        std::fs::write(dir.path().join("lib.glyph"), "\
+        std::fs::write(
+            dir.path().join("lib.glyph"),
+            "\
 export const greeting = \"Hello from lib.\"
-").unwrap();
+",
+        )
+        .unwrap();
 
         // consumer.glyph — imports from lib but is self-contained for compile
-        std::fs::write(dir.path().join("consumer.glyph"), "\
+        std::fs::write(
+            dir.path().join("consumer.glyph"),
+            "\
 import \"./lib.glyph\" { greeting }
 
 skill main()
     description: \"Main skill.\"
     flow:
         \"Use the greeting.\"
-").unwrap();
+",
+        )
+        .unwrap();
 
         // Pass files in reverse alphabetical order to prove topo sort reorders.
         let sources: Vec<PathBuf> = vec![
@@ -3986,27 +4431,39 @@ skill main()
         let dir = tempfile::tempdir().unwrap();
 
         // a.glyph — valid, standalone
-        std::fs::write(dir.path().join("a.glyph"), "\
+        std::fs::write(
+            dir.path().join("a.glyph"),
+            "\
 skill alpha()
     description: \"Alpha skill.\"
     flow:
         \"Do alpha.\"
-").unwrap();
+",
+        )
+        .unwrap();
 
         // b.glyph — intentionally broken (will fail Phase 1)
-        std::fs::write(dir.path().join("b.glyph"), "\
+        std::fs::write(
+            dir.path().join("b.glyph"),
+            "\
 this is not valid glyph syntax at all!!!
-").unwrap();
+",
+        )
+        .unwrap();
 
         // c.glyph — imports b, should be skipped
-        std::fs::write(dir.path().join("c.glyph"), "\
+        std::fs::write(
+            dir.path().join("c.glyph"),
+            "\
 import \"./b.glyph\" { something }
 
 skill gamma()
     description: \"Gamma skill.\"
     flow:
         \"Do gamma.\"
-").unwrap();
+",
+        )
+        .unwrap();
 
         let sources: Vec<PathBuf> = vec![
             dir.path().join("a.glyph"),
@@ -4021,9 +4478,10 @@ skill gamma()
         assert!(dir.path().join("a.md").exists(), "a.md should exist");
 
         // c should be skipped.
-        let c_outcome = result.outcomes.iter().find(|(p, _)| {
-            p.to_string_lossy().contains("c.glyph")
-        });
+        let c_outcome = result
+            .outcomes
+            .iter()
+            .find(|(p, _)| p.to_string_lossy().contains("c.glyph"));
         assert!(c_outcome.is_some(), "c.glyph should be in outcomes");
         match &c_outcome.unwrap().1 {
             FileOutcome::Skipped { failed_dep } => {
@@ -4047,34 +4505,36 @@ skill gamma()
         std::fs::write(dir.path().join("c.md"), stale_content).unwrap();
 
         // b.glyph — broken
-        std::fs::write(dir.path().join("b.glyph"), "\
+        std::fs::write(
+            dir.path().join("b.glyph"),
+            "\
 this is broken!!!
-").unwrap();
+",
+        )
+        .unwrap();
 
         // c.glyph — imports b, will be skipped
-        std::fs::write(dir.path().join("c.glyph"), "\
+        std::fs::write(
+            dir.path().join("c.glyph"),
+            "\
 import \"./b.glyph\" { something }
 
 skill gamma()
     description: \"Gamma skill.\"
     flow:
         \"Do gamma.\"
-").unwrap();
+",
+        )
+        .unwrap();
 
-        let sources: Vec<PathBuf> = vec![
-            dir.path().join("b.glyph"),
-            dir.path().join("c.glyph"),
-        ];
+        let sources: Vec<PathBuf> = vec![dir.path().join("b.glyph"), dir.path().join("c.glyph")];
         let result = compile_directory(&sources);
 
         assert_eq!(result.exit_code, 1);
 
         // c.md should still contain the stale content, untouched.
         let c_md = std::fs::read_to_string(dir.path().join("c.md")).unwrap();
-        assert_eq!(
-            c_md, stale_content,
-            "stale c.md should be left untouched"
-        );
+        assert_eq!(c_md, stale_content, "stale c.md should be left untouched");
     }
 
     #[test]
@@ -4084,32 +4544,44 @@ skill gamma()
         let dir = tempfile::tempdir().unwrap();
 
         // good.glyph — valid
-        std::fs::write(dir.path().join("good.glyph"), "\
+        std::fs::write(
+            dir.path().join("good.glyph"),
+            "\
 skill good()
     description: \"Good skill.\"
     flow:
         \"Do good.\"
-").unwrap();
+",
+        )
+        .unwrap();
 
         // bad.glyph — broken
-        std::fs::write(dir.path().join("bad.glyph"), "\
-this is broken!!!
-").unwrap();
-
-        let sources: Vec<PathBuf> = vec![
-            dir.path().join("good.glyph"),
+        std::fs::write(
             dir.path().join("bad.glyph"),
-        ];
+            "\
+this is broken!!!
+",
+        )
+        .unwrap();
+
+        let sources: Vec<PathBuf> =
+            vec![dir.path().join("good.glyph"), dir.path().join("bad.glyph")];
         let result = compile_directory(&sources);
 
         // Exit 1 because bad.glyph failed.
         assert_eq!(result.exit_code, 1, "should exit 1 when any file fails");
 
         // good.md should exist (partial output).
-        assert!(dir.path().join("good.md").exists(), "good.md should exist as partial output");
+        assert!(
+            dir.path().join("good.md").exists(),
+            "good.md should exist as partial output"
+        );
 
         // bad.md should NOT exist.
-        assert!(!dir.path().join("bad.md").exists(), "bad.md should not exist");
+        assert!(
+            !dir.path().join("bad.md").exists(),
+            "bad.md should not exist"
+        );
     }
 
     // --- Slice 13: Library files (export blocks/text + closure check) ---
@@ -4129,7 +4601,11 @@ block helper()
             "expected no-exports-in-library for library with zero exports, got: {:?}",
             ids
         );
-        assert_eq!(bag.exit_code(), 1, "no-exports-in-library should be a hard error");
+        assert_eq!(
+            bag.exit_code(),
+            1,
+            "no-exports-in-library should be a hard error"
+        );
     }
 
     #[test]
@@ -4139,15 +4615,22 @@ block helper()
         let dir = tempfile::tempdir().unwrap();
 
         let prefs_path = dir.path().join("prefs.glyph");
-        std::fs::write(&prefs_path, "\
+        std::fs::write(
+            &prefs_path,
+            "\
 export const terminal_mux = \"tmux\"
 export const validation_strictness = \"high\"
-").unwrap();
+",
+        )
+        .unwrap();
 
         let sources: Vec<PathBuf> = vec![prefs_path];
         let result = compile_directory(&sources);
 
-        assert_eq!(result.exit_code, 0, "library file should compile with exit 0");
+        assert_eq!(
+            result.exit_code, 0,
+            "library file should compile with exit 0"
+        );
         // No .md output should be produced for a library file.
         assert!(
             !dir.path().join("prefs.md").exists(),
@@ -4193,7 +4676,11 @@ export block shared_util(x = \"default\")
             "expected closure-violation for export block referencing private name, got: {:?}",
             ids
         );
-        assert_eq!(bag.exit_code(), 1, "closure-violation should be a hard error");
+        assert_eq!(
+            bag.exit_code(),
+            1,
+            "closure-violation should be a hard error"
+        );
     }
 
     #[test]
@@ -4251,12 +4738,19 @@ export const middle = \"M.\"
         assert_eq!(exports.texts.len(), 3);
 
         // Verify source-order by walking decls directly.
-        let names: Vec<&str> = file.decls.iter().filter_map(|d| match d {
-            ast::Decl::Const(c) if c.node.exported => Some(c.node.name.as_str()),
-            _ => None,
-        }).collect();
-        assert_eq!(names, vec!["zebra", "alpha", "middle"],
-            "exports should be in source order");
+        let names: Vec<&str> = file
+            .decls
+            .iter()
+            .filter_map(|d| match d {
+                ast::Decl::Const(c) if c.node.exported => Some(c.node.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["zebra", "alpha", "middle"],
+            "exports should be in source order"
+        );
     }
 
     #[test]
@@ -4275,12 +4769,15 @@ export const middle = \"M.\"
             ));
         }
 
-        let repo_tools_src = format!("\
+        let repo_tools_src = format!(
+            "\
 export block inspect_repo(scope = \".\") -> Path
     description: \"Inspect the repository for issues.\"
     flow:
 {}        return scope
-", long_body);
+",
+            long_body
+        );
 
         let tools_path = dir.path().join("repo_tools.glyph");
         std::fs::write(&tools_path, &repo_tools_src).unwrap();
@@ -4288,7 +4785,10 @@ export block inspect_repo(scope = \".\") -> Path
         let sources: Vec<PathBuf> = vec![tools_path.clone()];
         let result = compile_directory(&sources);
 
-        assert_eq!(result.exit_code, 0, "repo_tools library should compile with exit 0");
+        assert_eq!(
+            result.exit_code, 0,
+            "repo_tools library should compile with exit 0"
+        );
         // No .md output for a library file.
         assert!(
             !dir.path().join("repo_tools.md").exists(),
@@ -4298,10 +4798,14 @@ export block inspect_repo(scope = \".\") -> Path
         // Verify word count is tracked on the parsed AST.
         let source = std::fs::read_to_string(&tools_path).unwrap();
         let (file, _) = parse::parse(&source, 0).expect("should parse");
-        let export_block = file.decls.iter().find_map(|d| match d {
-            ast::Decl::ExportBlock(b) => Some(&b.node),
-            _ => None,
-        }).expect("export block should be present");
+        let export_block = file
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                ast::Decl::ExportBlock(b) => Some(&b.node),
+                _ => None,
+            })
+            .expect("export block should be present");
         assert!(
             export_block.body_word_count >= 150,
             "large export block should have >= 150 words, got {}",
@@ -4332,7 +4836,8 @@ export block inspect_repo(scope = \".\") -> Path
             ));
         }
 
-        let repo_tools_src = format!("\
+        let repo_tools_src = format!(
+            "\
 export block inspect_repo(scope = \".\") -> Path
     description: \"Inspect the repository for issues.\"
     flow:
@@ -4342,29 +4847,52 @@ export block run_tests(target = \"all\") -> TestResult
     description: \"Run the project test suite.\"
     flow:
 {}        return target
-", long_body_1, long_body_2);
+",
+            long_body_1, long_body_2
+        );
 
         let tools_path = dir.path().join("repo_tools.glyph");
         std::fs::write(&tools_path, &repo_tools_src).unwrap();
 
         let sources: Vec<PathBuf> = vec![tools_path.clone()];
         let result = compile_directory(&sources);
-        assert_eq!(result.exit_code, 0, "repo_tools library should compile with exit 0");
+        assert_eq!(
+            result.exit_code, 0,
+            "repo_tools library should compile with exit 0"
+        );
 
         // AC1: procedure files emitted
         let inspect_path = dir.path().join("repo_tools/inspect-repo.md");
         let run_tests_path = dir.path().join("repo_tools/run-tests.md");
-        assert!(inspect_path.exists(), "repo_tools/inspect-repo.md should exist");
-        assert!(run_tests_path.exists(), "repo_tools/run-tests.md should exist");
+        assert!(
+            inspect_path.exists(),
+            "repo_tools/inspect-repo.md should exist"
+        );
+        assert!(
+            run_tests_path.exists(),
+            "repo_tools/run-tests.md should exist"
+        );
 
         // AC2: kind: procedure in frontmatter
         let inspect_content = std::fs::read_to_string(&inspect_path).unwrap();
-        assert!(inspect_content.contains("kind: procedure"), "inspect-repo.md should have kind: procedure");
-        assert!(inspect_content.contains("name: inspect-repo"), "inspect-repo.md should have name: inspect-repo");
+        assert!(
+            inspect_content.contains("kind: procedure"),
+            "inspect-repo.md should have kind: procedure"
+        );
+        assert!(
+            inspect_content.contains("name: inspect-repo"),
+            "inspect-repo.md should have name: inspect-repo"
+        );
 
         let run_tests_content = std::fs::read_to_string(&run_tests_path).unwrap();
-        assert!(run_tests_content.contains("kind: procedure"), "run-tests.md should have kind: procedure");
-        assert!(run_tests_content.contains("name: run-tests"), "run-tests.md should have name: run-tests");
+        assert!(
+            run_tests_content.contains("kind: procedure"),
+            "run-tests.md should have kind: procedure"
+        );
+        assert!(
+            run_tests_content.contains("name: run-tests"),
+            "run-tests.md should have name: run-tests"
+        );
     }
 
     #[test]
@@ -4381,12 +4909,15 @@ export block run_tests(target = \"all\") -> TestResult
             ));
         }
 
-        let lib_src = format!("\
+        let lib_src = format!(
+            "\
 export block inspect_repo(scope = \".\") -> Path
     description: \"Inspect the repository for issues.\"
     flow:
 {}        return scope
-", long_body);
+",
+            long_body
+        );
 
         let lib_path = dir.path().join("repo_tools.glyph");
         std::fs::write(&lib_path, &lib_src).unwrap();
@@ -4432,12 +4963,15 @@ skill audit_code()
             ));
         }
 
-        let repo_tools_src = format!("\
+        let repo_tools_src = format!(
+            "\
 export block inspect_repo(scope = \".\") -> Path
     description: \"Inspect the repository for issues.\"
     flow:
 {}        return scope
-", long_body);
+",
+            long_body
+        );
 
         let tools_path = dir.path().join("repo_tools.glyph");
         std::fs::write(&tools_path, &repo_tools_src).unwrap();
@@ -4453,7 +4987,10 @@ export block inspect_repo(scope = \".\") -> Path
         compile_directory(&sources);
         let second_content = std::fs::read_to_string(&inspect_path).unwrap();
 
-        assert_eq!(first_content, second_content, "procedure file should be byte-identical across runs");
+        assert_eq!(
+            first_content, second_content,
+            "procedure file should be byte-identical across runs"
+        );
     }
 
     // --- Stdlib (slice 21) tests ---
@@ -4463,23 +5000,29 @@ export block inspect_repo(scope = \".\") -> Path
         // AC1: `subagent` is resolvable when imported from `@glyph/std`.
         let dir = tempfile::tempdir().unwrap();
         let main_path = dir.path().join("main.glyph");
-        std::fs::write(&main_path, r#"import "@glyph/std" { subagent }
+        std::fs::write(
+            &main_path,
+            r#"import "@glyph/std" { subagent }
 
 skill delegate(task = "do something")
     description: "Delegate work."
     flow:
         subagent(task)
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let bag = check_file(&main_path);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             !ids.contains(&"G::analyze::undefined-call"),
-            "subagent should resolve via stdlib import, got: {:?}", ids
+            "subagent should resolve via stdlib import, got: {:?}",
+            ids
         );
         assert!(
             !ids.contains(&"G::analyze::missing-file"),
-            "stdlib import should not trigger missing-file, got: {:?}", ids
+            "stdlib import should not trigger missing-file, got: {:?}",
+            ids
         );
     }
 
@@ -4488,19 +5031,24 @@ skill delegate(task = "do something")
         // AC2: `load` is compiler-internal and NOT resolvable from author source.
         let dir = tempfile::tempdir().unwrap();
         let main_path = dir.path().join("main.glyph");
-        std::fs::write(&main_path, r#"import "@glyph/std" { load }
+        std::fs::write(
+            &main_path,
+            r#"import "@glyph/std" { load }
 
 skill runner()
     description: "Run something."
     flow:
         load("file.md")
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let bag = check_file(&main_path);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::import-private"),
-            "load should not be importable, got: {:?}", ids
+            "load should not be importable, got: {:?}",
+            ids
         );
     }
 
@@ -4509,23 +5057,29 @@ skill runner()
         // AC1: `send` is resolvable when imported from `@glyph/std`.
         let dir = tempfile::tempdir().unwrap();
         let main_path = dir.path().join("main.glyph");
-        std::fs::write(&main_path, r#"import "@glyph/std" { send }
+        std::fs::write(
+            &main_path,
+            r#"import "@glyph/std" { send }
 
 skill notify(msg = "hello")
     description: "Send a message."
     flow:
         send(msg)
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let bag = check_file(&main_path);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             !ids.contains(&"G::analyze::undefined-call"),
-            "send should resolve via stdlib import, got: {:?}", ids
+            "send should resolve via stdlib import, got: {:?}",
+            ids
         );
         assert!(
             !ids.contains(&"G::analyze::missing-file"),
-            "stdlib import should not trigger missing-file, got: {:?}", ids
+            "stdlib import should not trigger missing-file, got: {:?}",
+            ids
         );
     }
 
@@ -4541,11 +5095,16 @@ skill notify(msg = "hello")
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::stdlib-missing-import"),
-            "should fire stdlib-missing-import for subagent without import, got: {:?}", ids
+            "should fire stdlib-missing-import for subagent without import, got: {:?}",
+            ids
         );
-        let diag = bag.iter().find(|d| d.id == "G::analyze::stdlib-missing-import").unwrap();
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::stdlib-missing-import")
+            .unwrap();
         assert_eq!(
-            diag.classification, Classification::Repairable,
+            diag.classification,
+            Classification::Repairable,
             "stdlib-missing-import should be repairable"
         );
     }
@@ -4562,7 +5121,8 @@ skill notify(msg = "hello")
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::stdlib-missing-import"),
-            "should fire stdlib-missing-import for send without import, got: {:?}", ids
+            "should fire stdlib-missing-import for send without import, got: {:?}",
+            ids
         );
     }
 
@@ -4571,19 +5131,24 @@ skill notify(msg = "hello")
         // AC4: `unknown-stdlib-module` error fires on import of nonexistent @glyph/ path.
         let dir = tempfile::tempdir().unwrap();
         let main_path = dir.path().join("main.glyph");
-        std::fs::write(&main_path, r#"import "@glyph/foo" { bar }
+        std::fs::write(
+            &main_path,
+            r#"import "@glyph/foo" { bar }
 
 skill main()
     description: "Main."
     flow:
         "Do something."
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let bag = check_file(&main_path);
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::imports::unknown-stdlib-module"),
-            "should fire unknown-stdlib-module for @glyph/foo, got: {:?}", ids
+            "should fire unknown-stdlib-module for @glyph/foo, got: {:?}",
+            ids
         );
     }
 
@@ -4611,7 +5176,8 @@ skill delegate(task = "do something")
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             ids.contains(&"G::analyze::effects-under-declared"),
-            "subagent's spawns_agent effect should propagate, got: {:?}", ids
+            "subagent's spawns_agent effect should propagate, got: {:?}",
+            ids
         );
     }
 
@@ -4641,7 +5207,11 @@ skill empty()
 ";
         let bag = check_source(src, 0, "empty_skill.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
-        assert!(ids.contains(&"G::analyze::empty-skill-body"), "ids: {:?}", ids);
+        assert!(
+            ids.contains(&"G::analyze::empty-skill-body"),
+            "ids: {:?}",
+            ids
+        );
     }
 
     #[test]
@@ -4675,7 +5245,11 @@ skill foo()
 ";
         let bag = check_source(src, 0, "dup.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
-        assert!(ids.contains(&"G::parse::duplicate-subsection"), "ids: {:?}", ids);
+        assert!(
+            ids.contains(&"G::parse::duplicate-subsection"),
+            "ids: {:?}",
+            ids
+        );
     }
 
     #[test]
@@ -4689,8 +5263,16 @@ skill foo()
 ";
         let bag = check_source(src, 0, "op.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
-        assert!(ids.contains(&"G::parse::operator-in-expression"), "ids: {:?}", ids);
-        assert_eq!(bag.exit_code(), 2, "operator-in-expression is repairable (exit 2)");
+        assert!(
+            ids.contains(&"G::parse::operator-in-expression"),
+            "ids: {:?}",
+            ids
+        );
+        assert_eq!(
+            bag.exit_code(),
+            2,
+            "operator-in-expression is repairable (exit 2)"
+        );
     }
 
     #[test]
@@ -4792,7 +5374,9 @@ skill main()
         let bag_off = check_source_with_effects(src_no_effects, 0, "test.glyph", false);
         let ids_off: Vec<&str> = bag_off.iter().map(|d| d.id.as_str()).collect();
         assert!(
-            !ids_off.iter().any(|id| id.starts_with("G::analyze::effects")),
+            !ids_off
+                .iter()
+                .any(|id| id.starts_with("G::analyze::effects")),
             "with effects off, no effect diagnostics should fire, got: {:?}",
             ids_off
         );
@@ -4834,7 +5418,9 @@ skill main()
         let bag_off = check_source_with_effects(src_off, 0, "test.glyph", false);
         let ids_off: Vec<&str> = bag_off.iter().map(|d| d.id.as_str()).collect();
         assert!(
-            !ids_off.iter().any(|id| id.starts_with("G::analyze::effects")),
+            !ids_off
+                .iter()
+                .any(|id| id.starts_with("G::analyze::effects")),
             "with effects off, no effect diagnostics should fire, got: {:?}",
             ids_off
         );
@@ -4876,7 +5462,9 @@ skill main()
         let bag_off = check_source_with_effects(src_off, 0, "test.glyph", false);
         let ids_off: Vec<&str> = bag_off.iter().map(|d| d.id.as_str()).collect();
         assert!(
-            !ids_off.iter().any(|id| id.starts_with("G::analyze::effects")),
+            !ids_off
+                .iter()
+                .any(|id| id.starts_with("G::analyze::effects")),
             "with effects off, no effect diagnostics should fire, got: {:?}",
             ids_off
         );
@@ -4978,7 +5566,9 @@ skill main()
         let dep_bag = bags.get(&canon_dep).unwrap();
         let dep_ids: Vec<&str> = dep_bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
-            dep_ids.iter().any(|id| id.starts_with("G::analyze::undefined")),
+            dep_ids
+                .iter()
+                .any(|id| id.starts_with("G::analyze::undefined")),
             "dep should carry the undefined-name diagnostic. got: {:?}",
             dep_ids
         );
@@ -5010,7 +5600,9 @@ skill main()
         let importer_bag = bags.get(&canon_importer).unwrap();
         let importer_ids: Vec<&str> = importer_bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
-            importer_ids.iter().any(|id| *id == "G::analyze::import-private"),
+            importer_ids
+                .iter()
+                .any(|id| *id == "G::analyze::import-private"),
             "import-private should surface on the importer. got: {:?}",
             importer_ids
         );
@@ -5045,7 +5637,11 @@ skill main()
         }
         // Compare sorted output (partition map insertion order is non-deterministic).
         assert_eq!(
-            merged.sorted().iter().map(|d| d.id.clone()).collect::<Vec<_>>(),
+            merged
+                .sorted()
+                .iter()
+                .map(|d| d.id.clone())
+                .collect::<Vec<_>>(),
             merged_from_partition
                 .sorted()
                 .iter()

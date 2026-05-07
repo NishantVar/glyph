@@ -67,10 +67,7 @@ pub fn parse_output_target(
     parse_identifier_form(source, span)
 }
 
-fn parse_descriptive(
-    source: &str,
-    span: Span,
-) -> Result<OutputTargetExpr, OutputTargetParseError> {
+fn parse_descriptive(source: &str, span: Span) -> Result<OutputTargetExpr, OutputTargetParseError> {
     // Form is `<"…">`. After leading `<"`, walk content with escape handling
     // identical to `tokenize.rs` lines 244-256 (`\"` -> `"`, `\\` -> `\`,
     // `\n` -> '\n', `\t` -> '\t', other `\X` passes through verbatim). Stop
@@ -142,10 +139,7 @@ fn parse_descriptive(
     if content.is_empty() {
         return Err(OutputTargetParseError::EmptyDescription);
     }
-    Ok(OutputTargetExpr::Description(Description {
-        content,
-        span,
-    }))
+    Ok(OutputTargetExpr::Description(Description { content, span }))
 }
 
 fn parse_identifier_form(
@@ -313,7 +307,10 @@ mod tests {
         let got = parse_output_target(src, span).expect("ok");
         match got {
             OutputTargetExpr::Description(d) => {
-                assert_eq!(d.content, "root cause analysis including affected files and severity");
+                assert_eq!(
+                    d.content,
+                    "root cause analysis including affected files and severity"
+                );
                 assert_eq!(d.span, span);
             }
             OutputTargetExpr::Identifier(_) => panic!("expected Description variant"),
@@ -333,8 +330,12 @@ mod tests {
         // `<"abc>` — closing `"` missing; the closing `>` does not close the string
         let src = r#"<"abc>"#;
         let span = Span::new(0, 0, src.len() as u32);
-        let err = parse_output_target(src, span).expect_err("must reject unterminated descriptive form");
-        assert!(matches!(err, OutputTargetParseError::UnterminatedDescription { .. }));
+        let err =
+            parse_output_target(src, span).expect_err("must reject unterminated descriptive form");
+        assert!(matches!(
+            err,
+            OutputTargetParseError::UnterminatedDescription { .. }
+        ));
     }
 
     #[test]

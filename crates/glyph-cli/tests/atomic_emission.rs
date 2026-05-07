@@ -72,8 +72,15 @@ skill hello()
         .output()
         .expect("failed to run glyph");
 
-    assert_eq!(output.status.code(), Some(0), "first compile should succeed");
-    assert!(output_path.exists(), "output .md should exist after successful compile");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "first compile should succeed"
+    );
+    assert!(
+        output_path.exists(),
+        "output .md should exist after successful compile"
+    );
 
     let original_content = std::fs::read_to_string(&output_path).unwrap();
 
@@ -93,7 +100,10 @@ skill hello()
     assert_ne!(output2.status.code(), Some(0), "second compile should fail");
 
     // Prior .md should still exist with original content.
-    assert!(output_path.exists(), "prior .md must survive failed rebuild");
+    assert!(
+        output_path.exists(),
+        "prior .md must survive failed rebuild"
+    );
     let after_content = std::fs::read_to_string(&output_path).unwrap();
     assert_eq!(
         original_content, after_content,
@@ -145,7 +155,10 @@ skill greet()
     );
 
     // Fresh .md should exist.
-    assert!(dir.path().join("greet.md").exists(), "output .md should exist");
+    assert!(
+        dir.path().join("greet.md").exists(),
+        "output .md should exist"
+    );
 }
 
 /// AC4: Procedure files also get atomic emission — stale .tmp cleaned.

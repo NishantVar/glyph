@@ -102,7 +102,10 @@ mod tests {
         let r = scan_slots("hello {scope} world");
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].name, "scope");
-        assert_eq!(&"hello {scope} world"[r[0].start_in_content..r[0].end_in_content], "{scope}");
+        assert_eq!(
+            &"hello {scope} world"[r[0].start_in_content..r[0].end_in_content],
+            "{scope}"
+        );
     }
 
     #[test]

@@ -19,19 +19,27 @@ fn glyph_bin() -> PathBuf {
 fn ac1_directory_compile_all_files() {
     let dir = tempfile::tempdir().unwrap();
 
-    std::fs::write(dir.path().join("a.glyph"), "\
+    std::fs::write(
+        dir.path().join("a.glyph"),
+        "\
 skill alpha()
     description: \"Alpha.\"
     flow:
         \"Do alpha.\"
-").unwrap();
+",
+    )
+    .unwrap();
 
-    std::fs::write(dir.path().join("b.glyph"), "\
+    std::fs::write(
+        dir.path().join("b.glyph"),
+        "\
 skill beta()
     description: \"Beta.\"
     flow:
         \"Do beta.\"
-").unwrap();
+",
+    )
+    .unwrap();
 
     let output = Command::new(glyph_bin())
         .arg("compile")
@@ -56,18 +64,26 @@ skill beta()
 fn ac2_topological_order() {
     let dir = tempfile::tempdir().unwrap();
 
-    std::fs::write(dir.path().join("lib.glyph"), "\
+    std::fs::write(
+        dir.path().join("lib.glyph"),
+        "\
 export const greeting = \"Hello.\"
-").unwrap();
+",
+    )
+    .unwrap();
 
-    std::fs::write(dir.path().join("consumer.glyph"), "\
+    std::fs::write(
+        dir.path().join("consumer.glyph"),
+        "\
 import \"./lib.glyph\" { greeting }
 
 skill main()
     description: \"Main.\"
     flow:
         \"Go.\"
-").unwrap();
+",
+    )
+    .unwrap();
 
     let output = Command::new(glyph_bin())
         .arg("compile")
@@ -86,7 +102,10 @@ skill main()
         stderr
     );
 
-    assert!(dir.path().join("consumer.md").exists(), "consumer.md should be produced");
+    assert!(
+        dir.path().join("consumer.md").exists(),
+        "consumer.md should be produced"
+    );
 }
 
 /// AC3: Failure in b.glyph skips c.glyph (which imports it) with the build warning.
@@ -95,27 +114,39 @@ fn ac3_failure_skips_dependent() {
     let dir = tempfile::tempdir().unwrap();
 
     // a — valid standalone
-    std::fs::write(dir.path().join("a.glyph"), "\
+    std::fs::write(
+        dir.path().join("a.glyph"),
+        "\
 skill alpha()
     description: \"Alpha.\"
     flow:
         \"Do alpha.\"
-").unwrap();
+",
+    )
+    .unwrap();
 
     // b — broken
-    std::fs::write(dir.path().join("b.glyph"), "\
+    std::fs::write(
+        dir.path().join("b.glyph"),
+        "\
 this is broken!!!
-").unwrap();
+",
+    )
+    .unwrap();
 
     // c — imports b
-    std::fs::write(dir.path().join("c.glyph"), "\
+    std::fs::write(
+        dir.path().join("c.glyph"),
+        "\
 import \"./b.glyph\" { something }
 
 skill gamma()
     description: \"Gamma.\"
     flow:
         \"Do gamma.\"
-").unwrap();
+",
+    )
+    .unwrap();
 
     let output = Command::new(glyph_bin())
         .arg("compile")
@@ -149,19 +180,27 @@ fn ac4_stale_md_untouched_with_note() {
     std::fs::write(dir.path().join("c.md"), stale_content).unwrap();
 
     // b — broken
-    std::fs::write(dir.path().join("b.glyph"), "\
+    std::fs::write(
+        dir.path().join("b.glyph"),
+        "\
 this is broken!!!
-").unwrap();
+",
+    )
+    .unwrap();
 
     // c — imports b, will be skipped
-    std::fs::write(dir.path().join("c.glyph"), "\
+    std::fs::write(
+        dir.path().join("c.glyph"),
+        "\
 import \"./b.glyph\" { something }
 
 skill gamma()
     description: \"Gamma.\"
     flow:
         \"Do gamma.\"
-").unwrap();
+",
+    )
+    .unwrap();
 
     let output = Command::new(glyph_bin())
         .arg("compile")
@@ -189,16 +228,24 @@ skill gamma()
 fn ac5_exit_1_partial_output() {
     let dir = tempfile::tempdir().unwrap();
 
-    std::fs::write(dir.path().join("good.glyph"), "\
+    std::fs::write(
+        dir.path().join("good.glyph"),
+        "\
 skill good()
     description: \"Good.\"
     flow:
         \"Do good.\"
-").unwrap();
+",
+    )
+    .unwrap();
 
-    std::fs::write(dir.path().join("bad.glyph"), "\
+    std::fs::write(
+        dir.path().join("bad.glyph"),
+        "\
 this is broken!!!
-").unwrap();
+",
+    )
+    .unwrap();
 
     let output = Command::new(glyph_bin())
         .arg("compile")
@@ -208,5 +255,8 @@ this is broken!!!
 
     assert_eq!(output.status.code(), Some(1), "should exit 1");
     assert!(dir.path().join("good.md").exists(), "good.md should exist");
-    assert!(!dir.path().join("bad.md").exists(), "bad.md should not exist");
+    assert!(
+        !dir.path().join("bad.md").exists(),
+        "bad.md should not exist"
+    );
 }

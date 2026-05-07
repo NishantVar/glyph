@@ -84,7 +84,10 @@ fn skill_files_produce_md_output() {
     // Skill files should produce .md output.
     assert!(path.join("fix_bug.md").exists(), "fix_bug.md missing");
     assert!(path.join("review_pr.md").exists(), "review_pr.md missing");
-    assert!(path.join("update_docs.md").exists(), "update_docs.md missing");
+    assert!(
+        path.join("update_docs.md").exists(),
+        "update_docs.md missing"
+    );
 }
 
 #[test]
@@ -207,10 +210,7 @@ fn repo_tools_procedure_files_emitted() {
     );
 
     // Verify the procedure file has expected frontmatter.
-    let proc_md = std::fs::read_to_string(
-        path.join("repo_tools").join("inspect-repo.md"),
-    )
-    .unwrap();
+    let proc_md = std::fs::read_to_string(path.join("repo_tools").join("inspect-repo.md")).unwrap();
     assert!(
         proc_md.contains("kind: procedure"),
         "procedure file should have kind: procedure"
@@ -382,11 +382,23 @@ fn multi_file_compile_is_idempotent() {
     assert_eq!(rev1, rev2, "review_pr.md not byte-identical across runs");
     assert_eq!(upd1, upd2, "update_docs.md not byte-identical across runs");
     // .ir.json files byte-identical
-    assert_eq!(fix_ir1, fix_ir2, "fix_bug.ir.json not byte-identical across runs");
-    assert_eq!(rev_ir1, rev_ir2, "review_pr.ir.json not byte-identical across runs");
-    assert_eq!(upd_ir1, upd_ir2, "update_docs.ir.json not byte-identical across runs");
+    assert_eq!(
+        fix_ir1, fix_ir2,
+        "fix_bug.ir.json not byte-identical across runs"
+    );
+    assert_eq!(
+        rev_ir1, rev_ir2,
+        "review_pr.ir.json not byte-identical across runs"
+    );
+    assert_eq!(
+        upd_ir1, upd_ir2,
+        "update_docs.ir.json not byte-identical across runs"
+    );
     // Procedure files byte-identical
-    assert_eq!(proc1, proc2, "repo_tools/inspect-repo.md procedure not byte-identical across runs");
+    assert_eq!(
+        proc1, proc2,
+        "repo_tools/inspect-repo.md procedure not byte-identical across runs"
+    );
 }
 
 // ── AC: Frontmatter correctness ────────────────────────────────────
@@ -432,10 +444,7 @@ fn fix_bug_parameters() {
         md.contains("## Parameters"),
         "fix_bug.md should have Parameters section"
     );
-    assert!(
-        md.contains("scope"),
-        "scope parameter should appear"
-    );
+    assert!(md.contains("scope"), "scope parameter should appear");
 }
 
 #[test]
@@ -526,8 +535,5 @@ fn review_pr_constraints() {
         md.contains("every changed file"),
         "thorough_review constraint text"
     );
-    assert!(
-        md.contains("tests exist"),
-        "check_tests constraint text"
-    );
+    assert!(md.contains("tests exist"), "check_tests constraint text");
 }

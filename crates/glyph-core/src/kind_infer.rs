@@ -86,10 +86,7 @@ mod tests {
     #[test]
     fn integer_literal_infers_int() {
         // `values-and-names.md` §Numeric Coercion: no `'.'` → Int.
-        assert_eq!(
-            infer_primitive(&Literal::Number("3".into())),
-            TypeTag::Int
-        );
+        assert_eq!(infer_primitive(&Literal::Number("3".into())), TypeTag::Int);
     }
 
     #[test]
@@ -133,18 +130,12 @@ mod tests {
     #[test]
     fn numeric_disambiguation_by_dot_presence() {
         // Sweep additional forms on the disambiguation rule.
-        assert_eq!(
-            infer_primitive(&Literal::Number("0".into())),
-            TypeTag::Int
-        );
+        assert_eq!(infer_primitive(&Literal::Number("0".into())), TypeTag::Int);
         assert_eq!(
             infer_primitive(&Literal::Number("0.0".into())),
             TypeTag::Float
         );
-        assert_eq!(
-            infer_primitive(&Literal::Number("42".into())),
-            TypeTag::Int
-        );
+        assert_eq!(infer_primitive(&Literal::Number("42".into())), TypeTag::Int);
         assert_eq!(
             infer_primitive(&Literal::Number("3.14".into())),
             TypeTag::Float

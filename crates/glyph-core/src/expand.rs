@@ -49,12 +49,10 @@ pub fn expand_step1(arena: IrArena) -> IrArena {
     expand_step1_with_imported_descriptions(arena, &HashMap::new())
 }
 
-
 pub fn expand_step1_with_imported_descriptions(
     mut arena: IrArena,
     imported_block_descriptions: &HashMap<String, String>,
 ) -> IrArena {
-
     // Phase 1: Compute resolved_word_count for each Block node.
     let mut block_word_counts: HashMap<String, u32> = HashMap::new();
     for n in arena.nodes() {
@@ -213,12 +211,11 @@ pub fn expand_step1_with_imported_descriptions(
                 // import fix-up step in `compile_source_with_resolved_imports`
                 // for imported callees, so this gate behaves consistently
                 // regardless of import boundary.
-                let callee_has_oc =
-                    if let IrNode::Call(c) = arena.get(step_id) {
-                        c.projection_tier == Some(1) && c.callee_output_contract.is_some()
-                    } else {
-                        false
-                    };
+                let callee_has_oc = if let IrNode::Call(c) = arena.get(step_id) {
+                    c.projection_tier == Some(1) && c.callee_output_contract.is_some()
+                } else {
+                    false
+                };
                 let nodes = arena.nodes_mut();
                 match &mut nodes[step_id.0 as usize] {
                     IrNode::InlineInstruction(inst) if !skill_has_oc => {
@@ -229,9 +226,7 @@ pub fn expand_step1_with_imported_descriptions(
                         );
                     }
                     IrNode::Call(call)
-                        if call.projection_tier == Some(1)
-                            && !skill_has_oc
-                            && !callee_has_oc =>
+                        if call.projection_tier == Some(1) && !skill_has_oc && !callee_has_oc =>
                     {
                         if let Some(body) = &mut call.resolved_body {
                             *body = format!(
@@ -249,7 +244,6 @@ pub fn expand_step1_with_imported_descriptions(
 
     arena
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -428,9 +422,7 @@ skill main()
         );
         assert!(!md.contains("<\"branch name as currently checked out\">"));
         assert!(
-            md.contains(
-                ", and return the branch name as currently checked out as your result."
-            ),
+            md.contains(", and return the branch name as currently checked out as your result."),
             "block description return suffix should appear in compiled markdown:\n{md}"
         );
     }
@@ -466,9 +458,7 @@ skill diagnose_issue() -> Diagnosis
         );
         // Return suffix uses the new locked form.
         assert!(
-            md.contains(
-                ", and return the root cause severity and affected files as your result."
-            ),
+            md.contains(", and return the root cause severity and affected files as your result."),
             "expected single-line return suffix with whitespace-collapsed description:\n{md}"
         );
     }

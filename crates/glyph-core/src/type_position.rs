@@ -44,8 +44,8 @@ pub struct Warning {
 
 /// Banned generic type names, per issue #83 AC3.
 const BANNED_GENERIC_NAMES: &[&str] = &[
-    "String", "Int", "Float", "Bool", "None", "List", "Set", "Map", "Array",
-    "Dict", "Tuple", "Object", "Any",
+    "String", "Int", "Float", "Bool", "None", "List", "Set", "Map", "Array", "Dict", "Tuple",
+    "Object", "Any",
 ];
 
 /// Validate an identifier in type position.
@@ -62,7 +62,10 @@ const BANNED_GENERIC_NAMES: &[&str] = &[
 /// `lower::name_to_typetag` ↔ `analyze::is_builtin_type_name` ↔ this site.
 pub fn validate_type_position(ident: &str) -> Result<DomainType, Warning> {
     let canonical = crate::domain_registry::canonicalize_identifier(ident);
-    if BANNED_GENERIC_NAMES.iter().any(|b| b.eq_ignore_ascii_case(&canonical)) {
+    if BANNED_GENERIC_NAMES
+        .iter()
+        .any(|b| b.eq_ignore_ascii_case(&canonical))
+    {
         return Err(Warning {
             id: crate::diagnostic::GENERIC_TYPE_NAME_DIAG_ID,
             offending: ident.to_string(),
@@ -117,8 +120,8 @@ mod tests {
     fn all_thirteen_banned_names_flagged() {
         // AC3: full banned list (13 names) per issue #83.
         let banned = [
-            "String", "Int", "Float", "Bool", "None", "List", "Set", "Map",
-            "Array", "Dict", "Tuple", "Object", "Any",
+            "String", "Int", "Float", "Bool", "None", "List", "Set", "Map", "Array", "Dict",
+            "Tuple", "Object", "Any",
         ];
         for name in banned {
             let result = validate_type_position(name);
@@ -222,7 +225,10 @@ mod tests {
         let result = validate_type_position("A_g_e_n_t");
         match result {
             Ok(d) => assert_eq!(d.name(), "A_g_e_n_t"),
-            Err(w) => panic!("`A_g_e_n_t` is not banned (Agent not on banned list); got Err({:?})", w),
+            Err(w) => panic!(
+                "`A_g_e_n_t` is not banned (Agent not on banned list); got Err({:?})",
+                w
+            ),
         }
     }
 
@@ -299,7 +305,10 @@ mod tests {
             let result = validate_type_position(name);
             match result {
                 Ok(d) => assert_eq!(d.name(), name),
-                Err(w) => panic!("expected Ok for valid domain name `{}`, got Err({:?})", name, w),
+                Err(w) => panic!(
+                    "expected Ok for valid domain name `{}`, got Err({:?})",
+                    name, w
+                ),
             }
         }
     }

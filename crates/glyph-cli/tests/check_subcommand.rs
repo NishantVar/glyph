@@ -64,10 +64,7 @@ fn check_valid_exits_zero_and_writes_no_md() {
         None => {
             if post_exists {
                 let _ = std::fs::remove_file(&sibling_md);
-                panic!(
-                    "check must not have written {}",
-                    sibling_md.display()
-                );
+                panic!("check must not have written {}", sibling_md.display());
             }
         }
     }
@@ -89,7 +86,10 @@ fn check_valid_exits_zero_and_writes_no_md() {
         }
         let v: serde_json::Value =
             serde_json::from_str(line).expect("each NDJSON line must parse as JSON");
-        let cls = v.get("classification").and_then(|x| x.as_str()).unwrap_or("");
+        let cls = v
+            .get("classification")
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
         assert_eq!(
             cls, "warning",
             "json mode on a valid file should emit only warnings on stdout, got classification {:?} in: {}",
