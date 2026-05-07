@@ -46,8 +46,8 @@
 //!    bare-name references are emitted as `GlyphContextNameRef`.
 
 use crate::ast::{
-    BlockDecl, ConstDecl, ContextEntry, Decl, ExportBlockDecl, FlowStmt, ImportDecl, ImportKind,
-    ReturnExpr, Skill, SourceFile,
+    BlockDecl, ConstDecl, ConstValue, ContextEntry, Decl, ExportBlockDecl, FlowStmt, ImportDecl,
+    ImportKind, ReturnExpr, Skill, SourceFile,
 };
 use crate::condition::tokenize_condition;
 use crate::diagnostic::DiagBag;
@@ -455,16 +455,20 @@ fn collect_block_decl_names(ast: &SourceFile) -> HashSet<String> {
     names
 }
 
-/// Collect the names of every same-file `const` declaration. Used to
-/// identify bare-name predicate tokens in `if`/`elif` conditions — any
-/// unquoted token that matches a const name is treated as `PredicateConst`
-/// for highlighting. This is syntactic-only (no type inference); it may
-/// highlight bool consts too, which is acceptable for LSP coloring.
+/// Collect the names of every same-file **string-bodied** `const`
+/// declaration. Used to identify bare-name predicate tokens in `if`/`elif`
+/// conditions — only string-kinded consts qualify per the design spec
+/// (§Condition Expressions / Predicate forms), so bool / int / float consts
+/// are intentionally excluded. A boolean const in condition position is a
+/// boolean condition, not a predicate, and must NOT receive the
+/// `GlyphPredicate` highlight.
 fn collect_const_decl_names(ast: &SourceFile) -> HashSet<String> {
     let mut names = HashSet::new();
     for decl in &ast.decls {
         if let Decl::Const(c) = decl {
-            names.insert(c.node.name.clone());
+            if matches!(c.node.value, ConstValue::String(_)) {
+                names.insert(c.node.name.clone());
+            }
         }
     }
     names
@@ -833,9 +837,10 @@ fn classify_flow_stmt(
 ///
 /// **Why syntactic-only?** The semantic token collector runs only the parse
 /// pass, not the analyze pass, so `ConditionClassification` slots in the AST
-/// are always `None` here. Syntactic detection is sound for two of the three
-/// forms and "best effort" for `PredicateConst` (uses any same-file const
-/// name, regardless of type — acceptable for LSP coloring).
+/// are always `None` here. The `const_names` set passed in is restricted by
+/// `collect_const_decl_names` to *string-bodied* consts only, so bool / int /
+/// float consts in condition position correctly do NOT get highlighted as
+/// predicates (per spec §3 — only string-kinded consts are predicate forms).
 fn emit_predicate_tokens(
     source: &str,
     file_id: u32,
@@ -1506,6 +1511,59 @@ mod tests {
             SemTokenType::GlyphPredicate as u32,
             "expected GlyphPredicate for applies() form in condition; got token: {:?}",
             pred
+        );
+    }
+
+    #[test]
+    fn predicate_const_form_skips_bool_consts() {
+        // `const flag = true` (bool body) — `if flag:` must NOT highlight `flag`
+        // as GlyphPredicate. Predicate highlighting is reserved for
+        // string-kinded consts per spec §3; a boolean const in condition
+        // position is a boolean condition, not a predicate.
+        let src = concat!(
+            "skill main()\n",
+            "    description: \"d\"\n",
+            "    flow:\n",
+            "        if flag:\n",
+            "            \"do it\"\n",
+            "\n",
+            "const flag = true\n",
+        );
+        let tokens = collect_semantic_tokens(src, 0);
+        let predicate_tokens = tokens
+            .iter()
+            .filter(|t| t.token_type == SemTokenType::GlyphPredicate as u32)
+            .count();
+        assert_eq!(
+            predicate_tokens, 0,
+            "bool const must not be highlighted as predicate; got tokens: {:?}",
+            tokens
+        );
+    }
+
+    #[test]
+    fn predicate_literal_in_elif_emits_glyph_predicate() {
+        // String literal in an `elif` condition — must be highlighted as
+        // GlyphPredicate symmetrically with the `if` arm.
+        let src = concat!(
+            "skill main()\n",
+            "    description: \"d\"\n",
+            "    flow:\n",
+            "        if true:\n",
+            "            \"a\"\n",
+            "        elif \"the user opted out\":\n",
+            "            \"b\"\n",
+        );
+        let tokens = collect_semantic_tokens(src, 0);
+        let predicate_tokens: Vec<_> = tokens
+            .iter()
+            .filter(|t| t.token_type == SemTokenType::GlyphPredicate as u32)
+            .collect();
+        assert_eq!(
+            predicate_tokens.len(),
+            1,
+            "elif literal predicate should be highlighted; got tokens: {:?}",
+            predicate_tokens
         );
     }
 }
