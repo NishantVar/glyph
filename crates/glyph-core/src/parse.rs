@@ -227,81 +227,69 @@ pub fn parse_with_diagnostics_opts(
         )
     };
 
-    // Post-parse Arrow scan. Any `Arrow` token whose start offset is NOT in
-    // `consumed_arrows` is a stray `->` in an expression position
-    // (`return x -> y`, `const a = b -> c`, `if x -> y`, etc.) — the parser
-    // could not legitimately use it. Emit `G::parse::operator-in-expression`
-    // Repairable per `design/language-surface.md` §3 (the `->` arrow is only
-    // valid as a return-type annotation on a declaration header) so callers
-    // see the same structured diagnostic that fired pre-#82-chunk-2 when the
-    // tokenizer flagged `-` as `UnexpectedChar`.
-    for tok in tokens.iter() {
-        if matches!(tok.kind, TokenKind::Arrow) && !consumed_arrows.contains(&tok.span.start) {
+    // Cascade-gate (issue #119). `parse_file` has no per-declaration
+    // recovery: the first structural error returns out of the whole call,
+    // leaving any tokens past the failure point unconsumed. The two
+    // post-parse leftover-token sweeps below (`Arrow` and `LAngle`) attribute
+    // those unreached tokens to the author, producing a screen of false
+    // positives that hide the real structural error. Skip both sweeps
+    // entirely when the parse failed; the structured error still surfaces
+    // via the legacy `CompileError::Parse` path. Standard compiler UX: one
+    // structural error at a time. After the author fixes the first, the
+    // sweeps run again and surface the next problem.
+    if parsed_result.is_ok() {
+        // Post-parse Arrow scan. Any `Arrow` token whose start offset is NOT
+        // in `consumed_arrows` is a stray `->` in an expression position
+        // (`return x -> y`, `const a = b -> c`, `if x -> y`, etc.) — the
+        // parser could not legitimately use it. Emit
+        // `G::parse::operator-in-expression` Repairable per
+        // `design/language-surface.md` §3 (the `->` arrow is only valid as a
+        // return-type annotation on a declaration header) so callers see the
+        // same structured diagnostic that fired pre-#82-chunk-2 when the
+        // tokenizer flagged `-` as `UnexpectedChar`.
+        for tok in tokens.iter() {
+            if matches!(tok.kind, TokenKind::Arrow) && !consumed_arrows.contains(&tok.span.start) {
+                let span = tok.span;
+                bag.push(
+                    Diagnostic {
+                        id: "G::parse::operator-in-expression".into(),
+                        classification: Classification::Repairable,
+                        message:
+                            "operator `->` is not supported in expressions; MVP Glyph has no value-level operators"
+                                .into(),
+                        span: SourceSpan::from_byte_span(file_label, span, line_index),
+                        related: Vec::new(),
+                        hints: vec![
+                            "the `->` arrow is only valid as a return-type annotation on a declaration header (e.g. `block foo() -> Path`); rewrite or remove it here"
+                                .into(),
+                        ],
+                    },
+                    span,
+                );
+            }
+        }
+
+        // Post-parse output-target scan. Any `<` token that was not consumed
+        // as part of a return-position output target candidate is outside
+        // the only MVP-legal slot (`return <name>` as the terminal flow
+        // statement).
+        for tok in tokens.iter() {
+            if !matches!(tok.kind, TokenKind::LAngle) {
+                continue;
+            }
+            if consumed_output_targets.contains(&tok.span.start) {
+                continue;
+            }
             let span = tok.span;
             bag.push(
-                Diagnostic {
-                    id: "G::parse::operator-in-expression".into(),
-                    classification: Classification::Repairable,
-                    message:
-                        "operator `->` is not supported in expressions; MVP Glyph has no value-level operators"
-                            .into(),
-                    span: SourceSpan::from_byte_span(file_label, span, line_index),
-                    related: Vec::new(),
-                    hints: vec![
-                        "the `->` arrow is only valid as a return-type annotation on a declaration header (e.g. `block foo() -> Path`); rewrite or remove it here"
-                            .into(),
-                    ],
-                },
+                Diagnostic::error(
+                    "G::parse::output-target-outside-return",
+                    "output targets are only allowed as the terminal `return <name>` expression",
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
                 span,
             );
         }
-    }
-
-    // Post-parse output-target scan. Any `<` token that was not consumed as
-    // part of a return-position output target candidate is outside the only
-    // MVP-legal slot (`return <name>` as the terminal flow statement).
-    //
-    // When `parse_file` returns `Err`, only `<` tokens at-or-before the
-    // failure offset are diagnostic-worthy. Tokens past the failure point
-    // were never reached by the parser, so a diagnostic against them
-    // mis-attributes the cause — e.g. a parse failure on an unsupported
-    // typed parameter (`:` in a parameter list) would otherwise surface as
-    // `G::parse::output-target-outside-return` against a `<` that appears
-    // much later in the source. The `Arrow` scan above runs unconditionally
-    // because stray `->` is a Repairable hint useful even when the
-    // surrounding parse failed; the `<` diagnostic is an error on a
-    // non-recoverable position and must not mis-fire on unreached tokens.
-    let failure_cutoff: Option<u32> = match &parsed_result {
-        Ok(_) => None,
-        Err(ParseError::Unexpected { span, .. }) => Some(span.start),
-        // Tokenize-level failures don't carry a usable position; suppress
-        // the scan entirely rather than guess.
-        Err(_) => Some(u32::MIN),
-    };
-    for tok in tokens.iter() {
-        if !matches!(tok.kind, TokenKind::LAngle) {
-            continue;
-        }
-        if consumed_output_targets.contains(&tok.span.start) {
-            continue;
-        }
-        if let Some(cutoff) = failure_cutoff {
-            // The token at the failure offset itself is the most likely
-            // cause (e.g. `< bar` at statement start); preserve it. Tokens
-            // past the failure are unreached.
-            if tok.span.start > cutoff {
-                continue;
-            }
-        }
-        let span = tok.span;
-        bag.push(
-            Diagnostic::error(
-                "G::parse::output-target-outside-return",
-                "output targets are only allowed as the terminal `return <name>` expression",
-                SourceSpan::from_byte_span(file_label, span, line_index),
-            ),
-            span,
-        );
     }
 
     let file = match parsed_result {
@@ -1886,9 +1874,11 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a (possibly empty) comma-separated parameter list between the
-    /// opening and closing parens of a header. Walking-skeleton scope: untyped,
-    /// optional default of the form `= "literal"` (string only). Type
-    /// annotations and non-string defaults are deferred to later slices.
+    /// opening and closing parens of a header. Slice 4 supports the bare
+    /// `name`, optional `name: Type` annotation (issue #119 / Phase 0), and
+    /// optional `= "literal"` string default. The annotation reserves the
+    /// syntactic position only — no resolution, no validation, no
+    /// module-qualified or generic forms (per `design/types.md`).
     fn parse_param_list(&mut self) -> Result<Vec<Param>, ParseError> {
         let mut params: Vec<Param> = Vec::new();
         // Empty list?
@@ -1897,8 +1887,18 @@ impl<'a> Parser<'a> {
         }
         loop {
             let (pname, name_span) = self.expect_ident(None)?;
+            let mut type_annotation: Option<Spanned<String>> = None;
             let mut default: Option<String> = None;
             let mut end_span = name_span;
+            // Optional `: Type` annotation — issue #119. Bare ident only;
+            // any malformed shape (`x:`, `x: 123`) reuses the generic
+            // `expect_ident` error per the PRD.
+            if matches!(self.peek().kind, TokenKind::Colon) {
+                self.pos += 1;
+                let (tname, tspan) = self.expect_ident(None)?;
+                type_annotation = Some(Spanned::new(tname, tspan));
+                end_span = tspan;
+            }
             if matches!(self.peek().kind, TokenKind::Equals) {
                 self.pos += 1;
                 // Slice 4: only string-literal defaults are supported.
@@ -1948,6 +1948,7 @@ impl<'a> Parser<'a> {
             params.push(Param {
                 name: pname,
                 default,
+                type_annotation,
                 span,
             });
             match &self.peek().kind {
@@ -3791,48 +3792,53 @@ skill foo()
     // parse_with_diagnostics tokenize-error arm (lines ~111–139) emitted
     // `G::parse::operator-in-expression`. After chunk 2 promoted `->` to a
     // real `Arrow` token, expression-position `->` was silently dropped by
-    // the parser body walkers, regressing the diagnostic. The post-parse
-    // Arrow scan introduced alongside these tests restores the structured
-    // diagnostic via `consumed_arrow_offsets`.
+    // the parser body walkers, regressing the diagnostic. A post-parse
+    // Arrow scan was introduced to restore the structured diagnostic via
+    // `consumed_arrow_offsets`.
+    //
+    // Issue #119 (Phase 0) refines the contract: when the parser produces
+    // any structural error, BOTH leftover-token sweeps are skipped so the
+    // author sees the real structural error first rather than a screen of
+    // false positives on unreached downstream tokens. The structured
+    // diagnostic still fires when the parser succeeds and the `->` survives
+    // unconsumed; it does not fire when the parser stops at the `->` and
+    // the legacy `CompileError::Parse` path delivers the structural error
+    // instead.
 
     #[test]
-    fn parse_rejects_arrow_in_flow_return_expression() {
-        // Codex P1-tokenize regression: `return x -> y` in a skill flow
-        // body must surface `G::parse::operator-in-expression` as
-        // Repairable (exit 2). The Arrow is not in a header slot so the
-        // parser does not consume it via `try_parse_return_type`, and the
-        // post-parse Arrow scan flags it.
+    fn parse_arrow_in_flow_return_expression_is_suppressed_on_parse_error() {
+        // Issue #119 cascade-gate: `return x -> y` aborts the flow parser.
+        // The post-parse Arrow sweep is skipped on parse error so the
+        // author sees the real structural diagnostic (delivered via the
+        // legacy `CompileError::Parse` path) instead of an
+        // `operator-in-expression` mis-attribution.
         let src = "\
 skill foo()
     description: \"d\"
     flow:
         return x -> y
 ";
-        let (ids, code) = run(src);
+        let (ids, _code) = run(src);
         assert!(
-            ids.iter().any(|s| s == "G::parse::operator-in-expression"),
-            "expected G::parse::operator-in-expression for `return x -> y`, got: {:?}",
+            !ids.iter().any(|s| s == "G::parse::operator-in-expression"),
+            "cascade-gate must suppress operator-in-expression on parse error, got: {:?}",
             ids
         );
-        assert_eq!(code, 2, "operator-in-expression is repairable (exit 2)");
     }
 
     #[test]
-    fn parse_rejects_arrow_in_const_rhs_expression() {
-        // Codex P1-tokenize regression: `const a = b -> c` must surface
-        // `G::parse::operator-in-expression` even though
-        // `parse_const_literal_rhs` short-circuits on the bare-name `b`
-        // before ever seeing the Arrow — the post-parse scan walks the
-        // raw token stream and is independent of how far the recursive
-        // descent got.
+    fn parse_arrow_in_const_rhs_expression_is_suppressed_on_parse_error() {
+        // Issue #119 cascade-gate: `const a = b -> c` causes a parse
+        // failure (the Arrow appears where a newline is expected). The
+        // post-parse Arrow sweep is skipped; the legacy `CompileError::Parse`
+        // path surfaces the structural error.
         let src = "const a = b -> c\n";
-        let (ids, code) = run(src);
+        let (ids, _code) = run(src);
         assert!(
-            ids.iter().any(|s| s == "G::parse::operator-in-expression"),
-            "expected G::parse::operator-in-expression for `const a = b -> c`, got: {:?}",
+            !ids.iter().any(|s| s == "G::parse::operator-in-expression"),
+            "cascade-gate must suppress operator-in-expression on parse error, got: {:?}",
             ids
         );
-        assert_eq!(code, 2);
     }
 
     #[test]
@@ -3860,47 +3866,45 @@ block foo() -> Path
     // post-parse scan still flags incomplete header arrows.
 
     #[test]
-    fn parse_rejects_incomplete_header_arrow_no_ident() {
-        // Codex P2-A regression #1: `block foo() ->` (no trailing ident)
-        // used to be silently swallowed because pass 2 unconditionally
-        // recorded the Arrow as consumed before validating the `Ident`.
-        // After pass 3 the recording moves to the success path, so this
-        // input now surfaces `G::parse::operator-in-expression`
-        // (Repairable, exit 2) via the post-parse scan.
+    fn parse_incomplete_header_arrow_is_suppressed_on_parse_error() {
+        // Issue #119 cascade-gate: `block foo() ->` (no trailing ident)
+        // makes the parser fail. The post-parse Arrow sweep is skipped on
+        // parse error so the author sees the structural error from the
+        // legacy `CompileError::Parse` path instead of an
+        // `operator-in-expression` mis-attribution.
         let src = "\
 block foo() ->
     description: \"d\"
     flow:
         \"x\"
 ";
-        let (ids, code) = run(src);
+        let (ids, _code) = run(src);
         assert!(
-            ids.iter().any(|s| s == "G::parse::operator-in-expression"),
-            "expected G::parse::operator-in-expression for `block foo() ->` (incomplete header arrow), got: {:?}",
+            !ids.iter().any(|s| s == "G::parse::operator-in-expression"),
+            "cascade-gate must suppress operator-in-expression on parse error, got: {:?}",
             ids
         );
-        assert_eq!(code, 2, "operator-in-expression is repairable (exit 2)");
     }
 
     #[test]
-    fn parse_rejects_header_arrow_followed_by_string_literal() {
-        // Codex P2-A regression #2: `skill foo() -> "Path"` (string
-        // literal where an Ident is required). The Arrow was consumed
-        // but never legitimately resolved into a return-type slot, so
-        // the post-parse scan must surface the structured diagnostic.
+    fn parse_header_arrow_followed_by_string_literal_is_suppressed_on_parse_error() {
+        // Issue #119 cascade-gate: `skill foo() -> "Path"` (string literal
+        // where an Ident is required) makes the parser fail. The post-parse
+        // Arrow sweep is skipped so the structural error surfaces via the
+        // legacy `CompileError::Parse` path instead of being shadowed by
+        // an `operator-in-expression` mis-attribution.
         let src = "\
 skill foo() -> \"Path\"
     description: \"d\"
     flow:
         \"x\"
 ";
-        let (ids, code) = run(src);
+        let (ids, _code) = run(src);
         assert!(
-            ids.iter().any(|s| s == "G::parse::operator-in-expression"),
-            "expected G::parse::operator-in-expression for `-> \"Path\"`, got: {:?}",
+            !ids.iter().any(|s| s == "G::parse::operator-in-expression"),
+            "cascade-gate must suppress operator-in-expression on parse error, got: {:?}",
             ids
         );
-        assert_eq!(code, 2);
     }
 
     // --- Issue #82 codex-pass-3 P2-B: branch-condition Arrow must fall
@@ -3908,13 +3912,12 @@ skill foo() -> \"Path\"
     // generic `ParseError::Unexpected`.
 
     #[test]
-    fn parse_rejects_arrow_in_branch_condition() {
-        // Codex P2-B regression: `if cond -> other` previously raised
-        // `ParseError::Unexpected` from `parse_branch_condition`, which
-        // `parse_with_diagnostics` collapsed into an unstructured exit-1
-        // failure with no diagnostic ID. After pass 3 the branch-condition
-        // arm `break`s without consuming the Arrow, so the post-parse
-        // scan emits the structured `G::parse::operator-in-expression`.
+    fn parse_arrow_in_branch_condition_is_suppressed_on_parse_error() {
+        // Issue #119 cascade-gate: `if cond -> other` raises a parse
+        // error from `parse_branch_condition`. The post-parse Arrow
+        // sweep is skipped so the structural error from the legacy
+        // `CompileError::Parse` path surfaces instead of an
+        // `operator-in-expression` mis-attribution.
         let src = "\
 skill foo()
     description: \"d\"
@@ -3922,13 +3925,12 @@ skill foo()
         if cond -> other
             \"yes\"
 ";
-        let (ids, code) = run(src);
+        let (ids, _code) = run(src);
         assert!(
-            ids.iter().any(|s| s == "G::parse::operator-in-expression"),
-            "expected G::parse::operator-in-expression for `if cond -> other`, got: {:?}",
+            !ids.iter().any(|s| s == "G::parse::operator-in-expression"),
+            "cascade-gate must suppress operator-in-expression on parse error, got: {:?}",
             ids
         );
-        assert_eq!(code, 2);
     }
 
     // --- Issue #82 chunk 2: AST `return_type` field is populated ---
@@ -4242,18 +4244,15 @@ skill foo()
         );
     }
 
-    /// Regression: when the parser fails for unrelated reasons (here,
-    /// unsupported `: TypeName` annotations on parameters — see
-    /// `design/user-facing-todo.md` §"Deferred Parser Support"), the
-    /// post-parse `<`-scan must NOT mis-attribute the failure to the
-    /// descriptive return's `<`. The author's real problem is the typed
-    /// parameter; emitting `output-target-outside-return` here would point
-    /// them at the wrong line and stall debugging. The scan is gated on
-    /// `parse_file` success; the surfaced error is a generic parse failure
-    /// (or whatever future structured diagnostic covers typed params), not
-    /// this misdirection.
+    /// Issue #119 Phase 0: typed parameters now parse cleanly (the
+    /// `: TypeName` slot is recognized syntactically by the parser).
+    /// A descriptive return in terminal position should not surface
+    /// `output-target-outside-return`. This is the historical "parser
+    /// fails, sweep mis-fires on the descriptive return's `<`" scenario,
+    /// now resolved by both Phase 0 changes: typed params parse, and
+    /// the cascade-gate would suppress sweeps on any parse error anyway.
     #[test]
-    fn parse_failure_on_typed_param_does_not_misfire_output_target_outside_return() {
+    fn parse_typed_param_with_descriptive_return_emits_no_output_target_diagnostic() {
         let src = "\
 skill foo(a: Path)
     description: \"test\"
@@ -4265,18 +4264,18 @@ skill foo(a: Path)
         assert!(
             !ids.iter()
                 .any(|id| id == "G::parse::output-target-outside-return"),
-            "post-parse `<`-scan must not fire on parse failure; got {ids:?}"
+            "typed param + terminal descriptive return must not fire output-target-outside-return, got: {ids:?}"
         );
     }
 
-    /// Positive companion: when the parse failure IS at a stray `<`
-    /// (statement-leading `<`, value-level `<` in an expression, etc.),
-    /// the post-parse scan must still surface
-    /// `G::parse::output-target-outside-return`. The narrower gate from
-    /// the regression above only suppresses `<` tokens past the failure
-    /// offset; tokens at-or-before the failure remain diagnostic-worthy.
+    /// Issue #119 cascade-gate: a stray `<` at statement position causes
+    /// a parse failure. Both leftover-token sweeps (Arrow scan and `<`
+    /// scan) are now suppressed on any parse error, so the structured
+    /// `output-target-outside-return` does NOT fire here. The author
+    /// sees the structural error from the legacy `CompileError::Parse`
+    /// path instead — that is the rejected mis-attribution scenario.
     #[test]
-    fn parse_failure_at_stray_langle_still_fires_output_target_outside_return() {
+    fn parse_failure_at_stray_langle_is_suppressed_on_parse_error() {
         let src = "\
 skill foo()
     flow:
@@ -4284,9 +4283,9 @@ skill foo()
 ";
         let ids = diagnostic_ids(src);
         assert!(
-            ids.iter()
+            !ids.iter()
                 .any(|id| id == "G::parse::output-target-outside-return"),
-            "stray `<` must still surface structured diagnostic; got {ids:?}"
+            "cascade-gate must suppress output-target-outside-return on parse error, got: {ids:?}"
         );
     }
 
@@ -5478,6 +5477,262 @@ skill main() -> Path
             !ids.iter()
                 .any(|s| s == "G::parse::output-target-outside-return"),
             "must not fire output-target-outside-return after multi-line-import fix; got: {:?}",
+            ids
+        );
+    }
+}
+
+#[cfg(test)]
+mod typed_param_tests {
+    //! Issue #119 Phase 0 — parser support for `name: Type` parameter
+    //! slots. Phase 0 is purely syntactic: the type ident is recorded as
+    //! `Param.type_annotation` and surfaced as `SemTokenType::Type`. There
+    //! is no resolution, no validation, and no semantic interpretation;
+    //! later phases extend this slot with descriptions and TypeRegistry
+    //! wiring.
+    use super::*;
+    use crate::ast::{BlockDecl, Decl, ExportBlockDecl, Skill};
+    use crate::span::LineIndex;
+
+    fn first_skill(src: &str) -> Skill {
+        let (file, _diags) = parse(src, 0).expect("parse should succeed");
+        file.decls
+            .into_iter()
+            .find_map(|d| match d {
+                Decl::Skill(s) => Some(s.node),
+                _ => None,
+            })
+            .expect("expected a skill declaration")
+    }
+
+    fn first_block(src: &str) -> BlockDecl {
+        let (file, _diags) = parse(src, 0).expect("parse should succeed");
+        file.decls
+            .into_iter()
+            .find_map(|d| match d {
+                Decl::Block(b) => Some(b.node),
+                _ => None,
+            })
+            .expect("expected a block declaration")
+    }
+
+    fn first_export_block(src: &str) -> ExportBlockDecl {
+        let (file, _diags) = parse(src, 0).expect("parse should succeed");
+        file.decls
+            .into_iter()
+            .find_map(|d| match d {
+                Decl::ExportBlock(b) => Some(b.node),
+                _ => None,
+            })
+            .expect("expected an export block declaration")
+    }
+
+    #[test]
+    fn skill_typed_param_records_annotation() {
+        let src = "\
+skill foo(a: Path)
+    description: \"d\"
+    flow:
+        \"x\"
+";
+        let skill = first_skill(src);
+        let p = &skill.params[0];
+        assert_eq!(p.name, "a");
+        assert!(p.default.is_none(), "no default expected, got: {:?}", p.default);
+        let t = p
+            .type_annotation
+            .as_ref()
+            .expect("type_annotation should be populated");
+        assert_eq!(t.node, "Path");
+    }
+
+    #[test]
+    fn skill_typed_param_with_default_records_both() {
+        let src = "\
+skill foo(a: Path = \"./out\")
+    description: \"d\"
+    flow:
+        \"x\"
+";
+        let skill = first_skill(src);
+        let p = &skill.params[0];
+        assert_eq!(p.name, "a");
+        assert_eq!(p.default.as_deref(), Some("\"./out\""));
+        let t = p
+            .type_annotation
+            .as_ref()
+            .expect("type_annotation should be populated");
+        assert_eq!(t.node, "Path");
+    }
+
+    #[test]
+    fn skill_untyped_param_records_no_annotation() {
+        let src = "\
+skill foo(a)
+    description: \"d\"
+    flow:
+        \"x\"
+";
+        let skill = first_skill(src);
+        let p = &skill.params[0];
+        assert_eq!(p.name, "a");
+        assert!(
+            p.type_annotation.is_none(),
+            "untyped param must have no annotation, got: {:?}",
+            p.type_annotation
+        );
+    }
+
+    #[test]
+    fn skill_mixed_param_list_typed_and_untyped() {
+        let src = "\
+skill foo(a, b: Path, c = \"x\", d: Path = \"y\")
+    description: \"d\"
+    flow:
+        \"x\"
+";
+        let skill = first_skill(src);
+        assert_eq!(skill.params.len(), 4);
+
+        // a — untyped, no default
+        assert_eq!(skill.params[0].name, "a");
+        assert!(skill.params[0].type_annotation.is_none());
+        assert!(skill.params[0].default.is_none());
+
+        // b — typed, no default
+        assert_eq!(skill.params[1].name, "b");
+        assert_eq!(
+            skill.params[1].type_annotation.as_ref().map(|t| t.node.as_str()),
+            Some("Path")
+        );
+        assert!(skill.params[1].default.is_none());
+
+        // c — untyped, with default
+        assert_eq!(skill.params[2].name, "c");
+        assert!(skill.params[2].type_annotation.is_none());
+        assert_eq!(skill.params[2].default.as_deref(), Some("\"x\""));
+
+        // d — typed, with default
+        assert_eq!(skill.params[3].name, "d");
+        assert_eq!(
+            skill.params[3].type_annotation.as_ref().map(|t| t.node.as_str()),
+            Some("Path")
+        );
+        assert_eq!(skill.params[3].default.as_deref(), Some("\"y\""));
+    }
+
+    #[test]
+    fn skill_typed_param_span_covers_type_ident() {
+        let src = "\
+skill foo(a: Path)
+    description: \"d\"
+    flow:
+        \"x\"
+";
+        let skill = first_skill(src);
+        let t = skill.params[0]
+            .type_annotation
+            .as_ref()
+            .expect("type_annotation populated");
+        let start = t.span.start as usize;
+        let end = t.span.end as usize;
+        assert_eq!(&src[start..end], "Path", "type ident span must cover `Path`");
+    }
+
+    #[test]
+    fn block_typed_param_records_annotation() {
+        let src = "\
+block helper(a: Path)
+    description: \"d\"
+    flow:
+        \"x\"
+";
+        let block = first_block(src);
+        let t = block.params[0]
+            .type_annotation
+            .as_ref()
+            .expect("type_annotation should be populated");
+        assert_eq!(t.node, "Path");
+    }
+
+    #[test]
+    fn export_block_typed_param_records_annotation() {
+        let src = "\
+export block helper(a: Path) -> Path
+    description: \"d\"
+    flow:
+        return \"x\"
+";
+        let eb = first_export_block(src);
+        let t = eb.params[0]
+            .type_annotation
+            .as_ref()
+            .expect("type_annotation should be populated");
+        assert_eq!(t.node, "Path");
+    }
+
+    #[test]
+    fn malformed_typed_param_missing_type_name_is_parse_error() {
+        // `a:` with nothing after it must surface a generic ParseError
+        // (per the PRD: malformed shapes reuse `expect_ident`'s error).
+        let src = "\
+skill foo(a:)
+    description: \"d\"
+    flow:
+        \"x\"
+";
+        let res = parse(src, 0);
+        assert!(
+            res.is_err(),
+            "expected ParseError for `a:` (missing type ident), got Ok"
+        );
+    }
+
+    #[test]
+    fn malformed_typed_param_non_ident_after_colon_is_parse_error() {
+        // `a: 123` must surface a generic ParseError — the slot only
+        // accepts a bare identifier in Phase 0.
+        let src = "\
+skill foo(a: 123)
+    description: \"d\"
+    flow:
+        \"x\"
+";
+        let res = parse(src, 0);
+        assert!(
+            res.is_err(),
+            "expected ParseError for `a: 123` (non-ident type), got Ok"
+        );
+    }
+
+    #[test]
+    fn cascade_gate_suppresses_both_sweeps_on_parse_error() {
+        // Issue #119 cascade-gate: a single parse error suppresses BOTH
+        // leftover-token sweeps (Arrow scan and `<` scan). Construct a
+        // source whose parse failure lands BEFORE both a downstream `->`
+        // and a downstream `<`; without the gate, the post-parse sweeps
+        // would mis-attribute one or both of these as repairable
+        // diagnostics. With the gate, neither fires.
+        let src = "\
+skill foo(a: 123)
+    description: \"d\"
+    flow:
+        \"x\" -> bar
+        return <output>
+";
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let _ = parse_with_diagnostics(src, 0, "t.glyph", &line_index, &mut bag);
+        let ids: Vec<String> = bag.iter().map(|d| d.id.clone()).collect();
+        assert!(
+            !ids.iter().any(|s| s == "G::parse::operator-in-expression"),
+            "cascade-gate must suppress operator-in-expression on parse error, got: {:?}",
+            ids
+        );
+        assert!(
+            !ids.iter()
+                .any(|s| s == "G::parse::output-target-outside-return"),
+            "cascade-gate must suppress output-target-outside-return on parse error, got: {:?}",
             ids
         );
     }
