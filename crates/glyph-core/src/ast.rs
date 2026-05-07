@@ -27,6 +27,10 @@ pub enum Decl {
     /// post-issue-#81 — supersedes the prior `text NAME = "..."` form by
     /// covering all four primitive kinds (String, Int, Float, Bool).
     Const(Spanned<ConstDecl>),
+    /// `type Name = <"…">` — see `TypeDecl`. Compile-time only; lowers to a
+    /// type-registry entry (Phase B.5) and is consumed by the emitter's
+    /// description-lookup (Phase B.6). Emits nothing directly.
+    TypeDecl(Spanned<TypeDecl>),
 }
 
 /// An `import` declaration at the top of a source file.
@@ -186,14 +190,25 @@ pub struct ExportBlockDecl {
     pub extra_subsections: Vec<DuplicateSubsection>,
 }
 
-/// A header parameter on `skill`, `block`, or `export block`.
+/// Single parameter on a `skill`, `block`, or `export block` header.
 ///
-/// Slice 4 supports the two MVP forms `name` (no default) and `name = "default"`.
-/// Type annotations are deferred. Defaults are constrained to literal forms in
-/// MVP — currently only string literals are accepted (see `language-surface.md`
-/// §3.10). The original literal text of the default — *with surrounding quotes
-/// preserved* for string defaults — is what eventually lands in the
-/// `## Parameters` section, so we store the rendered form here.
+/// Slice-4 surface forms (post-#119, post-A.1):
+/// - `name` — bare ident, no annotation, no default
+/// - `name: Type` — typed param (issue #119; syntactically reserved only,
+///   no resolution yet — see `type_annotation` field)
+/// - `name = "default"` — string-literal default
+/// - `name = <"description">` — per-param description (issue #119+ Phase A)
+/// - any combination of the above (e.g. `name: Type = "default" <"desc">`)
+///
+/// Defaults are constrained to literal forms in MVP — currently only string
+/// literals are accepted (see `language-surface.md` §3.10). The `default`
+/// field stores the **rendered** form (with surrounding quotes preserved for
+/// string defaults) because that string is what eventually lands in the
+/// `## Parameters` compiled-output section.
+///
+/// `type_annotation` is reserved for future type-system work (no semantic
+/// resolution today). `description` is the prose authored alongside the
+/// param at the call site (Phase A wires it into the compiled output).
 #[derive(Clone, Debug)]
 pub struct Param {
     pub name: String,
@@ -204,6 +219,28 @@ pub struct Param {
     /// arguments — call sites that omit them surface
     /// `G::analyze::missing-required-arg`.
     pub default: Option<String>,
+    /// `true` when `default` carries a name reference (e.g. `default_risk`
+    /// or `M.foo`) that must resolve to an in-scope `const` at compile
+    /// time; `false` for literal defaults (string / number / bool / `none`)
+    /// and for parameters with no default. Lower uses this flag to
+    /// substitute the referenced const's rendered value (with type-aware
+    /// quoting for string consts) instead of leaking the bare identifier
+    /// into the IR / `## Parameters` output.
+    pub default_is_name_ref: bool,
+    /// Optional `name: Type` annotation captured at parse time. Slice 4
+    /// (Phase 0) reserves the syntactic position only — the type name is
+    /// stored verbatim with its source span and **no** semantic resolution,
+    /// validation, hover, completion, or goto-def is wired up. A later type
+    /// system tier interprets this field; until then it exists purely so
+    /// authors can write the documented `name: Type` form without tripping
+    /// the parser. See `design/types.md` and `design/language-surface.md`.
+    pub type_annotation: Option<Spanned<String>>,
+    /// Per-param description authored as `<"…">` after the `=` slot
+    /// (or as `= <"…">` standalone). The `Spanned` wrapper carries the
+    /// full descriptive form's span (including the angle brackets).
+    /// Wired into the AST in Phase A.2 (parser); Phase A.1 only adds
+    /// the field with `None` at every construction site.
+    pub description: Option<Spanned<String>>,
     /// Span covering the parameter (header position, used for diagnostic
     /// reporting in slice 4).
     pub span: Span,
@@ -338,6 +375,19 @@ pub struct ConstDecl {
     /// `design/language-surface.md` §3.6). `generated` and `exported` are
     /// mutually exclusive at the grammar level.
     pub generated: bool,
+}
+
+/// `type Name = <"…">` top-level declaration. Carries the canonical,
+/// importable description for a domain type. Compile-time only — emits
+/// nothing into compiled output directly. See spec §6.2.
+#[derive(Clone, Debug)]
+pub struct TypeDecl {
+    pub name: String,
+    /// Description content (string literal RHS, quotes stripped, dedent
+    /// applied for block strings).
+    pub description: Spanned<String>,
+    /// Whether this decl was declared with `export`.
+    pub exported: bool,
 }
 
 /// Rendered literal RHS of a `const` declaration. Each variant carries the

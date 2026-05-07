@@ -11,7 +11,7 @@ pub(crate) mod scaffold;
 pub(crate) mod stub_fill;
 pub(crate) mod templates;
 
-use crate::ir::{IrArena, OutputTargetForm};
+use crate::ir::{IrArena, OutputTargetForm, TypeRegistry};
 
 pub fn emit(arena: &IrArena, enable_effects: bool) -> String {
     let scaffold = scaffold::build(arena, enable_effects);
@@ -30,13 +30,26 @@ pub fn emit(arena: &IrArena, enable_effects: bool) -> String {
 /// Identifier and Description forms route through the locked templates in
 /// `emit::templates` so a Tier-3 procedure retains its return contract on disk
 /// (`design/compiled-output.md` §OutputContract Rendering).
+/// One row in the Tier 3 procedure-file `## Parameters` bullet list. Mirrors
+/// the four fields the skill `## Parameters` renderer reads from `IrParam` so
+/// the two paths cannot drift on what they project (per `compiled-output.md`
+/// §`## Parameters`).
+pub struct ProcedureParam<'a> {
+    pub name: &'a str,
+    pub type_annotation: Option<&'a str>,
+    pub description: Option<&'a str>,
+    pub default: Option<&'a str>,
+}
+
 pub fn emit_procedure(
     name: &str,
     description: &str,
     effects: &[String],
-    params: &[(String, Option<String>)],
+    params: &[ProcedureParam<'_>],
     flow_strings: &[String],
     output_form: Option<&OutputTargetForm>,
+    return_type_text: Option<&str>,
+    type_registry: &TypeRegistry,
     enable_effects: bool,
 ) -> String {
     let kebab_name = name.replace('_', "-");
@@ -54,33 +67,39 @@ pub fn emit_procedure(
     }
     out.push_str("---\n\n");
 
-    // Parameters
+    // Parameters — same bullet shape as the skill `## Parameters` emitter.
+    // Picks per-param description first, falling back to the type-level
+    // `type Foo = <"…">` lookup so Tier 3 procedure files mirror the skill
+    // output (compiled-output.md §`## Parameters`).
     if !params.is_empty() {
         out.push_str("## Parameters\n\n");
-        for (pname, default) in params {
-            match default {
-                Some(v) => out.push_str(&format!("- **{}** (default: {})\n", pname, v)),
-                None => out.push_str(&format!("- **{}** (required)\n", pname)),
-            }
+        for p in params {
+            let desc = templates::effective_param_description(
+                p.description,
+                p.type_annotation,
+                type_registry,
+            );
+            out.push_str(&templates::render_param_bullet(
+                p.name,
+                p.type_annotation,
+                desc.as_deref(),
+                p.default,
+            ));
         }
         out.push('\n');
     }
 
     // Instructions / Steps
     out.push_str("## Instructions\n\n");
+    let return_sentence =
+        templates::compute_return_sentence(return_type_text, output_form, type_registry);
     let last_step_idx = flow_strings.len().checked_sub(1);
     if !flow_strings.is_empty() {
         out.push_str("### Steps\n\n");
         for (i, step) in flow_strings.iter().enumerate() {
             let body = if Some(i) == last_step_idx {
-                match output_form {
-                    Some(OutputTargetForm::Identifier(_)) => {
-                        templates::append_identifier_suffix(step)
-                    }
-                    Some(OutputTargetForm::Description(desc)) => {
-                        let normalized = desc.split_whitespace().collect::<Vec<_>>().join(" ");
-                        templates::append_description_suffix(step, &normalized)
-                    }
+                match return_sentence.as_deref() {
+                    Some(sent) => templates::append_return_sentence(step, sent),
                     None => step.clone(),
                 }
             } else {
@@ -88,19 +107,11 @@ pub fn emit_procedure(
             };
             out.push_str(&format!("{}. {}\n", i + 1, body));
         }
-    } else if let Some(form) = output_form {
-        // No steps but the export block still declares a return contract —
-        // surface it as a single standalone-return step so the contract isn't
-        // silently dropped from the procedure file.
+    } else if let Some(sent) = return_sentence.as_deref() {
+        // No steps but the export block still yields a §8.4 sentence —
+        // surface it as the sole step so the contract isn't silently dropped.
         out.push_str("### Steps\n\n");
-        let line = match form {
-            OutputTargetForm::Identifier(name) => templates::standalone_return_identifier(name),
-            OutputTargetForm::Description(desc) => {
-                let normalized = desc.split_whitespace().collect::<Vec<_>>().join(" ");
-                templates::standalone_return_description(&normalized)
-            }
-        };
-        out.push_str(&format!("1. {}\n", line));
+        out.push_str(&format!("1. {}\n", sent));
     }
 
     // Trim trailing blank lines for byte-stable output.
@@ -136,6 +147,7 @@ mod tests {
             return_text: None,
             return_type: None,
             output_contract: None,
+            return_type_text: None,
         }));
         arena.set_root_skill(skill_id);
         arena
@@ -174,6 +186,8 @@ mod tests {
             &[],
             &["Step one.".into()],
             None,
+            None,
+            &TypeRegistry::default(),
             false,
         );
         assert!(
@@ -195,6 +209,8 @@ mod tests {
             &[],
             &["Step one.".into()],
             None,
+            None,
+            &TypeRegistry::default(),
             true,
         );
         assert!(
@@ -204,7 +220,8 @@ mod tests {
     }
 
     #[test]
-    fn emit_procedure_appends_identifier_suffix_to_last_step() {
+    fn emit_procedure_appends_identifier_sentence_to_last_step() {
+        // §8.4 row 4: `return <name>` only, no `-> Foo`.
         let form = OutputTargetForm::Identifier("current_branch".into());
         let output = emit_procedure(
             "helper",
@@ -213,16 +230,19 @@ mod tests {
             &[],
             &["Examine the working tree.".into()],
             Some(&form),
+            None,
+            &TypeRegistry::default(),
             false,
         );
         assert!(
-            output.contains("1. Examine the working tree, and return that as your result.\n"),
-            "identifier output_form should append the locked suffix to the final step:\n{output}"
+            output.contains("1. Examine the working tree. Produce `current_branch`.\n"),
+            "identifier-only output_form should append the §8.4 sentence to the final step:\n{output}"
         );
     }
 
     #[test]
-    fn emit_procedure_appends_description_suffix_to_last_step() {
+    fn emit_procedure_appends_description_sentence_to_last_step() {
+        // §8.4 row 1: `return <"X">` (descriptive output target).
         let form = OutputTargetForm::Description("the branch name".into());
         let output = emit_procedure(
             "helper",
@@ -231,18 +251,18 @@ mod tests {
             &[],
             &["Examine the working tree.".into()],
             Some(&form),
+            None,
+            &TypeRegistry::default(),
             false,
         );
         assert!(
-            output.contains(
-                "1. Examine the working tree, and return the branch name as your result.\n"
-            ),
-            "description output_form should append the locked suffix with the text:\n{output}"
+            output.contains("1. Examine the working tree. Produce: the branch name.\n"),
+            "descriptive output_form should append the §8.4 sentence to the final step:\n{output}"
         );
     }
 
     #[test]
-    fn emit_procedure_emits_standalone_return_when_no_steps() {
+    fn emit_procedure_emits_standalone_sentence_when_no_steps() {
         let form = OutputTargetForm::Identifier("current_branch".into());
         let output = emit_procedure(
             "helper",
@@ -251,11 +271,13 @@ mod tests {
             &[],
             &[],
             Some(&form),
+            None,
+            &TypeRegistry::default(),
             false,
         );
         assert!(
-            output.contains("1. Return current branch as your result.\n"),
-            "with no steps, output_form should produce a standalone return line:\n{output}"
+            output.contains("1. Produce `current_branch`.\n"),
+            "with no steps, identifier-only output_form should produce a standalone §8.4 sentence:\n{output}"
         );
     }
 }

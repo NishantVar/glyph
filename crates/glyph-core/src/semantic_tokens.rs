@@ -462,6 +462,7 @@ fn classify_ast(
             Decl::ExportBlock(eb) => classify_export_block(eb, source, file_id, line_index, out),
             Decl::Const(c) => classify_const(c, source, file_id, line_index, out),
             Decl::Import(i) => classify_import(i, source, file_id, line_index, out),
+            Decl::TypeDecl(_) => {} // TODO: handled in Task B.4+
         }
     }
 }
@@ -641,6 +642,18 @@ fn classify_params(
             SemTokenModifier::DECLARATION,
             line_index,
         );
+        // Issue #119 Phase 0: highlight the optional `: Type` annotation
+        // ident as `SemTokenType::Type`. Phase 0 is purely syntactic — no
+        // resolution or validation is performed.
+        if let Some(t) = &p.type_annotation {
+            push_span(
+                out,
+                t.span,
+                SemTokenType::Type,
+                SemTokenModifier::NONE,
+                line_index,
+            );
+        }
     }
 }
 
@@ -1155,6 +1168,25 @@ mod tests {
         let scope = find_token(&tokens, 0, "scope", src).expect("param `scope`");
         assert_eq!(scope.token_type, SemTokenType::Parameter as u32);
         assert!(scope.modifiers & SemTokenModifier::DECLARATION != 0);
+    }
+
+    #[test]
+    fn typed_parameter_annotation_classified_as_type() {
+        // Issue #119 Phase 0: the optional `: Type` annotation on a
+        // parameter is highlighted as `SemTokenType::Type`, while the
+        // parameter name remains `SemTokenType::Parameter`.
+        let src = "skill main(scope: Path)\n    description: \"d\"\n    flow:\n        \"hi\"\n";
+        let tokens = collect_semantic_tokens(src, 0);
+        let scope = find_token(&tokens, 0, "scope", src).expect("param `scope`");
+        assert_eq!(scope.token_type, SemTokenType::Parameter as u32);
+        assert!(scope.modifiers & SemTokenModifier::DECLARATION != 0);
+        let path = find_token(&tokens, 0, "Path", src).expect("type ident `Path`");
+        assert_eq!(path.token_type, SemTokenType::Type as u32);
+        assert_eq!(
+            path.modifiers & SemTokenModifier::DECLARATION,
+            0,
+            "type-annotation ident is a reference, not a declaration"
+        );
     }
 
     #[test]

@@ -102,15 +102,15 @@ fn skill_with_params_compiles_and_emits_parameters_section() {
         md
     );
 
-    // Defaulted parameter renders with `(default: ".")`; required parameter
-    // renders with `(required)`.
+    // Defaulted parameter renders with `. Default: <X>.`; required parameter
+    // renders with `. Required.`.
     assert!(
-        md.contains("- **scope** (default: \".\")"),
+        md.contains("- **scope**. Default: \".\"."),
         "expected defaulted scope parameter; got md=\n{}",
         md
     );
     assert!(
-        md.contains("- **target** (required)"),
+        md.contains("- **target**. Required."),
         "expected required target parameter; got md=\n{}",
         md
     );
@@ -295,4 +295,34 @@ fn slot_in_description_emits_repairable_parse_diagnostic() {
     );
     let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
     assert_has_diagnostic_id(&stdout, "G::parse::param-slot-in-non-instruction-string");
+}
+
+#[test]
+fn skill_with_descriptions_renders_sentence_style() {
+    let src = fixture("valid", "with_description.glyph");
+    let out = src.with_file_name("with_description.md");
+    let _ = std::fs::remove_file(&out);
+
+    let result = run_compile(src.clone(), "json");
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "expected exit 0; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    let md = std::fs::read_to_string(&out).expect("compiled .md file is missing");
+
+    // Defaulted typed param with description.
+    assert!(
+        md.contains("- **scope** (PathSpec): directory to summarize, relative to repo root. Default: \".\"."),
+        "expected sentence-style scope; got md=\n{}",
+        md
+    );
+    // Untyped required param with description.
+    assert!(
+        md.contains("- **target**: absolute path to the report file. Required."),
+        "expected sentence-style target; got md=\n{}",
+        md
+    );
 }
