@@ -501,6 +501,7 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
                 exports.skills.insert(s.node.name.clone());
             }
             Decl::Import(_) => {}
+            Decl::TypeDecl(_) => {} // TODO: handled in Task B.4+
         }
     }
     exports

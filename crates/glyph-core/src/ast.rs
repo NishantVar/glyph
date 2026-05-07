@@ -27,6 +27,10 @@ pub enum Decl {
     /// post-issue-#81 — supersedes the prior `text NAME = "..."` form by
     /// covering all four primitive kinds (String, Int, Float, Bool).
     Const(Spanned<ConstDecl>),
+    /// `type Name = <"…">` — see `TypeDecl`. Compile-time only; lowers to a
+    /// type-registry entry (Phase B.5) and is consumed by the emitter's
+    /// description-lookup (Phase B.6). Emits nothing directly.
+    TypeDecl(Spanned<TypeDecl>),
 }
 
 /// An `import` declaration at the top of a source file.
@@ -356,6 +360,19 @@ pub struct ConstDecl {
     /// `design/language-surface.md` §3.6). `generated` and `exported` are
     /// mutually exclusive at the grammar level.
     pub generated: bool,
+}
+
+/// `type Name = <"…">` top-level declaration. Carries the canonical,
+/// importable description for a domain type. Compile-time only — emits
+/// nothing into compiled output directly. See spec §6.2.
+#[derive(Clone, Debug)]
+pub struct TypeDecl {
+    pub name: String,
+    /// Description content (string literal RHS, quotes stripped, dedent
+    /// applied for block strings).
+    pub description: Spanned<String>,
+    /// Whether this decl was declared with `export`.
+    pub exported: bool,
 }
 
 /// Rendered literal RHS of a `const` declaration. Each variant carries the

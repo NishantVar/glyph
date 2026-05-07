@@ -465,6 +465,7 @@ fn classify_ast(
             }
             Decl::Const(c) => classify_const(c, source, file_id, line_index, out),
             Decl::Import(i) => classify_import(i, source, file_id, line_index, out),
+            Decl::TypeDecl(_) => {} // TODO: handled in Task B.4+
         }
     }
 }

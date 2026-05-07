@@ -462,6 +462,7 @@ fn sweep_name_collisions(
                 consts.push((c.node.name.as_str(), c.span));
             }
             Decl::Import(_) => {}
+            Decl::TypeDecl(_) => {} // TODO: handled in Task B.4+
         }
     }
 
@@ -1000,6 +1001,7 @@ pub fn analyze_with_diagnostics(
             Decl::ExportBlock(b) => Some(b.node.name.as_str()),
             Decl::Skill(s) => Some(s.node.name.as_str()),
             Decl::Import(_) => None,
+            Decl::TypeDecl(_) => None, // TODO: handled in Task B.4+
         })
         .collect();
 
@@ -1113,6 +1115,7 @@ pub fn analyze_with_diagnostics(
             }
             Decl::Const(_) => {}
             Decl::Import(_) => {}
+            Decl::TypeDecl(_) => {} // TODO: handled in Task B.4+
         }
     }
 
@@ -1245,6 +1248,7 @@ pub fn collect_same_file_resolutions(file: &SourceFile, file_path: &PathBuf) -> 
                     }
                 }
             }
+            Decl::TypeDecl(_) => {} // TODO: handled in Task B.4+
         }
     }
     // Avoid "unused but populated" warning — `skill_defs` is reserved for a
@@ -1317,6 +1321,7 @@ pub fn collect_same_file_resolutions(file: &SourceFile, file_path: &PathBuf) -> 
                     }
                 }
             }
+            Decl::TypeDecl(_) => {} // TODO: handled in Task B.4+
         }
     }
 
@@ -1374,6 +1379,7 @@ pub fn collect_cross_file_resolutions(
                 walk_flow_for_cross_file(&spanned.node.flow, targets, &mut out);
             }
             Decl::ExportBlock(_) | Decl::Const(_) => {}
+            Decl::TypeDecl(_) => {} // TODO: handled in Task B.4+
             Decl::Import(imp) => {
                 // The selective-import name token itself jumps to the
                 // declaration in the dependency file. (Stdlib imports are
@@ -1772,6 +1778,7 @@ pub fn analyze_with_imports(
             Decl::ExportBlock(b) => Some(b.node.name.as_str()),
             Decl::Skill(s) => Some(s.node.name.as_str()),
             Decl::Import(_) => None,
+            Decl::TypeDecl(_) => None, // TODO: handled in Task B.4+
         })
         .collect();
     for t in &imported_text_refs {
@@ -1916,6 +1923,7 @@ pub fn analyze_with_imports(
                 );
             }
             Decl::Const(_) | Decl::Import(_) => {}
+            Decl::TypeDecl(_) => {} // TODO: handled in Task B.4+
         }
     }
 
@@ -3336,6 +3344,7 @@ pub fn fmt_signals(file: &SourceFile) -> FmtSignals {
                     bound.insert(alias.clone());
                 }
             },
+            Decl::TypeDecl(_) => {} // TODO: handled in Task B.4+
         }
     }
 
@@ -3371,6 +3380,7 @@ fn collect_refs_from_decl(decl: &Decl, out: &mut HashSet<String>) {
             }
         }
         Decl::Const(_) | Decl::Import(_) => {}
+        Decl::TypeDecl(_) => {} // TODO: handled in Task B.4+
     }
 }
 
