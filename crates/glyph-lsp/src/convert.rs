@@ -278,7 +278,7 @@ mod tests {
     fn analyze_error_roundtrip() {
         let d = Diagnostic::error(
             "G::analyze::undefined-name",
-            "`x` is not a declared `text` in this file",
+            "`x` is not a declared `const` in this file",
             span("f.glyph", 10, 5, 10, 5),
         );
         let lsp = diagnostic_to_lsp(&d);

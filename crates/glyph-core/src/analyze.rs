@@ -2323,7 +2323,7 @@ fn analyze_skill(
                     bag.push(
                         Diagnostic::error(
                             "G::analyze::undefined-name",
-                            format!("`{}` is not a declared `text` in this file", marker.name.node),
+                            format!("`{}` is not a declared `const` in this file", marker.name.node),
                             SourceSpan::from_byte_span(file_label, span, line_index),
                         ),
                         span,
@@ -2544,7 +2544,7 @@ fn analyze_skill(
                 Diagnostic::error(
                     "G::analyze::undefined-name",
                     format!(
-                        "`{}` is not a declared `text` in this file",
+                        "`{}` is not a declared `const` in this file",
                         marker.name.node
                     ),
                     SourceSpan::from_byte_span(file_label, span, line_index),
@@ -2822,7 +2822,7 @@ fn check_context_entry_name(
                 Diagnostic::error(
                     "G::analyze::undefined-name",
                     format!(
-                        "`{}` is not a declared `text` or context-only skill in this file",
+                        "`{}` is not a declared `const` or context-only skill in this file",
                         name.node
                     ),
                     SourceSpan::from_byte_span(file_label, span, line_index),
@@ -3042,7 +3042,7 @@ fn check_branch_body_names(
                     bag.push(
                         Diagnostic::error(
                             "G::analyze::undefined-name",
-                            format!("`{}` is not a declared `text` in this file", marker.name.node),
+                            format!("`{}` is not a declared `const` in this file", marker.name.node),
                             SourceSpan::from_byte_span(file_label, span, line_index),
                         ),
                         span,

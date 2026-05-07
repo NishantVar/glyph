@@ -1,12 +1,12 @@
 ---
 name: convert_md_to_glyph
-description: Convert an existing compiled-form skill at `source_md` into a Glyph source file at `target_glyph`.
+description: Convert an existing compiled-form skill at `source_md` into a Glyph source file at `target`.
 ---
 
 ## Parameters
 
 - **source_md** (required)
-- **target_glyph** (required)
+- **target** (required)
 
 ## Instructions
 
@@ -641,10 +641,10 @@ Values: "..."  """..."""  3  -1  0.8  true  false  none
 4. Map each remaining top-level context bullet to a `context:` entry on the skill. Use inline strings at this stage; the factoring pass will promote them to `const` constants where appropriate.
 5. Map each remaining top-level constraint bullet to a `constraints:` entry on the skill. Recover polarity from the bullet's leading verb (`Always` / `Must` / `Never` / `Avoid` / `Prefer` / `Consider`) and pick the matching marker (`require` / `must` / `must avoid` / `avoid`). Use inline strings; factoring will promote them later.
 6. Map the remaining top-level numbered steps to instruction strings inside `flow:` in their original order. Branch sites already became `if PROCNAME.applies()` calls during extraction — leave them alone here. If the final step describes what the skill produces, lift that into a top-level `return <"description">` statement at the end of `flow:` rather than restating it as another instruction.
-7. Write the assembled skill, blocks, and any extracted const constants to {target_glyph}. This is a verbose first draft — factoring and sorting will tidy it up next.
+7. Write the assembled skill, blocks, and any extracted const constants to {target}. This is a verbose first draft — factoring and sorting will tidy it up next.
 8. Scan every instruction string in `flow:` bodies. For any string longer than 10 words, extract it into a named `block` (or `export block` if it must be reachable from another file) and replace the inline string with a call to that block. Pick a verb-phrase name that describes the step's intent. Scan every inline string used as a marker body (`require`/`avoid`/`must`/`must avoid`/`context`) or as a `context:` entry. For any string longer than 10 words, extract it into a named `const` constant (or `export const` if another file imports it) and replace the inline string with a bare-name reference. Skip `description:` strings — leave them inline.
 9. Reorder top-level declarations in the file so that the single `skill` declaration appears first, every `block` and `export block` follows it, and every `const` and `export const` constant comes last. Preserve `import` statements at the very top of the file, above the `skill` declaration.
-10. Run the Glyph compiler on {target} and read the diagnostics. If the compiler exits with repairable diagnostics (exit 2), run `glyph fmt` on {target}. If `glyph fmt` changes the file, re-invoke the compiler and re-evaluate the diagnostics. Treat errors as required fixes. If repairable diagnostics remain after `glyph fmt`, treat them as informational — the LLM repair pass will rewrite the source. Treat warnings as advisory. Review the source diff after the LLM repair pass. If repair inserted `generated text` or `generated block` definitions, decide whether each is acceptable as-is or should be promoted to hand-authored by renaming `generated text` to `text` and `generated block` to `block`. Iterate on remaining diagnostics until the file compiles cleanly with the intended structure, and return path to the produced .glyph file as your result.
+10. Run the Glyph compiler on {target} and read the diagnostics. If the compiler exits with repairable diagnostics (exit 2), run `glyph fmt` on {target}. If `glyph fmt` changes the file, re-invoke the compiler and re-evaluate the diagnostics. Treat errors as required fixes. If repairable diagnostics remain after `glyph fmt`, treat them as informational — the LLM repair pass will rewrite the source. Treat warnings as advisory. Review the source diff after the LLM repair pass. If repair inserted `generated const` or `generated block` definitions, decide whether each is acceptable as-is or should be promoted to hand-authored by renaming `generated const` to `const` and `generated block` to `block`. Iterate on remaining diagnostics until the file compiles cleanly with the intended structure, and return path to the produced .glyph file as your result.
 
 ### Constraints
 

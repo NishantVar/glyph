@@ -48,8 +48,8 @@ import "./glyph_authoring_passes.glyph" {
     compile_and_iterate,
 }
 
-skill convert_md_to_glyph(source_md, target_glyph)
-    description: "Convert an existing compiled-form skill at `source_md` into a Glyph source file at `target_glyph`."
+skill convert_md_to_glyph(source_md, target)
+    description: "Convert an existing compiled-form skill at `source_md` into a Glyph source file at `target`."
 
     context:
         glyph_overview
@@ -94,10 +94,10 @@ skill convert_md_to_glyph(source_md, target_glyph)
         map_context_section()
         map_constraints_section()
         recover_flow_from_steps()
-        write_initial_glyph_source(target_glyph)
+        write_initial_glyph_source(target)
         factor_long_instructions_and_texts()
         sort_declarations()
-        compile_and_iterate(target_glyph)
+        compile_and_iterate(target)
         return <"path to the produced .glyph file">
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -130,5 +130,5 @@ block recover_flow_from_steps()
         "Map the remaining top-level numbered steps to instruction strings inside `flow:` in their original order. Branch sites already became `if PROCNAME.applies()` calls during extraction — leave them alone here."
         "If the final step describes what the skill produces, lift that into a top-level `return <\"description\">` statement at the end of `flow:` rather than restating it as another instruction."
 
-block write_initial_glyph_source(target_glyph)
-    "Write the assembled skill, blocks, and any extracted const constants to {target_glyph}. This is a verbose first draft — factoring and sorting will tidy it up next."
+block write_initial_glyph_source(target)
+    "Write the assembled skill, blocks, and any extracted const constants to {target}. This is a verbose first draft — factoring and sorting will tidy it up next."
