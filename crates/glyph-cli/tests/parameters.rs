@@ -93,7 +93,9 @@ fn skill_with_params_compiles_and_emits_parameters_section() {
     // `## Parameters` appears between frontmatter and `## Instructions`.
     let frontmatter_end = md.find("---\n\n").expect("frontmatter terminator");
     let params_idx = md.find("## Parameters").expect("`## Parameters` section");
-    let instructions_idx = md.find("## Instructions").expect("`## Instructions` section");
+    let instructions_idx = md
+        .find("## Instructions")
+        .expect("`## Instructions` section");
     assert!(
         frontmatter_end < params_idx && params_idx < instructions_idx,
         "section ordering: frontmatter -> ## Parameters -> ## Instructions; got md=\n{}",

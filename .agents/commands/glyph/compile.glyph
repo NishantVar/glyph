@@ -1,0 +1,48 @@
+// compile.glyph — /glyph:compile
+//
+// Runs the full Glyph pipeline on a Glyph source file and surfaces the
+// final agent-facing Markdown next to the source. Phase order matches
+// design/pipeline.md and design/agent-skill.md.
+
+skill compile(source_path)
+    description: "Use when the user invokes /glyph:compile on a Glyph source file. Runs the full Glyph pipeline — compile, deterministic fmt, LLM repair loop, constraint conflict scan, prose reshape, validate-output — and surfaces the final compiled `.md` to the user."
+
+    flow:
+        run_compiler(source_path)
+        run_repair_loop(source_path)
+        scan_constraint_conflicts(source_path)
+        reshape_prose(source_path)
+        validate_compiled_output(source_path)
+        return <"absolute path to the final compiled .md file">
+
+block run_compiler(source_path)
+    "Run `glyph compile {source_path} --format json --emit-ir`. The NDJSON diagnostics on stdout, the exit code, and any IR sidecar `.ir.json` next to the source are the inputs to the next steps."
+
+block run_repair_loop(source_path)
+    flow:
+        "If the most recent `glyph compile` exited 0, this block is a no-op — the mechanical `.md` and `.ir.json` are already written."
+        "If it exited 1 (hard errors) or 3 (invocation error), surface the diagnostics verbatim and stop the pipeline."
+        "If it exited 2 (repairable diagnostics), run `glyph fmt {source_path}` to apply the deterministic Phase 3a auto-fixes."
+        "Re-invoke `glyph compile {source_path} --format json --emit-ir`. If the diagnostics now resolve to exit 0, return."
+        "If repairable diagnostics persist, apply the Phase 3b LLM repair pass to {source_path} using the NDJSON diagnostics on stdout, then re-invoke `glyph compile`."
+        "Iterate at most 3 times per file. On the 4th attempt, hard-fail and surface the residual diagnostics verbatim."
+
+block scan_constraint_conflicts(source_path)
+    flow:
+        "Read the IR sidecar `.ir.json` written by the successful compile."
+        "For each declaration with two or more constraints, classify each pair as `contradiction`, `tension`, or `none`."
+        "On any contradiction, hard-fail and surface the conflict to the author."
+        "Tensions surface as warnings; the build proceeds."
+
+block reshape_prose(source_path)
+    flow:
+        "Read the mechanical `.md` written by the compiler and the resolved IR sidecar `.ir.json`."
+        "Rewrite the `## Parameters` descriptions using each parameter's name, type, default, and usage context. Do not add, remove, or rename parameters."
+        "Rewrite the `## Instructions` section into human-quality prose, following the role-preservation, constraint-wording, parameter-reference, and procedure-reference rules from `design/agent-skill.md`."
+        "Leave the YAML frontmatter exactly as the compiler emitted it."
+
+block validate_compiled_output(source_path)
+    flow:
+        "Run `glyph validate-output {source_path}.ir.json {source_path}.md`."
+        "On exit 0, the build is done."
+        "On exit 1, retry the prose reshape pass with the structural diagnostics as revise-with-feedback input. Budget at most 2 retries before surfacing the failure verbatim."

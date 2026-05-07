@@ -49,12 +49,10 @@ pub fn expand_step1(arena: IrArena) -> IrArena {
     expand_step1_with_imported_descriptions(arena, &HashMap::new())
 }
 
-
 pub fn expand_step1_with_imported_descriptions(
     mut arena: IrArena,
     imported_block_descriptions: &HashMap<String, String>,
 ) -> IrArena {
-
     // Phase 1: Compute resolved_word_count for each Block node.
     let mut block_word_counts: HashMap<String, u32> = HashMap::new();
     for n in arena.nodes() {
@@ -228,9 +226,7 @@ pub fn expand_step1_with_imported_descriptions(
                     };
                 let nodes = arena.nodes_mut();
                 match &mut nodes[step_id.0 as usize] {
-                    IrNode::InlineInstruction(inst)
-                        if !skill_has_oc && !skill_has_return_type =>
-                    {
+                    IrNode::InlineInstruction(inst) if !skill_has_oc && !skill_has_return_type => {
                         inst.text = format!(
                             "{} Return the result of {}.",
                             inst.text.trim_end_matches('.').trim(),
@@ -260,7 +256,6 @@ pub fn expand_step1_with_imported_descriptions(
 
     arena
 }
-
 
 #[cfg(test)]
 mod tests {

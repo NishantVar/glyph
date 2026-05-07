@@ -386,7 +386,8 @@ Constraints in `scoped_constraints` on a Call node use the same shape.
 {
   "node_id": "n14",
   "kind": "context",
-  "text": "This codebase follows a monorepo layout."
+  "text": "This codebase follows a monorepo layout.",
+  "name": "monorepo_layout"
 }
 ```
 
@@ -395,6 +396,7 @@ Constraints in `scoped_constraints` on a Call node use the same shape.
 | `node_id` | string | yes | |
 | `kind` | string | yes | Always `"context"`. |
 | `text` | string | yes | Resolved context text. |
+| `name` | string | no | Source identifier of the referenced `const` / `export const`, serialized verbatim (e.g. `monorepo_layout` as written in the source — not kebab-cased). Omitted for inline-string entries. Emit applies a kebab-case rendering transform when producing the `- **kebab-name**` lead-in label in `### Context`; the transform is emit-time only and not reflected in this field. |
 
 ## Expression Union
 

@@ -16,11 +16,7 @@ pub fn fill(scaffold: &Scaffold) -> HashMap<SpanId, String> {
                     .condition_expression
                     .clone()
                     .unwrap_or_default(),
-                SpanKind::CallBodyShape => span
-                    .payload
-                    .resolved_body
-                    .clone()
-                    .unwrap_or_default(),
+                SpanKind::CallBodyShape => span.payload.resolved_body.clone().unwrap_or_default(),
             };
             out.insert(span.id, s);
         }

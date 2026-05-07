@@ -59,8 +59,8 @@ fn emit_ir_produces_ir_json_file() {
 
     // Parse it as valid JSON.
     let content = std::fs::read_to_string(&ir_path).unwrap();
-    let v: serde_json::Value = serde_json::from_str(&content)
-        .expect("ir.json should be valid JSON");
+    let v: serde_json::Value =
+        serde_json::from_str(&content).expect("ir.json should be valid JSON");
 
     // Check top-level envelope fields.
     assert_eq!(v["ir_version"], 1);
@@ -83,7 +83,10 @@ fn emit_ir_is_byte_identical_across_runs() {
     assert!(r2.status.success());
     let bytes2 = std::fs::read(&ir_path).unwrap();
 
-    assert_eq!(bytes1, bytes2, "IR JSON should be byte-identical across runs");
+    assert_eq!(
+        bytes1, bytes2,
+        "IR JSON should be byte-identical across runs"
+    );
 }
 
 /// Write a source string to a tempdir, compile with --emit-ir, and return the parsed IR JSON.
@@ -294,7 +297,10 @@ skill fix()
     let call = &flow[0];
     assert_eq!(call["kind"], "call");
     let local_refs = call["local_refs"].as_array().unwrap();
-    assert!(local_refs.is_empty(), "local_refs should be empty when no local bindings");
+    assert!(
+        local_refs.is_empty(),
+        "local_refs should be empty when no local bindings"
+    );
 }
 
 #[test]
@@ -325,7 +331,10 @@ fn emit_ir_skill_carries_context_array() {
 "#;
     let v = compile_and_read_ir("ctx_empty.glyph", source);
     let context = v["skill"]["context"].as_array().unwrap();
-    assert!(context.is_empty(), "context should be empty when no context declared");
+    assert!(
+        context.is_empty(),
+        "context should be empty when no context declared"
+    );
 }
 
 #[test]
@@ -350,7 +359,11 @@ skill fix()
     assert_eq!(call["projection_mode"], "same_file_procedure");
     // callee_context should be an array (not null) for non-inline calls.
     let cc = &call["callee_context"];
-    assert!(cc.is_array(), "callee_context should be array for non-inline. got: {:?}", cc);
+    assert!(
+        cc.is_array(),
+        "callee_context should be array for non-inline. got: {:?}",
+        cc
+    );
 }
 
 #[test]
@@ -369,6 +382,34 @@ fn emit_ir_context_node_serializes_correctly() {
     assert!(cn["node_id"].as_str().unwrap().starts_with("n"));
     assert_eq!(cn["kind"], "context");
     assert_eq!(cn["text"], "This codebase follows a monorepo layout.");
+    // Inline-string context entries have no source name.
+    assert!(
+        cn.get("name").is_none(),
+        "inline-string context must not serialize a name field"
+    );
+}
+
+#[test]
+fn emit_ir_context_node_carries_name_for_nameref_entry() {
+    // A NameRef context entry resolves to the const's text but should also
+    // carry the source name in the IR JSON so downstream tooling (and the
+    // emitter) can render a per-entry label.
+    let source = r#"const project_overview = "This codebase is a monorepo."
+
+skill fix()
+    description: "Fix a bug."
+    context:
+        project_overview
+    flow:
+        "Do the fix."
+"#;
+    let v = compile_and_read_ir("ctx_named.glyph", source);
+    let context = v["skill"]["context"].as_array().unwrap();
+    assert_eq!(context.len(), 1);
+    let cn = &context[0];
+    assert_eq!(cn["kind"], "context");
+    assert_eq!(cn["text"], "This codebase is a monorepo.");
+    assert_eq!(cn["name"], "project_overview");
 }
 
 #[test]

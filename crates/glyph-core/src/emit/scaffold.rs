@@ -2,8 +2,8 @@
 //! `build()` walker that turns a resolved `IrArena` into a `Scaffold`.
 //! See `obsidian/plans/expand-emitter-design-2026-05-04.md`.
 
-use crate::ir::{IrArena, IrNode, NodeId, OutputTargetForm};
 use super::templates;
+use crate::ir::{IrArena, IrNode, NodeId, OutputTargetForm};
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 
@@ -36,6 +36,59 @@ fn block_return_type_text_owned(arena: &IrArena, block_name: &str) -> Option<Str
         }
     }
     None
+}
+
+/// Render one `### Context` entry as a column-0 Markdown bullet whose body
+/// is line-wise indented so the bullet contains the full body as nested
+/// content. Blank lines stay empty (no `  ` whitespace-only lines, per
+/// `compiled-output.md` "no trailing whitespace"). When `name` is `Some`,
+/// the bullet leads with a bold kebab-case label, then a blank line, then
+/// the indented body — same shape used by `### Procedure: <name>`.
+fn render_context_entry(text: &str, name: Option<&str>) -> String {
+    /// Indent every non-empty line by two spaces. Blank lines stay empty.
+    fn indent_continuation(body: &str) -> String {
+        body.lines()
+            .map(|line| {
+                if line.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {}", line)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    let trimmed = text.trim_matches('\n');
+    match name {
+        Some(n) => {
+            let label = templates::kebab_case(n);
+            let indented = indent_continuation(trimmed);
+            format!("- **{}**\n\n{}\n\n", label, indented)
+        }
+        None => {
+            // First line follows `- ` directly; rest indented under it.
+            let mut lines = trimmed.lines();
+            let first = lines.next().unwrap_or("");
+            let rest: Vec<&str> = lines.collect();
+            if rest.is_empty() {
+                format!("- {}\n\n", first)
+            } else {
+                let rest_indented = rest
+                    .iter()
+                    .map(|line| {
+                        if line.is_empty() {
+                            String::new()
+                        } else {
+                            format!("  {}", line)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("- {}\n{}\n\n", first, rest_indented)
+            }
+        }
+    }
 }
 
 /// Look up the `OutputTargetForm` for the skill's output_contract, returning an owned clone.
@@ -230,13 +283,12 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
     if !skill.context.is_empty() {
         s.push_literal("### Context\n\n");
         for ctx_id in &skill.context {
-            let text = match arena.get(*ctx_id) {
-                IrNode::Context(c) => c.text.clone(),
+            let (text, name) = match arena.get(*ctx_id) {
+                IrNode::Context(c) => (c.text.clone(), c.name.clone()),
                 _ => panic!("Context node was not a Context"),
             };
-            s.push_literal(format!("- {}\n", text));
+            s.push_literal(render_context_entry(&text, name.as_deref()));
         }
-        s.push_literal("\n");
     }
 
     // ### Steps
@@ -293,7 +345,13 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                         }
                     }
                     IrNode::Branch(br) => {
-                        super::branch::emit_to_scaffold(&mut s, arena, br, idx + 1, &mut next_span_id);
+                        super::branch::emit_to_scaffold(
+                            &mut s,
+                            arena,
+                            br,
+                            idx + 1,
+                            &mut next_span_id,
+                        );
                     }
                     IrNode::Call(c) if c.projection_tier == Some(1) => {
                         let body = c.resolved_body.as_deref().unwrap_or_default();
@@ -409,7 +467,8 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
         if let Some(stmts) = flow_stmts {
             s.push_literal(format!("### Procedure: {}\n\n", kebab_name));
             // Filter out raw "return" markers; they are replaced by the §8.4 sentence.
-            let visible_stmts: Vec<&String> = stmts.iter().filter(|st| st.as_str() != "return").collect();
+            let visible_stmts: Vec<&String> =
+                stmts.iter().filter(|st| st.as_str() != "return").collect();
             let visible_count = visible_stmts.len();
             let proc_sentence = templates::compute_return_sentence(
                 proc_rt_text.as_deref(),
@@ -473,6 +532,44 @@ fn trim_trailing_blank_line(s: &mut Scaffold) {
 mod tests {
     use super::*;
     use crate::ir::{IrArena, IrNode, IrParam, IrSkill, NodeId};
+
+    #[test]
+    fn render_context_entry_named_emits_kebab_label_and_indented_body() {
+        let body = "First paragraph.\n\n- nested bullet\n- another nested";
+        let out = render_context_entry(body, Some("glyph_overview"));
+        assert_eq!(
+            out,
+            "- **glyph-overview**\n\n  First paragraph.\n\n  - nested bullet\n  - another nested\n\n"
+        );
+    }
+
+    #[test]
+    fn render_context_entry_unnamed_single_line_keeps_simple_form() {
+        let out = render_context_entry("This codebase follows a monorepo layout.", None);
+        assert_eq!(out, "- This codebase follows a monorepo layout.\n\n");
+    }
+
+    #[test]
+    fn render_context_entry_unnamed_multiline_indents_continuation_lines() {
+        let body = "First line.\n\nSecond paragraph.\n- nested bullet";
+        let out = render_context_entry(body, None);
+        assert_eq!(
+            out,
+            "- First line.\n\n  Second paragraph.\n  - nested bullet\n\n"
+        );
+    }
+
+    #[test]
+    fn render_context_entry_blank_lines_stay_empty_no_trailing_whitespace() {
+        let body = "Para A.\n\nPara B.";
+        let out = render_context_entry(body, Some("alpha"));
+        // Critical: no `  ` whitespace-only blank line between paragraphs.
+        assert!(
+            !out.contains("\n  \n"),
+            "blank line must not carry indent whitespace: {:?}",
+            out
+        );
+    }
 
     #[test]
     fn build_parameters_section_emits_one_span_per_param() {

@@ -70,7 +70,8 @@ pub fn emit_procedure(
 
     // Instructions / Steps
     out.push_str("## Instructions\n\n");
-    let return_sentence = templates::compute_return_sentence(return_type_text, output_form, type_registry);
+    let return_sentence =
+        templates::compute_return_sentence(return_type_text, output_form, type_registry);
     let last_step_idx = flow_strings.len().checked_sub(1);
     if !flow_strings.is_empty() {
         out.push_str("### Steps\n\n");
@@ -135,15 +136,24 @@ mod tests {
     fn emit_skips_effects_when_disabled() {
         let arena = arena_with_effects();
         let output = emit(&arena, false);
-        assert!(!output.contains("effects:"), "effects line should be omitted when enable_effects is false");
-        assert!(output.contains("name: test_skill"), "name should still be present");
+        assert!(
+            !output.contains("effects:"),
+            "effects line should be omitted when enable_effects is false"
+        );
+        assert!(
+            output.contains("name: test_skill"),
+            "name should still be present"
+        );
     }
 
     #[test]
     fn emit_includes_effects_when_enabled() {
         let arena = arena_with_effects();
         let output = emit(&arena, true);
-        assert!(output.contains("effects: [fs:write, net:http]"), "effects line should be present when enable_effects is true");
+        assert!(
+            output.contains("effects: [fs:write, net:http]"),
+            "effects line should be present when enable_effects is true"
+        );
     }
 
     #[test]
@@ -159,8 +169,14 @@ mod tests {
             &TypeRegistry::default(),
             false,
         );
-        assert!(!output.contains("effects:"), "effects line should be omitted when enable_effects is false");
-        assert!(output.contains("name: my-proc"), "name should still be present");
+        assert!(
+            !output.contains("effects:"),
+            "effects line should be omitted when enable_effects is false"
+        );
+        assert!(
+            output.contains("name: my-proc"),
+            "name should still be present"
+        );
     }
 
     #[test]
@@ -176,7 +192,10 @@ mod tests {
             &TypeRegistry::default(),
             true,
         );
-        assert!(output.contains("effects: [fs:read]"), "effects line should be present when enable_effects is true");
+        assert!(
+            output.contains("effects: [fs:read]"),
+            "effects line should be present when enable_effects is true"
+        );
     }
 
     #[test]

@@ -167,7 +167,9 @@ fn return_row1_descriptive_target_produces_x() {
 fn return_row2_named_with_type_decl_includes_description() {
     let md = compile_and_read("return_row2_named_with_type_decl.glyph");
     assert!(
-        md.contains("Inspect the scope. Produce `diagnosis` (`Diagnosis`): root cause and severity."),
+        md.contains(
+            "Inspect the scope. Produce `diagnosis` (`Diagnosis`): root cause and severity."
+        ),
         "row 2 sentence should appear:\n{md}"
     );
 }

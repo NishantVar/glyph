@@ -175,7 +175,9 @@ pub fn collect_semantic_tokens(source: &str, file_id: u32) -> Vec<RawSemToken> {
     let mut tokens: Vec<RawSemToken> = Vec::new();
 
     // Pass 1: lex tokens (section-aware).
-    let lex_tokens = tokenize(source, file_id).map(|(t, _)| t).unwrap_or_default();
+    let lex_tokens = tokenize(source, file_id)
+        .map(|(t, _)| t)
+        .unwrap_or_default();
     classify_lex_tokens(source, &lex_tokens, &line_index, &mut tokens);
 
     // Pass 2: line comments (lexer strips them).
@@ -192,7 +194,14 @@ pub fn collect_semantic_tokens(source: &str, file_id: u32) -> Vec<RawSemToken> {
         true,
     ) {
         let block_names = collect_block_decl_names(&ast);
-        classify_ast(&ast, &block_names, source, file_id, &line_index, &mut tokens);
+        classify_ast(
+            &ast,
+            &block_names,
+            source,
+            file_id,
+            &line_index,
+            &mut tokens,
+        );
     }
 
     sort_and_dedup(&mut tokens);
@@ -268,7 +277,10 @@ fn classify_lex_tokens(
 /// Top-level declaration keywords that reset section state when seen at
 /// indent 0.
 fn is_top_level_decl_keyword(s: &str) -> bool {
-    matches!(s, "skill" | "block" | "export" | "generated" | "const" | "import")
+    matches!(
+        s,
+        "skill" | "block" | "export" | "generated" | "const" | "import"
+    )
 }
 
 /// Hard keywords + builtin types — always classified, regardless of
@@ -279,26 +291,9 @@ fn is_top_level_decl_keyword(s: &str) -> bool {
 fn classify_keyword_text(s: &str) -> Option<SemTokenType> {
     match s {
         // Declaration / control flow / logical operators / markers.
-        "skill"
-        | "block"
-        | "const"
-        | "export"
-        | "generated"
-        | "import"
-        | "as"
-        | "return"
-        | "if"
-        | "elif"
-        | "else"
-        | "and"
-        | "or"
-        | "not"
-        | "require"
-        | "avoid"
-        | "must"
-        | "context"
-        | "with"
-        | "none" => Some(SemTokenType::Keyword),
+        "skill" | "block" | "const" | "export" | "generated" | "import" | "as" | "return"
+        | "if" | "elif" | "else" | "and" | "or" | "not" | "require" | "avoid" | "must"
+        | "context" | "with" | "none" => Some(SemTokenType::Keyword),
         // Builtin types.
         "int" | "float" => Some(SemTokenType::Type),
         _ => None,
@@ -335,7 +330,9 @@ fn classify_interpolations(
 ) {
     // String literals always include quotes in their span; skip them.
     let s = string_span.start as usize + 1;
-    let e = (string_span.end as usize).saturating_sub(1).min(source.len());
+    let e = (string_span.end as usize)
+        .saturating_sub(1)
+        .min(source.len());
     if e <= s {
         return;
     }
@@ -413,7 +410,13 @@ fn classify_comments(source: &str, line_index: &LineIndex, out: &mut Vec<RawSemT
                 q += 1;
             }
             let span = Span::new(0, p as u32, q as u32);
-            push_span(out, span, SemTokenType::Comment, SemTokenModifier::NONE, line_index);
+            push_span(
+                out,
+                span,
+                SemTokenType::Comment,
+                SemTokenModifier::NONE,
+                line_index,
+            );
             p = q;
             continue;
         }
@@ -454,15 +457,9 @@ fn classify_ast(
 ) {
     for decl in &ast.decls {
         match decl {
-            Decl::Skill(s) => {
-                classify_skill(s, block_names, source, file_id, line_index, out)
-            }
-            Decl::Block(b) => {
-                classify_block(b, block_names, source, file_id, line_index, out)
-            }
-            Decl::ExportBlock(eb) => {
-                classify_export_block(eb, source, file_id, line_index, out)
-            }
+            Decl::Skill(s) => classify_skill(s, block_names, source, file_id, line_index, out),
+            Decl::Block(b) => classify_block(b, block_names, source, file_id, line_index, out),
+            Decl::ExportBlock(eb) => classify_export_block(eb, source, file_id, line_index, out),
             Decl::Const(c) => classify_const(c, source, file_id, line_index, out),
             Decl::Import(i) => classify_import(i, source, file_id, line_index, out),
             Decl::TypeDecl(_) => {} // TODO: handled in Task B.4+
@@ -478,9 +475,7 @@ fn classify_skill(
     line_index: &LineIndex,
     out: &mut Vec<RawSemToken>,
 ) {
-    if let Some(name_span) =
-        find_name_after_keywords(source, file_id, spanned.span, &["skill"])
-    {
+    if let Some(name_span) = find_name_after_keywords(source, file_id, spanned.span, &["skill"]) {
         push_span(
             out,
             name_span,
@@ -508,9 +503,7 @@ fn classify_block(
     line_index: &LineIndex,
     out: &mut Vec<RawSemToken>,
 ) {
-    if let Some(name_span) =
-        find_name_after_keywords(source, file_id, spanned.span, &["block"])
-    {
+    if let Some(name_span) = find_name_after_keywords(source, file_id, spanned.span, &["block"]) {
         push_span(
             out,
             name_span,
@@ -597,13 +590,9 @@ fn classify_import(
                 // the AST. Locate by scanning forward from the name span end
                 // for ` as <ident>` within the decl span.
                 if let Some(alias) = &n.alias {
-                    if let Some(alias_span) = find_alias_span(
-                        source,
-                        file_id,
-                        n.name.span.end,
-                        spanned.span.end,
-                        alias,
-                    ) {
+                    if let Some(alias_span) =
+                        find_alias_span(source, file_id, n.name.span.end, spanned.span.end, alias)
+                    {
                         push_span(
                             out,
                             alias_span,
@@ -620,13 +609,9 @@ fn classify_import(
             // The decl span starts at `import`; the alias sits after a
             // string literal and the `as` keyword. Scan for ` as <alias>`
             // anywhere in the decl slice.
-            if let Some(alias_span) = find_alias_span(
-                source,
-                file_id,
-                spanned.span.start,
-                spanned.span.end,
-                alias,
-            ) {
+            if let Some(alias_span) =
+                find_alias_span(source, file_id, spanned.span.start, spanned.span.end, alias)
+            {
                 push_span(
                     out,
                     alias_span,
@@ -678,7 +663,13 @@ fn classify_constraints(
     out: &mut Vec<RawSemToken>,
 ) {
     for cm in cms {
-        push_span(out, cm.name.span, SemTokenType::Variable, SemTokenModifier::NONE, line_index);
+        push_span(
+            out,
+            cm.name.span,
+            SemTokenType::Variable,
+            SemTokenModifier::NONE,
+            line_index,
+        );
     }
 }
 
@@ -735,7 +726,13 @@ fn classify_flow_stmt(
         }
         FlowStmt::ContextMarker(ContextEntry::InlineString(_)) => {}
         FlowStmt::BareName(n) => {
-            push_span(out, n.span, SemTokenType::Variable, SemTokenModifier::NONE, line_index);
+            push_span(
+                out,
+                n.span,
+                SemTokenType::Variable,
+                SemTokenModifier::NONE,
+                line_index,
+            );
         }
         FlowStmt::Return(ReturnExpr::Call { target, .. }) => {
             let ttype = if block_names.contains(&target.node) {
@@ -746,10 +743,21 @@ fn classify_flow_stmt(
             push_span(out, target.span, ttype, SemTokenModifier::NONE, line_index);
         }
         FlowStmt::Return(ReturnExpr::Name(n)) => {
-            push_span(out, n.span, SemTokenType::Variable, SemTokenModifier::NONE, line_index);
+            push_span(
+                out,
+                n.span,
+                SemTokenType::Variable,
+                SemTokenModifier::NONE,
+                line_index,
+            );
         }
         FlowStmt::Return(_) => {}
-        FlowStmt::Branch { then_body, elif_branches, else_body, .. } => {
+        FlowStmt::Branch {
+            then_body,
+            elif_branches,
+            else_body,
+            ..
+        } => {
             for s in then_body {
                 classify_flow_stmt(s, block_names, line_index, out);
             }
@@ -810,7 +818,11 @@ fn push_span(
         if seg_end <= seg_start {
             continue;
         }
-        let col = if l == sline { scol.saturating_sub(1) } else { 0 };
+        let col = if l == sline {
+            scol.saturating_sub(1)
+        } else {
+            0
+        };
         out.push(RawSemToken {
             line: l.saturating_sub(1),
             start: col,
@@ -914,11 +926,7 @@ fn find_alias_span(
             if q > alias_start {
                 let found = &slice[alias_start..q];
                 if found == alias {
-                    return Some(Span::new(
-                        file_id,
-                        (s + alias_start) as u32,
-                        (s + q) as u32,
-                    ));
+                    return Some(Span::new(file_id, (s + alias_start) as u32, (s + q) as u32));
                 }
             }
         }
@@ -975,7 +983,10 @@ mod tests {
         assert_eq!(skill.token_type, SemTokenType::Keyword as u32);
         // `description:` is now its own per-section header type.
         let desc = find_token(&tokens, 1, "description", src).expect("`description:` header");
-        assert_eq!(desc.token_type, SemTokenType::GlyphSectionDescription as u32);
+        assert_eq!(
+            desc.token_type,
+            SemTokenType::GlyphSectionDescription as u32
+        );
         // `flow:` is its own per-section header type.
         let flow = find_token(&tokens, 2, "flow", src).expect("`flow:` header");
         assert_eq!(flow.token_type, SemTokenType::GlyphSectionFlow as u32);
@@ -1026,8 +1037,7 @@ mod tests {
     fn context_name_ref_in_context_section() {
         let src = "skill main()\n    description: \"d\"\n    context:\n        project_conventions\n    flow:\n        \"hi\"\n\nconst project_conventions = \"use kebab-case.\"\n";
         let tokens = collect_semantic_tokens(src, 0);
-        let nref = find_token(&tokens, 3, "project_conventions", src)
-            .expect("context name ref");
+        let nref = find_token(&tokens, 3, "project_conventions", src).expect("context name ref");
         assert_eq!(nref.token_type, SemTokenType::GlyphContextNameRef as u32);
     }
 
@@ -1048,11 +1058,17 @@ mod tests {
         let src = "skill main()\n    description: \"d\"\n    context:\n        \"k\"\n    constraints:\n        require accuracy\n    flow:\n        \"hi\"\n\ntext accuracy = \"a\"\n";
         let tokens = collect_semantic_tokens(src, 0);
         let desc = find_token(&tokens, 1, "description", src).expect("description");
-        assert_eq!(desc.token_type, SemTokenType::GlyphSectionDescription as u32);
+        assert_eq!(
+            desc.token_type,
+            SemTokenType::GlyphSectionDescription as u32
+        );
         let ctx = find_token(&tokens, 2, "context", src).expect("context");
         assert_eq!(ctx.token_type, SemTokenType::GlyphSectionContext as u32);
         let cons = find_token(&tokens, 4, "constraints", src).expect("constraints");
-        assert_eq!(cons.token_type, SemTokenType::GlyphSectionConstraints as u32);
+        assert_eq!(
+            cons.token_type,
+            SemTokenType::GlyphSectionConstraints as u32
+        );
         let flow = find_token(&tokens, 6, "flow", src).expect("flow");
         assert_eq!(flow.token_type, SemTokenType::GlyphSectionFlow as u32);
     }
@@ -1119,7 +1135,8 @@ mod tests {
 
     #[test]
     fn line_comment_classified() {
-        let src = "// header comment\nskill main()\n    description: \"d\"\n    flow:\n        \"hi\"\n";
+        let src =
+            "// header comment\nskill main()\n    description: \"d\"\n    flow:\n        \"hi\"\n";
         let tokens = collect_semantic_tokens(src, 0);
         let comment = tokens
             .iter()
@@ -1131,7 +1148,8 @@ mod tests {
 
     #[test]
     fn comment_inside_string_is_not_classified() {
-        let src = "skill main()\n    description: \"contains // text\"\n    flow:\n        \"hi\"\n";
+        let src =
+            "skill main()\n    description: \"contains // text\"\n    flow:\n        \"hi\"\n";
         let tokens = collect_semantic_tokens(src, 0);
         // No comment token should have been emitted.
         assert!(
@@ -1211,7 +1229,8 @@ mod tests {
     fn triple_quoted_string_splits_into_per_line_tokens() {
         // A multi-line block string must produce one token per source line so
         // VS Code doesn't silently drop the single over-long token.
-        let src = "skill s()\n    flow:\n        \"\"\"\n        hello\n        world\n        \"\"\"\n";
+        let src =
+            "skill s()\n    flow:\n        \"\"\"\n        hello\n        world\n        \"\"\"\n";
         let tokens = collect_semantic_tokens(src, 0);
         // All tokens must live on a single line (length never crosses a \n).
         for t in &tokens {
@@ -1231,10 +1250,26 @@ mod tests {
             .map(|t| t.line)
             .collect();
         // Lines 2,3,4,5 (0-indexed) should all have a flow-string token.
-        assert!(flow_lines.contains(&2), "line 2 (opening \"\"\") missing: {:?}", flow_lines);
-        assert!(flow_lines.contains(&3), "line 3 (hello) missing: {:?}", flow_lines);
-        assert!(flow_lines.contains(&4), "line 4 (world) missing: {:?}", flow_lines);
-        assert!(flow_lines.contains(&5), "line 5 (closing \"\"\") missing: {:?}", flow_lines);
+        assert!(
+            flow_lines.contains(&2),
+            "line 2 (opening \"\"\") missing: {:?}",
+            flow_lines
+        );
+        assert!(
+            flow_lines.contains(&3),
+            "line 3 (hello) missing: {:?}",
+            flow_lines
+        );
+        assert!(
+            flow_lines.contains(&4),
+            "line 4 (world) missing: {:?}",
+            flow_lines
+        );
+        assert!(
+            flow_lines.contains(&5),
+            "line 5 (closing \"\"\") missing: {:?}",
+            flow_lines
+        );
     }
 
     #[test]

@@ -800,7 +800,8 @@ impl<'a> Parser<'a> {
                         _ => {
                             return Err(ParseError::Unexpected {
                                 span: self.peek().span,
-                                message: "expected `block`, `const`, or `type` after `export`".into(),
+                                message: "expected `block`, `const`, or `type` after `export`"
+                                    .into(),
                             });
                         }
                     };
@@ -1504,8 +1505,7 @@ impl<'a> Parser<'a> {
                                             },
                                             span,
                                         );
-                                        extra_subsections
-                                            .push(DuplicateSubsection::Description(s));
+                                        extra_subsections.push(DuplicateSubsection::Description(s));
                                     } else {
                                         description = Some(s);
                                     }
@@ -1523,7 +1523,10 @@ impl<'a> Parser<'a> {
                                         );
                                         // Skip the rest of the line.
                                         while !self.at_eof()
-                                            && !matches!(self.peek().kind, TokenKind::LineStart { .. })
+                                            && !matches!(
+                                                self.peek().kind,
+                                                TokenKind::LineStart { .. }
+                                            )
                                         {
                                             self.pos += 1;
                                         }
@@ -1624,9 +1627,8 @@ impl<'a> Parser<'a> {
                                             },
                                             span,
                                         );
-                                        extra_subsections.push(DuplicateSubsection::Flow(
-                                            local_flow,
-                                        ));
+                                        extra_subsections
+                                            .push(DuplicateSubsection::Flow(local_flow));
                                     } else {
                                         flow_present = true;
                                         flow.extend(local_flow);
@@ -1772,7 +1774,9 @@ impl<'a> Parser<'a> {
                                                         let kw = kw.clone();
                                                         self.pos += 1;
                                                         let kind = match kw.as_str() {
-                                                            "require" => ConstraintMarkerKind::Require,
+                                                            "require" => {
+                                                                ConstraintMarkerKind::Require
+                                                            }
                                                             "avoid" => ConstraintMarkerKind::Avoid,
                                                             "must" => {
                                                                 if let TokenKind::Ident(next) =
@@ -2139,8 +2143,7 @@ impl<'a> Parser<'a> {
                         span,
                     );
                     // Skip the rest of the line.
-                    while !self.at_eof()
-                        && !matches!(self.peek().kind, TokenKind::LineStart { .. })
+                    while !self.at_eof() && !matches!(self.peek().kind, TokenKind::LineStart { .. })
                     {
                         self.pos += 1;
                     }
@@ -2226,7 +2229,10 @@ impl<'a> Parser<'a> {
                     _ => unreachable!(),
                 };
                 let (name, name_span) = self.expect_ident(None)?;
-                body_constraints.push(ConstraintMarker { marker: kind, name: Spanned::new(name, name_span) });
+                body_constraints.push(ConstraintMarker {
+                    marker: kind,
+                    name: Spanned::new(name, name_span),
+                });
             }
             "context" => {
                 self.pos += 1;
@@ -2306,7 +2312,9 @@ impl<'a> Parser<'a> {
                                         let v = name.clone();
                                         let name_span = self.peek().span;
                                         self.pos += 1;
-                                        local_entries.push(ContextEntry::NameRef(Spanned::new(v, name_span)));
+                                        local_entries.push(ContextEntry::NameRef(Spanned::new(
+                                            v, name_span,
+                                        )));
                                     }
                                     _ => {
                                         return Err(ParseError::Unexpected {
@@ -2510,7 +2518,7 @@ impl<'a> Parser<'a> {
                             ),
                             related: Vec::new(),
                             hints: vec![
-                                "remove the duplicate or merge contents into one `flow:`".into(),
+                                "remove the duplicate or merge contents into one `flow:`".into()
                             ],
                         },
                         span,
@@ -2586,7 +2594,10 @@ impl<'a> Parser<'a> {
                         }
                     }
                     self.expect(&TokenKind::Rparen)?;
-                    ReturnExpr::Call { target: Spanned::new(name, name_span), args }
+                    ReturnExpr::Call {
+                        target: Spanned::new(name, name_span),
+                        args,
+                    }
                 } else {
                     ReturnExpr::Name(Spanned::new(name, name_span))
                 }
@@ -2734,7 +2745,9 @@ impl<'a> Parser<'a> {
                                 let v = name.clone();
                                 let name_span = self.peek().span;
                                 self.pos += 1;
-                                Ok(FlowStmt::ContextMarker(ContextEntry::NameRef(Spanned::new(v, name_span))))
+                                Ok(FlowStmt::ContextMarker(ContextEntry::NameRef(
+                                    Spanned::new(v, name_span),
+                                )))
                             }
                             TokenKind::StringLit(s) => {
                                 let v = s.clone();
@@ -3282,7 +3295,14 @@ impl<'a> Parser<'a> {
         let end = description.span.end;
         let span = Span::new(kw_span.file_id, kw_span.start, end);
 
-        Ok(Spanned::new(TypeDecl { name, description, exported }, span))
+        Ok(Spanned::new(
+            TypeDecl {
+                name,
+                description,
+                exported,
+            },
+            span,
+        ))
     }
 
     /// Parse `generated const NAME = "<string>"` — string-only RHS per
@@ -3676,11 +3696,7 @@ generated block summarize_changes()
     #[test]
     fn generated_block_rejects_return_type() {
         // §3.7: `generated block` does not admit a return-type slot.
-        let err = parse(
-            "generated block fix() -> Report\n    \"do thing\"\n",
-            0,
-        )
-        .err();
+        let err = parse("generated block fix() -> Report\n    \"do thing\"\n", 0).err();
         match err {
             Some(ParseError::Unexpected { ref message, .. }) => {
                 assert!(
@@ -4556,7 +4572,10 @@ block diagnose() -> Diagnosis
             FlowStmt::Return(ReturnExpr::OutputTarget(OutputTargetExpr::Description(d))) => {
                 assert_eq!(d.content, "root cause analysis");
             }
-            other => panic!("expected Return(OutputTarget(Description)), got {:?}", other),
+            other => panic!(
+                "expected Return(OutputTarget(Description)), got {:?}",
+                other
+            ),
         }
     }
 }
@@ -4732,27 +4751,21 @@ mod duplicate_subsection_recovery_tests {
     fn parse_first_skill_with_bag(src: &str) -> (Skill, DiagBag) {
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
-        let file = match parse_with_diagnostics_opts(
-            src,
-            0,
-            "dup.glyph",
-            &line_index,
-            &mut bag,
-            true,
-        ) {
-            Some(f) => f,
-            None => {
-                // Surface the legacy parse error to make AC4 failures
-                // (parser returning None when only duplicate-subsection
-                // diagnostics fire) actionable.
-                let legacy = parse(src, 0).err();
-                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
-                panic!(
-                    "parser returned None; bag ids: {:?}; legacy parse err: {:?}",
-                    ids, legacy
-                );
-            }
-        };
+        let file =
+            match parse_with_diagnostics_opts(src, 0, "dup.glyph", &line_index, &mut bag, true) {
+                Some(f) => f,
+                None => {
+                    // Surface the legacy parse error to make AC4 failures
+                    // (parser returning None when only duplicate-subsection
+                    // diagnostics fire) actionable.
+                    let legacy = parse(src, 0).err();
+                    let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+                    panic!(
+                        "parser returned None; bag ids: {:?}; legacy parse err: {:?}",
+                        ids, legacy
+                    );
+                }
+            };
         let skill = file
             .decls
             .into_iter()
@@ -4834,7 +4847,10 @@ skill foo()
             "body_constraints should hold exactly the first `constraints:` body's markers (got {:?})",
             skill.body_constraints
         );
-        assert_eq!(skill.body_constraints[0].marker, ConstraintMarkerKind::Require);
+        assert_eq!(
+            skill.body_constraints[0].marker,
+            ConstraintMarkerKind::Require
+        );
         assert_eq!(skill.body_constraints[0].name.node, "accuracy");
 
         // Second body recovered as a single Constraints variant in extras.
@@ -4876,10 +4892,18 @@ skill foo()
 ";
         let (skill, bag) = parse_first_skill_with_bag(src);
 
-        assert_eq!(skill.body_constraints.len(), 1, "first body wins on body_constraints");
+        assert_eq!(
+            skill.body_constraints.len(),
+            1,
+            "first body wins on body_constraints"
+        );
         assert_eq!(skill.body_constraints[0].name.node, "accuracy");
 
-        assert_eq!(skill.extra_subsections.len(), 2, "two extras for the 2nd + 3rd body");
+        assert_eq!(
+            skill.extra_subsections.len(),
+            2,
+            "two extras for the 2nd + 3rd body"
+        );
         match (&skill.extra_subsections[0], &skill.extra_subsections[1]) {
             (DuplicateSubsection::Constraints(m1), DuplicateSubsection::Constraints(m2)) => {
                 assert_eq!(m1.len(), 1);
@@ -4889,7 +4913,10 @@ skill foo()
                 assert_eq!(m2[0].marker, ConstraintMarkerKind::Must);
                 assert_eq!(m2[0].name.node, "clarity");
             }
-            other => panic!("expected two Constraints extras in source order, got {:?}", other),
+            other => panic!(
+                "expected two Constraints extras in source order, got {:?}",
+                other
+            ),
         }
 
         let dups = duplicate_subsection_diags(&bag);
@@ -5100,9 +5127,7 @@ skill foo()
         (block, bag)
     }
 
-    fn parse_first_export_block_with_bag(
-        src: &str,
-    ) -> (crate::ast::ExportBlockDecl, DiagBag) {
+    fn parse_first_export_block_with_bag(src: &str) -> (crate::ast::ExportBlockDecl, DiagBag) {
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
         let file = parse_with_diagnostics_opts(src, 0, "dup.glyph", &line_index, &mut bag, true)
@@ -5338,14 +5363,7 @@ skill foo()
 ";
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
-        let file = parse_with_diagnostics_opts(
-            src,
-            0,
-            "dup.glyph",
-            &line_index,
-            &mut bag,
-            true,
-        );
+        let file = parse_with_diagnostics_opts(src, 0, "dup.glyph", &line_index, &mut bag, true);
 
         // Pin the bag shape: at least one duplicate-subsection AND at
         // least one param-slot diagnostic, both repairable.

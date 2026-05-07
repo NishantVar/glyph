@@ -121,9 +121,22 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let enable_effects = cli.enable_effects;
     match cli.command {
-        Command::Compile { path, format, emit_ir, strict } => run_compile(path, format, emit_ir, strict, enable_effects),
-        Command::Check { path, format, strict } => run_check(path, format, strict, enable_effects),
-        Command::ValidateOutput { ir_json_path, md_path, format } => run_validate_output(ir_json_path, md_path, format),
+        Command::Compile {
+            path,
+            format,
+            emit_ir,
+            strict,
+        } => run_compile(path, format, emit_ir, strict, enable_effects),
+        Command::Check {
+            path,
+            format,
+            strict,
+        } => run_check(path, format, strict, enable_effects),
+        Command::ValidateOutput {
+            ir_json_path,
+            md_path,
+            format,
+        } => run_validate_output(ir_json_path, md_path, format),
         Command::Fmt { path, check } => run_fmt(path, check, enable_effects),
         Command::Lsp { .. } => run_lsp(),
     }
@@ -308,7 +321,11 @@ fn collect_glyph_sources(path: &std::path::Path) -> Result<Vec<PathBuf>, ExitCod
                 let entry = match entry {
                     Ok(e) => e,
                     Err(e) => {
-                        eprintln!("glyph: cannot read directory entry under `{}`: {}", dir.display(), e);
+                        eprintln!(
+                            "glyph: cannot read directory entry under `{}`: {}",
+                            dir.display(),
+                            e
+                        );
                         return Err(ExitCode::from(3));
                     }
                 };
@@ -333,11 +350,20 @@ fn collect_glyph_sources(path: &std::path::Path) -> Result<Vec<PathBuf>, ExitCod
         return Ok(out);
     }
 
-    eprintln!("glyph: `{}` is neither a regular file nor a directory", path.display());
+    eprintln!(
+        "glyph: `{}` is neither a regular file nor a directory",
+        path.display()
+    );
     Err(ExitCode::from(3))
 }
 
-fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool, enable_effects: bool) -> ExitCode {
+fn run_compile(
+    path: PathBuf,
+    format: OutputFormat,
+    emit_ir: bool,
+    strict: bool,
+    enable_effects: bool,
+) -> ExitCode {
     let metadata = match std::fs::metadata(&path) {
         Ok(m) => m,
         Err(e) => {
@@ -360,7 +386,8 @@ fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool,
     };
 
     let label = path.display().to_string();
-    let outcome = match glyph_core::compile_source_with_effects(&source, 0, &label, enable_effects) {
+    let outcome = match glyph_core::compile_source_with_effects(&source, 0, &label, enable_effects)
+    {
         Ok(o) => o,
         Err(e) => {
             eprintln!("glyph: compile failed: {:?}", e);
@@ -369,7 +396,11 @@ fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool,
     };
 
     match outcome {
-        CompileOutcome::Compiled { markdown, diagnostics, arena } => {
+        CompileOutcome::Compiled {
+            markdown,
+            diagnostics,
+            arena,
+        } => {
             let code = diagnostics.exit_code();
             // In strict mode, repairable diagnostics (exit 2) become hard
             // errors (exit 1) and no `.md` output is written.
@@ -383,11 +414,10 @@ fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool,
                 return ExitCode::from(3);
             }
             if emit_ir {
-                let source_file = path
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("");
-                if let Some(ir_json) = glyph_core::emit_ir::serialize_ir_json(&arena, source_file, enable_effects) {
+                let source_file = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                if let Some(ir_json) =
+                    glyph_core::emit_ir::serialize_ir_json(&arena, source_file, enable_effects)
+                {
                     let ir_path = ir_json_output_path(&path);
                     if let Err(e) = glyph_core::atomic_write(&ir_path, &ir_json) {
                         eprintln!("glyph: cannot write `{}`: {}", ir_path.display(), e);
@@ -411,7 +441,13 @@ fn run_compile(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool,
 
 /// Directory-mode compile: collect all `.glyph` files, build DAG, compile
 /// in topological order with partial failure.
-fn run_compile_directory(path: PathBuf, format: OutputFormat, emit_ir: bool, strict: bool, enable_effects: bool) -> ExitCode {
+fn run_compile_directory(
+    path: PathBuf,
+    format: OutputFormat,
+    emit_ir: bool,
+    strict: bool,
+    enable_effects: bool,
+) -> ExitCode {
     let files = match collect_glyph_sources(&path) {
         Ok(v) => v,
         Err(code) => return code,
@@ -439,10 +475,12 @@ fn run_compile_directory(path: PathBuf, format: OutputFormat, emit_ir: bool, str
                 emit_diagnostics(diagnostics, &label, &source, format);
             }
             glyph_core::FileOutcome::Skipped { failed_dep } => {
-                let file_name = file_path.file_name()
+                let file_name = file_path
+                    .file_name()
                     .and_then(|s| s.to_str())
                     .unwrap_or("unknown");
-                let out_name = file_name.strip_suffix(".glyph")
+                let out_name = file_name
+                    .strip_suffix(".glyph")
                     .map(|s| format!("{}.md", s))
                     .unwrap_or_else(|| file_name.to_string());
                 eprintln!(
@@ -451,7 +489,8 @@ fn run_compile_directory(path: PathBuf, format: OutputFormat, emit_ir: bool, str
                     failed_dep.display(),
                 );
                 // Stale .md note (per pipeline.md §Partial Failure Policy §3).
-                let stale_path = file_path.parent()
+                let stale_path = file_path
+                    .parent()
                     .unwrap_or_else(|| std::path::Path::new("."))
                     .join(&out_name);
                 if stale_path.exists() {

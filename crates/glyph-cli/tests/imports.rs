@@ -42,7 +42,11 @@ fn assert_contains_diagnostic_id(stdout: &str, id: &str) {
             found = true;
         }
     }
-    assert!(found, "expected diagnostic id `{}` in JSON output:\n{}", id, stdout);
+    assert!(
+        found,
+        "expected diagnostic id `{}` in JSON output:\n{}",
+        id, stdout
+    );
 }
 
 /// AC1: fix_bug.glyph resolves names imported from prefs.glyph and repo_tools.glyph.
@@ -54,8 +58,14 @@ fn ac1_cross_file_resolution() {
     for line in stdout.lines() {
         let v: serde_json::Value = serde_json::from_str(line).unwrap();
         let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
-        assert_ne!(id, "G::analyze::undefined-name", "imported name should resolve");
-        assert_ne!(id, "G::analyze::undefined-call", "imported block should resolve");
+        assert_ne!(
+            id, "G::analyze::undefined-name",
+            "imported name should resolve"
+        );
+        assert_ne!(
+            id, "G::analyze::undefined-call",
+            "imported block should resolve"
+        );
     }
     // Exit code should not be 1 (hard error).
     assert_ne!(
@@ -77,10 +87,18 @@ fn ac2_circular_import_path() {
         let v: serde_json::Value = serde_json::from_str(line).unwrap();
         if v.get("id").and_then(|x| x.as_str()) == Some("G::analyze::circular-import") {
             let msg = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
-            assert!(msg.contains("->"), "cycle path should use -> separator: {}", msg);
+            assert!(
+                msg.contains("->"),
+                "cycle path should use -> separator: {}",
+                msg
+            );
         }
     }
-    assert_eq!(output.status.code(), Some(1), "circular import should be exit 1");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "circular import should be exit 1"
+    );
 }
 
 /// AC3: Importing a private (non-exported) name fails with import-private.
@@ -89,7 +107,11 @@ fn ac3_import_private() {
     let output = run_check("invalid/imports/import_private.glyph", "json");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_contains_diagnostic_id(&stdout, "G::analyze::import-private");
-    assert_eq!(output.status.code(), Some(1), "import-private should be exit 1");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "import-private should be exit 1"
+    );
 }
 
 /// AC4: Importing a skill (not a block/text) fails with import-skill.
@@ -98,7 +120,11 @@ fn ac4_import_skill() {
     let output = run_check("invalid/imports/import_skill.glyph", "json");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_contains_diagnostic_id(&stdout, "G::analyze::import-skill");
-    assert_eq!(output.status.code(), Some(1), "import-skill should be exit 1");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "import-skill should be exit 1"
+    );
 }
 
 /// AC5: Duplicate imports are repairable diagnostics → exit 2.
@@ -156,5 +182,9 @@ fn missing_import_file_exit_1() {
     let output = run_check("invalid/imports/missing_import.glyph", "json");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_contains_diagnostic_id(&stdout, "G::analyze::missing-file");
-    assert_eq!(output.status.code(), Some(1), "missing file should be exit 1");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "missing file should be exit 1"
+    );
 }

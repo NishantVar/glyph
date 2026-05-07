@@ -51,8 +51,8 @@ use tower_lsp::lsp_types::{
     MessageType, OneOf, SemanticToken, SemanticTokenModifier as LspTokenModifier,
     SemanticTokenType as LspTokenType, SemanticTokens, SemanticTokensFullOptions,
     SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
-    TextDocumentSyncCapability, TextDocumentSyncKind, Url, WorkDoneProgressOptions,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
+    TextDocumentSyncKind, Url, WorkDoneProgressOptions,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -135,8 +135,7 @@ impl Backend {
             .to_file_path()
             .unwrap_or_else(|_| std::path::PathBuf::from(uri.path()));
 
-        let bags =
-            glyph_core::check_source_with_imports(text, 0, &buffer_path, enable_effects);
+        let bags = glyph_core::check_source_with_imports(text, 0, &buffer_path, enable_effects);
 
         // Resolve which key in `bags` corresponds to the buffer. The core
         // canonicalizes the entry path when possible; match against both.
@@ -144,13 +143,15 @@ impl Backend {
             .canonicalize()
             .unwrap_or_else(|_| buffer_path.clone());
 
-        let mut new_dep_uris: std::collections::HashSet<Url> =
-            std::collections::HashSet::new();
+        let mut new_dep_uris: std::collections::HashSet<Url> = std::collections::HashSet::new();
         let mut buffer_diagnostics: Vec<LspDiagnostic> = Vec::new();
 
         for (path, bag) in bags.iter() {
-            let diagnostics: Vec<LspDiagnostic> =
-                bag.sorted().iter().map(convert::diagnostic_to_lsp).collect();
+            let diagnostics: Vec<LspDiagnostic> = bag
+                .sorted()
+                .iter()
+                .map(convert::diagnostic_to_lsp)
+                .collect();
 
             let is_buffer = path == &canon_buffer || path == &buffer_path;
             if is_buffer {
@@ -184,7 +185,9 @@ impl Backend {
                 .unwrap_or_default()
         };
         for stale in stale_dep_uris {
-            self.client.publish_diagnostics(stale, Vec::new(), None).await;
+            self.client
+                .publish_diagnostics(stale, Vec::new(), None)
+                .await;
         }
 
         // Stamp the Document with this lint's published set so we know
@@ -293,7 +296,9 @@ impl LanguageServer for Backend {
         // re-lint here.
         let uri = params.text_document.uri;
         let mut docs = self.documents.write().await;
-        let Some(doc) = docs.get_mut(&uri) else { return };
+        let Some(doc) = docs.get_mut(&uri) else {
+            return;
+        };
 
         // tower-lsp's content_changes is `Vec<TextDocumentContentChangeEvent>`.
         // With Full sync (advertised in initialize), each event has `range == None`
@@ -366,7 +371,11 @@ impl LanguageServer for Backend {
         &self,
         params: GotoDefinitionParams,
     ) -> JsonRpcResult<Option<GotoDefinitionResponse>> {
-        let uri = params.text_document_position_params.text_document.uri.clone();
+        let uri = params
+            .text_document_position_params
+            .text_document
+            .uri
+            .clone();
         let pos = params.text_document_position_params.position;
 
         let text = {
@@ -403,9 +412,11 @@ impl LanguageServer for Backend {
         // Smallest enclosing resolution. Resolutions are span-disjoint by
         // construction (each reference has exactly one resolution), so the
         // first hit is the right one — no need to sort.
-        if let Some(r) = view.resolutions.iter().find(|r| {
-            off >= r.use_span.start && off < r.use_span.end
-        }) {
+        if let Some(r) = view
+            .resolutions
+            .iter()
+            .find(|r| off >= r.use_span.start && off < r.use_span.end)
+        {
             // §10.D: stdlib targets return null. The user sees no jump,
             // which matches "subagent has no .glyph to open."
             if r.kind == ResolutionKind::Stdlib {
@@ -414,8 +425,7 @@ impl LanguageServer for Backend {
             // Cross-file branch: when the def lives in a different file, build
             // the target URI from its on-disk path and read that file just to
             // build a LineIndex for the LSP range conversion.
-            let same_file = r.def_file == buffer_path
-                || r.def_file.as_os_str().is_empty();
+            let same_file = r.def_file == buffer_path || r.def_file.as_os_str().is_empty();
             if !same_file {
                 let target_uri = match Url::from_file_path(&r.def_file) {
                     Ok(u) => u,
@@ -433,13 +443,19 @@ impl LanguageServer for Backend {
                 })));
             }
             let range = convert::byte_span_to_lsp_range(r.def_span, &view.line_index);
-            return Ok(Some(GotoDefinitionResponse::Scalar(Location { uri, range })));
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                uri,
+                range,
+            })));
         }
 
         // Fallback: cursor inside a `{name}` slot in a flow inline string.
         if let Some(param_span) = resolve_param_slot(&text, &view.ast, off) {
             let range = convert::byte_span_to_lsp_range(param_span, &view.line_index);
-            return Ok(Some(GotoDefinitionResponse::Scalar(Location { uri, range })));
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                uri,
+                range,
+            })));
         }
 
         Ok(None)
@@ -559,9 +575,7 @@ fn resolve_param_slot(
                 // Cursor is somewhere in this string. Walk slots.
                 let inner_offset = cursor as usize - abs_start;
                 for slot in glyph_core::slot::scan_slots(s) {
-                    if inner_offset >= slot.start_in_content
-                        && inner_offset < slot.end_in_content
-                    {
+                    if inner_offset >= slot.start_in_content && inner_offset < slot.end_in_content {
                         // Look up param by name.
                         if let Some(p) = params.iter().find(|p| p.name == slot.name) {
                             return Some(p.span);
@@ -584,10 +598,7 @@ fn covers(span: Span, off: u32) -> bool {
 
 /// Collect every `FlowStmt::InlineString` content reachable inside the
 /// decl whose span is `decl_span`.
-fn collect_flow_inline_strings(
-    ast: &glyph_core::ast::SourceFile,
-    decl_span: Span,
-) -> Vec<String> {
+fn collect_flow_inline_strings(ast: &glyph_core::ast::SourceFile, decl_span: Span) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for d in &ast.decls {
         match d {
@@ -612,7 +623,12 @@ fn gather_strings(stmts: &[FlowStmt], out: &mut Vec<String>) {
     for s in stmts {
         match s {
             FlowStmt::InlineString(t) => out.push(t.clone()),
-            FlowStmt::Branch { then_body, elif_branches, else_body, .. } => {
+            FlowStmt::Branch {
+                then_body,
+                elif_branches,
+                else_body,
+                ..
+            } => {
                 gather_strings(then_body, out);
                 for elif in elif_branches {
                     gather_strings(&elif.body, out);
@@ -639,8 +655,8 @@ mod tests {
     flow:
         "Inspect {scope} for issues."
 "#;
-        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false)
-            .expect("parse");
+        let view =
+            glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false).expect("parse");
         // Find the byte offset of the `s` inside `{scope}`.
         let off = src.find("{scope}").unwrap() as u32 + 1; // inside the braces
         let span = resolve_param_slot(src, &view.ast, off).expect("should resolve");
@@ -648,7 +664,11 @@ mod tests {
         // header. The param name is `scope` — verify the span starts at
         // or near `scope = ".",` in the source.
         let head = &src[span.start as usize..span.end as usize];
-        assert!(head.contains("scope"), "param span should cover `scope`, got: {:?}", head);
+        assert!(
+            head.contains("scope"),
+            "param span should cover `scope`, got: {:?}",
+            head
+        );
     }
 
     /// Cursor inside a slot whose name is not a known parameter returns None.
@@ -659,8 +679,8 @@ mod tests {
     flow:
         "Use {missing} here."
 "#;
-        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false)
-            .expect("parse");
+        let view =
+            glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false).expect("parse");
         let off = src.find("{missing}").unwrap() as u32 + 1;
         assert!(resolve_param_slot(src, &view.ast, off).is_none());
     }
@@ -673,8 +693,8 @@ mod tests {
     flow:
         "Inspect things."
 "#;
-        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false)
-            .expect("parse");
+        let view =
+            glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false).expect("parse");
         let off = src.find("Inspect").unwrap() as u32 + 2;
         assert!(resolve_param_slot(src, &view.ast, off).is_none());
     }
@@ -698,8 +718,8 @@ mod tests {
 block validate_plan()
     "Check the plan."
 "#;
-        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false)
-            .expect("parse");
+        let view =
+            glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false).expect("parse");
         // Cursor inside the `validate_plan` call-site (first occurrence —
         // the second is the `block` declaration's name token).
         let call_offset = src.find("validate_plan()").unwrap() as u32 + 2;
@@ -727,8 +747,8 @@ block validate_plan()
 
 const accuracy = "Be accurate."
 "#;
-        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false)
-            .expect("parse");
+        let view =
+            glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false).expect("parse");
         // Cursor inside `accuracy` after `require`.
         let off = src.find("require accuracy").unwrap() as u32 + "require ".len() as u32 + 1;
         let r = view
@@ -752,8 +772,8 @@ skill main()
     flow:
         subagent()
 "#;
-        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false)
-            .expect("parse");
+        let view =
+            glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false).expect("parse");
         // Cursor inside the `subagent` call-site. Skip the import line.
         let off = src.find("subagent()").unwrap() as u32 + 2;
         let r = view
@@ -775,15 +795,19 @@ skill main()
 block validate_plan()
     "Check the plan."
 "#;
-        let view = glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false)
-            .expect("parse");
+        let view =
+            glyph_core::check_source_with_resolutions(src, 0, "test.glyph", false).expect("parse");
         // Cursor on a leading-whitespace position (start of the indented line).
         let off = src.find("    description").unwrap() as u32;
         let hit = view
             .resolutions
             .iter()
             .find(|r| off >= r.use_span.start && off < r.use_span.end);
-        assert!(hit.is_none(), "no resolution should cover whitespace, got: {:?}", hit);
+        assert!(
+            hit.is_none(),
+            "no resolution should cover whitespace, got: {:?}",
+            hit
+        );
         // And the param-slot fallback should also yield None.
         assert!(resolve_param_slot(src, &view.ast, off).is_none());
     }
@@ -866,8 +890,7 @@ skill main()
 ";
         std::fs::write(&importer_path, importer_src).expect("write importer");
 
-        let bags =
-            glyph_core::check_source_with_imports(importer_src, 0, &importer_path, false);
+        let bags = glyph_core::check_source_with_imports(importer_src, 0, &importer_path, false);
 
         let canon_dep = dep_path.canonicalize().expect("canon dep");
         let canon_importer = importer_path.canonicalize().expect("canon importer");
@@ -879,9 +902,10 @@ skill main()
         // Importer is clean; dep carries the undefined-name.
         let importer_bag = bags.get(&canon_importer).unwrap();
         assert!(
-            importer_bag
-                .iter()
-                .all(|d| !matches!(d.classification, glyph_core::diagnostic::Classification::Error)),
+            importer_bag.iter().all(|d| !matches!(
+                d.classification,
+                glyph_core::diagnostic::Classification::Error
+            )),
             "importer should be clean"
         );
         let dep_bag = bags.get(&canon_dep).unwrap();
@@ -940,7 +964,10 @@ skill main()
         // Same line ⇒ delta_start is the column difference.
         assert_eq!(encoded[1].delta_start, 6);
         assert_eq!(encoded[1].length, 4);
-        assert_eq!(encoded[1].token_modifiers_bitset, SemTokenModifier::DECLARATION);
+        assert_eq!(
+            encoded[1].token_modifiers_bitset,
+            SemTokenModifier::DECLARATION
+        );
     }
 
     #[test]
@@ -1001,4 +1028,3 @@ pub fn run_stdio() -> std::io::Result<()> {
 
     Ok(())
 }
-

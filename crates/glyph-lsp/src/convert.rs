@@ -211,8 +211,20 @@ mod tests {
     fn single_character_span_end_col_conversion() {
         let s = span("f.glyph", 5, 7, 5, 7);
         let r = source_span_to_range(&s);
-        assert_eq!(r.start, Position { line: 4, character: 6 });
-        assert_eq!(r.end, Position { line: 4, character: 7 });
+        assert_eq!(
+            r.start,
+            Position {
+                line: 4,
+                character: 6
+            }
+        );
+        assert_eq!(
+            r.end,
+            Position {
+                line: 4,
+                character: 7
+            }
+        );
     }
 
     /// Multi-character single-line span: `foo` at line 3 cols 5..7 inclusive.
@@ -221,8 +233,20 @@ mod tests {
     fn multi_character_single_line_span() {
         let s = span("f.glyph", 3, 5, 3, 7);
         let r = source_span_to_range(&s);
-        assert_eq!(r.start, Position { line: 2, character: 4 });
-        assert_eq!(r.end, Position { line: 2, character: 7 });
+        assert_eq!(
+            r.start,
+            Position {
+                line: 2,
+                character: 4
+            }
+        );
+        assert_eq!(
+            r.end,
+            Position {
+                line: 2,
+                character: 7
+            }
+        );
     }
 
     /// Multi-line span: line 1 col 1 through line 3 col 4 inclusive.
@@ -231,16 +255,34 @@ mod tests {
     fn multi_line_span() {
         let s = span("f.glyph", 1, 1, 3, 4);
         let r = source_span_to_range(&s);
-        assert_eq!(r.start, Position { line: 0, character: 0 });
-        assert_eq!(r.end, Position { line: 2, character: 4 });
+        assert_eq!(
+            r.start,
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+        assert_eq!(
+            r.end,
+            Position {
+                line: 2,
+                character: 4
+            }
+        );
     }
 
     /// Severity mapping is fixed by §6 and asserted explicitly.
     #[test]
     fn severity_mapping() {
         assert_eq!(severity(Classification::Error), DiagnosticSeverity::ERROR);
-        assert_eq!(severity(Classification::Repairable), DiagnosticSeverity::WARNING);
-        assert_eq!(severity(Classification::Warning), DiagnosticSeverity::INFORMATION);
+        assert_eq!(
+            severity(Classification::Repairable),
+            DiagnosticSeverity::WARNING
+        );
+        assert_eq!(
+            severity(Classification::Warning),
+            DiagnosticSeverity::INFORMATION
+        );
     }
 
     /// Roundtrip test #1: a parse error becomes an LSP error with the
@@ -263,8 +305,14 @@ mod tests {
         assert_eq!(
             lsp.range,
             Range {
-                start: Position { line: 1, character: 0 },
-                end: Position { line: 1, character: 1 }
+                start: Position {
+                    line: 1,
+                    character: 0
+                },
+                end: Position {
+                    line: 1,
+                    character: 1
+                }
             }
         );
         assert!(lsp.related_information.is_none());
@@ -284,9 +332,7 @@ mod tests {
         let lsp = diagnostic_to_lsp(&d);
         assert_eq!(
             lsp.code,
-            Some(NumberOrString::String(
-                "G::analyze::undefined-name".into()
-            ))
+            Some(NumberOrString::String("G::analyze::undefined-name".into()))
         );
         assert_eq!(lsp.severity, Some(DiagnosticSeverity::ERROR));
         assert!(lsp.message.starts_with("`x` is not a declared"));
@@ -346,8 +392,20 @@ mod tests {
         let li = LineIndex::new(src);
         let span = Span::new(0, 4, 7);
         let r = byte_span_to_lsp_range(span, &li);
-        assert_eq!(r.start, Position { line: 1, character: 0 });
-        assert_eq!(r.end, Position { line: 1, character: 3 });
+        assert_eq!(
+            r.start,
+            Position {
+                line: 1,
+                character: 0
+            }
+        );
+        assert_eq!(
+            r.end,
+            Position {
+                line: 1,
+                character: 3
+            }
+        );
     }
 
     /// Byte-span → LSP range when the use-site is at the very start of file.
@@ -357,8 +415,20 @@ mod tests {
         let li = LineIndex::new(src);
         let span = Span::new(0, 0, 3);
         let r = byte_span_to_lsp_range(span, &li);
-        assert_eq!(r.start, Position { line: 0, character: 0 });
-        assert_eq!(r.end, Position { line: 0, character: 3 });
+        assert_eq!(
+            r.start,
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+        assert_eq!(
+            r.end,
+            Position {
+                line: 0,
+                character: 3
+            }
+        );
     }
 
     /// `related` spans flow through into LSP `related_information`.

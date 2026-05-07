@@ -45,7 +45,9 @@ pub fn compute_return_sentence(
     type_registry: &TypeRegistry,
 ) -> Option<String> {
     match output_form {
-        Some(OutputTargetForm::Description(text)) => Some(format!("Produce: {}.", normalize_ws(text))),
+        Some(OutputTargetForm::Description(text)) => {
+            Some(format!("Produce: {}.", normalize_ws(text)))
+        }
         Some(OutputTargetForm::Identifier(name)) => Some(match return_type_text {
             Some(t) => match type_registry.descriptions.get(t) {
                 Some(d) => format!("Produce `{}` (`{}`): {}.", name, t, normalize_ws(d)),

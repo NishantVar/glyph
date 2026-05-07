@@ -108,6 +108,11 @@ pub struct IrConstraint {
 pub struct IrContext {
     pub node_id: NodeId,
     pub text: String,
+    /// Source name when the entry was a NameRef (e.g. `glyph_overview`).
+    /// Absent for inline strings. Used by the emitter to render a bold
+    /// kebab-case label as the first line of the entry's bullet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -357,7 +362,11 @@ mod tests {
             ty: None,
             source: OutputSource::SynthesizedByAgent,
         };
-        assert!(matches!(id_form.form, OutputTargetForm::Identifier(ref n) if n == "current_branch"));
-        assert!(matches!(desc_form.form, OutputTargetForm::Description(ref d) if d == "root cause analysis"));
+        assert!(
+            matches!(id_form.form, OutputTargetForm::Identifier(ref n) if n == "current_branch")
+        );
+        assert!(
+            matches!(desc_form.form, OutputTargetForm::Description(ref d) if d == "root cause analysis")
+        );
     }
 }

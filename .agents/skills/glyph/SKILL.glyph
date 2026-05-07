@@ -1,0 +1,34 @@
+// SKILL.glyph
+//
+// Entry point for the Glyph toolkit. Pure router: identify which Glyph
+// sub-capability the user is invoking and hand off to the matching slash
+// command. The actual procedures live in `/glyph:teach`, `/glyph:compile`,
+// and `/glyph:decompile` (under `.agents/commands/glyph/`).
+
+skill glyph()
+    description: "Entry point for the Glyph toolkit. Use when the user wants to author, compile, decompile, or learn the Glyph DSL. Routes the request to the matching `/glyph:*` slash command."
+
+    flow:
+        if route_to_teach.applies()
+            route_to_teach()
+        elif route_to_compile.applies()
+            route_to_compile()
+        elif route_to_decompile.applies()
+            route_to_decompile()
+        else
+            ask_which_glyph_capability()
+
+block route_to_teach()
+    description: "User wants to author or edit a `.glyph` source file, or wants the Glyph DSL syntax taught or explained. Triggers include phrases like `write a glyph skill`, `teach me glyph`, `how does glyph syntax work`, or any request to create or edit a `.glyph` file."
+    "Hand off to the `/glyph:teach` slash command. Pass through the target `.glyph` path the user mentioned, or ask for it if absent. Do not run any authoring steps in this router — `/glyph:teach` owns the full procedure."
+
+block route_to_compile()
+    description: "User wants to compile an existing `.glyph` source file or directory through the full Glyph pipeline (compile, fmt, repair loop, constraint scan, prose reshape, validate-output) and surface the agent-facing `.md` output."
+    "Hand off to the `/glyph:compile` slash command. Pass through the source `.glyph` file or directory path. Do not run `glyph compile` directly from this router — `/glyph:compile` owns the full pipeline."
+
+block route_to_decompile()
+    description: "User wants to convert an existing compiled-form skill (a `.md` file, a `SKILL.md`, an Anthropic-style skill, or any other Markdown skill) back into a Glyph source file (`.glyph`)."
+    "Hand off to the `/glyph:decompile` slash command. Pass through the source `.md` path and the target `.glyph` path. Do not perform any reverse-mapping in this router — `/glyph:decompile` owns the full procedure."
+
+block ask_which_glyph_capability()
+    "Ask the user which Glyph capability they need: `teach` (author or learn the DSL), `compile` (build a `.glyph` into agent-facing Markdown), or `decompile` (reverse a `.md` skill back into `.glyph`). Once they answer, re-enter the matching branch."

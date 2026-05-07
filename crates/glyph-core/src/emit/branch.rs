@@ -11,7 +11,10 @@ pub const MULTI_ARM_OPENER: &str =
 
 pub fn is_pure_applies(br: &IrBranch) -> bool {
     is_applies_only(&br.condition)
-        && br.elif_branches.iter().all(|e| is_applies_only(&e.condition))
+        && br
+            .elif_branches
+            .iter()
+            .all(|e| is_applies_only(&e.condition))
 }
 
 fn is_applies_only(c: &str) -> bool {

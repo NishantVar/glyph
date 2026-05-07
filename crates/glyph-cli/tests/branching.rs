@@ -62,9 +62,21 @@ fn branching_corpus_compiles_with_lettered_substeps() {
     );
 
     let emitted = std::fs::read_to_string(&out).expect("branching.md should exist");
-    assert!(emitted.contains("a."), "expected lettered sub-steps in output:\n{}", emitted);
-    assert!(emitted.contains("If mode =="), "expected If branch header:\n{}", emitted);
-    assert!(emitted.contains("Otherwise:"), "expected else arm:\n{}", emitted);
+    assert!(
+        emitted.contains("a."),
+        "expected lettered sub-steps in output:\n{}",
+        emitted
+    );
+    assert!(
+        emitted.contains("If mode =="),
+        "expected If branch header:\n{}",
+        emitted
+    );
+    assert!(
+        emitted.contains("Otherwise:"),
+        "expected else arm:\n{}",
+        emitted
+    );
 }
 
 // AC7: applies-no-parens corpus file fires the right diagnostic.
@@ -72,7 +84,11 @@ fn branching_corpus_compiles_with_lettered_substeps() {
 fn applies_no_parens_corpus_fires_diagnostic() {
     let src = corpus_path("invalid", "applies_no_parens.glyph");
     let result = run_check_json(src);
-    assert_eq!(result.status.code(), Some(1), "applies-no-parens is an error");
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "applies-no-parens is an error"
+    );
     let ids = stdout_diagnostic_ids(&result);
     assert!(
         ids.contains(&"G::parse::applies-no-parens".to_string()),
@@ -86,7 +102,11 @@ fn applies_no_parens_corpus_fires_diagnostic() {
 fn applies_with_args_corpus_fires_diagnostic() {
     let src = corpus_path("invalid", "applies_with_args.glyph");
     let result = run_check_json(src);
-    assert_eq!(result.status.code(), Some(1), "applies-with-args is an error");
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "applies-with-args is an error"
+    );
     let ids = stdout_diagnostic_ids(&result);
     assert!(
         ids.contains(&"G::parse::applies-with-args".to_string()),
@@ -100,7 +120,11 @@ fn applies_with_args_corpus_fires_diagnostic() {
 fn applies_on_non_block_corpus_fires_diagnostic() {
     let src = corpus_path("invalid", "applies_on_non_block.glyph");
     let result = run_check_json(src);
-    assert_eq!(result.status.code(), Some(1), "applies-on-non-block is an error");
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "applies-on-non-block is an error"
+    );
     let ids = stdout_diagnostic_ids(&result);
     assert!(
         ids.contains(&"G::analyze::applies-on-non-block".to_string()),

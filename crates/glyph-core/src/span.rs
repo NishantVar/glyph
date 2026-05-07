@@ -15,7 +15,11 @@ pub struct Span {
 
 impl Span {
     pub const fn new(file_id: u32, start: u32, end: u32) -> Self {
-        Self { file_id, start, end }
+        Self {
+            file_id,
+            start,
+            end,
+        }
     }
 }
 

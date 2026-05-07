@@ -40,7 +40,14 @@ pub fn fmt_source(source: &str, enable_effects: bool) -> FmtResult {
 
     // Try to parse for stratum 2.
     let line_index = LineIndex::new(&after_preparse);
-    let parsed = parse::parse_with_diagnostics_opts(&after_preparse, 0, "<fmt>", &line_index, &mut bag, enable_effects);
+    let parsed = parse::parse_with_diagnostics_opts(
+        &after_preparse,
+        0,
+        "<fmt>",
+        &line_index,
+        &mut bag,
+        enable_effects,
+    );
 
     match parsed {
         Some(file) => {
@@ -122,8 +129,8 @@ fn preparse_rewrite(source: &str) -> String {
 /// - A whole-module import supersedes any selective imports for the same path.
 /// - Returns the source unchanged (same `String` value) when nothing to collapse.
 fn collapse_duplicate_imports(source: &str, file: &crate::ast::SourceFile) -> String {
-    use std::collections::{HashMap, HashSet};
     use crate::ast::{Decl, ImportKind};
+    use std::collections::{HashMap, HashSet};
 
     struct Group {
         first_line_idx: usize,
@@ -196,7 +203,13 @@ fn collapse_duplicate_imports(source: &str, file: &crate::ast::SourceFile) -> St
         }
         // Build the merged import line.
         let merged = if g.is_whole_module {
-            format!(r#"import "{}" as {}"#, path, g.whole_module_alias.as_deref().expect("WholeModule branch always sets alias"))
+            format!(
+                r#"import "{}" as {}"#,
+                path,
+                g.whole_module_alias
+                    .as_deref()
+                    .expect("WholeModule branch always sets alias")
+            )
         } else {
             let names = g
                 .selective_names
@@ -420,7 +433,12 @@ where
     let line_index = crate::span::LineIndex::new(&source);
     let mut bag = crate::diagnostic::DiagBag::new();
     match crate::parse::parse_with_diagnostics_opts(
-        &source, 0, "<fmt>", &line_index, &mut bag, enable_effects,
+        &source,
+        0,
+        "<fmt>",
+        &line_index,
+        &mut bag,
+        enable_effects,
     ) {
         Some(file) => {
             let signals = crate::analyze::fmt_signals(&file);
@@ -470,7 +488,12 @@ fn ast_rewrite(
         let line_index = crate::span::LineIndex::new(&after_stdlib);
         let mut bag = crate::diagnostic::DiagBag::new();
         if let Some(re) = crate::parse::parse_with_diagnostics_opts(
-            &after_stdlib, 0, "<fmt>", &line_index, &mut bag, enable_effects,
+            &after_stdlib,
+            0,
+            "<fmt>",
+            &line_index,
+            &mut bag,
+            enable_effects,
         ) {
             let new_signals = crate::analyze::fmt_signals(&re);
             return ast_rewrite_inner(&after_stdlib, &re, &new_signals, enable_effects);
@@ -857,7 +880,10 @@ fn rewrite_decl_body(
 /// If `line` is a bare identifier in a flow section that is unresolved, return
 /// the rewritten form `indent + name + "()"`. Returns `None` if the line is
 /// not a bare identifier or the name is locally bound (not in `unresolved_names`).
-fn rewrite_bare_name_in_flow_line(line: &str, signals: &crate::analyze::FmtSignals) -> Option<String> {
+fn rewrite_bare_name_in_flow_line(
+    line: &str,
+    signals: &crate::analyze::FmtSignals,
+) -> Option<String> {
     let indent_len = line.len() - line.trim_start().len();
     let indent = &line[..indent_len];
     let trimmed = line.trim();
@@ -865,7 +891,10 @@ fn rewrite_bare_name_in_flow_line(line: &str, signals: &crate::analyze::FmtSigna
         return None;
     }
     // Must be a pure bare identifier — letters/digits/underscore only.
-    if !trimmed.chars().all(|c| c == '_' || c.is_ascii_alphanumeric()) {
+    if !trimmed
+        .chars()
+        .all(|c| c == '_' || c.is_ascii_alphanumeric())
+    {
         return None;
     }
     let first = trimmed.chars().next()?;
@@ -1217,7 +1246,6 @@ fn trailing_comment_after_keyword(line: &str) -> Option<String> {
     None
 }
 
-
 /// Strip the surrounding `"..."` from a string literal token slice. Returns
 /// `None` if the slice isn't a quoted string.
 fn unwrap_string_literal(s: &str) -> Option<String> {
@@ -1349,7 +1377,9 @@ enum PlaceholderRepair {
     Description(String),
 }
 
-fn placeholder_string_return_target(ast_decl: Option<&crate::ast::Decl>) -> Option<PlaceholderRepair> {
+fn placeholder_string_return_target(
+    ast_decl: Option<&crate::ast::Decl>,
+) -> Option<PlaceholderRepair> {
     let decl = ast_decl?;
     match decl {
         crate::ast::Decl::Skill(s) if is_domain_return_type(s.node.return_type.as_ref()) => {
@@ -1372,7 +1402,9 @@ fn flow_placeholder_target(flow: &[crate::ast::FlowStmt]) -> Option<PlaceholderR
     })
 }
 
-fn return_expr_placeholder_target(expr: Option<&crate::ast::ReturnExpr>) -> Option<PlaceholderRepair> {
+fn return_expr_placeholder_target(
+    expr: Option<&crate::ast::ReturnExpr>,
+) -> Option<PlaceholderRepair> {
     let Some(crate::ast::ReturnExpr::Inline(s)) = expr else {
         return None;
     };
@@ -1760,14 +1792,21 @@ skill diagnose() -> Confirmation
         return \"<root cause and severity>\"
 ";
         let result = fmt_source(src, false);
-        assert!(result.changed, "fmt should rewrite the descriptive placeholder string");
         assert!(
-            result.output.contains("        return <\"root cause and severity\">\n"),
+            result.changed,
+            "fmt should rewrite the descriptive placeholder string"
+        );
+        assert!(
+            result
+                .output
+                .contains("        return <\"root cause and severity\">\n"),
             "expected descriptive output target return after fmt, got:\n{}",
             result.output
         );
         assert!(
-            !result.output.contains("return \"<root cause and severity>\""),
+            !result
+                .output
+                .contains("return \"<root cause and severity>\""),
             "placeholder string return should be gone, got:\n{}",
             result.output
         );
@@ -1784,7 +1823,10 @@ skill diagnose() -> Confirmation
         return \"<\\\"foo\\\">\"
 ";
         let result = fmt_source(src, false);
-        assert_eq!(result.output, src, "line with inner-quoted placeholder must be left unrewritten");
+        assert_eq!(
+            result.output, src,
+            "line with inner-quoted placeholder must be left unrewritten"
+        );
         assert!(!result.changed, "fmt must not mark source as changed");
     }
 
@@ -1807,7 +1849,10 @@ skill diagnose() -> Confirmation
                 result.output, *src,
                 "[{label}] line with escape-requiring inner placeholder must be left unrewritten"
             );
-            assert!(!result.changed, "[{label}] fmt must not mark source as changed");
+            assert!(
+                !result.changed,
+                "[{label}] fmt must not mark source as changed"
+            );
         }
     }
 
@@ -1906,7 +1951,9 @@ skill main()
         subagent("x")
 "#;
         let result = fmt_source(src, true);
-        assert!(result.output.contains(r#"import "@glyph/std" { send, subagent }"#));
+        assert!(result
+            .output
+            .contains(r#"import "@glyph/std" { send, subagent }"#));
         assert_eq!(result.output.matches(r#"import "@glyph/std""#).count(), 1);
         assert!(result.changed);
     }
@@ -1991,8 +2038,11 @@ skill main()
         send("hi")
 "#;
         let result = fmt_source(src, true);
-        assert!(result.output.contains(r#"import "@glyph/std" { send }"#),
-            "expected only `send` to remain, got: {}", result.output);
+        assert!(
+            result.output.contains(r#"import "@glyph/std" { send }"#),
+            "expected only `send` to remain, got: {}",
+            result.output
+        );
         assert!(!result.output.contains("subagent"));
         assert!(result.changed);
     }
@@ -2007,8 +2057,11 @@ skill main()
         return "<done>"
 "#;
         let result = fmt_source(src, true);
-        assert!(!result.output.contains("import"),
-            "expected import line dropped, got: {}", result.output);
+        assert!(
+            !result.output.contains("import"),
+            "expected import line dropped, got: {}",
+            result.output
+        );
         assert!(result.changed);
     }
 
@@ -2062,8 +2115,13 @@ skill main()
 "#;
         let result = fmt_source(src, true);
         // Aliased name `S` is referenced; raw name `subagent` (alias `Sub`) is not.
-        assert!(result.output.contains(r#"import "@glyph/std" { send as S }"#),
-            "expected only `send as S` to remain, got: {}", result.output);
+        assert!(
+            result
+                .output
+                .contains(r#"import "@glyph/std" { send as S }"#),
+            "expected only `send as S` to remain, got: {}",
+            result.output
+        );
         assert!(!result.output.contains("Sub"));
         assert!(!result.output.contains("subagent"));
         assert!(result.changed);
@@ -2079,8 +2137,11 @@ skill main()
         send("hi")
 "#;
         let result = fmt_source(src, true);
-        assert!(result.output.starts_with(r#"import "@glyph/std" { send }"#),
-            "expected stdlib import inserted at top, got: {}", result.output);
+        assert!(
+            result.output.starts_with(r#"import "@glyph/std" { send }"#),
+            "expected stdlib import inserted at top, got: {}",
+            result.output
+        );
         assert!(result.changed);
     }
 
@@ -2095,8 +2156,13 @@ skill main()
         subagent("y")
 "#;
         let result = fmt_source(src, true);
-        assert!(result.output.contains(r#"import "@glyph/std" { send, subagent }"#),
-            "expected subagent appended, got: {}", result.output);
+        assert!(
+            result
+                .output
+                .contains(r#"import "@glyph/std" { send, subagent }"#),
+            "expected subagent appended, got: {}",
+            result.output
+        );
         assert!(result.changed);
     }
 
@@ -2110,8 +2176,10 @@ skill main()
         send_value(subagent)
 "#;
         let result = fmt_source(src, true);
-        assert!(!result.output.contains("@glyph/std"),
-            "should not auto-import when name is locally bound");
+        assert!(
+            !result.output.contains("@glyph/std"),
+            "should not auto-import when name is locally bound"
+        );
     }
 
     #[test]
@@ -2151,10 +2219,17 @@ skill main()
         let result = fmt_source(src, true);
         // User authored `subagent` first; new `send` must be appended at the end,
         // not alphabetically reordered before `subagent`.
-        assert!(result.output.contains(r#"import "@glyph/std" { subagent, send }"#),
-            "expected appended order, got: {}", result.output);
-        assert!(!result.output.contains(r#"{ send, subagent }"#),
-            "must not reorder existing names alphabetically");
+        assert!(
+            result
+                .output
+                .contains(r#"import "@glyph/std" { subagent, send }"#),
+            "expected appended order, got: {}",
+            result.output
+        );
+        assert!(
+            !result.output.contains(r#"{ send, subagent }"#),
+            "must not reorder existing names alphabetically"
+        );
         assert!(result.changed);
     }
 
@@ -2166,8 +2241,11 @@ skill main()
         load("config.txt")
 "#;
         let result = fmt_source(src, true);
-        assert!(result.output.contains(r#"import "@glyph/std" { load }"#),
-            "expected `load` auto-imported, got: {}", result.output);
+        assert!(
+            result.output.contains(r#"import "@glyph/std" { load }"#),
+            "expected `load` auto-imported, got: {}",
+            result.output
+        );
         assert!(result.changed);
     }
 
@@ -2181,8 +2259,11 @@ skill main()
         helper
 "#;
         let result = fmt_source(src, true);
-        assert!(result.output.contains("helper()"),
-            "expected `helper` rewritten to `helper()`, got: {}", result.output);
+        assert!(
+            result.output.contains("helper()"),
+            "expected `helper` rewritten to `helper()`, got: {}",
+            result.output
+        );
         assert!(result.changed);
     }
 
@@ -2214,8 +2295,10 @@ skill main()
         let result = fmt_source(src, true);
         // The block declaration's HEADER `block helper() -> Report` contains `helper()` but not `helper()\n` directly
         // (it ends with `Report\n`). The flow-body line `        helper` is what we're checking is NOT rewritten.
-        assert!(!result.output.contains("helper()\n"),
-            "should not auto-paren when name resolves locally");
+        assert!(
+            !result.output.contains("helper()\n"),
+            "should not auto-paren when name resolves locally"
+        );
     }
 
     #[test]
@@ -2255,8 +2338,11 @@ skill main()
         send("hi")
 "#;
         let result = fmt_source(src, true);
-        assert!(result.output.contains("effects: spawns_agent"),
-            "expected inferred effects inserted, got: {}", result.output);
+        assert!(
+            result.output.contains("effects: spawns_agent"),
+            "expected inferred effects inserted, got: {}",
+            result.output
+        );
         assert!(result.changed);
     }
 
@@ -2361,13 +2447,19 @@ skill the_skill()
         // Both markers present, and the first body's marker comes before the
         // second's (source-order preservation).
         let req_idx = result.output.find("require accuracy").unwrap_or_else(|| {
-            panic!("first body's marker missing from output:\n{}", result.output)
+            panic!(
+                "first body's marker missing from output:\n{}",
+                result.output
+            )
         });
         let avd_idx = result
             .output
             .find("avoid stale_references")
             .unwrap_or_else(|| {
-                panic!("second body's marker missing from output:\n{}", result.output)
+                panic!(
+                    "second body's marker missing from output:\n{}",
+                    result.output
+                )
             });
         assert!(
             req_idx < avd_idx,
@@ -3114,8 +3206,7 @@ skill the_skill()
             })
             .expect("merged skill must have a description");
         assert_eq!(
-            merged_value,
-            "He said \"hi\"\nand \\done",
+            merged_value, "He said \"hi\"\nand \\done",
             "description merge double-escaped or otherwise mangled content; got `{}`",
             merged_value
         );
@@ -3344,14 +3435,8 @@ skill the_skill()
             result.output
         );
 
-        let first_idx = result
-            .output
-            .find("writes_files")
-            .expect("first body lost");
-        let second_idx = result
-            .output
-            .find("reads_files")
-            .expect("second body lost");
+        let first_idx = result.output.find("writes_files").expect("first body lost");
+        let second_idx = result.output.find("reads_files").expect("second body lost");
         assert!(
             first_idx < second_idx,
             "source order must be preserved; got:\n{}",

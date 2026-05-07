@@ -715,7 +715,7 @@ return <"what to synthesize">            // output target (descriptive form)
 
 Hard rules:
 
-- **Exactly one `return` per `flow:`**, and it must be the **last statement at the top level** (not inside `if`/`elif`/`else`).
+- **At most one `return` per `flow:`**, and when present it must be the **last statement at the top level** (not inside `if`/`elif`/`else`).
 - `return` is forbidden inside branch arms — there is no early return in MVP.
 - **`export block` requires an explicit `return`** (even `return none`). For `skill` and private `block`, omitting `return` is fine; the compiler implicitly returns `none`.
 - The return type annotation (`-> Plan`, `-> Agent`, etc.) is **advisory** — used to shape compiled prose ("Your output should be a Plan containing…") and for nominal type matching at call boundaries. There is no runtime structural enforcement.
@@ -956,9 +956,9 @@ Compiles to prose like:
 3. Your result is the researcher agent spawned above — the caller may continue sending it instructions.
 ```
 
-### 12.2 `send(agent: Agent, message) -> None`
+### 12.2 `send(agent: Agent, message)`
 
-Use UFCS for readability: `agent.send("…")` desugars to `send(agent, "…")`. Effects are `spawns_agent`.
+Use UFCS for readability: `agent.send("…")` desugars to `send(agent, "…")`. It has no meaningful return value. Effects are `spawns_agent`.
 
 ### 12.3 The `Agent` type
 
@@ -1001,7 +1001,7 @@ skill fix_bug(scope = ".")
 
 ### 13.2 Preferences are ordinary constants
 
-There is no `pref(...)` call form, no `reads_prefs` effect, no ambient lookup. A preference is just an `export const`. The compiler infers the value kind (string, integer, float) from the literal. Default values are mandatory on every `const` declaration.
+There is no `pref(...)` call form, no `reads_prefs` effect, no ambient lookup. A preference is just an `export const`. The compiler infers the value kind (string, integer, float) from the literal. An RHS value is mandatory on every `const` declaration.
 
 Preferences may also serve as **parameter defaults**:
 
@@ -1214,8 +1214,8 @@ block summarize_changes()
 
 ```glyph
 // prefs.glyph
-export text preserve_existing_patterns = "Prefer the repository's existing patterns and helpers."
-export text safety_first = "Never execute destructive operations without explicit confirmation."
+export const preserve_existing_patterns = "Prefer the repository's existing patterns and helpers."
+export const safety_first = "Never execute destructive operations without explicit confirmation."
 ```
 
 ```glyph
@@ -1225,14 +1225,13 @@ export block inspect_repo(scope = ".") -> RepoContext
     flow:
         "List directories and files under {scope}."
         "Identify source modules and their relationships."
-        return "A summary of the repo layout."
+        return <"summary of the repo layout">
 
-export block has_test_suite() -> Bool
+export block has_test_suite(scope = ".")
     description: "The project has an established test suite with meaningful coverage."
     flow:
-        "Check whether a recognized test framework is configured."
-        "Verify test files exist and aren't empty stubs."
-        return "true if a functioning test suite exists, false otherwise."
+        "Inspect {scope} for test configuration and existing tests."
+        return none
 ```
 
 ```glyph
@@ -1254,7 +1253,7 @@ skill fix_bug(scope = ".")
         "Identify the root cause from {ctx} before proposing a fix."
         "Apply the smallest possible patch."
         "Verify the fix resolves the issue and runs the test suite cleanly."
-        return "A short summary of what was changed and why."
+        return <"short summary of what was changed and why">
 ```
 
 ### 18.4 Subagent delegation
@@ -1285,17 +1284,15 @@ Strings:     "inline"   """block"""   no interpolation; only `{name}` slots in i
 Top-level declarations:
   skill <name>(<params>) [-> Type]
   block <name>(<params>) [-> Type]
-  export block <name>(<params>) -> Type     # default required on every param; explicit return required
-  text <name>           = "..."  | bare-name | qualified-name
-  int <name>            = <int>  | bare-name | qualified-name
-  float <name>          = <float>| bare-name | qualified-name
-  export text/int/float (same RHS forms; default required)
+  export block <name>(<params>) [-> Type]   # default required on every param; explicit return required
+  const <name> = "..." | <int> | <float> | bare-name | qualified-name
+  export const <name> = "..." | <int> | <float> | bare-name | qualified-name
   import "<path>" as <alias>                 # whole-module
   import "<path>" { name, name as alias }    # selective
   import "@glyph/std" { subagent, send }     # stdlib
 
 Sub-section headers (inside skill / block / export block body):
-  description:   one-line string or text-name reference (singular)
+  description:   one-line string or const-name reference (singular)
   effects:       list / inline list (gated by --enable-effects)
   context:       bare names, inline strings, or `context "..."` markers
   constraints:   require / avoid / must / must avoid markers
@@ -1313,7 +1310,7 @@ Flow statement forms:
   receiver.method(args)            # UFCS desugars to method(receiver, args)
   Alias.callee(args)               # qualified call
   call(args) with "modifier"       # site modifier
-  bare_name                        # name reference (resolves to text/block/import/binding)
+  bare_block_name                  # shorthand call; string constants need a marker
   "inline instruction"
   context <name|"string">          # context marker
   require / avoid / must … <name|"string">   # constraint marker
@@ -1324,11 +1321,11 @@ Conditions:
   is_valid | foo(ctx) | ctx.has_tests | not x | a == b | a != b |
   a and b | a or b | (a or b) and c | block_name.applies()
 
-Stdlib types: String, Int, Float, Bool, None, Agent
-Stdlib calls: subagent(task) -> Agent ;   send(agent: Agent, message) -> None
+Stdlib type:  Agent
+Stdlib calls: subagent(task) -> Agent ;   send(agent: Agent, message)
 
 Values: "..."  """..."""  3  -1  0.8  true  false  none
-Reserved keywords: skill, block, export, import, text, int, float, type, flow, call, if, elif, else,
+Reserved keywords: skill, block, export, import, const, type, flow, call, if, elif, else,
   return, true, false, none, effects, constraints, inputs, outputs, when_to_use, description,
   as, generated, input, output, must, require, avoid, context, and, or, not
 ```

@@ -85,7 +85,8 @@ pub fn validate(arena: &IrArena) -> Result<(), ValidateError> {
     // Check for recursive calls — full cycle detection in the block call graph.
     // Build adjacency map, then DFS for cycles.
     {
-        let mut adjacency: std::collections::HashMap<&str, &[String]> = std::collections::HashMap::new();
+        let mut adjacency: std::collections::HashMap<&str, &[String]> =
+            std::collections::HashMap::new();
         for n in arena.nodes() {
             if let IrNode::Block(b) = n {
                 adjacency.insert(&b.name, &b.outgoing_calls);
@@ -195,11 +196,13 @@ mod tests {
         }));
         arena.set_root_skill(NodeId(0));
         // Manually push a node with the same ID.
-        arena.nodes_mut().push(IrNode::InlineInstruction(IrInlineInstruction {
-            node_id: NodeId(0), // duplicate!
-            text: "step".into(),
-            role: Role::Step,
-        }));
+        arena
+            .nodes_mut()
+            .push(IrNode::InlineInstruction(IrInlineInstruction {
+                node_id: NodeId(0), // duplicate!
+                text: "step".into(),
+                role: Role::Step,
+            }));
         let err = validate(&arena).unwrap_err();
         assert_eq!(err, ValidateError::DuplicateNodeId(0));
         assert_eq!(err.diagnostic_id(), "G::validate::duplicate-node-id");

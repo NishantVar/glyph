@@ -67,5 +67,8 @@ fn explicit_blocks_tier2_projection() {
 
     // Procedure section ordering is deterministic across runs.
     let output2 = compile_fixture("explicit_blocks");
-    assert_eq!(output, output2, "procedure section ordering should be deterministic across runs");
+    assert_eq!(
+        output, output2,
+        "procedure section ordering should be deterministic across runs"
+    );
 }
