@@ -292,6 +292,19 @@ mod tests {
     }
 
     #[test]
+    fn pure_predicate_rejects_comparison_operator() {
+        let c = ConditionClassification {
+            tokens: vec![],
+            has_boolean_token: false,
+            has_predicate_token: true,
+            has_compositional_operator: false,
+            has_comparison_operator: true,
+            has_numeric_bare_condition: false,
+        };
+        assert!(!c.is_pure_predicate());
+    }
+
+    #[test]
     fn classified_token_carries_text_kind_operand_flag() {
         let t = ClassifiedConditionToken {
             text: "risk".to_string(),
