@@ -634,6 +634,8 @@ if complex_change_required and not is_dry_run:
     recommend_full_compile()
 ```
 
+Mixed conditions (a predicate combined with `and`/`not` or another boolean operand) take the non-deterministic path: the compiler hands the resolved predicate text and the rest of the condition to the LLM, which folds them into a single natural-language guard sentence. Pure-predicate arms (one or more predicates joined only by `or`) project deterministically as shown in the single-arm and multi-arm examples above.
+
 When a string-kinded name appears as an `==` operand it is treated as a string equality comparison, not a predicate: `if risk == high_risk_const:` compares strings.
 
 See §8.7 `.applies()` for the form that bundles the predicate and the block body together — `.applies()` is the canonical form when the natural-language description is a `description:` sub-section of the block being dispatched to. Use the named-const or inline-literal forms when the predicate stands on its own without an associated block body.
