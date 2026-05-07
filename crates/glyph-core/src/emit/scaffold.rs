@@ -24,6 +24,20 @@ fn block_output_form_owned(arena: &IrArena, block_name: &str) -> Option<OutputTa
     None
 }
 
+/// Look up the source-text `-> Foo` annotation for a block by name. Mirrors
+/// `block_output_form_owned`; needed by §8.4 templates because the canonical
+/// `return_type` loses casing.
+fn block_return_type_text_owned(arena: &IrArena, block_name: &str) -> Option<String> {
+    for node in arena.nodes() {
+        if let IrNode::Block(b) = node {
+            if b.name == block_name {
+                return b.return_type_text.clone();
+            }
+        }
+    }
+    None
+}
+
 /// Render one `### Context` entry as a column-0 Markdown bullet whose body
 /// is line-wise indented so the bullet contains the full body as nested
 /// content. Blank lines stay empty (no `  ` whitespace-only lines, per
@@ -90,6 +104,15 @@ fn skill_output_form_owned(arena: &IrArena) -> Option<OutputTargetForm> {
     None
 }
 
+/// Look up the source-text `-> Foo` annotation on the root skill.
+fn skill_return_type_text_owned(arena: &IrArena) -> Option<String> {
+    let root_id = arena.root_skill()?;
+    if let IrNode::Skill(s) = arena.get(root_id) {
+        return s.return_type_text.clone();
+    }
+    None
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SpanId(pub u32);
 
@@ -110,7 +133,6 @@ pub struct SpanRef {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpanKind {
     ParamDescription,
-    DescriptionReturnFold,
     BranchCondition,
     CallBodyShape,
 }
@@ -119,7 +141,6 @@ pub enum SpanKind {
 pub struct SpanPayload {
     pub site_modifier: Option<String>,
     pub resolved_body: Option<String>,
-    pub description_text: Option<String>,
     pub condition_expression: Option<String>,
     pub applies_descriptions: Option<BTreeMap<String, String>>,
     pub param_name: Option<String>,
@@ -164,27 +185,92 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
     }
     s.push_literal("---\n\n");
 
-    // ## Parameters — one ParamDescription span per param
+    // ## Parameters — one ParamDescription span per param (sentence-style)
     if !skill.params.is_empty() {
         s.push_literal("## Parameters\n\n");
         for p in &skill.params {
-            s.push_literal(format!("- **{}**", p.name));
-            // Span for the (currently empty) description.
-            let id = SpanId(next_span_id);
-            next_span_id += 1;
-            s.push_span(SpanRef {
-                id,
-                kind: SpanKind::ParamDescription,
-                ir_node: skill.node_id,
-                payload: SpanPayload {
-                    param_name: Some(p.name.clone()),
-                    param_default: p.default.clone(),
-                    ..SpanPayload::default()
-                },
+            // Build the type annotation suffix if present.
+            let type_suffix = match &p.type_annotation {
+                Some(t) => format!(" ({})", t),
+                None => String::new(),
+            };
+            // Metadata tail: "Default: X." or "Required."
+            let meta_tail = match &p.default {
+                Some(v) => format!("Default: {}.", v),
+                None => "Required.".to_string(),
+            };
+
+            // Emit bullet header and span, then description+metadata.
+            // Effective description: per-param wins, else type-level (from registry), else none.
+            let effective_desc: Option<String> = p.description.clone().or_else(|| {
+                p.type_annotation
+                    .as_ref()
+                    .and_then(|t| arena.type_registry.get(t).cloned())
             });
-            match &p.default {
-                Some(v) => s.push_literal(format!(" (default: {})\n", v)),
-                None => s.push_literal(" (required)\n"),
+            let has_desc = effective_desc.is_some();
+            let desc_text = effective_desc.as_deref().unwrap_or("");
+            let is_multiline = has_desc && (desc_text.contains('\n') || desc_text.len() > 120);
+
+            if is_multiline {
+                // Multi-line form:
+                //   - **<name>**[ (<Type>)]:
+                //     <description lines>
+                //     Default: X. / Required.
+                s.push_literal(format!("- **{}**{}:\n", p.name, type_suffix));
+                let id = SpanId(next_span_id);
+                next_span_id += 1;
+                s.push_span(SpanRef {
+                    id,
+                    kind: SpanKind::ParamDescription,
+                    ir_node: skill.node_id,
+                    payload: SpanPayload {
+                        param_name: Some(p.name.clone()),
+                        param_type: p.type_annotation.clone(),
+                        param_default: p.default.clone(),
+                        ..SpanPayload::default()
+                    },
+                });
+                for line in desc_text.lines() {
+                    s.push_literal(format!("  {}\n", line));
+                }
+                s.push_literal(format!("  {}\n", meta_tail));
+            } else if has_desc {
+                // Single-line description form:
+                //   - **<name>**[ (<Type>)]: <description>. Default: X. / Required.
+                let trimmed = desc_text.trim_end_matches('.').trim_end();
+                s.push_literal(format!("- **{}**{}: ", p.name, type_suffix));
+                let id = SpanId(next_span_id);
+                next_span_id += 1;
+                s.push_span(SpanRef {
+                    id,
+                    kind: SpanKind::ParamDescription,
+                    ir_node: skill.node_id,
+                    payload: SpanPayload {
+                        param_name: Some(p.name.clone()),
+                        param_type: p.type_annotation.clone(),
+                        param_default: p.default.clone(),
+                        ..SpanPayload::default()
+                    },
+                });
+                s.push_literal(format!("{}. {}\n", trimmed, meta_tail));
+            } else {
+                // No description form:
+                //   - **<name>**[ (<Type>)]. Default: X. / Required.
+                s.push_literal(format!("- **{}**{}. ", p.name, type_suffix));
+                let id = SpanId(next_span_id);
+                next_span_id += 1;
+                s.push_span(SpanRef {
+                    id,
+                    kind: SpanKind::ParamDescription,
+                    ir_node: skill.node_id,
+                    payload: SpanPayload {
+                        param_name: Some(p.name.clone()),
+                        param_type: p.type_annotation.clone(),
+                        param_default: p.default.clone(),
+                        ..SpanPayload::default()
+                    },
+                });
+                s.push_literal(format!("{}\n", meta_tail));
             }
         }
         s.push_literal("\n");
@@ -212,50 +298,43 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
     // Pre-compute skill output_contract form once (owned), for use in the
     // last-step suffix logic below.
     let skill_oc_form = skill_output_form_owned(arena);
+    let skill_rt_text = skill_return_type_text_owned(arena);
     let skill_step_count = skill.steps.len();
+    let skill_has_return_sentence = templates::compute_return_sentence(
+        skill_rt_text.as_deref(),
+        skill_oc_form.as_ref(),
+        &arena.type_registry,
+    )
+    .is_some();
 
-    if skill_step_count > 0 || skill_oc_form.is_some() {
+    if skill_step_count > 0 || skill_has_return_sentence {
         s.push_literal("### Steps\n\n");
 
         if skill_step_count == 0 {
-            // Return-only skill: no flow steps but has an output_contract.
-            // Emit a standalone "Return ... as your result." step.
-            let body = match skill_oc_form.as_ref().unwrap() {
-                OutputTargetForm::Identifier(name) => templates::standalone_return_identifier(name),
-                OutputTargetForm::Description(desc) => {
-                    let normalized = desc.split_whitespace().collect::<Vec<_>>().join(" ");
-                    templates::standalone_return_description(&normalized)
-                }
-            };
-            s.push_literal(format!("1. {}\n", body));
+            // Return-only skill: no flow steps but has a contract that yields a
+            // §8.4 sentence. Emit it as the sole step.
+            let sentence = templates::compute_return_sentence(
+                skill_rt_text.as_deref(),
+                skill_oc_form.as_ref(),
+                &arena.type_registry,
+            )
+            .expect("guarded by skill_has_return_sentence");
+            s.push_literal(format!("1. {}\n", sentence));
         } else {
             for (idx, step_id) in skill.steps.iter().enumerate() {
                 let is_last = idx + 1 == skill_step_count;
                 match arena.get(*step_id) {
                     IrNode::InlineInstruction(i) => {
                         if is_last {
-                            match skill_oc_form.as_ref() {
-                                Some(OutputTargetForm::Identifier(_)) => {
-                                    let body = templates::append_identifier_suffix(&i.text);
+                            let sentence = templates::compute_return_sentence(
+                                skill_rt_text.as_deref(),
+                                skill_oc_form.as_ref(),
+                                &arena.type_registry,
+                            );
+                            match sentence {
+                                Some(sent) => {
+                                    let body = templates::append_return_sentence(&i.text, &sent);
                                     s.push_literal(format!("{}. {}\n", idx + 1, body));
-                                }
-                                Some(OutputTargetForm::Description(desc)) => {
-                                    let normalized =
-                                        desc.split_whitespace().collect::<Vec<_>>().join(" ");
-                                    let body_trimmed = i.text.trim_end().trim_end_matches('.');
-                                    s.push_literal(format!("{}. {}", idx + 1, body_trimmed));
-                                    let id = SpanId(next_span_id);
-                                    next_span_id += 1;
-                                    s.push_span(SpanRef {
-                                        id,
-                                        kind: SpanKind::DescriptionReturnFold,
-                                        ir_node: *step_id,
-                                        payload: SpanPayload {
-                                            description_text: Some(normalized),
-                                            resolved_body: Some(i.text.clone()),
-                                            ..SpanPayload::default()
-                                        },
-                                    });
                                 }
                                 None => {
                                     s.push_literal(format!("{}. {}\n", idx + 1, i.text));
@@ -286,49 +365,32 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                             // The callee's OC is read directly off the Call node —
                             // populated at lower time for same-file callees and at
                             // the cross-file import fix-up for imported callees.
-                            let callee_oc = c.callee_output_contract.clone();
-                            let effective_oc = skill_oc_form.as_ref().or(callee_oc.as_ref());
+                            let (effective_form, effective_rt) = match skill_oc_form.as_ref() {
+                                Some(form) => (Some(form), skill_rt_text.as_deref()),
+                                None => (
+                                    c.callee_output_contract.as_ref(),
+                                    c.callee_return_type_text.as_deref(),
+                                ),
+                            };
+                            let sentence = templates::compute_return_sentence(
+                                effective_rt,
+                                effective_form,
+                                &arena.type_registry,
+                            );
                             // A return-only callee (e.g. `block helper: do { return <x> }`)
-                            // inlines with an empty resolved_body. Suffixing then yields
-                            // malformed `1. , and return that as your result.` — emit a
-                            // standalone return step instead, mirroring the return-only
-                            // skill and same-file procedure paths.
+                            // inlines with an empty resolved_body. Suffixing onto an
+                            // empty body would yield a malformed leading-comma line;
+                            // emit the §8.4 sentence as a standalone step instead.
                             let body_is_empty = body.trim().is_empty();
-                            match effective_oc {
-                                Some(OutputTargetForm::Identifier(name)) if body_is_empty => {
-                                    let line = templates::standalone_return_identifier(name);
-                                    s.push_literal(format!("{}. {}\n", idx + 1, line));
+                            match (sentence, body_is_empty) {
+                                (Some(sent), true) => {
+                                    s.push_literal(format!("{}. {}\n", idx + 1, sent));
                                 }
-                                Some(OutputTargetForm::Description(desc)) if body_is_empty => {
-                                    let normalized =
-                                        desc.split_whitespace().collect::<Vec<_>>().join(" ");
-                                    let line =
-                                        templates::standalone_return_description(&normalized);
-                                    s.push_literal(format!("{}. {}\n", idx + 1, line));
+                                (Some(sent), false) => {
+                                    let folded = templates::append_return_sentence(body, &sent);
+                                    s.push_literal(format!("{}. {}\n", idx + 1, folded));
                                 }
-                                Some(OutputTargetForm::Identifier(_)) => {
-                                    let suffixed = templates::append_identifier_suffix(body);
-                                    s.push_literal(format!("{}. {}\n", idx + 1, suffixed));
-                                }
-                                Some(OutputTargetForm::Description(desc)) => {
-                                    let normalized =
-                                        desc.split_whitespace().collect::<Vec<_>>().join(" ");
-                                    let body_trimmed = body.trim_end().trim_end_matches('.');
-                                    s.push_literal(format!("{}. {}", idx + 1, body_trimmed));
-                                    let id = SpanId(next_span_id);
-                                    next_span_id += 1;
-                                    s.push_span(SpanRef {
-                                        id,
-                                        kind: SpanKind::DescriptionReturnFold,
-                                        ir_node: *step_id,
-                                        payload: SpanPayload {
-                                            description_text: Some(normalized),
-                                            resolved_body: Some(body.to_owned()),
-                                            ..SpanPayload::default()
-                                        },
-                                    });
-                                }
-                                None => {
+                                (None, _) => {
                                     s.push_literal(format!("{}. {}\n", idx + 1, body));
                                 }
                             }
@@ -385,67 +447,46 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
     // ### Procedure: <name> sections
     for target_name in &procedure_order {
         let kebab_name = target_name.replace('_', "-");
-        // Collect the block's flow_statements and output_contract before emitting.
-        let (flow_stmts, proc_oc_form) = {
+        // Collect the block's flow_statements + contract metadata before emitting.
+        let (flow_stmts, proc_oc_form, proc_rt_text) = {
             let mut stmts: Option<Vec<String>> = None;
             let mut oc: Option<OutputTargetForm> = None;
+            let mut rt: Option<String> = None;
             for node in arena.nodes() {
                 if let IrNode::Block(b) = node {
                     if b.name == *target_name {
                         stmts = Some(b.flow_statements.clone());
                         oc = block_output_form_owned(arena, target_name);
+                        rt = block_return_type_text_owned(arena, target_name);
                         break;
                     }
                 }
             }
-            (stmts, oc)
+            (stmts, oc, rt)
         };
         if let Some(stmts) = flow_stmts {
             s.push_literal(format!("### Procedure: {}\n\n", kebab_name));
-            // Filter out raw "return" markers; they are replaced by the output_contract suffix.
+            // Filter out raw "return" markers; they are replaced by the §8.4 sentence.
             let visible_stmts: Vec<&String> =
                 stmts.iter().filter(|st| st.as_str() != "return").collect();
             let visible_count = visible_stmts.len();
+            let proc_sentence = templates::compute_return_sentence(
+                proc_rt_text.as_deref(),
+                proc_oc_form.as_ref(),
+                &arena.type_registry,
+            );
 
-            if visible_count == 0 && proc_oc_form.is_some() {
-                // Return-only block: emit standalone step.
-                let body = match proc_oc_form.as_ref().unwrap() {
-                    OutputTargetForm::Identifier(name) => {
-                        templates::standalone_return_identifier(name)
-                    }
-                    OutputTargetForm::Description(desc) => {
-                        let normalized = desc.split_whitespace().collect::<Vec<_>>().join(" ");
-                        templates::standalone_return_description(&normalized)
-                    }
-                };
-                s.push_literal(format!("1. {}\n", body));
+            if visible_count == 0 && proc_sentence.is_some() {
+                // Return-only block: emit the §8.4 sentence as a standalone step.
+                s.push_literal(format!("1. {}\n", proc_sentence.unwrap()));
             } else {
                 for (i, stmt) in visible_stmts.iter().enumerate() {
                     let is_last = i + 1 == visible_count;
                     if is_last {
-                        match proc_oc_form.as_ref() {
-                            Some(OutputTargetForm::Identifier(_)) => {
-                                let suffixed = templates::append_identifier_suffix(stmt);
-                                s.push_literal(format!("{}. {}\n", i + 1, suffixed));
-                            }
-                            Some(OutputTargetForm::Description(desc)) => {
-                                let normalized =
-                                    desc.split_whitespace().collect::<Vec<_>>().join(" ");
-                                let body_trimmed = stmt.trim_end().trim_end_matches('.');
-                                s.push_literal(format!("{}. {}", i + 1, body_trimmed));
-                                let id = SpanId(next_span_id);
-                                next_span_id += 1;
-                                // We don't have a single NodeId for a block flow stmt; use root.
-                                s.push_span(SpanRef {
-                                    id,
-                                    kind: SpanKind::DescriptionReturnFold,
-                                    ir_node: root_id,
-                                    payload: SpanPayload {
-                                        description_text: Some(normalized),
-                                        resolved_body: Some(stmt.to_string()),
-                                        ..SpanPayload::default()
-                                    },
-                                });
+                        match proc_sentence.as_deref() {
+                            Some(sent) => {
+                                let body = templates::append_return_sentence(stmt, sent);
+                                s.push_literal(format!("{}. {}\n", i + 1, body));
                             }
                             None => {
                                 s.push_literal(format!("{}. {}\n", i + 1, stmt));
@@ -541,6 +582,8 @@ mod tests {
             params: vec![IrParam {
                 name: "branch".into(),
                 default: None,
+                description: None,
+                type_annotation: None,
             }],
             steps: vec![],
             context: vec![],
@@ -548,6 +591,7 @@ mod tests {
             return_text: None,
             return_type: None,
             output_contract: None,
+            return_type_text: None,
         }));
         arena.set_root_skill(s_id);
 
