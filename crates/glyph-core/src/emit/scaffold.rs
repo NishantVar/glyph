@@ -111,27 +111,89 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
     }
     s.push_literal("---\n\n");
 
-    // ## Parameters — one ParamDescription span per param
+    // ## Parameters — one ParamDescription span per param (sentence-style)
     if !skill.params.is_empty() {
         s.push_literal("## Parameters\n\n");
         for p in &skill.params {
-            s.push_literal(format!("- **{}**", p.name));
-            // Span for the (currently empty) description.
-            let id = SpanId(next_span_id);
-            next_span_id += 1;
-            s.push_span(SpanRef {
-                id,
-                kind: SpanKind::ParamDescription,
-                ir_node: skill.node_id,
-                payload: SpanPayload {
-                    param_name: Some(p.name.clone()),
-                    param_default: p.default.clone(),
-                    ..SpanPayload::default()
-                },
-            });
-            match &p.default {
-                Some(v) => s.push_literal(format!(" (default: {})\n", v)),
-                None => s.push_literal(" (required)\n"),
+            // Build the type annotation suffix if present.
+            let type_suffix = match &p.type_annotation {
+                Some(t) => format!(" ({})", t),
+                None => String::new(),
+            };
+            // Metadata tail: "Default: X." or "Required."
+            let meta_tail = match &p.default {
+                Some(v) => format!("Default: {}.", v),
+                None => "Required.".to_string(),
+            };
+
+            // Emit bullet header and span, then description+metadata.
+            let has_desc = p.description.is_some();
+            let desc_text = p.description.as_deref().unwrap_or("");
+            let is_multiline = has_desc && (desc_text.contains('\n') || desc_text.len() > 120);
+
+            if is_multiline {
+                // Multi-line form:
+                //   - **<name>**[ (<Type>)]:
+                //     <description lines>
+                //     Default: X. / Required.
+                s.push_literal(format!("- **{}**{}:\n", p.name, type_suffix));
+                let id = SpanId(next_span_id);
+                next_span_id += 1;
+                s.push_span(SpanRef {
+                    id,
+                    kind: SpanKind::ParamDescription,
+                    ir_node: skill.node_id,
+                    payload: SpanPayload {
+                        param_name: Some(p.name.clone()),
+                        param_type: p.type_annotation.clone(),
+                        param_default: p.default.clone(),
+                        description_text: p.description.clone(),
+                        ..SpanPayload::default()
+                    },
+                });
+                for line in desc_text.lines() {
+                    s.push_literal(format!("  {}\n", line));
+                }
+                s.push_literal(format!("  {}\n", meta_tail));
+            } else if has_desc {
+                // Single-line description form:
+                //   - **<name>**[ (<Type>)]: <description>. Default: X. / Required.
+                let trimmed = desc_text.trim_end_matches('.').trim_end();
+                s.push_literal(format!("- **{}**{}: ", p.name, type_suffix));
+                let id = SpanId(next_span_id);
+                next_span_id += 1;
+                s.push_span(SpanRef {
+                    id,
+                    kind: SpanKind::ParamDescription,
+                    ir_node: skill.node_id,
+                    payload: SpanPayload {
+                        param_name: Some(p.name.clone()),
+                        param_type: p.type_annotation.clone(),
+                        param_default: p.default.clone(),
+                        description_text: p.description.clone(),
+                        ..SpanPayload::default()
+                    },
+                });
+                s.push_literal(format!("{}. {}\n", trimmed, meta_tail));
+            } else {
+                // No description form:
+                //   - **<name>**[ (<Type>)]. Default: X. / Required.
+                s.push_literal(format!("- **{}**{}. ", p.name, type_suffix));
+                let id = SpanId(next_span_id);
+                next_span_id += 1;
+                s.push_span(SpanRef {
+                    id,
+                    kind: SpanKind::ParamDescription,
+                    ir_node: skill.node_id,
+                    payload: SpanPayload {
+                        param_name: Some(p.name.clone()),
+                        param_type: p.type_annotation.clone(),
+                        param_default: p.default.clone(),
+                        description_text: p.description.clone(),
+                        ..SpanPayload::default()
+                    },
+                });
+                s.push_literal(format!("{}\n", meta_tail));
             }
         }
         s.push_literal("\n");
