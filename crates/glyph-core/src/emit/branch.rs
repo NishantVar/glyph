@@ -24,7 +24,7 @@ pub fn extract_predicate_token(condition: &str) -> Option<(String, ConditionToke
     // Form 1: .applies() — "name.applies()"
     if trimmed.ends_with(".applies()") {
         let stem = &trimmed[..trimmed.len() - ".applies()".len()];
-        if !stem.is_empty() && is_bare_identifier(stem) {
+        if !stem.is_empty() && is_ident(stem) {
             return Some((trimmed.to_string(), ConditionTokenKind::PredicateApplies));
         }
         return None;
@@ -37,20 +37,29 @@ pub fn extract_predicate_token(condition: &str) -> Option<(String, ConditionToke
     }
 
     // Form 3: bare identifier const ref
-    if is_bare_identifier(trimmed) {
+    if is_ident(trimmed) {
         return Some((trimmed.to_string(), ConditionTokenKind::PredicateConst));
     }
 
     None
 }
 
-fn is_bare_identifier(s: &str) -> bool {
+fn is_ident(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {
         Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
         _ => return false,
     }
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+// For PredicateApplies form, `resolved_predicates` is keyed by the bare
+// block name (without `.applies()`). For other forms, key is the token text.
+fn lookup_key_for_token(token: &str, kind: ConditionTokenKind) -> &str {
+    match kind {
+        ConditionTokenKind::PredicateApplies => token.strip_suffix(".applies()").unwrap_or(token),
+        _ => token,
+    }
 }
 
 pub fn strip_trailing_period(s: &str) -> &str {
@@ -75,16 +84,15 @@ pub fn emit_to_scaffold(
 fn emit_pure_applies(s: &mut Scaffold, arena: &IrArena, br: &IrBranch, step_num: usize) {
     let single_arm = br.elif_branches.is_empty() && br.else_body.is_none();
     if single_arm {
-        let (token, _kind) = extract_predicate_token(&br.condition)
+        let (token, kind) = extract_predicate_token(&br.condition)
             .unwrap_or_else(|| (br.condition.trim().to_string(), ConditionTokenKind::PredicateConst));
-        // Lookup key: strip `.applies()` suffix for the applies form (Task 4.4 generalises).
-        let lookup_key = token.strip_suffix(".applies()").unwrap_or(&token).to_string();
+        let lookup_key = lookup_key_for_token(&token, kind);
         let desc = br
             .resolved_predicates
             .as_ref()
-            .and_then(|m| m.get(&lookup_key))
+            .and_then(|m| m.get(lookup_key))
             .cloned()
-            .unwrap_or_else(|| lookup_key.clone());
+            .unwrap_or_else(|| lookup_key.to_string());
         let desc = strip_trailing_period(&desc);
         s.push_literal(format!(
             "{step_num}. {SINGLE_ARM_OPENER_PREFIX}{desc}{SINGLE_ARM_OPENER_TAIL}\n"
@@ -110,16 +118,15 @@ fn emit_applies_arm_header_and_body(
     condition: &str,
     body: &[NodeId],
 ) {
-    let (token, _kind) = extract_predicate_token(condition)
+    let (token, kind) = extract_predicate_token(condition)
         .unwrap_or_else(|| (condition.trim().to_string(), ConditionTokenKind::PredicateConst));
-    // Lookup key: strip `.applies()` suffix for the applies form (Task 4.4 generalises).
-    let lookup_key = token.strip_suffix(".applies()").unwrap_or(&token).to_string();
+    let lookup_key = lookup_key_for_token(&token, kind);
     let desc = br
         .resolved_predicates
         .as_ref()
-        .and_then(|m| m.get(&lookup_key))
+        .and_then(|m| m.get(lookup_key))
         .cloned()
-        .unwrap_or_else(|| lookup_key.clone());
+        .unwrap_or_else(|| lookup_key.to_string());
     let desc = strip_trailing_period(&desc);
     s.push_literal(format!("   If {desc}:\n"));
     emit_lettered_substeps(s, arena, body);
@@ -284,7 +291,21 @@ mod tests {
 
     #[test]
     fn extract_predicate_token_rejects_compound_condition() {
-        assert_eq!(extract_predicate_token("x == 1"), None);
+        // operator-joined conditions
+        assert!(extract_predicate_token("x == 1").is_none());
+        assert!(extract_predicate_token("a.applies() or b.applies()").is_none());
+
+        // compound .applies() stem (stem must be a single identifier)
+        assert!(extract_predicate_token("x y.applies()").is_none());
+
+        // empty .applies() stem
+        assert!(extract_predicate_token(".applies()").is_none());
+
+        // empty input
+        assert!(extract_predicate_token("").is_none());
+
+        // single dangling quote — not a closed literal
+        assert!(extract_predicate_token("\"").is_none());
     }
 
     #[test]
