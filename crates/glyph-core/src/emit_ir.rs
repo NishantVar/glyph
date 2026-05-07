@@ -664,6 +664,26 @@ mod output_contract_emit_tests {
         serde_json::from_str(&s).expect("emitter output is valid JSON")
     }
 
+    /// Variant of [`ir_json`] that runs the full `parse → analyze → lower →
+    /// serialize` pipeline so that `condition_classification` annotations
+    /// written by Analyze are present when Lower populates `predicate_shape`.
+    fn ir_json_analyzed(src: &str) -> Value {
+        use crate::analyze::analyze_with_diagnostics;
+        use crate::diagnostic::DiagBag;
+        use crate::domain_registry::Registry;
+        use crate::span::LineIndex;
+        let (file, _) = parse::parse(src, 0).expect("source should parse");
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let mut registry = Registry::new();
+        let analyzed =
+            analyze_with_diagnostics(file, 0, "test", &line_index, &mut bag, &mut registry);
+        let arena = lower::lower(&analyzed).expect("source should lower");
+        let s = serialize_ir_json(&arena, "test.glyph", false)
+            .expect("arena has a root skill so JSON is produced");
+        serde_json::from_str(&s).expect("emitter output is valid JSON")
+    }
+
     /// Variant of [`ir_json`] that runs `expand_step1` between lower and emit
     /// so block calls receive their final projection tier before JSON
     /// serialization.
@@ -1106,5 +1126,34 @@ skill make_report() -> Report
             id_obj.get("source").and_then(|v| v.as_str()),
             Some("synthesized_by_agent"),
         );
+    }
+
+    /// Task 2.6 — regression: `predicate_shape` in emitted JSON carries real
+    /// classification values (not the all-false default) once Lower wires
+    /// `ConditionClassification` through from Analyze.
+    #[test]
+    fn ir_json_emits_predicate_shape_for_branch_and_elif() {
+        let src = r#"
+const a = "alpha"
+
+skill foo()
+    description: "test"
+    flow:
+        if a:
+            "do alpha"
+        elif a:
+            "do alpha again"
+"#;
+        let json = ir_json_analyzed(src);
+        let flow = &json["skill"]["flow"];
+        let branch = &flow[0];
+        assert_eq!(branch["kind"], "branch");
+        assert_eq!(branch["predicate_shape"]["has_predicate_token"], true);
+        assert_eq!(branch["predicate_shape"]["has_boolean_token"], false);
+        assert_eq!(branch["predicate_shape"]["has_compositional_operator"], false);
+        let elif = &branch["elif_branches"][0];
+        assert_eq!(elif["predicate_shape"]["has_predicate_token"], true);
+        assert_eq!(elif["predicate_shape"]["has_boolean_token"], false);
+        assert_eq!(elif["predicate_shape"]["has_compositional_operator"], false);
     }
 }
