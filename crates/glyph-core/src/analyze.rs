@@ -20,9 +20,201 @@ use std::path::PathBuf;
 
 use crate::ast::{self, BlockDecl, ContextEntry, Decl, FlowStmt, ReturnExpr, SourceFile};
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
+use crate::kind_infer::TypeTag;
 use crate::output_target::OutputTargetExpr;
 use crate::slot::scan_slots;
 use crate::span::{LineIndex, Span, Spanned};
+
+// ---------------------------------------------------------------------------
+// Flow-position assignments — scope structures
+// (`.flow-assign-spec.md` §6.1; Codex Round 3 Med 4 + High 2).
+//
+// Today the analyzer tracks per-flow `param_names` as a bare HashSet<&str>
+// at each call site. The flow-position assignment work needs richer scope
+// state: a `bound_names` set for collision checks, plus a typed map for
+// the return-type matcher / branch-condition classifier / slot-visibility
+// lookups.
+//
+// `FlowScope` lives next to the existing flow walker. A child scope is
+// created for each branch arm by cloning the parent (Codex/spec §6.1
+// (X)): outer bindings stay visible inside arms; arm-local bindings do
+// NOT leak back to the enclosing flow.
+//
+// `ContainerKind` threads the enclosing-decl kind into the walk so the
+// per-call handler can reject block-flow assignments (Codex Round 3 High
+// 2) without changing the walk shape.
+// ---------------------------------------------------------------------------
+
+/// Typed metadata captured for a single flow-position assignment.
+///
+/// Stored in [`FlowScope::flow_local_types`] and consumed by:
+/// - the return-type matcher (`tag` + `raw_type` for the LHS type),
+/// - branch-condition classification (live snapshot — see §6.3),
+/// - emit's agent-shape selection (`is_agent`, §9.1).
+#[derive(Debug, Clone)]
+pub(crate) struct FlowLocalType {
+    /// `TypeTag` for the nominal-matcher fast path. `String` for every
+    /// non-Agent return type today (the existing matcher works on
+    /// `raw_type` text); `Agent` when the callee returns an agent-shape.
+    pub tag: TypeTag,
+    /// The declared `-> Type` text with its original span. The existing
+    /// nominal matcher consumes raw text plus span (banned-name skipping,
+    /// related-span pinning), so we keep both rather than collapsing
+    /// to `tag` only.
+    pub raw_type: Spanned<String>,
+    /// Span of the producing assignment statement. Used for "bound at line
+    /// N" hints on `use-before-bind` and other binding-related diagnostics.
+    pub producer_span: Span,
+    /// Whether the callee's return is agent-shape. Decided by the
+    /// agent-shape rule in §9.1 (Codex Round 3 Med 5): rule (1) — match
+    /// against `TypeTag::Agent`.
+    pub is_agent: bool,
+}
+
+/// Per-flow scope state. Replaces the bare `param_names: HashSet<&str>` at
+/// each FlowStmt::Call walk site.
+///
+/// A child scope (for a branch arm) is created via [`FlowScope::child`].
+/// Arm-local additions go into the child and are dropped when the arm
+/// finishes — implementing the §6.1 (X) lexical-scoping rule.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct FlowScope {
+    /// Header param names of the enclosing skill / block. Unchanged from
+    /// today's `param_names`; renamed for symmetry with the new fields.
+    pub param_names: HashSet<String>,
+    /// Flow-local binding names declared so far at this point in the
+    /// walk. Used for the §6.2.a collision check.
+    pub bound_names: HashSet<String>,
+    /// `bound_name → typed metadata`. Consulted by the return-type
+    /// matcher, branch-condition classifier, and slot visibility lookup.
+    pub flow_local_types: HashMap<String, FlowLocalType>,
+}
+
+impl FlowScope {
+    /// Snapshot for a child branch arm. Inherits the parent's view; the
+    /// caller pushes arm-local additions onto the child and discards it
+    /// when the arm finishes.
+    pub(crate) fn child(&self) -> Self {
+        self.clone()
+    }
+}
+
+/// Enclosing-decl kind for the flow walk. Threaded alongside `FlowScope`
+/// so the per-call handler can reject `<name> = ...` inside block flow
+/// (Codex Round 3 High 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContainerKind {
+    Skill,
+    Block,
+}
+
+/// Auxiliary state for the §6.3 use-before-bind specialization (Codex
+/// Round 2 Med 6).
+///
+/// Built by a pre-pass over the skill's flow before the main analyze
+/// walk: every `FlowStmt::Call.bound_name` is registered here regardless
+/// of branch position. The main walk consults this when a name lookup
+/// fails in the current `FlowScope`:
+/// - in `all_names_ever_bound` ⇒ use-before-bind (specialized diag),
+/// - not in the set ⇒ truly unknown (existing diag path).
+#[derive(Debug, Default, Clone)]
+pub(crate) struct SkillBindingTrace {
+    pub all_names_ever_bound: HashSet<String>,
+}
+
+impl SkillBindingTrace {
+    /// Walk the entire flow tree (including branch bodies) collecting every
+    /// `FlowStmt::Call.bound_name` whose RHS callee actually resolves to a
+    /// declared return type. Branch bodies are walked recursively so an
+    /// arm-local binding can be detected by the use-before-bind classifier
+    /// even when referenced from outside the arm.
+    ///
+    /// **Codex round-2 M3 — gated registration.** Names whose RHS callee
+    /// is unresolved (no matching block in this file or its imports, no
+    /// matching stdlib signature) are intentionally *omitted* from the
+    /// trace. Such bindings will already trigger the primary
+    /// `G::analyze::undefined-call` (or `stdlib-missing-import`)
+    /// diagnostic at the call site; including them in the trace makes
+    /// every downstream `{name}` / `return name` reference fire a
+    /// secondary `G::analyze::use-before-bind` (Error tier) on top, which
+    /// upgrades a repairable single-fault failure to an exit-1 cascade.
+    /// `handle_flow_assign` performs the same filter at registration
+    /// time (it bails on the no-value path before inserting into
+    /// `scope.bound_names`); the trace must agree with that decision so
+    /// the §6.3 specialization only fires for names that were *actually*
+    /// bound in some sibling scope.
+    pub(crate) fn collect(
+        flow: &[FlowStmt],
+        local_callee_return_types: &HashMap<&str, &Spanned<String>>,
+        imported_block_return_types: &HashMap<String, Spanned<String>>,
+    ) -> Self {
+        fn walk(
+            stmts: &[FlowStmt],
+            trace: &mut SkillBindingTrace,
+            local_callee_return_types: &HashMap<&str, &Spanned<String>>,
+            imported_block_return_types: &HashMap<String, Spanned<String>>,
+        ) {
+            for stmt in stmts {
+                match stmt {
+                    FlowStmt::Call {
+                        bound_name: Some(spanned),
+                        target,
+                        ..
+                    } => {
+                        if resolve_callee_return_for_assign(
+                            target.node.as_str(),
+                            target.span,
+                            local_callee_return_types,
+                            imported_block_return_types,
+                        )
+                        .is_some()
+                        {
+                            trace.all_names_ever_bound.insert(spanned.node.clone());
+                        }
+                    }
+                    FlowStmt::Branch {
+                        then_body,
+                        elif_branches,
+                        else_body,
+                        ..
+                    } => {
+                        walk(
+                            then_body,
+                            trace,
+                            local_callee_return_types,
+                            imported_block_return_types,
+                        );
+                        for elif in elif_branches {
+                            walk(
+                                &elif.body,
+                                trace,
+                                local_callee_return_types,
+                                imported_block_return_types,
+                            );
+                        }
+                        if let Some(eb) = else_body {
+                            walk(
+                                eb,
+                                trace,
+                                local_callee_return_types,
+                                imported_block_return_types,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut trace = SkillBindingTrace::default();
+        walk(
+            flow,
+            &mut trace,
+            local_callee_return_types,
+            imported_block_return_types,
+        );
+        trace
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Name-resolution table for go-to-definition (LSP M2).
@@ -738,6 +930,557 @@ fn emit_nominal_mismatch_at_return(
     bag.push(diag, primary_span);
 }
 
+// ---------------------------------------------------------------------------
+// Flow-position assignments — per-call helpers (§6.2 / §6.3).
+// ---------------------------------------------------------------------------
+
+/// Resolved return-type metadata for a flow-position assignment RHS.
+///
+/// Returned by [`resolve_callee_return_for_assign`] and consumed by the
+/// per-call registration step.
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedCalleeReturn {
+    pub tag: TypeTag,
+    pub raw_type: Spanned<String>,
+    pub is_agent: bool,
+}
+
+/// Resolve the declared return type of a call target for the purpose of
+/// the §6.2.b no-value check / FlowLocalType registration.
+///
+/// Resolution order:
+/// 1. Same-file private/export blocks via `local_callee_return_types`.
+/// 2. Imported blocks via `imported_block_return_types`.
+/// 3. Stdlib registry via `crate::stdlib_sig` (§4 lib.rs touch row,
+///    Codex Round 2 Med 5).
+///
+/// Returns `None` when the callee has no declared `-> Type`. The
+/// per-call handler treats that as the no-value error.
+pub(crate) fn resolve_callee_return_for_assign(
+    target_name: &str,
+    target_span: Span,
+    local_callee_return_types: &HashMap<&str, &Spanned<String>>,
+    imported_block_return_types: &HashMap<String, Spanned<String>>,
+) -> Option<ResolvedCalleeReturn> {
+    if let Some(rt) = local_callee_return_types.get(target_name) {
+        let raw = (*rt).clone();
+        let is_agent = raw.node.eq_ignore_ascii_case("Agent");
+        let tag = if is_agent {
+            TypeTag::Agent
+        } else {
+            TypeTag::DomainType(raw.node.clone())
+        };
+        return Some(ResolvedCalleeReturn {
+            tag,
+            raw_type: raw,
+            is_agent,
+        });
+    }
+    if let Some(rt) = imported_block_return_types.get(target_name) {
+        let raw = rt.clone();
+        let is_agent = raw.node.eq_ignore_ascii_case("Agent");
+        let tag = if is_agent {
+            TypeTag::Agent
+        } else {
+            TypeTag::DomainType(raw.node.clone())
+        };
+        return Some(ResolvedCalleeReturn {
+            tag,
+            raw_type: raw,
+            is_agent,
+        });
+    }
+    // Stdlib lookup. The `stdlib_sig` registry returns
+    // `Some({return_type: Some("Agent"), is_agent: true})` for
+    // `subagent` and `Some({return_type: None, ...})` for `send`.
+    if let Some(sig) = crate::stdlib_sig(target_name) {
+        let rt_text = sig.return_type?;
+        let raw = Spanned {
+            node: rt_text.to_string(),
+            span: target_span,
+        };
+        let tag = if sig.is_agent {
+            TypeTag::Agent
+        } else {
+            TypeTag::DomainType(rt_text.to_string())
+        };
+        return Some(ResolvedCalleeReturn {
+            tag,
+            raw_type: raw,
+            is_agent: sig.is_agent,
+        });
+    }
+    None
+}
+
+/// Per-call handler for the §6.2 bound-name registration / collision /
+/// no-value checks. Mutates `scope` in place when registration succeeds.
+///
+/// `consts_in_scope` and `declared_texts_in_scope` collapse to one list
+/// today (`text_names`) but the spec lists them separately, so we accept
+/// the broader iterable to keep call sites readable.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn handle_flow_assign(
+    bound_name: &Spanned<String>,
+    target: &Spanned<String>,
+    container: ContainerKind,
+    scope: &mut FlowScope,
+    text_names: &HashSet<&str>,
+    block_names: &HashSet<&str>,
+    local_callee_return_types: &HashMap<&str, &Spanned<String>>,
+    imported_block_return_types: &HashMap<String, Spanned<String>>,
+    enclosing_span: Span,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    let n = &bound_name.node;
+    let _ = enclosing_span;
+    // Codex Round 3 High 2: skill-only.
+    if container == ContainerKind::Block {
+        let mut diag = Diagnostic::error(
+            "G::analyze::flow-assign-in-block-unsupported",
+            format!(
+                "flow-position assignments are only supported in skill flow blocks (`{}` declared inside a block flow)",
+                n
+            ),
+            SourceSpan::from_byte_span(file_label, bound_name.span, line_index),
+        );
+        diag.hints.push(
+            "move the binding into the calling skill, or inline the call without `<name> =`"
+                .to_string(),
+        );
+        bag.push(diag, bound_name.span);
+        return;
+    }
+    // Collision check: any visible value-namespace name at this point
+    // in scope (param, const, declared text, earlier flow-local). We
+    // also reject collisions with same-file blocks/skills since those
+    // are call targets and shadowing them with a binding would be
+    // confusing — though parsing today rejects most of these.
+    let collider_kind: Option<&'static str> = if scope.param_names.contains(n) {
+        Some("parameter")
+    } else if text_names.contains(n.as_str()) {
+        Some("const")
+    } else if scope.bound_names.contains(n) {
+        Some("flow-local binding")
+    } else if block_names.contains(n.as_str()) {
+        Some("block")
+    } else {
+        None
+    };
+    if let Some(kind) = collider_kind {
+        let mut diag = Diagnostic::error(
+            "G::analyze::redeclared-flow-binding",
+            format!("`{}` is already declared in this scope", n),
+            SourceSpan::from_byte_span(file_label, bound_name.span, line_index),
+        );
+        diag.hints.push(format!(
+            "`{}` is already declared as a {} in this scope",
+            n, kind
+        ));
+        bag.push(diag, bound_name.span);
+        // Skip registration on collision so downstream lookups behave
+        // as if the binding never existed (the existing name still
+        // resolves through its original namespace).
+        return;
+    }
+    // No-value check.
+    let resolved = resolve_callee_return_for_assign(
+        target.node.as_str(),
+        target.span,
+        local_callee_return_types,
+        imported_block_return_types,
+    );
+    let resolved = match resolved {
+        Some(r) => r,
+        None => {
+            // Codex M5: when `target` does not resolve to ANY declared
+            // block in this file or its imports, the legacy per-stmt
+            // resolver in `analyze_skill` will fire
+            // `G::analyze::undefined-call` (or `stdlib-missing-import`)
+            // for the same call. Suppress the redundant
+            // `assignment-rhs-has-no-value` so the user sees one root
+            // cause, not two. The bound name is also intentionally
+            // *not* registered into the scope below — without a return
+            // type there is nothing for downstream `{name}` slots to
+            // bind to anyway, and any consumer-side reference will
+            // surface its own `unknown-param-slot` / `use-before-bind`.
+            let target_is_known = block_names.contains(target.node.as_str());
+            if !target_is_known {
+                return;
+            }
+            let span = bound_name.span;
+            let mut diag = Diagnostic::error(
+                "G::analyze::assignment-rhs-has-no-value",
+                format!(
+                    "the right-hand side of a flow assignment must return a value (`{}` declares no return type)",
+                    target.node
+                ),
+                SourceSpan::from_byte_span(file_label, span, line_index),
+            );
+            diag.hints.push(
+                "this callee declares no return type — drop the `<name> =` or call a different block"
+                    .to_string(),
+            );
+            bag.push(diag, span);
+            return;
+        }
+    };
+    // Register.
+    scope.bound_names.insert(n.clone());
+    scope.flow_local_types.insert(
+        n.clone(),
+        FlowLocalType {
+            tag: resolved.tag,
+            raw_type: resolved.raw_type,
+            producer_span: bound_name.span,
+            is_agent: resolved.is_agent,
+        },
+    );
+}
+
+/// Recursive flow walker that owns the flow-position-assignment checks:
+/// inline-string slot validation, `handle_flow_assign` registration, the
+/// `return <name>` resolution path, and (Codex H3) call-arg type checks
+/// for arguments that name a flow-local binding.
+///
+/// Branch arms get a *child* `FlowScope` so the parent's bindings (params +
+/// outer flow-locals) stay visible inside the arm but arm-local additions
+/// do NOT leak back out (`.flow-assign-spec.md` §6.1 (X) "block-scoped per
+/// branch arm"). The recursion mirrors the production AST shape exactly —
+/// `then_body`, each `elif_branches[i].body`, and `else_body`. The same
+/// per-arm checks that run at the skill flow root run inside each arm.
+///
+/// Notably this walker does NOT duplicate the per-call `undefined-call` /
+/// `validate_call_args` / `check_return_call_undefined` /
+/// `check_return_call_nominal` paths — those still live in the legacy
+/// per-stmt match in `analyze_skill` for the root walk and in
+/// `check_branch_body_names` for branch arms (their behaviour is unchanged).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn walk_skill_flow_assign_checks(
+    flow: &[FlowStmt],
+    scope: &mut FlowScope,
+    container: ContainerKind,
+    skill_name: &str,
+    skill_return_type: Option<&Spanned<String>>,
+    decl_span: Span,
+    binding_trace: &SkillBindingTrace,
+    text_names: &HashSet<&str>,
+    block_names: &HashSet<&str>,
+    block_decls: &HashMap<&str, &BlockDecl>,
+    export_block_decls: &HashMap<&str, &crate::ast::ExportBlockDecl>,
+    imported_block_params: &HashMap<String, Vec<crate::ast::Param>>,
+    local_callee_return_types: &HashMap<&str, &Spanned<String>>,
+    imported_block_return_types: &HashMap<String, Spanned<String>>,
+    registry: &crate::domain_registry::Registry,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    for stmt in flow {
+        match stmt {
+            FlowStmt::InlineString(text) => {
+                for slot in scan_slots(text) {
+                    if !scope.param_names.contains(&slot.name)
+                        && !scope.bound_names.contains(&slot.name)
+                    {
+                        let span = decl_span;
+                        if binding_trace.all_names_ever_bound.contains(&slot.name) {
+                            // §6.3 specialization: name bound elsewhere in
+                            // this skill (in a sibling arm, in the
+                            // post-branch tail, etc.) but not in scope here.
+                            bag.push(
+                                Diagnostic::error(
+                                    "G::analyze::use-before-bind",
+                                    format!("`{}` is not in scope here", slot.name),
+                                    SourceSpan::from_byte_span(file_label, span, line_index),
+                                ),
+                                span,
+                            );
+                        } else {
+                            bag.push(
+                                Diagnostic::error(
+                                    "G::analyze::unknown-param-slot",
+                                    format!(
+                                        "`{{{}}}` is not a declared parameter of `{}`",
+                                        slot.name, skill_name
+                                    ),
+                                    SourceSpan::from_byte_span(file_label, span, line_index),
+                                ),
+                                span,
+                            );
+                        }
+                    }
+                }
+            }
+            FlowStmt::Call {
+                target,
+                args,
+                bound_name,
+                ..
+            } => {
+                // Codex H3: when a call's positional argument names a
+                // flow-local binding whose recorded type is a domain
+                // type, and the callee's param at the same index has a
+                // domain `:Type` annotation, run a nominal match. On
+                // mismatch emit `G::analyze::call-arg-type-mismatch`.
+                // The mirror check at `return <name>` already lives in
+                // the `FlowStmt::Return` arm below.
+                //
+                // Resolution order matches the legacy per-stmt match
+                // (`block_decls` → `export_block_decls` → imported
+                // export-block params). This walker fires the type
+                // check only — undefined-call / `validate_call_args`
+                // continue to run from the legacy resolver.
+                let callee_params: Option<&[crate::ast::Param]> = block_decls
+                    .get(target.node.as_str())
+                    .map(|b| b.params.as_slice())
+                    .or_else(|| {
+                        export_block_decls
+                            .get(target.node.as_str())
+                            .map(|b| b.params.as_slice())
+                    })
+                    .or_else(|| {
+                        imported_block_params
+                            .get(target.node.as_str())
+                            .map(|v| v.as_slice())
+                    });
+                if let Some(params) = callee_params {
+                    for (i, arg) in args.iter().enumerate() {
+                        let Some(param) = params.get(i) else {
+                            continue;
+                        };
+                        let Some(param_ty) = param.type_annotation.as_ref() else {
+                            continue;
+                        };
+                        let Some(flt) = scope.flow_local_types.get(arg) else {
+                            continue;
+                        };
+                        if crate::type_position::validate_type_position(&param_ty.node).is_err() {
+                            continue;
+                        }
+                        if crate::type_position::validate_type_position(&flt.raw_type.node).is_err()
+                        {
+                            continue;
+                        }
+                        if !registry.nominal_match(&param_ty.node, &flt.raw_type.node) {
+                            bag.push(
+                                Diagnostic::error(
+                                    "G::analyze::call-arg-type-mismatch",
+                                    format!(
+                                        "argument `{}` to `{}()` has type `{}`, expected `{}`",
+                                        arg, target.node, flt.raw_type.node, param_ty.node
+                                    ),
+                                    SourceSpan::from_byte_span(file_label, target.span, line_index),
+                                ),
+                                target.span,
+                            );
+                        }
+                    }
+                }
+
+                // Flow-position assignments (§6.2): register the bound
+                // name on success, or emit one of:
+                // - G::analyze::flow-assign-in-block-unsupported (skill-only),
+                // - G::analyze::redeclared-flow-binding,
+                // - G::analyze::assignment-rhs-has-no-value.
+                if let Some(name_spanned) = bound_name {
+                    handle_flow_assign(
+                        name_spanned,
+                        target,
+                        container,
+                        scope,
+                        text_names,
+                        block_names,
+                        local_callee_return_types,
+                        imported_block_return_types,
+                        decl_span,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                }
+            }
+            FlowStmt::Return(expr) => {
+                if let crate::ast::ReturnExpr::Name(name) = expr {
+                    if !scope.param_names.contains(&name.node)
+                        && !text_names.contains(name.node.as_str())
+                    {
+                        if let Some(flt) = scope.flow_local_types.get(&name.node).cloned() {
+                            if let Some(caller_rt) = skill_return_type {
+                                if crate::type_position::validate_type_position(&caller_rt.node)
+                                    .is_ok()
+                                    && crate::type_position::validate_type_position(
+                                        &flt.raw_type.node,
+                                    )
+                                    .is_ok()
+                                    && !registry.nominal_match(&caller_rt.node, &flt.raw_type.node)
+                                {
+                                    emit_nominal_mismatch_at_return(
+                                        name.node.as_str(),
+                                        &caller_rt.node,
+                                        &flt.raw_type.node,
+                                        decl_span,
+                                        caller_rt.span,
+                                        file_label,
+                                        line_index,
+                                        bag,
+                                    );
+                                }
+                            }
+                        } else if binding_trace.all_names_ever_bound.contains(&name.node) {
+                            // §6.3 specialization: name bound elsewhere
+                            // in this skill (e.g. in a sibling arm) but
+                            // not in scope here.
+                            bag.push(
+                                Diagnostic::error(
+                                    "G::analyze::use-before-bind",
+                                    format!("`{}` is not in scope here", name.node),
+                                    SourceSpan::from_byte_span(file_label, name.span, line_index),
+                                ),
+                                name.span,
+                            );
+                        }
+                    }
+                }
+            }
+            FlowStmt::Branch {
+                then_body,
+                elif_branches,
+                else_body,
+                ..
+            } => {
+                let mut child = scope.child();
+                walk_skill_flow_assign_checks(
+                    then_body,
+                    &mut child,
+                    container,
+                    skill_name,
+                    skill_return_type,
+                    decl_span,
+                    binding_trace,
+                    text_names,
+                    block_names,
+                    block_decls,
+                    export_block_decls,
+                    imported_block_params,
+                    local_callee_return_types,
+                    imported_block_return_types,
+                    registry,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+                for elif in elif_branches {
+                    let mut child = scope.child();
+                    walk_skill_flow_assign_checks(
+                        &elif.body,
+                        &mut child,
+                        container,
+                        skill_name,
+                        skill_return_type,
+                        decl_span,
+                        binding_trace,
+                        text_names,
+                        block_names,
+                        block_decls,
+                        export_block_decls,
+                        imported_block_params,
+                        local_callee_return_types,
+                        imported_block_return_types,
+                        registry,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                }
+                if let Some(eb) = else_body {
+                    let mut child = scope.child();
+                    walk_skill_flow_assign_checks(
+                        eb,
+                        &mut child,
+                        container,
+                        skill_name,
+                        skill_return_type,
+                        decl_span,
+                        binding_trace,
+                        text_names,
+                        block_names,
+                        block_decls,
+                        export_block_decls,
+                        imported_block_params,
+                        local_callee_return_types,
+                        imported_block_return_types,
+                        registry,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                }
+            }
+            // The remaining variants (BareName, ConstraintMarker,
+            // ContextMarker) carry no flow-local-binding semantics; their
+            // diagnostics still fire from the legacy walker in
+            // `analyze_skill` / `check_branch_body_names`.
+            _ => {}
+        }
+    }
+}
+
+/// Walk a block's flow and emit `G::analyze::flow-assign-in-block-unsupported`
+/// for every flow-position assignment encountered. Block-flow assignments
+/// are rejected at analyze time per Codex Round 3 High 2 (`.flow-assign-spec.md`
+/// §6.1) — the existing private-block lowering has no producer node to
+/// attach `bound_name` to.
+pub(crate) fn check_block_flow_assign_rejected(
+    flow: &[FlowStmt],
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    fn walk(stmts: &[FlowStmt], file_label: &str, line_index: &LineIndex, bag: &mut DiagBag) {
+        for stmt in stmts {
+            match stmt {
+                FlowStmt::Call {
+                    bound_name: Some(name_spanned),
+                    ..
+                } => {
+                    let mut diag = Diagnostic::error(
+                        "G::analyze::flow-assign-in-block-unsupported",
+                        format!(
+                            "flow-position assignments are only supported in skill flow blocks (`{}` declared inside a block flow)",
+                            name_spanned.node
+                        ),
+                        SourceSpan::from_byte_span(file_label, name_spanned.span, line_index),
+                    );
+                    diag.hints.push(
+                        "move the binding into the calling skill, or inline the call without `<name> =`"
+                            .to_string(),
+                    );
+                    bag.push(diag, name_spanned.span);
+                }
+                FlowStmt::Branch {
+                    then_body,
+                    elif_branches,
+                    else_body,
+                    ..
+                } => {
+                    walk(then_body, file_label, line_index, bag);
+                    for elif in elif_branches {
+                        walk(&elif.body, file_label, line_index, bag);
+                    }
+                    if let Some(eb) = else_body {
+                        walk(eb, file_label, line_index, bag);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    walk(flow, file_label, line_index, bag);
+}
+
 /// Issue #84 Chunk 4 (AC4 / D13, D16): single-statement nominal check.
 ///
 /// Inspect one `FlowStmt`. If it is a `Return(Call { target })` and the
@@ -1367,6 +2110,12 @@ pub fn analyze_with_diagnostics(
                     line_index,
                     bag,
                 );
+                // Flow-position assignments (§6.1, Codex Round 3 High 2):
+                // block flow does not support `<name> = ...` assignments
+                // in this MVP. Walk the block's flow and emit
+                // `G::analyze::flow-assign-in-block-unsupported` for
+                // every flow-position assignment encountered.
+                check_block_flow_assign_rejected(&spanned.node.flow, file_label, line_index, bag);
             }
             Decl::Const(_) => {}
             Decl::Import(_) => {}
@@ -2578,7 +3327,6 @@ fn analyze_skill(
     constraint_skill_names: &HashSet<&str>,
 ) {
     let skill = &spanned.node;
-    let declared: HashSet<&str> = skill.params.iter().map(|p| p.name.as_str()).collect();
     let visible_names = visible_names_for_decl(
         skill.params.iter().map(|p| p.name.as_str()),
         text_names,
@@ -2621,26 +3369,60 @@ fn analyze_skill(
     // attribute slot diagnostics to the enclosing skill header span; this is
     // synthetic-fallback option (3) per `design/diagnostics.md` §Span
     // Semantics. The IDs and messages remain accurate.
+
+    // Flow-position assignments (`.flow-assign-spec.md` §6).
+    // Build the per-skill `FlowScope` with the header params, plus the
+    // pre-pass binding trace used by the `use-before-bind`
+    // specialization (§6.3 — Codex Round 2 Med 6).
+    //
+    // Codex H1+H2: the assignment-related checks (slot validation,
+    // `handle_flow_assign`, return-name resolution, H3 call-arg type
+    // check) run through `walk_skill_flow_assign_checks` against a
+    // mutable `FlowScope`. The walker recurses into branch arms with a
+    // *child* scope so arm-local bindings stay arm-local. The legacy
+    // per-stmt match below keeps running for everything else (undefined-
+    // call, `validate_call_args`, return-call resolution + nominal
+    // checks, constraint/context name resolution) — those have nothing
+    // to do with flow-local-binding scoping.
+    let mut flow_scope = FlowScope::default();
+    for p in &skill.params {
+        flow_scope.param_names.insert(p.name.clone());
+    }
+    let binding_trace = SkillBindingTrace::collect(
+        &skill.flow,
+        local_callee_return_types,
+        imported_block_return_types,
+    );
+    let container = ContainerKind::Skill;
+    walk_skill_flow_assign_checks(
+        &skill.flow,
+        &mut flow_scope,
+        container,
+        skill.name.as_str(),
+        skill.return_type.as_ref(),
+        spanned.span,
+        &binding_trace,
+        text_names,
+        block_names,
+        block_decls,
+        export_block_decls,
+        imported_block_params,
+        local_callee_return_types,
+        imported_block_return_types,
+        registry,
+        file_label,
+        line_index,
+        bag,
+    );
+
     for stmt in &skill.flow {
         match stmt {
-            FlowStmt::InlineString(text) => {
-                for slot in scan_slots(text) {
-                    if !declared.contains(slot.name.as_str()) {
-                        let span = spanned.span;
-                        bag.push(
-                            Diagnostic::error(
-                                "G::analyze::unknown-param-slot",
-                                format!(
-                                    "`{{{}}}` is not a declared parameter of `{}`",
-                                    slot.name, skill.name
-                                ),
-                                SourceSpan::from_byte_span(file_label, span, line_index),
-                            ),
-                            span,
-                        );
-                        let _ = file_id;
-                    }
-                }
+            FlowStmt::InlineString(_) => {
+                // Slot validation lives in `walk_skill_flow_assign_checks`
+                // (Codex H1+H2). The legacy slot scan moved there so it
+                // sees the same `FlowScope` (and child scope inside arms)
+                // that the binding registration uses.
+                let _ = file_id;
             }
             FlowStmt::BareName(name) => {
                 // A bare name in flow: without a keyword prefix is a compile error.
@@ -2664,7 +3446,12 @@ fn analyze_skill(
                     span,
                 );
             }
-            FlowStmt::Call { target, args, .. } => {
+            FlowStmt::Call {
+                target,
+                args,
+                bound_name,
+                ..
+            } => {
                 // Check that the call target resolves to a declared block.
                 if !block_names.contains(target.node.as_str()) {
                     // Check if this is a stdlib name used without import.
@@ -2756,6 +3543,13 @@ fn analyze_skill(
                         bag.push(d, target.span);
                     }
                 }
+                // Flow-position-assignment registration (`handle_flow_assign`)
+                // now lives in `walk_skill_flow_assign_checks` (Codex
+                // H1+H2 / M5). The walker fires the same diagnostics
+                // and mutates the same `FlowScope`, but with proper
+                // child-scope recursion into branch arms and with the
+                // `undefined-call` dedupe applied.
+                let _ = bound_name;
             }
             FlowStmt::ConstraintMarker(marker) => {
                 // Check that the constraint name resolves to a text declaration.
@@ -2847,6 +3641,12 @@ fn analyze_skill(
                     line_index,
                     bag,
                 );
+                // Flow-position-assignment return-name resolution
+                // (§6.3 / §6.4 — `return <name>` against a flow-local
+                // binding) now lives in `walk_skill_flow_assign_checks`
+                // (Codex H1+H2). The walker also fires the
+                // `use-before-bind` specialization when `name` is bound
+                // somewhere else in the skill (e.g. inside an arm).
             }
             FlowStmt::Branch {
                 condition,
@@ -2875,6 +3675,7 @@ fn analyze_skill(
                     &block_names,
                     &block_decls,
                     imported_block_descriptions,
+                    &flow_scope.flow_local_types,
                 );
                 // Check elif conditions too.
                 for elif in elif_branches {
@@ -2889,6 +3690,7 @@ fn analyze_skill(
                         &block_names,
                         &block_decls,
                         imported_block_descriptions,
+                        &flow_scope.flow_local_types,
                     );
                 }
                 // Check flow statements inside branch bodies for name resolution.
@@ -3370,6 +4172,137 @@ fn annotate_branch_classifications(
     }
 }
 
+/// Skill-flow branch annotator that walks the flow tree live, accumulating
+/// flow-local bindings as it goes (spec `.flow-assign-spec.md` §6.3 / Codex
+/// Round 2 High 4 — option i: consolidate per-branch annotation INTO the
+/// flow walk).
+///
+/// At each `FlowStmt::Branch`, snapshot the current
+/// `flow_local_bindings` into a transient `ConditionContext::for_branch_with_consts`
+/// before classifying the condition. Branch bodies recurse with a CLONED
+/// snapshot so arm-local bindings declared inside the arm do not leak to
+/// sibling arms or back to the enclosing scope (matches the lexical rule in
+/// spec §6.1).
+///
+/// Producer-side resolution: when a `FlowStmt::Call` carries a `bound_name`,
+/// look up the callee's return type via `local_callee_return_types` /
+/// `imported_block_return_types` / `crate::stdlib_sig` and stash the
+/// agent-shape flag.
+fn annotate_skill_flow_with_locals(
+    flow: &mut [FlowStmt],
+    consts: &std::collections::HashMap<String, crate::kind_infer::TypeTag>,
+    params_set: &std::collections::HashSet<String>,
+    local_callee_return_types: &std::collections::HashMap<String, String>,
+    imported_block_return_types: &std::collections::HashMap<String, String>,
+    flow_local_bindings: &mut std::collections::HashMap<
+        String,
+        crate::condition::ConditionFlowLocal,
+    >,
+) {
+    for stmt in flow.iter_mut() {
+        match stmt {
+            FlowStmt::Call {
+                target, bound_name, ..
+            } => {
+                if let Some(spanned_name) = bound_name {
+                    let n = spanned_name.node.clone();
+                    let raw = local_callee_return_types
+                        .get(target.node.as_str())
+                        .cloned()
+                        .or_else(|| {
+                            imported_block_return_types
+                                .get(target.node.as_str())
+                                .cloned()
+                        })
+                        .or_else(|| {
+                            crate::stdlib_sig(target.node.as_str())
+                                .and_then(|s| s.return_type.map(str::to_string))
+                        });
+                    let is_agent = raw
+                        .as_deref()
+                        .map(|s| s.eq_ignore_ascii_case("Agent"))
+                        .unwrap_or(false)
+                        || crate::stdlib_sig(target.node.as_str())
+                            .map(|s| s.is_agent)
+                            .unwrap_or(false);
+                    flow_local_bindings
+                        .insert(n, crate::condition::ConditionFlowLocal { is_agent });
+                }
+            }
+            FlowStmt::Branch {
+                condition,
+                condition_classification,
+                then_body,
+                elif_branches,
+                else_body,
+            } => {
+                // Snapshot the bindings at this branch site. Build a
+                // ConditionContext with the snapshot and classify.
+                let consts_ref: std::collections::HashMap<&str, crate::kind_infer::TypeTag> =
+                    consts
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.clone()))
+                        .collect();
+                let params_ref: std::collections::HashSet<&str> =
+                    params_set.iter().map(|s| s.as_str()).collect();
+                let bindings_ref: std::collections::HashMap<
+                    &str,
+                    crate::condition::ConditionFlowLocal,
+                > = flow_local_bindings
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), *v))
+                    .collect();
+                let ctx = crate::condition::ConditionContext::for_branch_with_consts(
+                    consts_ref,
+                    params_ref,
+                    bindings_ref,
+                );
+                *condition_classification =
+                    Some(crate::condition::classify_condition(condition, &ctx));
+                for elif in elif_branches.iter_mut() {
+                    elif.condition_classification =
+                        Some(crate::condition::classify_condition(&elif.condition, &ctx));
+                }
+
+                // Arm bodies recurse with cloned snapshots — arm-local
+                // bindings do not leak (spec §6.1 — branch-arm scoping (X)).
+                let mut then_locals = flow_local_bindings.clone();
+                annotate_skill_flow_with_locals(
+                    then_body,
+                    consts,
+                    params_set,
+                    local_callee_return_types,
+                    imported_block_return_types,
+                    &mut then_locals,
+                );
+                for elif in elif_branches.iter_mut() {
+                    let mut elif_locals = flow_local_bindings.clone();
+                    annotate_skill_flow_with_locals(
+                        &mut elif.body,
+                        consts,
+                        params_set,
+                        local_callee_return_types,
+                        imported_block_return_types,
+                        &mut elif_locals,
+                    );
+                }
+                if let Some(eb) = else_body {
+                    let mut else_locals = flow_local_bindings.clone();
+                    annotate_skill_flow_with_locals(
+                        eb,
+                        consts,
+                        params_set,
+                        local_callee_return_types,
+                        imported_block_return_types,
+                        &mut else_locals,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Annotate every `Branch`/`ElifBranch` node in each `Decl::Skill` AND
 /// `Decl::Block` flow inside a `SourceFile`.
 ///
@@ -3407,9 +4340,7 @@ fn annotate_file_branches(
 
     // Pre-bake (params_with_string_default) for every Skill / Block by index,
     // again with owned strings so we can release the immutable borrow before
-    // the mutable walk. `bindings` is currently always empty (the AST has no
-    // binding-form `FlowStmt` variant yet — see condition::ConditionContext
-    // doc) so we don't bake anything for it.
+    // the mutable walk.
     let mut per_decl_params: Vec<std::collections::HashSet<String>> =
         Vec::with_capacity(file.decls.len());
     for decl in &file.decls {
@@ -3445,19 +4376,58 @@ fn annotate_file_branches(
         per_decl_params.push(set);
     }
 
+    // Pre-bake the producer-side return-type tables for skill flow walks.
+    // Spec §6.3 / Codex Round 2 High 4 — option (i): the per-branch
+    // `ConditionContext` snapshot needs to know the agent-shape flag of
+    // each flow-local binding declared upstream in the same skill flow.
+    // Owned-string keyed so the maps outlive `file.decls`.
+    let mut local_callee_return_types: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for decl in &file.decls {
+        match decl {
+            Decl::Block(b) => {
+                if let Some(rt) = &b.node.return_type {
+                    local_callee_return_types.insert(b.node.name.clone(), rt.node.clone());
+                }
+            }
+            Decl::ExportBlock(eb) => {
+                if let Some(rt) = &eb.node.return_type {
+                    local_callee_return_types.insert(eb.node.name.clone(), rt.node.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    // Imported block return types are not threaded into this function today
+    // (callers only pass imported texts + const types). Pass an empty map;
+    // the producer-side fallback to `crate::stdlib_sig` covers `subagent`.
+    let imported_block_return_types_owned: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
     // Build a per-call context whose lifetime is tied to the local owned
     // tables, NOT to `file.decls`. This is what frees us to mutate
     // `flow.condition_classification` inside the loop.
     for (idx, decl) in file.decls.iter_mut().enumerate() {
         match decl {
             Decl::Skill(spanned) => {
-                annotate_decl_branches(
+                // Spec §6.3 / option (i): walk the skill flow live so each
+                // branch sees the live `flow_local_bindings` snapshot.
+                let mut flow_local_bindings: std::collections::HashMap<
+                    String,
+                    crate::condition::ConditionFlowLocal,
+                > = std::collections::HashMap::new();
+                annotate_skill_flow_with_locals(
                     &mut spanned.node.flow,
                     &consts_owned,
                     &per_decl_params[idx],
+                    &local_callee_return_types,
+                    &imported_block_return_types_owned,
+                    &mut flow_local_bindings,
                 );
             }
             Decl::Block(spanned) => {
+                // Block flow has no flow-locals (rejected at analyze time),
+                // so the pre-bake path is sufficient.
                 annotate_decl_branches(
                     &mut spanned.node.flow,
                     &consts_owned,
@@ -3492,6 +4462,7 @@ fn annotate_decl_branches(
         consts,
         params_with_string_default: params_set,
         bindings: std::collections::HashSet::new(),
+        flow_local_bindings: std::collections::HashMap::new(),
     };
     annotate_branch_classifications(flow, &ctx);
 }
@@ -3595,6 +4566,14 @@ fn check_file_numeric_conditions(
 
 /// Check applies() calls in a branch condition string.
 /// Validates: applies-on-non-block, applies-on-undescribed-block.
+///
+/// Flow-position assignments (`.flow-assign-spec.md` §6.3): the
+/// `flow_local_types` parameter carries the live `FlowScope.flow_local_types`
+/// at the branch site. An agent-shape flow-local (`is_agent == true`) is
+/// a valid `.applies()` receiver — a `subagent(...)` binding — so a hit
+/// short-circuits the resolver before falling through to the existing
+/// non-block diagnostic.
+#[allow(clippy::too_many_arguments)]
 fn check_applies_in_condition(
     condition: &str,
     span: crate::span::Span,
@@ -3606,6 +4585,7 @@ fn check_applies_in_condition(
     block_names: &HashSet<&str>,
     block_decls: &HashMap<&str, &BlockDecl>,
     imported_block_descriptions: &HashMap<String, String>,
+    flow_local_types: &HashMap<String, FlowLocalType>,
 ) {
     // Find all `NAME.applies()` patterns in the condition.
     // Simple string scanning — condition is a reconstructed string.
@@ -3620,6 +4600,16 @@ fn check_applies_in_condition(
             .next()
             .unwrap_or("");
         if !receiver_name.is_empty() {
+            // §6.3: an agent-shape flow-local binding is a valid
+            // `.applies()` receiver. Plumb the live FlowScope so this
+            // branch annotation runs against the binding state at the
+            // current walk position.
+            if let Some(flt) = flow_local_types.get(receiver_name) {
+                if flt.is_agent {
+                    search_from = abs_pos + applies_suffix.len();
+                    continue;
+                }
+            }
             if text_names.contains(receiver_name) {
                 // Receiver is a text declaration — not a block.
                 bag.push(
@@ -4400,6 +5390,7 @@ skill current() -> BranchName
             &block_names,
             &block_decls,
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
@@ -4483,6 +5474,7 @@ skill current() -> BranchName
                     target: Spanned::new("writer".to_string(), Span::new(0, 0, 6)),
                     args: Vec::new(),
                     site_modifier: None,
+                    bound_name: None,
                 }],
                 flow_present: true,
                 body_constraints: Vec::new(),
@@ -7305,6 +8297,272 @@ export block helper(x = unknown_const)
         assert!(
             msgs.iter().any(|m| m.contains("`unknown_const`")),
             "expected diagnostic naming `unknown_const`, got {msgs:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Flow-position assignments — analyze tests (Phase 2 of the
+// flow-position-assignments feature; see `.flow-assign-spec.md`).
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod flow_assign_tests {
+    use crate::diagnostic::Classification;
+
+    fn diag_ids(src: &str) -> Vec<String> {
+        crate::check_source(src, 0, "test.glyph")
+            .iter()
+            .map(|d| d.id.clone())
+            .collect()
+    }
+
+    /// Test 1: collision with parameter → `redeclared-flow-binding`.
+    #[test]
+    fn flow_assign_redecl_param_emits_diag() {
+        let src = "\
+import \"@glyph/std\" { subagent }
+
+block inspect_repo(scope = \".\") -> RepoContext
+    \"inspect\"
+
+skill demo(ctx = \".\")
+    description: \"demo\"
+    flow:
+        ctx = inspect_repo(ctx)
+        return ctx
+";
+        let ids = diag_ids(src);
+        assert!(
+            ids.iter()
+                .any(|id| id == "G::analyze::redeclared-flow-binding"),
+            "expected redeclared-flow-binding, got {ids:?}"
+        );
+    }
+
+    /// Test 2: RHS callee is declared in this file but its header
+    /// declares no return type → `assignment-rhs-has-no-value`.
+    ///
+    /// Codex M5: this diagnostic only fires when the callee resolves
+    /// (so the legacy resolver will *not* also fire `undefined-call` /
+    /// `stdlib-missing-import`); see
+    /// `flow_assign_unknown_callee_emits_only_undefined_call` for the
+    /// dedupe contract on truly-unknown callees.
+    #[test]
+    fn flow_assign_no_value_diag() {
+        let src = "\
+block helper()
+    \"do something\"
+
+skill demo()
+    description: \"demo\"
+    flow:
+        x = helper()
+";
+        let ids = diag_ids(src);
+        assert!(
+            ids.iter()
+                .any(|id| id == "G::analyze::assignment-rhs-has-no-value"),
+            "expected assignment-rhs-has-no-value, got {ids:?}"
+        );
+    }
+
+    /// Test 3: flow-assign inside a block flow → `flow-assign-in-block-unsupported`.
+    #[test]
+    fn flow_assign_in_block_diag() {
+        let src = "\
+block inspect_repo(scope = \".\") -> RepoContext
+    \"inspect\"
+
+block helper()
+    flow:
+        x = inspect_repo(\".\")
+
+skill caller()
+    description: \"caller\"
+    flow:
+        helper()
+";
+        let ids = diag_ids(src);
+        assert!(
+            ids.iter()
+                .any(|id| id == "G::analyze::flow-assign-in-block-unsupported"),
+            "expected flow-assign-in-block-unsupported, got {ids:?}"
+        );
+    }
+
+    /// Test 4: bound name returned, types don't match → existing
+    /// nominal-mismatch / return-type-mismatch diag.
+    #[test]
+    fn flow_assign_return_type_mismatch() {
+        let src = "\
+block inspect_repo(scope = \".\") -> RepoContext
+    \"inspect\"
+
+skill demo() -> Risk
+    description: \"demo\"
+    flow:
+        ctx = inspect_repo(\".\")
+        return ctx
+";
+        let ids = diag_ids(src);
+        // Existing mismatch diag (the analyze nominal matcher uses
+        // `G::analyze::nominal-mismatch`).
+        assert!(
+            ids.iter().any(|id| id == "G::analyze::nominal-mismatch"),
+            "expected G::analyze::nominal-mismatch, got {ids:?}"
+        );
+    }
+
+    /// Test 5: branch condition uses flow-local type — bound via subagent
+    /// (agent-shape) — must classify cleanly with no errors. The condition
+    /// uses `researcher.applies()`, which is what the live FlowScope-aware
+    /// classifier needs to recognize as a predicate against the
+    /// agent-typed flow-local binding.
+    #[test]
+    fn flow_assign_branch_uses_flow_local_type() {
+        let src = "\
+import \"@glyph/std\" { subagent }
+
+const note = \"step\"
+
+skill demo()
+    description: \"demo\"
+    flow:
+        researcher = subagent(\".\") with \"investigate this area\"
+        if researcher.applies():
+            require note
+";
+        let bag = crate::check_source(src, 0, "test.glyph");
+        let errors: Vec<_> = bag
+            .iter()
+            .filter(|d| matches!(d.classification, Classification::Error))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "expected no Error diagnostics, got {errors:?}"
+        );
+    }
+
+    /// Test 6: use-before-bind — `{ctx}` slot before `ctx = ...` in
+    /// the same flow body. The binding exists later in the same skill
+    /// but is not in scope at the slot's position.
+    #[test]
+    fn flow_assign_use_before_bind_specialized() {
+        let src = "\
+block inspect_repo(scope = \".\") -> RepoContext
+    \"inspect\"
+
+skill demo() -> RepoContext
+    description: \"demo\"
+    flow:
+        \"Use {ctx}\"
+        ctx = inspect_repo(\".\")
+        return ctx
+";
+        let ids = diag_ids(src);
+        assert!(
+            ids.iter().any(|id| id == "G::analyze::use-before-bind"),
+            "expected G::analyze::use-before-bind, got {ids:?}"
+        );
+    }
+
+    /// Test 7: truly-unknown name → existing `unknown-param-slot`, NOT
+    /// `use-before-bind`.
+    #[test]
+    fn flow_assign_truly_unknown_uses_existing_diag() {
+        let src = "\
+skill demo()
+    description: \"demo\"
+    flow:
+        \"Use {never_bound}\"
+";
+        let ids = diag_ids(src);
+        assert!(
+            ids.iter().any(|id| id == "G::analyze::unknown-param-slot"),
+            "expected G::analyze::unknown-param-slot, got {ids:?}"
+        );
+        assert!(
+            !ids.iter().any(|id| id == "G::analyze::use-before-bind"),
+            "did not expect G::analyze::use-before-bind, got {ids:?}"
+        );
+    }
+
+    /// Codex H3: passing a flow-local binding as a positional call
+    /// argument whose recorded type does not nominal-match the
+    /// callee's `:Type` annotation must fire
+    /// `G::analyze::call-arg-type-mismatch` at the call site.
+    #[test]
+    fn flow_assign_call_arg_type_mismatch_emits_diag() {
+        let src = "\
+block produce(scope = \".\") -> RepoContext
+    \"produce\"
+
+block consume(input: Risk = \"x\") -> Plan
+    \"consume\"
+
+skill demo() -> Plan
+    description: \"demo\"
+    flow:
+        ctx = produce(\".\")
+        plan = consume(ctx)
+        return plan
+";
+        let ids = diag_ids(src);
+        assert!(
+            ids.iter()
+                .any(|id| id == "G::analyze::call-arg-type-mismatch"),
+            "expected G::analyze::call-arg-type-mismatch, got {ids:?}"
+        );
+    }
+
+    /// Codex M5: `x = unknown()` where `unknown` is not a declared
+    /// block must fire ONLY `G::analyze::undefined-call`. The
+    /// `assignment-rhs-has-no-value` diagnostic must be suppressed so
+    /// the user sees one root cause, not two.
+    #[test]
+    fn flow_assign_unknown_callee_emits_only_undefined_call() {
+        let src = "\
+skill demo()
+    description: \"demo\"
+    flow:
+        x = unknown_block(\".\")
+";
+        let ids = diag_ids(src);
+        assert!(
+            ids.iter().any(|id| id == "G::analyze::undefined-call"),
+            "expected G::analyze::undefined-call, got {ids:?}"
+        );
+        assert!(
+            !ids.iter()
+                .any(|id| id == "G::analyze::assignment-rhs-has-no-value"),
+            "did not expect G::analyze::assignment-rhs-has-no-value (Codex M5), got {ids:?}"
+        );
+    }
+
+    /// Codex H3 negative: when types nominally match, no
+    /// `call-arg-type-mismatch` fires.
+    #[test]
+    fn flow_assign_call_arg_type_match_no_diag() {
+        let src = "\
+block produce(scope = \".\") -> RepoContext
+    \"produce\"
+
+block consume(input: RepoContext = \"x\") -> Plan
+    \"consume\"
+
+skill demo() -> Plan
+    description: \"demo\"
+    flow:
+        ctx = produce(\".\")
+        plan = consume(ctx)
+        return plan
+";
+        let ids = diag_ids(src);
+        assert!(
+            !ids.iter()
+                .any(|id| id == "G::analyze::call-arg-type-mismatch"),
+            "did not expect G::analyze::call-arg-type-mismatch, got {ids:?}"
         );
     }
 }
