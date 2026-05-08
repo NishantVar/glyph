@@ -99,9 +99,6 @@ pub fn validate_output(ir_json: &str, md: &str) -> Vec<Violation> {
     // Modifier leakage
     check_modifier_leaked(skill, md, &mut violations);
 
-    // Content shape (sentence limits)
-    check_content_shape(&md_struct, &mut violations);
-
     // Procedure checks
     check_procedures(&md_struct, skill, &mut violations);
 
@@ -141,9 +138,7 @@ struct ListItem {
 }
 
 #[derive(Debug)]
-struct SubItem {
-    text: String,
-}
+struct SubItem;
 
 fn parse_md_structure(md: &str) -> MdStructure {
     let mut structure = MdStructure::default();
@@ -222,9 +217,8 @@ fn parse_md_structure(md: &str) -> MdStructure {
                     });
                 } else if is_lettered_subitem(trimmed) {
                     // Lettered sub-item: "a. ...", "b. ...", etc.
-                    let text = strip_letter_prefix(trimmed);
                     if let Some(ref mut item) = current_item {
-                        item.sub_items.push(SubItem { text });
+                        item.sub_items.push(SubItem);
                     }
                 } else if let Some(ref mut item) = current_item {
                     // Continuation line
@@ -309,14 +303,6 @@ fn is_lettered_subitem(s: &str) -> bool {
         return false;
     }
     bytes[0].is_ascii_lowercase() && bytes[1] == b'.' && bytes[2] == b' '
-}
-
-fn strip_letter_prefix(s: &str) -> String {
-    if s.len() >= 3 {
-        s[3..].to_string()
-    } else {
-        s.to_string()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1233,116 +1219,6 @@ fn check_modifier_leaked_in_flow(flow: &[Value], md: &str, violations: &mut Vec<
             }
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Check: content shape (step-too-long, constraint-multi-sentence)
-// ---------------------------------------------------------------------------
-
-fn check_content_shape(md_struct: &MdStructure, violations: &mut Vec<Violation>) {
-    // Check steps
-    if let Some(steps) = find_instructions_h3(md_struct, "Steps") {
-        for (i, item) in steps.items.iter().enumerate() {
-            if item.sub_items.is_empty() {
-                // Non-conditional step
-                let sentences = count_sentences(&item.text);
-                if sentences > 3 {
-                    violations.push(Violation::new(
-                        "G::expand::step-too-long",
-                        format!("step {} has {} sentences (max 3)", i + 1, sentences),
-                    ));
-                }
-            } else {
-                // Conditional step — check each sub-item
-                for (j, sub) in item.sub_items.iter().enumerate() {
-                    let sentences = count_sentences(&sub.text);
-                    if sentences > 3 {
-                        violations.push(Violation::new(
-                            "G::expand::step-too-long",
-                            format!(
-                                "step {} sub-step {} has {} sentences (max 3)",
-                                i + 1,
-                                (b'a' + j as u8) as char,
-                                sentences
-                            ),
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
-    // Check constraints
-    if let Some(constraints) = find_instructions_h3(md_struct, "Constraints") {
-        for (i, item) in constraints.items.iter().enumerate() {
-            let sentences = count_sentences(&item.text);
-            if sentences > 1 {
-                violations.push(Violation::new(
-                    "G::expand::constraint-multi-sentence",
-                    format!("constraint {} has {} sentences (max 1)", i + 1, sentences),
-                ));
-            }
-        }
-    }
-}
-
-/// Count sentences per the spec: strip backtick code spans, then count
-/// `.`, `!`, `?` followed by whitespace or end-of-string.
-fn count_sentences(text: &str) -> usize {
-    // Step 1: strip backtick code spans
-    let stripped = strip_code_spans(text);
-
-    // Step 2: count sentence boundaries
-    let bytes = stripped.as_bytes();
-    let mut count = 0;
-    for i in 0..bytes.len() {
-        if bytes[i] == b'.' || bytes[i] == b'!' || bytes[i] == b'?' {
-            // Followed by whitespace or end-of-string
-            if i + 1 >= bytes.len() || bytes[i + 1].is_ascii_whitespace() {
-                count += 1;
-            }
-        }
-    }
-
-    // If there's text but no sentence boundary found, it's still one sentence
-    if count == 0 && !stripped.trim().is_empty() {
-        count = 1;
-    }
-
-    count
-}
-
-fn strip_code_spans(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'`' {
-            // Find matching backtick
-            let mut end = i + 1;
-            while end < bytes.len() && bytes[end] != b'`' {
-                end += 1;
-            }
-            if end < bytes.len() {
-                i = end + 1; // Skip past closing backtick
-            } else {
-                // Unmatched backtick — preserve it (ASCII, single byte).
-                result.push('`');
-                i += 1;
-            }
-        } else {
-            // Decode the UTF-8 char at `i` so multi-byte sequences (é, —, 🌟)
-            // round-trip unchanged instead of being corrupted byte-by-byte.
-            let ch = text[i..]
-                .chars()
-                .next()
-                .expect("i is on a UTF-8 char boundary");
-            let len = ch.len_utf8();
-            result.push(ch);
-            i += len;
-        }
-    }
-    result
 }
 
 // ---------------------------------------------------------------------------
@@ -2711,6 +2587,7 @@ mod tests {
         );
     }
 
+
     // --- procedure-count-mismatch ---
     #[test]
     fn procedure_count_mismatch() {
@@ -3087,19 +2964,6 @@ mod tests {
             "violations: {:?}",
             violations
         );
-    }
-
-    // --- sentence counting ---
-    #[test]
-    fn sentence_counting() {
-        assert_eq!(count_sentences("One sentence."), 1);
-        assert_eq!(count_sentences("First. Second."), 2);
-        assert_eq!(count_sentences("First. Second. Third."), 3);
-        assert_eq!(count_sentences("First. Second. Third. Fourth."), 4);
-        // Code spans stripped
-        assert_eq!(count_sentences("Use `file.txt` here."), 1);
-        // No trailing period
-        assert_eq!(count_sentences("Just text"), 1);
     }
 
     // --- format output ---
