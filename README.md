@@ -124,6 +124,10 @@ The full `/glyph:compile` pipeline runs four LLM passes after the deterministic 
 - Expanded Semantic Validation
 - Fully Deterministic Compiler
 
+## What's Next
+
+My next project — [Flux](https://github.com/NishantVar/flux).
+
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE).
