@@ -266,6 +266,11 @@ fn fixture_predicate_branch_last_in_block_procedure_with_return() {
 }
 
 #[test]
+fn fixture_predicate_branch_in_tier1_block() {
+    snapshot_test("predicate_branch_in_tier1_block");
+}
+
+#[test]
 fn mixed_predicate_const_with_not_emits_branch_condition_span() {
     let src = r#"
 const big = "the change is big"

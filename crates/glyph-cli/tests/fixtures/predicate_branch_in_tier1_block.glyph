@@ -1,0 +1,13 @@
+const big_change = "the change is big"
+
+block plan_big_change()
+    description: "Plan a big change."
+    flow:
+        if big_change:
+            "Stop and confirm with user."
+
+skill main()
+    description: "Test branch survives small block."
+    flow:
+        plan_big_change()
+        "Move on."

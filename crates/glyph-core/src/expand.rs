@@ -78,10 +78,17 @@ pub fn expand_step1_with_imported_descriptions(
     // Collect block metadata for tier decisions:
     // - flow_statement_count: number of individual flow statements
     // - call_count: how many times each block is called in the skill
+    // - has_branches: whether the block's flow contains any `if`/elif/else.
+    //   Codex review Finding (high): Tier 1 inlines `body_text`, which is
+    //   built from `FlowStmt::InlineString` only — branches are dropped
+    //   silently. Forcing Tier 2 here keeps the structured branch nodes
+    //   reachable through the procedure emit path.
     let mut block_flow_counts: HashMap<String, usize> = HashMap::new();
+    let mut block_has_branches: HashMap<String, bool> = HashMap::new();
     for n in arena.nodes() {
         if let IrNode::Block(b) = n {
             block_flow_counts.insert(b.name.clone(), b.flow_statements.len());
+            block_has_branches.insert(b.name.clone(), !b.branch_steps.is_empty());
         }
     }
 
@@ -106,9 +113,12 @@ pub fn expand_step1_with_imported_descriptions(
                 .unwrap_or_else(|| count_words(c.resolved_body.as_ref().unwrap()));
             let stmt_count = block_flow_counts.get(target).copied().unwrap_or(0);
             let freq = call_frequency.get(target).copied().unwrap_or(1);
+            let has_branches = block_has_branches.get(target).copied().unwrap_or(false);
 
-            // Tier 2 conditions: >= 4 flow statements, or called 2+ times.
-            let is_tier2 = stmt_count >= 4 || freq >= 2;
+            // Tier 2 conditions: >= 4 flow statements, called 2+ times,
+            // OR the block's flow contains a branch (forced Tier 2 — Tier 1
+            // inline drops branch structure, see `block_has_branches` above).
+            let is_tier2 = stmt_count >= 4 || freq >= 2 || has_branches;
 
             if is_tier2 {
                 // Mark as Tier 2 — leave the Call node in place.
