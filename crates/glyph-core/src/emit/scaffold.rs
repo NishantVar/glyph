@@ -515,6 +515,19 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                                 step_num,
                                 &mut next_span_id,
                             );
+                            // Codex review Finding (medium): when the
+                            // last visible step is a branch, the
+                            // §8.4 sentence still has to render. The
+                            // branch emitter has no place to fold the
+                            // sentence in (its arms are sub-steps),
+                            // so we emit it as a trailing standalone
+                            // step — same shape as the return-only
+                            // procedure path above.
+                            if is_last {
+                                if let Some(sent) = proc_sentence.as_deref() {
+                                    s.push_literal(format!("{}. {}\n", step_num + 1, sent));
+                                }
+                            }
                             continue;
                         }
                     }
