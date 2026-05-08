@@ -1,0 +1,9 @@
+import "./imported-string-predicate-imported.glyph" { requires_review }
+
+skill main()
+    description: "Gate on the imported predicate."
+    flow:
+        if requires_review
+            "Send the change for review."
+        else
+            "Land directly."

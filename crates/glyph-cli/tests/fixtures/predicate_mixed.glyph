@@ -1,0 +1,10 @@
+const complex_change_required = "the requested change requires regenerating multi-line prose that repair or prose-reshape originally authored, beyond a localised wording or value swap"
+
+block recommend_full_compile()
+    "Stop and recommend running `/glyph:compile` instead — incremental edit cannot regenerate prose."
+
+skill predicate_mixed()
+    description: "Demonstrate mixed condition: predicate const AND-NOT inline literal."
+    flow:
+        if complex_change_required and not "is dry run":
+            recommend_full_compile()

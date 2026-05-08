@@ -372,11 +372,19 @@ ResolvedInstructionRef {
 
 ResolvedBranch {
   ...Branch fields...
-  applies_descriptions: {String: String}?  // present when any condition (top-level, elif) uses `BLOCKNAME.applies()`;
-                                           // map key is the block name as it appears in source, value is the
-                                           // resolved `description:` string of that block. See
-                                           // `ir-and-semantics.md` §Block Trigger Predicate. Step 2 reads this
-                                           // side-map to render description-driven prose; Step 1 populates it.
+  resolved_predicates: {String: String}?   // present when any condition (top-level, elif) uses a predicate form;
+                                           // key is the predicate token as it appears in the condition string,
+                                           // value is the resolved natural-language string. Three forms:
+                                           //   - `.applies()` form: key = "block_name.applies()",
+                                           //     value = block's resolved `description:` string.
+                                           //   - string-const form: key = "const_name",
+                                           //     value = the const's string body.
+                                           //   - inline literal: not stored (literal already in condition string).
+                                           // `null` when no condition arm uses a predicate form.
+                                           // Populated by Expand Step 1. See `ir-and-semantics.md` §Predicates.
+                                           // Step 2 reads this side-map to render predicate-driven prose;
+                                           // Step 1 populates it. Renamed from `applies_descriptions` (ir_version 1)
+                                           // in ir_version 2.
 }
 ```
 

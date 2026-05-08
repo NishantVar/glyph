@@ -1,0 +1,8 @@
+block stop_and_review()
+    "Stop and request explicit user confirmation."
+
+skill predicate_literal_or_literal()
+    description: "Demonstrate literal-or-literal predicate composition."
+    flow:
+        if "the user requested it" or "the change is risky":
+            stop_and_review()

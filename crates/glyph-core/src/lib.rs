@@ -6,6 +6,7 @@
 
 pub mod analyze;
 pub mod ast;
+pub mod condition;
 pub mod diagnostic;
 pub mod domain_registry;
 pub mod emit;
@@ -504,6 +505,19 @@ pub struct ExportedNames {
     /// name. Consumer files fold these into their `TypeRegistry` for cross-file
     /// type-level description lookup at emit time. Same-file decls take precedence.
     pub types: HashMap<String, String>,
+    /// Codex review Finding 3: rendered source-text of every exported `const`
+    /// keyed by the producer name. Bool values are normalized to lowercase to
+    /// mirror the multi-file compile path (`extract_and_store_exports`). The
+    /// import-aware check pipeline re-keys these under the consumer-local
+    /// spelling and passes them to `analyze_with_imports` so an imported
+    /// numeric/string const used bare in condition position is classified by
+    /// the same `TypeTag` that compile would see.
+    pub text_values: HashMap<String, String>,
+    /// Companion to `text_values` carrying the inferred `TypeTag` for each
+    /// exported const. Without this, the classifier in `collect_consts_for_file`
+    /// falls back to `TypeTag::String` for every imported name and silently
+    /// skips `condition-non-boolean-non-predicate` for imported numerics.
+    pub text_value_types: HashMap<String, kind_infer::TypeTag>,
 }
 
 /// Extract the exported names from a parsed source file.
@@ -517,6 +531,8 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
         block_params: HashMap::new(),
         block_output_contracts: HashMap::new(),
         types: HashMap::new(),
+        text_values: HashMap::new(),
+        text_value_types: HashMap::new(),
     };
     for decl in &file.decls {
         match decl {
@@ -526,6 +542,20 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
                 // (including `generated const`) are private.
                 if c.node.exported {
                     exports.texts.insert(c.node.name.clone());
+                    let rendered = match &c.node.value {
+                        ast::ConstValue::Bool(s) => s.to_ascii_lowercase(),
+                        other => other.rendered().to_string(),
+                    };
+                    let lit = match &c.node.value {
+                        ast::ConstValue::String(s) => kind_infer::Literal::String(s.clone()),
+                        ast::ConstValue::Int(s) | ast::ConstValue::Float(s) => {
+                            kind_infer::Literal::Number(s.clone())
+                        }
+                        ast::ConstValue::Bool(s) => kind_infer::Literal::Bool(s.clone()),
+                    };
+                    let tag = kind_infer::infer_primitive(&lit);
+                    exports.text_values.insert(c.node.name.clone(), rendered);
+                    exports.text_value_types.insert(c.node.name.clone(), tag);
                 } else {
                     exports.privates.insert(c.node.name.clone());
                 }
@@ -810,6 +840,16 @@ fn check_one_file(
 
     // Collect imported names for cross-file resolution.
     let mut imported_texts: HashSet<String> = HashSet::new();
+    // Codex review Finding 3: parallel maps that carry the rendered body and
+    // inferred TypeTag for every imported const, re-keyed under the
+    // consumer-local spelling. Threaded into `analyze_with_imports` so the
+    // classifier in `collect_consts_for_file` lands the correct
+    // `ConditionTokenKind` for imported numeric/string consts in condition
+    // position — matching what `compile_source_with_resolved_imports` does.
+    let mut imported_text_values: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    let mut imported_const_types: std::collections::BTreeMap<String, kind_infer::TypeTag> =
+        std::collections::BTreeMap::new();
     let mut imported_blocks: HashSet<String> = HashSet::new();
     // Phase B.7: imported `export type` names (consumer-local spelling).
     // Used to mark `param.type_annotation` references as "used" so the
@@ -978,6 +1018,14 @@ fn check_one_file(
                             );
                         } else if dep_exports.texts.contains(&imp_name.name.node) {
                             imported_texts.insert(local.to_string());
+                            // Re-key the producer-side const value/type under
+                            // the consumer-local name (alias if present).
+                            if let Some(v) = dep_exports.text_values.get(&imp_name.name.node) {
+                                imported_text_values.insert(local.to_string(), v.clone());
+                            }
+                            if let Some(t) = dep_exports.text_value_types.get(&imp_name.name.node) {
+                                imported_const_types.insert(local.to_string(), t.clone());
+                            }
                         } else if dep_exports.blocks.contains(&imp_name.name.node) {
                             imported_blocks.insert(local.to_string());
                             // Issue #84 Chunk 4: re-key the producer-side
@@ -1025,7 +1073,17 @@ fn check_one_file(
                     all_import_names.push((alias.clone(), import_span));
                     // Make all exported names available prefixed.
                     for t in &dep_exports.texts {
-                        imported_texts.insert(format!("{}.{}", alias, t));
+                        let qualified = format!("{}.{}", alias, t);
+                        imported_texts.insert(qualified.clone());
+                        // Mirror selective import: prefix the alias on
+                        // const value/type so the classifier can resolve
+                        // `alias.name` references in condition position.
+                        if let Some(v) = dep_exports.text_values.get(t) {
+                            imported_text_values.insert(qualified.clone(), v.clone());
+                        }
+                        if let Some(tag) = dep_exports.text_value_types.get(t) {
+                            imported_const_types.insert(qualified, tag.clone());
+                        }
                     }
                     for b in &dep_exports.blocks {
                         let qualified = format!("{}.{}", alias, b);
@@ -1097,6 +1155,12 @@ fn check_one_file(
 
     // Run Phase 2 with import-augmented name sets.
     let mut registry = domain_registry::Registry::new();
+    // Codex review Finding 3: pass the imported const value/type maps built
+    // above so the check-only path classifies imported numeric/string
+    // consts identically to `compile_source_with_resolved_imports`. Without
+    // these, every imported name fell back to `TypeTag::String` and a bare
+    // imported numeric in condition position silently skipped
+    // `condition-non-boolean-non-predicate`.
     let _ = analyze::analyze_with_imports(
         &file,
         0,
@@ -1112,6 +1176,8 @@ fn check_one_file(
         &mut registry,
         &imported_block_return_types,
         &imported_block_params,
+        &imported_text_values,
+        &imported_const_types,
     );
 
     // Unused import detection.
@@ -1202,8 +1268,7 @@ pub fn compute_import_closure(entry: &Path, enable_effects: bool) -> Vec<PathBuf
                     if import_spanned.node.path.starts_with("@glyph/") {
                         continue;
                     }
-                    if let Some(resolved) =
-                        resolve_import_path(&current, &import_spanned.node.path)
+                    if let Some(resolved) = resolve_import_path(&current, &import_spanned.node.path)
                     {
                         stack.push(resolved);
                     }
@@ -1417,7 +1482,9 @@ pub fn compile_directory_with_options(
             }
             Ok(CompileOutcome::Diagnostics(bag)) => {
                 failed_files.insert(file.clone());
-                any_failure = true;
+                if bag.has_error() {
+                    any_failure = true;
+                }
                 outcomes.push((file.clone(), FileOutcome::Failed { diagnostics: bag }));
             }
             Err(CompileError::Lower(lower::LowerError::NoSkill)) => {
@@ -1451,7 +1518,20 @@ pub fn compile_directory_with_options(
         }
     }
 
-    let exit_code = if any_failure { 1 } else { 0 };
+    let diag_worst = outcomes
+        .iter()
+        .map(|(_, o)| match o {
+            FileOutcome::Compiled { diagnostics } | FileOutcome::Failed { diagnostics } => {
+                diagnostics.exit_code()
+            }
+            FileOutcome::Skipped { .. } => 0,
+        })
+        .fold(0u8, |acc, code| match (acc, code) {
+            (1, _) | (_, 1) => 1,
+            (2, _) | (_, 2) => 2,
+            _ => 0,
+        });
+    let exit_code = if any_failure { 1 } else { diag_worst };
     BuildResult {
         outcomes,
         exit_code,
@@ -2140,6 +2220,11 @@ fn compile_source_with_resolved_imports(
         &mut registry,
         &resolved_imports.block_return_types,
         &resolved_imports.block_params,
+        // Task 6: rendered import bodies + inferred types reach the
+        // classifier so a bare imported name in a branch condition lands
+        // in the correct ConditionTokenKind variant per its TypeTag.
+        &resolved_imports.text_values,
+        &resolved_imports.text_value_types,
     );
     if bag.has_error() || bag.has_repairable() {
         return Ok(CompileOutcome::Diagnostics(bag));
@@ -3566,6 +3651,7 @@ skill main()
                 then_body,
                 elif_branches,
                 else_body,
+                ..
             } => {
                 assert_eq!(condition, "mode == \"fast\"");
                 assert_eq!(then_body.len(), 1);
@@ -3842,8 +3928,8 @@ skill main()
     }
 
     #[test]
-    fn applies_descriptions_populated_in_expand() {
-        // AC6: applies_descriptions side-map is populated post-Step-1.
+    fn resolved_predicates_populated_in_expand() {
+        // AC6: resolved_predicates side-map is populated post-Step-1.
         let src = "\
 block fast_mode()
     description: \"When the user wants fast processing.\"
@@ -3865,8 +3951,22 @@ skill main()
         else
             \"Do default processing.\"
 ";
+        // Task 7: expand consumes IrBranch.classification, populated by the
+        // analyze→lower path. The bare `analyze::analyze` stub is a no-op, so
+        // this test must use `analyze_with_diagnostics` (which runs
+        // `annotate_file_branches`) for classification to reach the IR.
         let (file, _) = parse::parse(src, 0).expect("should parse");
-        let file = analyze::analyze(file);
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let file = analyze::analyze_with_diagnostics(
+            file,
+            0,
+            "test.glyph",
+            &line_index,
+            &mut bag,
+            &mut registry,
+        );
         let arena = lower::lower(&file).expect("should lower");
         let arena = expand::expand_step1(arena);
         // Find the Branch node.
@@ -3876,9 +3976,9 @@ skill main()
         });
         let branch = branch.expect("should have a Branch node");
         let descs = branch
-            .applies_descriptions
+            .resolved_predicates
             .as_ref()
-            .expect("applies_descriptions should be populated");
+            .expect("resolved_predicates should be populated");
         assert_eq!(
             descs.get("fast_mode").map(|s| s.as_str()),
             Some("When the user wants fast processing.")
@@ -5855,6 +5955,37 @@ skill foo()
             diag.message.contains("do_thing"),
             "message must name the call target `do_thing`, got: {}",
             diag.message
+        );
+    }
+
+    #[test]
+    fn cross_file_imported_numeric_const_fires_condition_non_boolean_via_check_file() {
+        // Finding 3 (review): when a library exports `const max_attempts = 3`
+        // and a consumer uses it bare in `if max_attempts:`, the import-aware
+        // check pipeline must classify the imported const as Numeric and emit
+        // `G::analyze::condition-non-boolean-non-predicate`. Without imported
+        // const TypeTag plumbing through `check_file_recursive`, the
+        // imported name falls back to `TypeTag::String` and the diagnostic
+        // silently skips — so check classifies the same condition
+        // differently from compile.
+        let dir = tempfile::tempdir().unwrap();
+
+        let lib_path = dir.path().join("lib.glyph");
+        std::fs::write(&lib_path, "export const max_attempts = 3\n").unwrap();
+
+        let main_path = dir.path().join("main.glyph");
+        std::fs::write(
+            &main_path,
+            "import \"./lib.glyph\" { max_attempts }\n\nskill main()\n    description: \"Main.\"\n    flow:\n        if max_attempts:\n            \"do something\"\n",
+        )
+        .unwrap();
+
+        let bag = check_file(&main_path);
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::condition-non-boolean-non-predicate"),
+            "expected G::analyze::condition-non-boolean-non-predicate from cross-file pipeline (imported numeric const used as bare condition), got: {:?}",
+            ids
         );
     }
 

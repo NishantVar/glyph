@@ -300,6 +300,8 @@ mod tests {
             return_type: None,
             output_contract: None,
             return_type_text: None,
+            branch_steps: std::collections::HashMap::new(),
+            string_default_params: std::collections::BTreeMap::new(),
         }));
         arena.set_root_skill(NodeId(0));
 
@@ -331,7 +333,9 @@ mod tests {
             then_body: vec![], // empty — malformed!
             elif_branches: vec![],
             else_body: None,
-            applies_descriptions: None,
+            resolved_predicates: None,
+            predicate_shape: crate::ir::BranchPredicateShape::default(),
+            classification: None,
         }));
         arena.set_root_skill(NodeId(0));
         let err = validate(&arena).unwrap_err();
@@ -381,6 +385,8 @@ mod tests {
             return_type: None,
             output_contract: None,
             return_type_text: None,
+            branch_steps: std::collections::HashMap::new(),
+            string_default_params: std::collections::BTreeMap::new(),
         }));
         // Block "bar" calls "foo" — completing the cycle.
         arena.push(IrNode::Block(IrBlock {
@@ -394,6 +400,8 @@ mod tests {
             return_type: None,
             output_contract: None,
             return_type_text: None,
+            branch_steps: std::collections::HashMap::new(),
+            string_default_params: std::collections::BTreeMap::new(),
         }));
         arena.set_root_skill(NodeId(0));
 

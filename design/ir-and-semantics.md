@@ -301,7 +301,7 @@ skill fix_bug(scope = ".")
 
 If `description:` is omitted on a `skill`, the compiler generates one from the skill name and body during the LLM repair pass (Phase 3), adding it as a `description:` sub-section in the source. Authors should prefer explicit descriptions for predictable skill routing.
 
-On a `block` / `export block`, `description:` is **optional**. It is required only when the block is referenced via `BLOCKNAME.applies()` somewhere in the build. See §Block Trigger Predicate for required-when-consulted semantics and the cross-file repair limitation.
+On a `block` / `export block`, `description:` is **optional**. It is required only when the block is referenced via `BLOCKNAME.applies()` somewhere in the build. See §Predicates §Block Trigger Predicate for required-when-consulted semantics and the cross-file repair limitation.
 
 ### `context:` Section
 
@@ -327,40 +327,76 @@ skill fix_bug(scope = ".")
         ...
 ```
 
-### Block Trigger Predicate
+### Predicates
 
-`BLOCKNAME.applies()` is a special syntactic form for description-driven dispatch inside a flow. It evaluates to a `Bool` that the receiving coding agent computes by matching the referenced block's `description:` against current context.
+A **predicate** is a natural-language string that the consuming coding agent evaluates against current context to decide whether a branch arm applies. Three syntactic forms produce predicates in an `if` / `elif` condition:
 
-**Surface form.** The receiver must be a same-file `block` / `export block` name, an imported `export block` name, or a single-level qualified callee (`module_alias.block_name`). The method name `applies` and the empty argument list are fixed: `applies(arg)` is a parse error (`G::parse::applies-with-args`); omitting the parens is a parse error (`G::parse::applies-no-parens`). `applies` is reserved in this method-call position and is not a UFCS dispatch — blocks are not first-class values, and there is no `applies(b: Block)` stdlib function.
+| Form | Example | Resolved value |
+|---|---|---|
+| Block trigger predicate | `fork_with_plan.applies()` | block's `description:` string |
+| String-const predicate | `complex_change_required` | const's string body |
+| Inline literal predicate | `"the user has explicitly opted out of compile-on-save"` | the literal itself |
 
-**Where it is valid.** Only inside an `if` / `elif` condition (directly, or composed with `and` / `or` / `not` per `data-flow.md` §Condition Expressions). It is not a value expression and cannot bind to a variable, appear in `return`, or appear as a call argument in MVP. Authors who need to reuse a predicate factor it as a separate `if` arm, not a binding.
+All three forms are semantically equivalent from the agent's perspective — the agent reads the resolved string and decides. They differ only in where the string lives in source. Authors choose the form that reads most clearly at the call site.
+
+Predicates compose with `and`, `or`, `not`, and parenthesization the same way boolean conditions do. A Branch is **pure-predicate** when every arm's condition is one or more predicate-form tokens combined by `or` only. Pure-predicate Branches use the deterministic "decide which applies" framing (see `compiled-output.md` §Predicate-Driven Branch Projection). Mixed conditions — predicates combined with boolean tokens via `and` or `not` — go through the `BranchCondition` LLM span.
+
+Predicates are only valid in `if` / `elif` condition position. They are not value expressions and cannot bind to a variable, appear in `return`, or appear as call arguments.
+
+#### Natural-Language Predicates (all three forms)
+
+**IR representation.** `Branch.condition` remains a String (`ir-schema.md` §Branch). Condition text is preserved verbatim. Expand Step 1 populates the `resolved_predicates: {predicate_token → resolved_string}` side-map on the Branch node (`ir-schema.md` §Resolved IR). Step 2 reads both the condition string and the side-map to render the conditional Step prose (see `compiled-output.md` §Predicate-Driven Branch Projection).
+
+**Effects.** Predicate evaluation (any form) contributes no effects to the enclosing declaration. Block declared effects propagate only via `Call` nodes when the block is actually invoked inside an arm body.
+
+#### Block Trigger Predicate (`.applies()`)
+
+`BLOCKNAME.applies()` evaluates to a predicate by reading the referenced block's `description:` string. The receiving agent matches this description against current context.
+
+**Surface form.** The receiver must be a same-file `block` / `export block` name, an imported `export block` name, or a single-level qualified callee (`module_alias.block_name`). The method name `applies` and the empty argument list are fixed: `applies(arg)` is a parse error (`G::parse::applies-with-args`); omitting the parens is a parse error (`G::parse::applies-no-parens`). `applies` is reserved in this method-call position and is not a UFCS dispatch.
 
 **Required-when-consulted.** A block referenced by `.applies()` must declare `description:`. Resolution behavior:
 
-- **Local block** (declared in the same file as the `.applies()` call) without `description:` → emits `G::analyze::applies-on-undescribed-block` (repairable). Phase 3 Repair generates a description from the block's name, parameters, effects, and flow body, focused on *when this block applies* (the trigger condition), and adds it as a `description:` sub-section.
-- **Imported `export block`** without `description:` → emits `G::analyze::applies-on-undescribed-block` as a hard error. Repair only edits the file under compilation; it does not cross file boundaries (`repair.md` §9, `todo.md` §Repair). The author must add `description:` in the foreign source manually.
-- **Receiver does not resolve to a block** (e.g., a skill name, parameter, value binding, or unknown name in method position) → emits `G::analyze::applies-on-non-block` (error).
+- **Local block** (declared in the same file as the `.applies()` call) without `description:` → emits `G::analyze::applies-on-undescribed-block` (repairable). Phase 3 Repair generates a description from the block's name, parameters, effects, and flow body, focused on *when this block applies*, and adds it as a `description:` sub-section.
+- **Imported `export block`** without `description:` → emits `G::analyze::applies-on-undescribed-block` as a hard error. Repair only edits the file under compilation; it does not cross file boundaries (`repair.md` §9). The author must add `description:` in the foreign source manually.
+- **Receiver does not resolve to a block** → emits `G::analyze::applies-on-non-block` (error).
 
-**Optionality otherwise.** A block never consulted via `.applies()` may omit `description:` entirely. Repair does not generate descriptions speculatively for blocks; the metadata is materialized only when a `.applies()` call requires it.
+**Optionality otherwise.** A block never consulted via `.applies()` may omit `description:` entirely.
 
-**Metadata, not gate.** A block carrying `description:` remains directly callable by name without consulting its description. `applies()` is opt-in at the call site; the dispatch decision lives in source where the reader can see it.
+**Metadata, not gate.** A block carrying `description:` remains directly callable by name without consulting its description. `applies()` is opt-in at the call site.
 
-**Effects.** A `BLOCKNAME.applies()` evaluation contributes no effects to the enclosing declaration. The referenced block's declared effects propagate only via `Call` nodes (i.e., when the block is actually invoked, typically inside an arm body of the same `if`).
+**Body grammar.** The body grammar of `description:` on a block is identical to a skill's: exactly one quoted string literal (`"..."` or `"""..."""`), or a bare-name reference to a same-file `const` / `export const` declaration. The same parameter-slot rule (`G::parse::param-slot-in-non-instruction-string`) and singularity rule (`G::parse::duplicate-subsection`) apply.
 
-**IR representation.** `Branch.condition` remains a String (`ir-schema.md` §Branch). The literal source `block_x.applies()` survives unchanged into the condition text — no new `Expression` variant is introduced. Phase 4 (Lower) recognizes the form during condition tokenization and validates the shape; Expand Step 1 resolves each `block_x.applies()` invocation by reading `block_x`'s `description:` and populating a side map `applies_descriptions: {block_name: resolved_description}` on the Branch node (`ir-schema.md` §Resolved IR). Expand Step 2 reads both the condition string and the side map to render the conditional Step prose (see `compiled-output.md` §Description-Driven Branch Projection).
+**Step 1 resolution.** Expand Step 1 reads `block_x`'s `description:` and stores the resolved string in `resolved_predicates["block_x.applies()"]` on the Branch node.
+
+#### String-Const Predicate
+
+A bare identifier in condition position that resolves to a string-kinded `const` or `export const` is a string-const predicate. The const's string body is the predicate. Analyze classifies the condition after name resolution using the inferred kind of the resolved declaration (see `values-and-names.md` §Bare-Name Resolution In Condition Position).
+
+An undefined name in condition position is repaired to `generated const` (not `generated block`) — the same routing as constraint and context markers. The LLM generates a single-clause predicate string from the name, surrounding flow context, and the enclosing skill's description.
+
+**Step 1 resolution.** Expand Step 1 reads the const's body and stores the resolved string in `resolved_predicates["const_name"]` on the Branch node.
+
+**No `description:` requirement.** String-const predicates always have a body (the const RHS); the "required-when-consulted" requirement from `.applies()` does not apply. `G::analyze::applies-on-undescribed-block` never fires for this form.
+
+#### Inline Literal Predicate
+
+A quoted string literal in condition position is a self-contained predicate. The literal text is the predicate string. No `resolved_predicates` map entry is needed — the literal is already in the condition string.
+
+**Step 1 resolution.** The literal text flows through unchanged. Expand Step 2 reads it directly from the condition string when projecting the Branch arm header.
+
+**Style guidance.** Inline literals are concise for one-off conditions. Extract to a named `const` when the predicate is reused, long, or benefits from a descriptive name.
 
 **Body grammar inheritance.** The body grammar of `description:` on a block is identical to a skill's: exactly one quoted string literal (`"..."` or `"""..."""`), or a bare-name reference to a same-file `const` / `export const` declaration. The same parameter-slot rule (`G::parse::param-slot-in-non-instruction-string`) and singularity rule (`G::parse::duplicate-subsection`) apply.
 
 **Style relief — extract long descriptions.** When a block's `description:` grows long (e.g., trigger phrases, multi-clause "use when" guidance), the bare-name reference form is the recommended pattern: declare a `const` and reference it from `description:`. Block declarations stay tight; trigger prose lives next to other constants as data. Length-based linter nudges are a post-MVP `glyph fmt` / `glyph check` concern (see `todo.md`).
-
-**Composition with regular booleans.** `applies()` calls compose with the existing condition operators (`and`, `or`, `not`, parenthesization). For a condition that is *purely* one or more `applies()` calls combined by `or` (or a chain of `if`/`elif` arms each guarded by a single `applies()` call), Expand Step 2 emits the "decide which applies" prose form. For mixed conditions (e.g., `block_x.applies() and not is_dry_run`), the description inlines into the larger condition prose: "If the user wants a structured plan and this is not a dry run, ...". See `compiled-output.md` §Description-Driven Branch Projection.
 
 ### Section Content Rules
 
 **`description:`** — a concise one-line summary. Available on `skill`, `block`, and `export block` declarations.
 
 - On a `skill`, the description summarizes when and why to use this skill, and compiles to frontmatter `description`. If omitted, Repair (Phase 3) generates one from the skill name and body and adds it to the source.
-- On a `block` or `export block`, the description names the user-intent or runtime condition under which the block applies. It is consulted only by the trigger predicate `BLOCKNAME.applies()` (see §Block Trigger Predicate); it does **not** appear in compiled output otherwise. **Required when `BLOCKNAME.applies()` is called somewhere reachable**; otherwise optional and treated as documentation only. When the consulting call site is in the same file as the block, a missing description is repairable (`G::analyze::applies-on-undescribed-block` repairable); when the block is imported, a missing description is an error and must be added in the source library directly.
+- On a `block` or `export block`, the description names the user-intent or runtime condition under which the block applies. It is consulted only by the trigger predicate `BLOCKNAME.applies()` (see §Predicates §Block Trigger Predicate); it does **not** appear in compiled output otherwise. **Required when `BLOCKNAME.applies()` is called somewhere reachable**; otherwise optional and treated as documentation only. When the consulting call site is in the same file as the block, a missing description is repairable (`G::analyze::applies-on-undescribed-block` repairable); when the block is imported, a missing description is an error and must be added in the source library directly.
 
 **`effects:`** — declared effect keywords (see section 3). Compiles to frontmatter `effects` as a YAML list. Validated against the inferred effect set.
 

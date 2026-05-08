@@ -7,6 +7,8 @@
 //! This module operates on external files (not the compiler's internal IR),
 //! using `serde_json::Value` to parse the IR JSON.
 
+use crate::condition::{tokenize_condition, ConditionTokenKind};
+use crate::emit::branch::{extract_predicate_token, lookup_key_for_token};
 use crate::emit::templates::kebab_case;
 use serde_json::Value;
 
@@ -104,7 +106,7 @@ pub fn validate_output(ir_json: &str, md: &str) -> Vec<Violation> {
     check_procedures(&md_struct, skill, &mut violations);
 
     // Description-driven branch validation
-    check_applies_descriptions(skill, md, &mut violations);
+    check_resolved_predicates(skill, md, &mut violations);
 
     violations
 }
@@ -667,8 +669,7 @@ fn check_step_order(md_struct: &MdStructure, flow: &[Value], violations: &mut Ve
                         .and_then(|t| t.as_str())
                         .filter(|s| !s.is_empty());
                     if projection == "inline" && body.is_some() {
-                        ir_step_keys
-                            .push((body.unwrap().to_string(), StepKeyKind::Prose));
+                        ir_step_keys.push((body.unwrap().to_string(), StepKeyKind::Prose));
                     } else {
                         let target = node.get("target").and_then(|t| t.as_str()).unwrap_or("");
                         ir_step_keys.push((target.to_string(), StepKeyKind::Identifier));
@@ -1596,49 +1597,114 @@ fn find_callee_flow_count(flow: &[Value], proc_name: &str) -> Option<usize> {
 // Check: description-shape-missing (description-driven branch projection)
 // ---------------------------------------------------------------------------
 
-fn check_applies_descriptions(skill: &Value, md: &str, violations: &mut Vec<Violation>) {
+fn check_resolved_predicates(skill: &Value, md: &str, violations: &mut Vec<Violation>) {
     if let Some(flow) = skill.get("flow").and_then(|f| f.as_array()) {
-        check_applies_descriptions_in_flow(flow, md, violations);
+        check_resolved_predicates_in_flow(flow, md, violations);
     }
 }
 
-fn check_applies_descriptions_in_flow(flow: &[Value], md: &str, violations: &mut Vec<Violation>) {
+fn check_resolved_predicates_in_flow(flow: &[Value], md: &str, violations: &mut Vec<Violation>) {
     for node in flow {
         let kind = node.get("kind").and_then(|k| k.as_str()).unwrap_or("");
         if kind == "branch" {
-            // Check if this branch has applies_descriptions
-            if let Some(desc_map) = node.get("applies_descriptions").and_then(|d| d.as_object()) {
-                // When applies_descriptions is populated, the compiled output
-                // must use description-keyed prose, not raw condition expressions.
-                // Verify that none of the block names followed by `.applies()`
-                // survive literally in the markdown.
-                for block_name in desc_map.keys() {
-                    let raw_condition = format!("{}.applies()", block_name);
-                    if md.contains(&raw_condition) {
-                        violations.push(Violation::new(
-                            "G::expand::description-shape-missing",
-                            format!(
-                                "raw condition `{}` survives in output; \
-                                 description-driven branch should use resolved description prose",
-                                raw_condition
-                            ),
-                        ));
+            // Gather all (condition, resolved_predicates) pairs: the branch arm and each elif arm.
+            let mut arms: Vec<(&str, Option<&serde_json::Map<String, Value>>)> = Vec::new();
+            if let Some(cond) = node.get("condition").and_then(|c| c.as_str()) {
+                let rp = node.get("resolved_predicates").and_then(|d| d.as_object());
+                arms.push((cond, rp));
+            }
+            // elif_branch nodes carry no resolved_predicates of their own (schema
+            // §ElifBranch). The parent branch owns the shared map covering all arms.
+            let parent_rp = node.get("resolved_predicates").and_then(|d| d.as_object());
+            if let Some(elifs) = node.get("elif_branches").and_then(|b| b.as_array()) {
+                for elif in elifs {
+                    if let Some(cond) = elif.get("condition").and_then(|c| c.as_str()) {
+                        arms.push((cond, parent_rp));
                     }
                 }
             }
+
+            for (condition, resolved_predicates) in &arms {
+                // Negative check (existing): raw `<name>.applies()` must not survive.
+                if let Some(desc_map) = resolved_predicates {
+                    for block_name in desc_map.keys() {
+                        let raw_condition = format!("{}.applies()", block_name);
+                        if md.contains(&raw_condition) {
+                            violations.push(Violation::new(
+                                "G::expand::description-shape-missing",
+                                format!(
+                                    "raw condition `{}` survives in output; \
+                                     description-driven branch should use resolved description prose",
+                                    raw_condition
+                                ),
+                            ));
+                        }
+                    }
+                }
+
+                // Positive check: every predicate token's resolved prose must appear in
+                // the markdown. We rely on extract_predicate_token returning None for
+                // non-predicate tokens (booleans, operators, numerics) rather than
+                // gating on predicate_shape.has_predicate_token — the two signals are
+                // equivalent for this purpose, and the token-by-token approach is simpler.
+                //
+                // The condition string carries a trailing `:` from the parser;
+                // strip it before tokenising. See expand.rs ~187 and
+                // emit/branch.rs ~22-25 and emit/stub_fill.rs ~36 for the same strip.
+                let condition_stripped = condition.trim().trim_end_matches(':').trim();
+                for token in tokenize_condition(condition_stripped) {
+                    if let Some((tok, kind)) = extract_predicate_token(&token) {
+                        match kind {
+                            ConditionTokenKind::PredicateApplies
+                            | ConditionTokenKind::PredicateConst => {
+                                if let Some(desc_map) = resolved_predicates {
+                                    let key = lookup_key_for_token(&tok, kind);
+                                    if let Some(prose) = desc_map.get(key).and_then(|v| v.as_str())
+                                    {
+                                        if !md.contains(prose) {
+                                            violations.push(Violation::new(
+                                                "G::expand::predicate-prose-missing",
+                                                format!(
+                                                    "predicate `{}` resolved to prose \"{}\", \
+                                                     but that prose was not found in the output",
+                                                    key, prose
+                                                ),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                            ConditionTokenKind::PredicateLiteral => {
+                                // Literal form: the inner text IS the prose; no resolved_predicates lookup.
+                                if !md.contains(&tok) {
+                                    violations.push(Violation::new(
+                                        "G::expand::predicate-prose-missing",
+                                        format!(
+                                            "literal predicate prose \"{}\" was not found in the output",
+                                            tok
+                                        ),
+                                    ));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
             // Recurse into branch bodies
             if let Some(body) = node.get("then_body").and_then(|b| b.as_array()) {
-                check_applies_descriptions_in_flow(body, md, violations);
+                check_resolved_predicates_in_flow(body, md, violations);
             }
             if let Some(elifs) = node.get("elif_branches").and_then(|b| b.as_array()) {
                 for elif in elifs {
                     if let Some(body) = elif.get("body").and_then(|b| b.as_array()) {
-                        check_applies_descriptions_in_flow(body, md, violations);
+                        check_resolved_predicates_in_flow(body, md, violations);
                     }
                 }
             }
             if let Some(body) = node.get("else_body").and_then(|b| b.as_array()) {
-                check_applies_descriptions_in_flow(body, md, violations);
+                check_resolved_predicates_in_flow(body, md, violations);
             }
         }
     }
@@ -1700,7 +1766,7 @@ mod tests {
     /// Helper: minimal valid IR JSON
     fn minimal_ir() -> String {
         serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -1743,7 +1809,7 @@ mod tests {
     #[test]
     fn output_target_leak_is_rejected() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -1787,7 +1853,7 @@ mod tests {
     #[test]
     fn natural_output_target_name_is_allowed() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -1893,7 +1959,7 @@ mod tests {
     fn extra_h3_accepts_valid_h3s() {
         // All valid H3s: Context, Steps, Constraints, Procedure: <name>
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -1982,7 +2048,7 @@ mod tests {
     #[test]
     fn substep_count_mismatch() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2007,7 +2073,12 @@ mod tests {
                         "else_body": [
                             { "node_id": "n4", "kind": "inline_instruction", "text": "Skip tests.", "role": "step" }
                         ],
-                        "applies_descriptions": null
+                        "resolved_predicates": null,
+                        "predicate_shape": {
+                            "has_boolean_token": false,
+                            "has_predicate_token": false,
+                            "has_compositional_operator": false
+                        }
                     }
                 ]
             }
@@ -2025,7 +2096,7 @@ mod tests {
     #[test]
     fn constraint_count_mismatch() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2058,7 +2129,7 @@ mod tests {
     #[test]
     fn context_count_mismatch() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2092,7 +2163,7 @@ mod tests {
     #[test]
     fn context_count_ignores_indented_body_bullets() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2130,7 +2201,7 @@ mod tests {
     #[test]
     fn step_order_mismatch() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2334,7 +2405,7 @@ mod tests {
     #[test]
     fn dropped_param_ref() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2388,7 +2459,7 @@ mod tests {
     #[test]
     fn unresolved_local_ref() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2463,7 +2534,7 @@ mod tests {
     #[test]
     fn modifier_leaked() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2516,7 +2587,7 @@ mod tests {
     #[test]
     fn params_section_mismatch() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2553,7 +2624,7 @@ mod tests {
     #[test]
     fn params_section_missing() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2609,7 +2680,7 @@ mod tests {
     #[test]
     fn constraint_multi_sentence() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2644,7 +2715,7 @@ mod tests {
     #[test]
     fn procedure_count_mismatch() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2698,7 +2769,7 @@ mod tests {
     #[test]
     fn procedure_name_mismatch() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2751,7 +2822,7 @@ mod tests {
     #[test]
     fn procedure_step_count_mismatch() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2806,7 +2877,7 @@ mod tests {
     #[test]
     fn procedure_ref_missing() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2860,7 +2931,7 @@ mod tests {
     #[test]
     fn procedure_ref_dangling() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2914,7 +2985,7 @@ mod tests {
     #[test]
     fn procedure_duplicate() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -2947,7 +3018,7 @@ mod tests {
     #[test]
     fn procedure_order() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -3054,7 +3125,7 @@ mod tests {
         // using description-keyed shape. This test verifies that validates passes
         // when the branch is correctly rendered.
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -3081,13 +3152,23 @@ mod tests {
                                 "condition": "fork_with_summary.applies()",
                                 "body": [
                                     { "node_id": "n4", "kind": "inline_instruction", "text": "Fork with summary.", "role": "step" }
-                                ]
+                                ],
+                                "predicate_shape": {
+                                    "has_boolean_token": false,
+                                    "has_predicate_token": false,
+                                    "has_compositional_operator": false
+                                }
                             }
                         ],
                         "else_body": null,
-                        "applies_descriptions": {
+                        "resolved_predicates": {
                             "fork_with_plan": "Fork a terminal with a plan.",
                             "fork_with_summary": "Fork a terminal with a summary."
+                        },
+                        "predicate_shape": {
+                            "has_boolean_token": false,
+                            "has_predicate_token": false,
+                            "has_compositional_operator": false
                         }
                     }
                 ]
@@ -3111,11 +3192,11 @@ mod tests {
 
     #[test]
     fn description_driven_branch_rejects_raw_applies_condition() {
-        // When a Branch has applies_descriptions, the compiled output must NOT
+        // When a Branch has resolved_predicates, the compiled output must NOT
         // contain the raw `.applies()` condition expressions. If they survive,
         // it means the description-keyed rendering failed.
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -3142,13 +3223,23 @@ mod tests {
                                 "condition": "fork_with_summary.applies()",
                                 "body": [
                                     { "node_id": "n4", "kind": "inline_instruction", "text": "Fork with summary.", "role": "step" }
-                                ]
+                                ],
+                                "predicate_shape": {
+                                    "has_boolean_token": false,
+                                    "has_predicate_token": false,
+                                    "has_compositional_operator": false
+                                }
                             }
                         ],
                         "else_body": null,
-                        "applies_descriptions": {
+                        "resolved_predicates": {
                             "fork_with_plan": "Fork a terminal with a plan.",
                             "fork_with_summary": "Fork a terminal with a summary."
+                        },
+                        "predicate_shape": {
+                            "has_boolean_token": false,
+                            "has_predicate_token": false,
+                            "has_compositional_operator": false
                         }
                     }
                 ]
@@ -3175,7 +3266,7 @@ mod tests {
     #[test]
     fn description_form_leak_token_is_re_escaped_to_source_shape() {
         let ir = serde_json::json!({
-            "ir_version": 1,
+            "ir_version": 2,
             "compiler": "glyph 0.1.0",
             "source_file": "test.glyph",
             "skill": {
@@ -3229,6 +3320,85 @@ mod tests {
                 .any(|v| v.id == "G::expand::output-target-leak"),
             "expected output-target-leak for source-shape description token, \
              got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn check_resolved_predicates_accepts_renamed_key() {
+        let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"x.applies()","resolved_predicates":{"x.applies()":"the change is large"},"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
+        let md = "## Instructions\n\n### Steps\n\n1. If the change is large:\n   a. Stop.\n";
+        let violations = validate_output(ir, md);
+        assert!(violations.is_empty(), "got: {:?}", violations);
+    }
+
+    #[test]
+    fn check_resolved_predicates_accepts_const_form() {
+        let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"big","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":{"big":"the change is big"},"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
+        let md = "## Instructions\n\n### Steps\n\n1. If the change is big:\n   a. Stop.\n";
+        let violations = validate_output(ir, md);
+        assert!(violations.is_empty(), "got: {:?}", violations);
+    }
+
+    #[test]
+    fn check_resolved_predicates_accepts_literal_form() {
+        let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"\"the user opted in\"","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":null,"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
+        let md = "## Instructions\n\n### Steps\n\n1. If the user opted in:\n   a. Skip.\n";
+        let violations = validate_output(ir, md);
+        assert!(violations.is_empty(), "got: {:?}", violations);
+    }
+
+    #[test]
+    fn check_resolved_predicates_rejects_const_form_with_missing_prose() {
+        // IR declares the resolved-predicate prose `"the change is big"` for the
+        // bare-const predicate `big`, but the rendered markdown does NOT contain
+        // that prose. The new positive check must fire.
+        let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"big","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":{"big":"the change is big"},"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
+        let md = "## Instructions\n\n### Steps\n\n1. If something else:\n   a. Stop.\n";
+        let violations = validate_output(ir, md);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::predicate-prose-missing"),
+            "expected G::expand::predicate-prose-missing; got: {:?}",
+            violations
+        );
+    }
+
+    #[test]
+    fn check_resolved_predicates_rejects_missing_prose_in_elif_arm() {
+        // The main arm renders correctly, but the elif arm's resolved prose
+        // is missing from the markdown. The positive check must fire on
+        // elif-arm conditions, not just the main condition.
+        //
+        // Note: resolved_predicates lives on the parent branch node (IR schema
+        // §ElifBranch), covering all arms. The elif_branch carries no such map of
+        // its own. Both `big` and `small` entries are on the parent.
+        let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"big","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":{"big":"the change is big","small":"the change is small"},"then_body":[],"elif_branches":[{"kind":"elif_branch","condition":"small","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"body":[]}],"else_body":null}]}}"#;
+        let md = "## Instructions\n\n### Steps\n\n1. If the change is big:\n   a. Stop.\n2. If something else:\n   a. Continue.\n";
+        let violations = validate_output(ir, md);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::predicate-prose-missing"),
+            "expected G::expand::predicate-prose-missing for elif arm; got: {:?}",
+            violations
+        );
+    }
+
+    #[test]
+    fn check_resolved_predicates_rejects_literal_form_with_missing_prose() {
+        // IR declares an inline-literal predicate `"the user opted in"`, but the
+        // rendered markdown does not contain that text. The new positive check
+        // must fire on the literal arm too.
+        let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"\"the user opted in\"","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":null,"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
+        let md = "## Instructions\n\n### Steps\n\n1. If they declined:\n   a. Skip.\n";
+        let violations = validate_output(ir, md);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::predicate-prose-missing"),
+            "expected G::expand::predicate-prose-missing; got: {:?}",
+            violations
         );
     }
 }

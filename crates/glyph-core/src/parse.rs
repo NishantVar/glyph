@@ -2874,10 +2874,18 @@ impl<'a> Parser<'a> {
                                             elif_branches.push(ElifBranch {
                                                 condition: cond,
                                                 body,
+                                                condition_classification: None,
                                             });
                                         }
                                         TokenKind::Ident(kw) if kw == "else" => {
                                             self.pos += 1;
+                                            // Consume optional trailing `:` after `else`
+                                            // (the language guide shows `else:` with a colon;
+                                            // `parse_branch_condition` is not called for `else`
+                                            // so we must strip it explicitly here).
+                                            if matches!(self.peek().kind, TokenKind::Colon) {
+                                                self.pos += 1;
+                                            }
                                             let body = self.parse_flow_body(body_indent)?;
                                             else_body = Some(body);
                                             break; // else is always last
@@ -2898,6 +2906,7 @@ impl<'a> Parser<'a> {
                             then_body,
                             elif_branches,
                             else_body,
+                            condition_classification: None,
                         })
                     }
                     _ => {
@@ -5749,6 +5758,82 @@ skill main() -> Path
             "must not fire output-target-outside-return after multi-line-import fix; got: {:?}",
             ids
         );
+    }
+}
+
+// Pins parser behavior for string literals in `if` condition position.
+// This module is a regression guard: if the parser ever stops accepting bare
+// string literals as branch conditions, these tests will fail loudly before
+// any Phase-4 work begins.
+#[cfg(test)]
+mod branch_condition_tests {
+    use super::*;
+    use crate::ast::{Decl, FlowStmt};
+
+    fn first_skill_flow(src: &str) -> Vec<FlowStmt> {
+        let (file, _) = parse(src, 0).expect("parse should succeed");
+        file.decls
+            .into_iter()
+            .find_map(|d| match d {
+                Decl::Skill(s) => Some(s.node.flow),
+                _ => None,
+            })
+            .expect("expected a skill declaration")
+    }
+
+    /// Parser already accepts a bare string literal in `if` condition position.
+    ///
+    /// The condition string in the AST includes the trailing `:` that closes the
+    /// `if` header — `parse_branch_condition` consumes Colon tokens as regular
+    /// condition tokens. The reconstructed value is `"\"the user opted in\" :"`.
+    ///
+    /// Phase 4 of the predicate-as-string-const feature reads this condition string
+    /// back; it must strip the trailing ` :` before using the inner text as a
+    /// predicate, or the analyze/lower pass must account for the colon.
+    #[test]
+    fn parse_accepts_string_literal_in_if_condition() {
+        let src = "\
+skill test_predicate_parse()
+    description: \"pin parser behavior for string literal in if condition\"
+    flow:
+        if \"the user opted in\":
+            \"stop\"
+";
+        let flow = first_skill_flow(src);
+        match flow.first().expect("expected at least one flow stmt") {
+            FlowStmt::Branch { condition, .. } => {
+                // The parser includes the trailing ` :` in the condition string.
+                // This is the current behavior being pinned — Phase 4 must account for it.
+                assert_eq!(
+                    condition, "\"the user opted in\" :",
+                    "expected condition to include trailing colon (current parser behavior)"
+                );
+            }
+            other => panic!("expected FlowStmt::Branch, got {:?}", other),
+        }
+    }
+
+    /// Parser accepts `not "literal":` — negated inline string predicate.
+    /// Condition string includes the trailing ` :`.
+    #[test]
+    fn parse_accepts_not_string_literal_in_if_condition() {
+        let src = "\
+skill test_predicate_not_parse()
+    description: \"pin parser behavior for negated string literal in if condition\"
+    flow:
+        if not \"the user opted in\":
+            \"stop\"
+";
+        let flow = first_skill_flow(src);
+        match flow.first().expect("expected at least one flow stmt") {
+            FlowStmt::Branch { condition, .. } => {
+                assert_eq!(
+                    condition, "not \"the user opted in\" :",
+                    "expected negated condition with trailing colon (current parser behavior)"
+                );
+            }
+            other => panic!("expected FlowStmt::Branch, got {:?}", other),
+        }
     }
 }
 

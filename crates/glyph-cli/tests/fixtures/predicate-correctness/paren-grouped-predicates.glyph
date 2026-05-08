@@ -1,0 +1,10 @@
+const big = "the change is big"
+const small = "the change is small"
+
+skill main(reviewable: Bool = "true")
+    description: "Branch on grouped predicates."
+    flow:
+        if (big or small) and reviewable
+            "Review carefully."
+        else
+            "Skip detailed review."

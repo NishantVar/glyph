@@ -1,0 +1,11 @@
+block helper(needs_review = "the change needs review")
+    description: "Helper block."
+    flow:
+        if needs_review:
+            "Stop and confirm with user."
+
+skill main()
+    description: "Test block param string default resolves as predicate."
+    flow:
+        helper()
+        "Done."

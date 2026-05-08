@@ -29,7 +29,7 @@ fn run_validate_output(ir_json: &str, md: &str, format: &str) -> Output {
 
 fn minimal_ir() -> String {
     serde_json::json!({
-        "ir_version": 1,
+        "ir_version": 2,
         "compiler": "glyph 0.1.0",
         "source_file": "test.glyph",
         "skill": {

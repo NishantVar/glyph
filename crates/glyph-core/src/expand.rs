@@ -5,7 +5,8 @@
 //! - Assigns projection tiers to call sites.
 //! - Tier 1 (inline): callee body < 150 words → call keeps inline projection metadata.
 
-use crate::ir::{IrArena, IrNode};
+use crate::condition::ConditionTokenKind;
+use crate::ir::{IrArena, IrNode, NodeId};
 use std::collections::{BTreeMap, HashMap};
 
 /// Count words in resolved prose per `compiled-output.md` §Word Counting Rule.
@@ -77,10 +78,17 @@ pub fn expand_step1_with_imported_descriptions(
     // Collect block metadata for tier decisions:
     // - flow_statement_count: number of individual flow statements
     // - call_count: how many times each block is called in the skill
+    // - has_branches: whether the block's flow contains any `if`/elif/else.
+    //   Codex review Finding (high): Tier 1 inlines `body_text`, which is
+    //   built from `FlowStmt::InlineString` only — branches are dropped
+    //   silently. Forcing Tier 2 here keeps the structured branch nodes
+    //   reachable through the procedure emit path.
     let mut block_flow_counts: HashMap<String, usize> = HashMap::new();
+    let mut block_has_branches: HashMap<String, bool> = HashMap::new();
     for n in arena.nodes() {
         if let IrNode::Block(b) = n {
             block_flow_counts.insert(b.name.clone(), b.flow_statements.len());
+            block_has_branches.insert(b.name.clone(), !b.branch_steps.is_empty());
         }
     }
 
@@ -105,9 +113,12 @@ pub fn expand_step1_with_imported_descriptions(
                 .unwrap_or_else(|| count_words(c.resolved_body.as_ref().unwrap()));
             let stmt_count = block_flow_counts.get(target).copied().unwrap_or(0);
             let freq = call_frequency.get(target).copied().unwrap_or(1);
+            let has_branches = block_has_branches.get(target).copied().unwrap_or(false);
 
-            // Tier 2 conditions: >= 4 flow statements, or called 2+ times.
-            let is_tier2 = stmt_count >= 4 || freq >= 2;
+            // Tier 2 conditions: >= 4 flow statements, called 2+ times,
+            // OR the block's flow contains a branch (forced Tier 2 — Tier 1
+            // inline drops branch structure, see `block_has_branches` above).
+            let is_tier2 = stmt_count >= 4 || freq >= 2 || has_branches;
 
             if is_tier2 {
                 // Mark as Tier 2 — leave the Call node in place.
@@ -133,7 +144,7 @@ pub fn expand_step1_with_imported_descriptions(
         }
     }
 
-    // Phase 2b: Populate applies_descriptions on Branch nodes.
+    // Phase 2b: Populate resolved_predicates on Branch nodes.
     // Collect block descriptions into a lookup map.
     let mut block_descriptions: HashMap<String, String> = HashMap::new();
     // Include imported block descriptions first, local descriptions will override.
@@ -147,38 +158,88 @@ pub fn expand_step1_with_imported_descriptions(
             }
         }
     }
-    // Walk Branch nodes and populate applies_descriptions.
-    let nodes = arena.nodes_mut();
-    for i in 0..nodes.len() {
-        if let IrNode::Branch(ref br) = nodes[i] {
-            let mut descs: BTreeMap<String, String> = BTreeMap::new();
-            // Check all conditions (if + elif) for .applies() patterns.
-            let mut conditions = vec![br.condition.clone()];
-            for elif in &br.elif_branches {
-                conditions.push(elif.condition.clone());
-            }
-            for cond in &conditions {
-                let applies_suffix = ".applies()";
-                let mut search_from = 0;
-                while let Some(pos) = cond[search_from..].find(applies_suffix) {
-                    let abs_pos = search_from + pos;
-                    let receiver = &cond[..abs_pos];
-                    let block_name = receiver
-                        .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
-                        .next()
-                        .unwrap_or("");
-                    if !block_name.is_empty() {
-                        if let Some(desc) = block_descriptions.get(block_name) {
-                            descs.insert(block_name.to_string(), desc.clone());
-                        }
+    // Clone the consts map so we can borrow it below without arena borrow conflict.
+    // Merge in the root skill's string-defaulted params: condition.rs:304 classifies
+    // those param names as PredicateConst, so resolve_branch_predicates must look
+    // them up alongside arena consts. (Same-name shadowing is rejected by Analyze.)
+    let mut consts_for_lookup: BTreeMap<String, String> = arena.consts.clone();
+    if let Some(root_id) = arena.root_skill() {
+        if let IrNode::Skill(s) = arena.get(root_id) {
+            for p in &s.params {
+                if let Some(default) = &p.default {
+                    if default.starts_with('"') && default.ends_with('"') && default.len() >= 2 {
+                        let inner = &default[1..default.len() - 1];
+                        consts_for_lookup
+                            .entry(p.name.clone())
+                            .or_insert_with(|| inner.to_string());
                     }
-                    search_from = abs_pos + applies_suffix.len();
                 }
             }
-            if !descs.is_empty() {
-                // We need to mutate the Branch — clone data and replace.
-                let mut br_clone = br.clone();
-                br_clone.applies_descriptions = Some(descs);
+        }
+    }
+    // Codex review Finding (medium): block params with string defaults are
+    // ALSO classified as PredicateConst by Analyze, but they are LOCAL to
+    // the block they belong to. A flat file-level merge lets duplicate
+    // names across blocks collide (first wins via `or_insert_with`); a
+    // branch in the second block then renders the first block's prose.
+    // Build a per-branch attribution map instead: for each block, walk
+    // its `branch_steps` plus every reachable nested branch (through
+    // then/elif/else bodies) and mark each Branch NodeId as owned by that
+    // block. Predicate resolution below merges (skill_consts ∪
+    // owning_block.string_default_params) per branch.
+    let mut branch_block_params: HashMap<NodeId, BTreeMap<String, String>> = HashMap::new();
+    for n in arena.nodes() {
+        if let IrNode::Block(b) = n {
+            if b.string_default_params.is_empty() || b.branch_steps.is_empty() {
+                continue;
+            }
+            let params_for_block = &b.string_default_params;
+            let mut to_visit: Vec<NodeId> = b.branch_steps.values().copied().collect();
+            while let Some(nid) = to_visit.pop() {
+                if branch_block_params.contains_key(&nid) {
+                    continue;
+                }
+                if let IrNode::Branch(br) = arena.get(nid) {
+                    branch_block_params.insert(nid, params_for_block.clone());
+                    let mut push_branches = |body: &[NodeId]| {
+                        for body_nid in body {
+                            if matches!(arena.get(*body_nid), IrNode::Branch(_)) {
+                                to_visit.push(*body_nid);
+                            }
+                        }
+                    };
+                    push_branches(&br.then_body);
+                    for elif in &br.elif_branches {
+                        push_branches(&elif.body);
+                    }
+                    if let Some(eb) = &br.else_body {
+                        push_branches(eb);
+                    }
+                }
+            }
+        }
+    }
+    // Walk Branch nodes and populate resolved_predicates by consuming the
+    // Analyze-attached `classification.tokens` instead of re-tokenizing.
+    // Tokens with `is_comparison_operand == true` are skipped per
+    // `design/data-flow.md` §327.
+    let nodes = arena.nodes_mut();
+    for i in 0..nodes.len() {
+        if let IrNode::Branch(br) = &nodes[i] {
+            let mut br_clone = br.clone();
+            // Per-branch lookup: skill consts ∪ owning-block params (if any).
+            // Skill consts retain precedence on collision, matching the
+            // pre-existing `or_insert_with` semantics.
+            let mut lookup = consts_for_lookup.clone();
+            if let Some(block_params) = branch_block_params.get(&br_clone.node_id) {
+                for (name, default) in block_params {
+                    lookup
+                        .entry(name.clone())
+                        .or_insert_with(|| default.clone());
+                }
+            }
+            populate_resolved_predicates(&mut br_clone, &lookup, &block_descriptions);
+            if br_clone.resolved_predicates.is_some() {
                 nodes[i] = IrNode::Branch(br_clone);
             }
         }
@@ -255,6 +316,56 @@ pub fn expand_step1_with_imported_descriptions(
     }
 
     arena
+}
+
+/// Populate `branch.resolved_predicates` by walking the Analyze-attached
+/// classification tokens on `branch` and each of its elif arms. Tokens marked
+/// `is_comparison_operand` are skipped per `design/data-flow.md` §327 — they
+/// are operands of an `==` comparison and must NOT enter resolved_predicates.
+///
+/// `consts` maps const-name → resolved body text (typically `IrArena.consts`).
+/// `block_descriptions` maps block-name → its `description:` text (locals
+/// override imports; the caller is responsible for that merge).
+fn populate_resolved_predicates(
+    branch: &mut crate::ir::IrBranch,
+    consts: &BTreeMap<String, String>,
+    block_descriptions: &HashMap<String, String>,
+) {
+    let mut rp: BTreeMap<String, String> = BTreeMap::new();
+
+    let mut walk = |c: &crate::condition::ConditionClassification| {
+        for tok in &c.tokens {
+            if tok.is_comparison_operand {
+                continue;
+            }
+            match tok.kind {
+                ConditionTokenKind::PredicateApplies => {
+                    let key = tok.text.trim_end_matches(".applies()").to_string();
+                    if let Some(desc) = block_descriptions.get(&key) {
+                        rp.insert(key, desc.clone());
+                    }
+                }
+                ConditionTokenKind::PredicateConst => {
+                    let key = tok.text.clone();
+                    if let Some(body) = consts.get(&key) {
+                        rp.insert(key, body.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    };
+
+    if let Some(c) = &branch.classification {
+        walk(c);
+    }
+    for elif in &branch.elif_branches {
+        if let Some(c) = &elif.classification {
+            walk(c);
+        }
+    }
+
+    branch.resolved_predicates = if rp.is_empty() { None } else { Some(rp) };
 }
 
 #[cfg(test)]
@@ -534,5 +645,86 @@ skill current()
             md.contains(". Produce `current_branch` (`BranchName`)."),
             "expected the §8.4 row-3 sentence:\n{md}"
         );
+    }
+
+    /// Run parse → analyze_with_diagnostics → lower so that
+    /// `IrBranch.classification` is populated by the live pipeline (Tasks 5/6).
+    /// Post-Task-7, `expand_step1` consumes that classification directly,
+    /// so any test that exercises `resolved_predicates` MUST go through
+    /// the analyzed entry-point — `analyze::analyze` is a no-op stub.
+    fn lower_analyzed(src: &str) -> crate::ir::IrArena {
+        use crate::analyze::analyze_with_diagnostics;
+        use crate::diagnostic::DiagBag;
+        use crate::domain_registry::Registry;
+        use crate::span::LineIndex;
+        let (file, _) = parse::parse(src, 0).expect("source should parse");
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let mut registry = Registry::new();
+        let analyzed =
+            analyze_with_diagnostics(file, 0, "test", &line_index, &mut bag, &mut registry);
+        lower::lower(&analyzed).expect("source should lower")
+    }
+
+    #[test]
+    fn expand_step1_populates_resolved_predicates_for_const_form() {
+        let src = r#"
+const big = "the change is big"
+
+skill foo()
+    description: "test"
+    flow:
+        if big:
+            "stop"
+"#;
+        let arena = lower_analyzed(src);
+        let arena = expand_step1(arena);
+        // Find the Branch node in the arena.
+        let branch = arena
+            .nodes()
+            .iter()
+            .find_map(|n| match n {
+                crate::ir::IrNode::Branch(b) => Some(b),
+                _ => None,
+            })
+            .expect("arena should contain a Branch node");
+        let rp = branch
+            .resolved_predicates
+            .as_ref()
+            .expect("resolved_predicates should be populated for PredicateConst");
+        assert_eq!(rp.get("big"), Some(&"the change is big".to_string()));
+    }
+
+    #[test]
+    fn expand_step1_populates_resolved_predicates_for_elif_const_form() {
+        let src = r#"
+const big = "the change is big"
+const small = "the change is small"
+
+skill foo()
+    description: "test"
+    flow:
+        if big:
+            "stop"
+        elif small:
+            "continue"
+"#;
+        let arena = lower_analyzed(src);
+        let arena = expand_step1(arena);
+        // Find the Branch node in the arena.
+        let branch = arena
+            .nodes()
+            .iter()
+            .find_map(|n| match n {
+                crate::ir::IrNode::Branch(b) => Some(b),
+                _ => None,
+            })
+            .expect("arena should contain a Branch node");
+        let rp = branch
+            .resolved_predicates
+            .as_ref()
+            .expect("resolved_predicates should be populated for PredicateConst");
+        assert_eq!(rp.get("big"), Some(&"the change is big".to_string()));
+        assert_eq!(rp.get("small"), Some(&"the change is small".to_string()));
     }
 }

@@ -1,0 +1,21 @@
+const simple_value_swap = "the change is a localised wording or value swap"
+const complex_change_required = "the requested change requires regenerating multi-line prose that repair or prose-reshape originally authored, beyond a localised wording or value swap"
+
+block apply_inline()
+    "Apply the edit inline without recompiling."
+
+block recommend_full_compile()
+    "Stop and recommend running `/glyph:compile` instead — incremental edit cannot regenerate prose."
+
+block plan_paired_edit()
+    "Plan a paired edit for the requested change."
+
+skill predicate_const_multi_arm()
+    description: "Demonstrate multi-arm pure-predicate const form."
+    flow:
+        if simple_value_swap:
+            apply_inline()
+        elif complex_change_required:
+            recommend_full_compile()
+        else:
+            plan_paired_edit()

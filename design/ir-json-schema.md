@@ -26,7 +26,7 @@ The matching `TypeTag` for primitive consts is inferred at the lowering boundary
 
 ```json
 {
-  "ir_version": 1,
+  "ir_version": 2,
   "compiler": "glyph 0.1.0",
   "source_file": "fix_bug.glyph",
   "skill": { ... }
@@ -35,7 +35,7 @@ The matching `TypeTag` for primitive consts is inferred at the lowering boundary
 
 | Field | Type | Description |
 |---|---|---|
-| `ir_version` | integer | Monotonic schema version. Starts at `1`. Bumps on any breaking shape change (field removal, rename, type change). Adding new fields does not bump this. |
+| `ir_version` | integer | Monotonic schema version. Currently `2` (bumped from `1` when `applies_descriptions` was renamed to `resolved_predicates` and the key space was broadened to cover all three predicate forms). Bumps on any breaking shape change (field removal, rename, type change). Adding new fields does not bump this. |
 | `compiler` | string | Freeform compiler identifier for debugging. Format: `"glyph <semver>"`. Not parsed by consumers — human-readable only. |
 | `source_file` | string | Relative path to the `.glyph` source file that produced this IR. |
 | `skill` | object | The root `Skill` node (see §Skill below). Always exactly one. |
@@ -284,7 +284,7 @@ Here `{scope}` is a parameter slot (not in `local_refs`) and `{diagnosis}` is a 
     }
   ],
   "else_body": [ ... ],
-  "applies_descriptions": null
+  "resolved_predicates": null
 }
 ```
 
@@ -296,11 +296,11 @@ Here `{scope}` is a parameter slot (not in `local_refs`) and `{diagnosis}` is a 
 | `then_body` | array of FlowNode | yes | Flow nodes for the `if` arm. |
 | `elif_branches` | array of ElifBranch | yes | May be empty. |
 | `else_body` | array of FlowNode or null | yes | `null` when no `else` clause. |
-| `applies_descriptions` | object or null | yes | Map of `{block_name: resolved_description}` for every block referenced via `BLOCKNAME.applies()` in this Branch's own `condition` or any `elif_branches[*].condition`. `null` when no condition uses `.applies()`. Populated by Expand Step 1. See `ir-and-semantics.md` §Block Trigger Predicate. |
+| `resolved_predicates` | object or null | yes | Unified predicate side-map: object mapping **predicate keys** to resolved natural-language strings. The predicate key for each form is: (1) **`.applies()` form** — bare receiver block name (e.g. `"fork_with_plan"`, NOT `"fork_with_plan.applies()"`); value is the resolved block `description:` string. (2) **string-const form** — bare const name (e.g. `"complex_change_required"`); value is the const's body. (3) **inline literal form** — not stored (the literal is verbatim in the condition string). `null` when no condition arm uses any predicate form. Populated by Expand Step 1. See `ir-and-semantics.md` §Predicates. **Renamed from `applies_descriptions` at ir_version 2.** |
 
 `Branch` is a container node. It carries no `role` — its children carry their own roles.
 
-**Example with `.applies()`:**
+**Example with `.applies()` (block trigger predicate):**
 
 ```json
 {
@@ -317,10 +317,40 @@ Here `{scope}` is a parameter slot (not in `local_refs`) and `{diagnosis}` is a 
     }
   ],
   "else_body": [ ... ],
-  "applies_descriptions": {
+  "resolved_predicates": {
     "fork_with_plan": "Fork a terminal pre-loaded with the current plan.",
     "fork_with_summary": "Fork a terminal with a conversation-history summary as the prompt for the new agent."
   }
+}
+```
+
+**Example with string-const predicate:**
+
+```json
+{
+  "node_id": "n7",
+  "kind": "branch",
+  "condition": "complex_change_required",
+  "then_body": [ ... ],
+  "elif_branches": [],
+  "else_body": null,
+  "resolved_predicates": {
+    "complex_change_required": "the requested change requires regenerating multi-line prose that repair or prose-reshape originally authored, beyond a localised wording or value swap"
+  }
+}
+```
+
+**Example with inline literal predicate:**
+
+```json
+{
+  "node_id": "n7",
+  "kind": "branch",
+  "condition": "\"the user has explicitly opted out of compile-on-save\"",
+  "then_body": [ ... ],
+  "elif_branches": [],
+  "else_body": null,
+  "resolved_predicates": null
 }
 ```
 
@@ -492,7 +522,7 @@ A complete `fix_bug.ir.json` for the `fix_bug` skill from `expand.md` §8.
 
 ```json
 {
-  "ir_version": 1,
+  "ir_version": 2,
   "compiler": "glyph 0.1.0",
   "source_file": "fix_bug.glyph",
   "skill": {

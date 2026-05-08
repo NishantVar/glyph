@@ -147,6 +147,24 @@ pub struct IrBlock {
     /// field's doc for why the canonicalized `return_type` is insufficient.
     #[serde(skip)]
     pub return_type_text: Option<String>,
+    /// Codex review Finding 2: per-flow-statement override pointing at the
+    /// `IrBranch` node lowered for a `FlowStmt::Branch` inside the block's
+    /// flow. Keyed by the index in `flow_statements`. The Tier 2 procedure
+    /// emitter consults this map and, when present, renders the branch via
+    /// the same `branch::emit_to_scaffold` path as skill steps — instead of
+    /// printing the raw `if {condition}` placeholder string and silently
+    /// dropping the branch body. Empty when the block contains no branches
+    /// (the common case), so existing fixtures keep their identical IR.
+    #[serde(skip)]
+    pub branch_steps: std::collections::HashMap<usize, NodeId>,
+    /// Codex review Finding (medium): block params with string defaults are
+    /// classified by Analyze (`condition.rs:304`) as PredicateConst and need
+    /// their unquoted default value available at branch-resolution time. We
+    /// stash a focused `name -> unquoted default` map here (instead of full
+    /// `IrParam`s) so Expand can merge them into `consts_for_lookup` without
+    /// re-walking the AST. Empty when the block has no string-default params.
+    #[serde(skip)]
+    pub string_default_params: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -198,6 +216,21 @@ pub struct IrCall {
     pub callee_return_type_text: Option<String>,
 }
 
+/// Shape classification for a branch predicate. Populated by Tasks 2.5/2.6.
+/// All fields default to false until the classifier runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BranchPredicateShape {
+    pub has_boolean_token: bool,
+    pub has_predicate_token: bool,
+    pub has_compositional_operator: bool,
+}
+
+impl BranchPredicateShape {
+    pub fn is_pure_predicate(&self) -> bool {
+        self.has_predicate_token && !self.has_boolean_token && !self.has_compositional_operator
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct IrBranch {
     pub node_id: NodeId,
@@ -211,13 +244,33 @@ pub struct IrBranch {
     /// Maps block names to their resolved `description:` text for
     /// `BLOCKNAME.applies()` calls in conditions. Populated by Expand Step 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub applies_descriptions: Option<BTreeMap<String, String>>,
+    pub resolved_predicates: Option<BTreeMap<String, String>>,
+    /// Shape classification for the branch predicate. Placeholder slot;
+    /// populated by Tasks 2.5/2.6.
+    #[serde(skip)]
+    pub predicate_shape: BranchPredicateShape,
+    /// Classification computed by Analyze. None on freshly-loaded IR JSON
+    /// (validate-output path); Some(_) on every branch produced by the live
+    /// compile pipeline. Consumers (Expand, emit) read this directly without
+    /// re-classifying.
+    #[serde(skip)]
+    pub classification: Option<crate::condition::ConditionClassification>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IrElifBranch {
     pub condition: String,
     pub body: Vec<NodeId>,
+    /// Shape classification for the elif predicate. Placeholder slot;
+    /// populated by Tasks 2.5/2.6.
+    #[serde(skip)]
+    pub predicate_shape: BranchPredicateShape,
+    /// Classification computed by Analyze. None on freshly-loaded IR JSON
+    /// (validate-output path); Some(_) on every branch produced by the live
+    /// compile pipeline. Consumers (Expand, emit) read this directly without
+    /// re-classifying.
+    #[serde(skip)]
+    pub classification: Option<crate::condition::ConditionClassification>,
 }
 
 /// Issue #86: tagged form distinguishing identifier vs descriptive output
@@ -317,6 +370,10 @@ pub struct IrArena {
     nodes: Vec<IrNode>,
     /// The root skill, if any.
     root_skill: Option<NodeId>,
+    /// String-typed const declarations from the source file (name → rendered
+    /// body text). Populated by Lower so Expand can resolve `PredicateConst`
+    /// branch conditions into `resolved_predicates`.
+    pub consts: BTreeMap<String, String>,
     /// Type-description registry built from same-file `type` decls.
     /// Cross-file imports folded in by Phase B.7.
     pub type_registry: TypeRegistry,
@@ -369,6 +426,77 @@ impl IrArena {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ir_branch_exposes_resolved_predicates_field() {
+        use crate::ir::{BranchPredicateShape, IrBranch, NodeId};
+        let br = IrBranch {
+            node_id: NodeId(0),
+            condition: "x.applies()".into(),
+            then_body: vec![],
+            elif_branches: vec![],
+            else_body: None,
+            resolved_predicates: None,
+            predicate_shape: BranchPredicateShape::default(),
+            classification: None,
+        };
+        assert!(br.resolved_predicates.is_none());
+    }
+
+    #[test]
+    fn ir_branch_classification_does_not_appear_in_json() {
+        // Covers both `IrBranch.classification` and `IrElifBranch.classification`:
+        // the parent's JSON serialization recursively serializes `elif_branches`,
+        // so populating an elif's classification with `Some(_)` makes the
+        // substring assertion below transitively guard the elif side too.
+        use crate::condition::{
+            ClassifiedConditionToken, ConditionClassification, ConditionTokenKind,
+        };
+        use crate::ir::{BranchPredicateShape, IrBranch, IrElifBranch, NodeId};
+        let mut br = IrBranch {
+            node_id: NodeId(0),
+            condition: "x".into(),
+            then_body: vec![],
+            elif_branches: vec![IrElifBranch {
+                condition: "y".into(),
+                body: vec![],
+                predicate_shape: BranchPredicateShape::default(),
+                classification: Some(ConditionClassification {
+                    tokens: vec![ClassifiedConditionToken {
+                        text: "y".to_string(),
+                        kind: ConditionTokenKind::PredicateApplies,
+                        is_comparison_operand: false,
+                    }],
+                    has_boolean_token: false,
+                    has_predicate_token: true,
+                    has_compositional_operator: true,
+                    has_comparison_operator: true,
+                    has_numeric_bare_condition: true,
+                }),
+            }],
+            else_body: None,
+            resolved_predicates: None,
+            predicate_shape: BranchPredicateShape::default(),
+            classification: None,
+        };
+        br.classification = Some(ConditionClassification {
+            tokens: vec![ClassifiedConditionToken {
+                text: "x".to_string(),
+                kind: ConditionTokenKind::Boolean,
+                is_comparison_operand: false,
+            }],
+            has_boolean_token: true,
+            has_predicate_token: false,
+            has_compositional_operator: false,
+            has_comparison_operator: false,
+            has_numeric_bare_condition: false,
+        });
+        let json = serde_json::to_string(&br).unwrap();
+        assert!(
+            !json.contains("classification"),
+            "classification leaked into JSON: {json}"
+        );
+    }
+
     #[test]
     fn output_contract_constructs_both_forms() {
         use crate::ir::{IrOutputContract, NodeId, OutputSource, OutputTargetForm};

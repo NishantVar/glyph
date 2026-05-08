@@ -139,6 +139,7 @@ Representative diagnostics implied by the current design.
 | `G::analyze::const-in-flow` | repairable | A bare name (or undefined identifier) appears in `flow:` without a keyword prefix (`require`/`avoid`/`must`/`context`); `const` declarations are passive constants and are not legal as flow instruction steps. Repair adds parentheses and materializes a `generated block` (`language-surface.md` §3.4, `repair.md` §5) |
 | `G::analyze::applies-on-non-block` | error | `NAME.applies()` was called where `NAME` resolves to something other than a `block` or `export block` declaration (e.g., a `const`, an `import` alias, a parameter). The trigger predicate is defined only on blocks (`ir-and-semantics.md` §Block Trigger Predicate) |
 | `G::analyze::applies-on-undescribed-block` | repairable / error | `BLOCKNAME.applies()` is called on a block that lacks a `description:` sub-section. **Repairable** when the block is defined in the same file under compilation; Repair adds a trigger-shaped `description:` to the block. **Error** when the block is imported from another file; the author must edit the source library directly because Repair is single-file (`ir-and-semantics.md` §Block Trigger Predicate, `repair.md` §9) |
+| `G::analyze::condition-non-boolean-non-predicate` | error | An `if` / `elif` condition contains a token that is neither boolean-kinded nor a recognised predicate form. The token resolves to an `int`- or `float`-kinded declaration (the compiler does not implicitly truth-test numerics), or to another non-string, non-boolean kind that condition position cannot accept. The author must rewrite the condition explicitly (e.g., compare to a literal). Opaque/domain-kinded bindings fall through to boolean treatment and do not trigger this error (`types.md` §Inferred Kinds, `values-and-names.md` §Bare-Name Resolution In Condition Position, `pipeline.md` Phase 2). |
 | `G::analyze::unmerged-duplicate-subsection` | error | A `Skill`, `Block`, or `ExportBlock` AST node still has a non-empty `extra_subsections` slot when Analyze runs — i.e., the parser recorded duplicate sub-sections (`G::parse::duplicate-subsection`) but Phase 3a's deterministic merge did not run or could not consume them (e.g., `--no-repair`, `glyph fmt --check`, or a 3a merge failure). Analyze emits this hard error so Lower never sees an inconsistent declaration shape; Lower treats `extra_subsections` non-empty as an unreachable invariant violation. The author must either re-run with Phase 3a enabled or fix the duplicates manually (`language-surface.md` §2.5, `repair.md` §4.11). |
 
 ### Validate phase
@@ -207,6 +208,8 @@ By-construction-satisfied for scaffolded portions:
 | `G::expand::procedure-ref-dangling` | error | Step references a procedure name with no matching `### Procedure:` section |
 | `G::expand::procedure-duplicate` | error | Same procedure name appears in two or more `### Procedure:` sections |
 | `G::expand::procedure-order` | error | `### Procedure:` sections not ordered by first reference from `### Steps` |
+| `G::expand::description-shape-missing` | error | A raw `<name>.applies()` condition string survived literally in the output; a description-driven branch must render using the resolved description prose, not the raw trigger expression |
+| `G::expand::predicate-prose-missing` | error | A predicate's resolved prose was not found in the output; covers all three forms — `.applies()` (from block `description:`), const (from `const` declaration), and literal (the quoted text itself). |
 
 ### Repair notifications
 
@@ -227,6 +230,7 @@ By-construction-satisfied for scaffolded portions:
 | `G::repair::no-convergence` | error | Repair loop exhausted 3 iterations with `repairable` diagnostics still present (`repair.md` §8, `pipeline.md` Phase 3) |
 | `G::repair::constraint-contradiction` | error | Phase 3c LLM scan identified two constraints in the same declaration that cannot both be satisfied; the author must edit one (`repair.md` §4.10) |
 | `G::repair::constraint-scan-malformed` | error | Phase 3c LLM output did not conform to the expected JSON shape after 2 retries with info-rich feedback (`repair.md` §4.10) |
+| `G::repair::predicate-generation-failed` | error | Phase 3 LLM produced an empty or malformed string when generating predicate prose for a condition-position bare name routed to predicate semantics. Non-repairable; the author must add the `const` declaration manually (`repair.md` §6). |
 
 ### Type description coherence (Deferred)
 

@@ -63,7 +63,7 @@ fn emit_ir_produces_ir_json_file() {
         serde_json::from_str(&content).expect("ir.json should be valid JSON");
 
     // Check top-level envelope fields.
-    assert_eq!(v["ir_version"], 1);
+    assert_eq!(v["ir_version"], 2);
     assert!(v["compiler"].as_str().unwrap().starts_with("glyph "));
     assert_eq!(v["source_file"].as_str().unwrap(), "update_docs.glyph");
     assert_eq!(v["skill"]["kind"], "skill");
@@ -227,7 +227,7 @@ skill fix()
 }
 
 #[test]
-fn emit_ir_includes_applies_descriptions_on_branch() {
+fn emit_ir_includes_resolved_predicates_on_branch() {
     let (_dir, src) = setup_tempdir("branching.glyph");
     let result = run_compile_emit_ir(&src);
     assert!(result.status.success());
@@ -239,15 +239,27 @@ fn emit_ir_includes_applies_descriptions_on_branch() {
     let flow = v["skill"]["flow"].as_array().unwrap();
     let branch = flow.iter().find(|n| n["kind"] == "branch").unwrap();
     // branching.glyph uses mode == "fast" / mode == "slow", not .applies().
-    // So applies_descriptions should be null.
+    // So resolved_predicates should be null.
     assert!(
-        branch["applies_descriptions"].is_null(),
-        "applies_descriptions should be null when no .applies() used"
+        branch["resolved_predicates"].is_null(),
+        "resolved_predicates should be null when no .applies() used"
     );
+    // predicate_shape reflects the actual classification from Analyze.
+    // branching.glyph uses `mode == "fast"`: per design/data-flow.md §327, the
+    // entire `==` form is a boolean comparison — operands do NOT contribute to
+    // summary flags. Only `==` itself fires `has_boolean_token` (and
+    // `has_comparison_operator`). `mode` and `"fast"` are operands so they
+    // never set `has_predicate_token`. `==` is not a compositional operator
+    // (and/or/not).
+    let shape = &branch["predicate_shape"];
+    assert!(shape.is_object(), "predicate_shape should be an object");
+    assert_eq!(shape["has_boolean_token"], true);
+    assert_eq!(shape["has_predicate_token"], false);
+    assert_eq!(shape["has_compositional_operator"], false);
 }
 
 #[test]
-fn emit_ir_includes_applies_descriptions_with_applies_calls() {
+fn emit_ir_includes_resolved_predicates_with_applies_calls() {
     let source = r#"block fast_mode()
     description: "When the user wants fast processing."
     flow:
@@ -271,10 +283,13 @@ skill main()
     let v = compile_and_read_ir("applies.glyph", source);
     let flow = v["skill"]["flow"].as_array().unwrap();
     let branch = flow.iter().find(|n| n["kind"] == "branch").unwrap();
-    let ad = &branch["applies_descriptions"];
-    assert!(ad.is_object(), "applies_descriptions should be an object");
-    assert_eq!(ad["fast_mode"], "When the user wants fast processing.");
-    assert_eq!(ad["slow_mode"], "When the user wants thorough processing.");
+    let rp = &branch["resolved_predicates"];
+    assert!(rp.is_object(), "resolved_predicates should be an object");
+    assert_eq!(rp["fast_mode"], "When the user wants fast processing.");
+    assert_eq!(rp["slow_mode"], "When the user wants thorough processing.");
+    // predicate_shape should always be present.
+    let shape = &branch["predicate_shape"];
+    assert!(shape.is_object(), "predicate_shape should be an object");
 }
 
 #[test]
@@ -450,7 +465,7 @@ fn emit_ir_conforms_to_schema_full_skill() {
     let v: serde_json::Value = serde_json::from_str(&content).unwrap();
 
     // Envelope
-    assert_eq!(v["ir_version"], 1);
+    assert_eq!(v["ir_version"], 2);
     assert!(v["compiler"].is_string());
     assert!(v["source_file"].is_string());
 
@@ -474,4 +489,173 @@ fn emit_ir_conforms_to_schema_full_skill() {
         assert!(c["node_id"].is_string());
         assert!(c["text"].is_string());
     }
+}
+
+#[test]
+fn predicate_shape_reflects_predicate_token_classification() {
+    let source = r#"block helper()
+    description: "A helper block."
+    flow:
+        "Do helper work."
+
+skill main()
+    description: "A test skill."
+    flow:
+        if helper.applies()
+            "Do work."
+"#;
+    let v = compile_and_read_ir("classification_propagation.glyph", source);
+    let flow = v["skill"]["flow"].as_array().unwrap();
+    let branch = flow.iter().find(|n| n["kind"] == "branch").unwrap();
+    let shape = &branch["predicate_shape"];
+    assert_eq!(shape["has_predicate_token"], true);
+    assert_eq!(shape["has_boolean_token"], false);
+    assert_eq!(shape["has_compositional_operator"], false);
+}
+
+#[test]
+fn imported_string_const_resolves_in_arena_consts() {
+    let dir = tempfile::tempdir().unwrap();
+    let imported_path = dir.path().join("imported.glyph");
+    std::fs::write(
+        &imported_path,
+        r#"export const big_change = "the change is big"
+"#,
+    )
+    .unwrap();
+    let main_path = dir.path().join("main.glyph");
+    std::fs::write(
+        &main_path,
+        r#"import "./imported.glyph" { big_change }
+
+skill main()
+    description: "A test skill."
+    flow:
+        if big_change
+            "Do work."
+"#,
+    )
+    .unwrap();
+
+    // Compile the whole directory so the multi-file pipeline resolves the
+    // import edge and routes through `lower_with_imports`. (Single-file compile
+    // on this branch does not walk imports.)
+    let result = run_compile_emit_ir(dir.path());
+    assert!(
+        result.status.success(),
+        "compile failed: {:?}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let ir_path = ir_json_path(&main_path);
+    let content = std::fs::read_to_string(&ir_path).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+    let flow = v["skill"]["flow"].as_array().unwrap();
+    let branch = flow.iter().find(|n| n["kind"] == "branch").unwrap();
+    let rp = &branch["resolved_predicates"];
+    assert!(rp.is_object(), "resolved_predicates should be populated");
+    assert_eq!(rp["big_change"], "the change is big");
+}
+
+/// Task 6 — Decl::Block flow walking: a numeric bare-condition inside a
+/// private block's flow must fire the
+/// `G::analyze::condition-non-boolean-non-predicate` diagnostic. Pre-fix,
+/// `check_file_numeric_conditions` only walked `Decl::Skill`, so the
+/// equivalent condition inside `block helper` slipped past analyze.
+#[test]
+fn block_flow_numeric_condition_fires_diagnostic() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("block_numeric.glyph");
+    std::fs::write(
+        &path,
+        r#"const max_attempts = 3
+
+block helper()
+    description: "A helper block."
+    flow:
+        if max_attempts
+            "Loop."
+        else
+            "Stop."
+
+skill main()
+    description: "Test."
+    flow:
+        helper()
+"#,
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(glyph_bin())
+        .arg("check")
+        .arg(&path)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("failed to spawn glyph");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let ids: Vec<String> = stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|v| v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string()))
+        .collect();
+    assert!(
+        ids.contains(&"G::analyze::condition-non-boolean-non-predicate".to_string()),
+        "expected diagnostic for bare numeric in block flow; got: {:?}",
+        ids
+    );
+}
+
+#[test]
+fn expand_skips_eq_operand_from_resolved_predicates() {
+    let source = r#"const complex_change = "the requested change is complex"
+
+skill main(risk: String)
+    description: "Test."
+    flow:
+        if risk == "high" and complex_change
+            "Escalate."
+        else
+            "Proceed."
+"#;
+    let v = compile_and_read_ir("eq_operand_skipped.glyph", source);
+    let flow = v["skill"]["flow"].as_array().unwrap();
+    let branch = flow.iter().find(|n| n["kind"] == "branch").unwrap();
+    let rp = &branch["resolved_predicates"];
+    assert!(rp.is_object(), "resolved_predicates should be populated");
+    assert_eq!(
+        rp["complex_change"], "the requested change is complex",
+        "complex_change must resolve"
+    );
+    assert!(
+        rp.get("high").is_none() && rp.get("\"high\"").is_none(),
+        "operand `\"high\"` must NOT enter resolved_predicates; got keys: {:?}",
+        rp.as_object().unwrap().keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn expand_resolves_both_predicates_in_or_compound() {
+    let source = r#"block fast_mode()
+    description: "Fast processing path."
+    flow:
+        "Fast work."
+
+block slow_mode()
+    description: "Slow processing path."
+    flow:
+        "Slow work."
+
+skill main()
+    description: "Test."
+    flow:
+        if fast_mode.applies() or slow_mode.applies()
+            "Either path."
+"#;
+    let v = compile_and_read_ir("or_compound_predicates.glyph", source);
+    let flow = v["skill"]["flow"].as_array().unwrap();
+    let branch = flow.iter().find(|n| n["kind"] == "branch").unwrap();
+    let rp = &branch["resolved_predicates"];
+    assert_eq!(rp["fast_mode"], "Fast processing path.");
+    assert_eq!(rp["slow_mode"], "Slow processing path.");
 }
