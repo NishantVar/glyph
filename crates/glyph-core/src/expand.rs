@@ -6,7 +6,7 @@
 //! - Tier 1 (inline): callee body < 150 words → call keeps inline projection metadata.
 
 use crate::condition::ConditionTokenKind;
-use crate::ir::{IrArena, IrNode};
+use crate::ir::{IrArena, IrNode, NodeId};
 use std::collections::{BTreeMap, HashMap};
 
 /// Count words in resolved prose per `compiled-output.md` §Word Counting Rule.
@@ -178,17 +178,44 @@ pub fn expand_step1_with_imported_descriptions(
         }
     }
     // Codex review Finding (medium): block params with string defaults are
-    // ALSO classified as PredicateConst by Analyze. Lower stashed each block's
-    // string-default params on `IrBlock.string_default_params`; merge them all
-    // here so a `if param_name:` inside a block resolves to the param's prose
-    // instead of leaking the bare identifier. Same-name collisions are
-    // rejected by Analyze, so flat-merging is safe.
+    // ALSO classified as PredicateConst by Analyze, but they are LOCAL to
+    // the block they belong to. A flat file-level merge lets duplicate
+    // names across blocks collide (first wins via `or_insert_with`); a
+    // branch in the second block then renders the first block's prose.
+    // Build a per-branch attribution map instead: for each block, walk
+    // its `branch_steps` plus every reachable nested branch (through
+    // then/elif/else bodies) and mark each Branch NodeId as owned by that
+    // block. Predicate resolution below merges (skill_consts ∪
+    // owning_block.string_default_params) per branch.
+    let mut branch_block_params: HashMap<NodeId, BTreeMap<String, String>> = HashMap::new();
     for n in arena.nodes() {
         if let IrNode::Block(b) = n {
-            for (name, default) in &b.string_default_params {
-                consts_for_lookup
-                    .entry(name.clone())
-                    .or_insert_with(|| default.clone());
+            if b.string_default_params.is_empty() || b.branch_steps.is_empty() {
+                continue;
+            }
+            let params_for_block = &b.string_default_params;
+            let mut to_visit: Vec<NodeId> = b.branch_steps.values().copied().collect();
+            while let Some(nid) = to_visit.pop() {
+                if branch_block_params.contains_key(&nid) {
+                    continue;
+                }
+                if let IrNode::Branch(br) = arena.get(nid) {
+                    branch_block_params.insert(nid, params_for_block.clone());
+                    let mut push_branches = |body: &[NodeId]| {
+                        for body_nid in body {
+                            if matches!(arena.get(*body_nid), IrNode::Branch(_)) {
+                                to_visit.push(*body_nid);
+                            }
+                        }
+                    };
+                    push_branches(&br.then_body);
+                    for elif in &br.elif_branches {
+                        push_branches(&elif.body);
+                    }
+                    if let Some(eb) = &br.else_body {
+                        push_branches(eb);
+                    }
+                }
             }
         }
     }
@@ -200,7 +227,18 @@ pub fn expand_step1_with_imported_descriptions(
     for i in 0..nodes.len() {
         if let IrNode::Branch(br) = &nodes[i] {
             let mut br_clone = br.clone();
-            populate_resolved_predicates(&mut br_clone, &consts_for_lookup, &block_descriptions);
+            // Per-branch lookup: skill consts ∪ owning-block params (if any).
+            // Skill consts retain precedence on collision, matching the
+            // pre-existing `or_insert_with` semantics.
+            let mut lookup = consts_for_lookup.clone();
+            if let Some(block_params) = branch_block_params.get(&br_clone.node_id) {
+                for (name, default) in block_params {
+                    lookup
+                        .entry(name.clone())
+                        .or_insert_with(|| default.clone());
+                }
+            }
+            populate_resolved_predicates(&mut br_clone, &lookup, &block_descriptions);
             if br_clone.resolved_predicates.is_some() {
                 nodes[i] = IrNode::Branch(br_clone);
             }

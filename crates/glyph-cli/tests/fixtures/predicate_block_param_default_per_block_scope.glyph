@@ -1,0 +1,17 @@
+block first(flag = "the first block flag is set")
+    description: "First helper block."
+    flow:
+        if flag:
+            "Stop and confirm with user."
+
+block second(flag = "the second block flag is set")
+    description: "Second helper block."
+    flow:
+        if flag:
+            "Pause and ask the user."
+
+skill main()
+    description: "Two blocks share param name `flag`; each branch must resolve to its own block's default."
+    flow:
+        first()
+        second()
