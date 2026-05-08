@@ -7,7 +7,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust" />
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square" />
-  <img src="https://img.shields.io/badge/status-early%20design-blue?style=flat-square" />
+  <img src="https://img.shields.io/badge/status-beta%20v0.1.0-brightgreen?style=flat-square" />
 </p>
 
 Glyph is a small language for authoring agent skills. You write structured source — parameters, constraints, control flow — and the compiler turns it into flat, explicit Markdown that agents can follow. The source form is for humans. The compiled output is for agents.
