@@ -52,6 +52,15 @@ skill write_changelog(scope = ".", version) -> Changelog
         return write_file(entry)
 ```
 
+## Skills
+
+| Skill | When to use |
+|---|---|
+| `/glyph:compile` | Compile a `.glyph` source file into a finished `.md` skill — runs the full pipeline (fmt, LLM repair loop, constraint conflict scan, prose reshape, validation). |
+| `/glyph:decompile` | Convert an existing compiled `.md` skill back into a `.glyph` source file for editing. |
+| `/glyph:teach` | Author or edit a `.glyph` source file. Use when writing a new skill from scratch or making changes to an existing `.glyph` file. |
+| `/glyph:icompile` | Apply a small targeted change to both the `.glyph` source and its compiled `.md` in tandem, without re-running the full pipeline. Use for localised wording or value swaps; fall back to `/glyph:compile` if prose needs to be regenerated. |
+
 ## The Five Primitives
 
 Every construct in Glyph decomposes into one or more of five semantic primitives:
@@ -64,7 +73,7 @@ Every construct in Glyph decomposes into one or more of five semantic primitives
 | **Interface** | Define a callable's contract | Parameters, return type, `description:`, `effects:` |
 | **Binding** | Introduce an addressable name | Declarations, local assignments, imports |
 
-## Things to Know
+## Syntax Notes
 
 - **Constraint strength has two levels.** `require`/`avoid` are soft — strong guidance. `must`/`must avoid` are hard — absolute rules. Reserve `must` for things that genuinely cannot be violated.
 

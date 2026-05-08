@@ -4,7 +4,7 @@
 // source (`.glyph`). Pulls the language reference and authoring rules
 // from sibling library files by per-const import.
 
-import "../skills/glyph/context.glyph" {
+import "../../skills/glyph/context.glyph" {
     glyph_overview,
     file_kinds,
     layout_rules,
@@ -22,7 +22,7 @@ import "../skills/glyph/context.glyph" {
     quick_reference,
 }
 
-import "../skills/glyph/constraints.glyph" {
+import "../../skills/glyph/constraints.glyph" {
     four_space_indentation,
     primitive_type_names_in_source,
     string_interpolation,
@@ -42,7 +42,7 @@ import "../skills/glyph/constraints.glyph" {
     deeply_nested_calls,
 }
 
-import "../skills/glyph/passes.glyph" {
+import "../../skills/glyph/passes.glyph" {
     factor_long_instructions_and_texts,
     sort_declarations,
     compile_and_iterate,
@@ -79,6 +79,7 @@ skill decompile(source_md, target)
         must explicit_return_in_export_block
         must avoid return_inside_branch_arms
         must avoid slots_in_non_instruction_strings
+        require decompile_by_semantic_content_not_shape
         require novice_kernel_first
         require descriptive_domain_types
         require description_on_applies_blocks
@@ -90,14 +91,17 @@ skill decompile(source_md, target)
     flow:
         parse_compiled_skill(source_md)
         map_frontmatter_to_skill_header()
-        extract_branches_into_procedures()
+        classify_and_map_unplaced_content()
         map_context_section()
         map_constraints_section()
         recover_flow_from_steps()
         write_initial_glyph_source(target)
+        append_unmapped_section(target)
         factor_long_instructions_and_texts()
         sort_declarations()
+        rename_source_md_with_old_prefix(source_md)
         compile_and_iterate(target)
+        retry_unmapped_with_fresh_eyes(target)
         return <"path to the produced .glyph file">
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -109,15 +113,16 @@ block parse_compiled_skill(source_md)
     "Read the file at {source_md}. Split the YAML frontmatter from the Markdown body. Within the body, locate the `## Parameters`, `### Context`, `### Steps`, and `### Constraints` sub-sections — note which are present and which are absent."
 
 block map_frontmatter_to_skill_header()
-    "Use the frontmatter `name`, `description`, and parameter list (if present) to author the `skill <name>(params)` declaration line and its `description:` sub-section. Recover parameter names from the `## Parameters` section when the frontmatter does not list them. Do not invent parameters that are not in the source."
+    "Use the frontmatter `name`, `description`, and parameter list (if present) to author the `skill <name>(params)` declaration line and its `description:` sub-section. Recover parameter names from the `## Parameters` section when the frontmatter does not list them. If the skill has a `## Variables` section (or similarly named block of user-editable knobs with defaults), map each variable to a skill parameter with its default value. Do not invent parameters that are not in the source."
 
-block extract_branches_into_procedures()
+block classify_and_map_unplaced_content()
     flow:
-        "Scan the steps, context bullets, and constraint bullets for conditional language — phrases like `if`, `when`, `for the case where`, `depending on whether`, or any wording that signals one path applies under one condition and a different path under another. Distinguish real control flow from hedging advice (e.g. `if you see X, consider Y` inside a single step is usually not a branch)."
-        "For each branch you find, define a new `block` whose body holds the entire branch arm — its steps, its context bullets, and its constraint bullets — and replace the original branch site in the parent flow with an `if PROCNAME.applies()` chain that dispatches by description."
-        "Set each new block's `description:` to the predicate prose of its arm so `.applies()` can match against runtime context."
+        context decompile_by_semantic_content_not_shape
+        "Walk the compiled skill body section by section, including non-canonical sub-sections (custom `##` / `###` headers like `## Variables`, `## Workflow`, `## Cookbook`, `### Sending prompts to running sessions`, etc.) and any prose that has not yet been placed by frontmatter mapping. For each unit of unplaced prose, classify it semantically against the catalog of Glyph constructs before deciding it has no Glyph home."
+        context classification_table
+        "Apply the mapping that the classifier produces. For branches: define a new `block` whose body holds the entire branch arm — its steps, its context bullets, and its constraint bullets — and replace the original branch site in the parent flow with an `if PROCNAME.applies()` chain that dispatches by description. Set each new block's `description:` to the predicate prose of its arm so `.applies()` can match against runtime context, rolling any example trigger phrases into the description string."
         "For each context bullet and constraint bullet that came along inside an extracted arm, classify the wording. If it reads as a file-wide rule, hoist it to the parent skill's `context:` / `constraints:`. If it reads as scoped to this branch, leave it inside the procedure's own `context:` / `constraints:`. If the wording is ambiguous, ask the user."
-        "Recurse on each newly created block: scan its body for nested branches and apply the same extraction. Stop when no block contains conditional language."
+        "Recurse on each newly created block: scan its body for nested unplaced content and re-apply this procedure. Stop when no body contains unplaced content."
 
 block map_context_section()
     "Map each remaining top-level context bullet to a `context:` entry on the skill. Use inline strings at this stage; the factoring pass will promote them to `const` constants where appropriate."
@@ -132,3 +137,42 @@ block recover_flow_from_steps()
 
 block write_initial_glyph_source(target)
     "Write the assembled skill, blocks, and any extracted const constants to {target}. This is a verbose first draft — factoring and sorting will tidy it up next."
+
+block rename_source_md_with_old_prefix(source_md)
+    "Rename the file at {source_md} by prepending `old_` to its basename (e.g. `foo.md` becomes `old_foo.md` in the same directory). This preserves the original compiled skill so the upcoming Glyph compile of {target} does not overwrite it. If a file already exists at the destination, abort and surface the conflict to the user — do not overwrite."
+
+block append_unmapped_section(target)
+    flow:
+        context decompile_by_semantic_content_not_shape
+        "Review the original compiled skill against everything mapped so far. UNMAPPED is a last resort: for each candidate unplaced item, re-run the classifier from `classify_and_map_unplaced_content` and confirm that every Glyph construct (block, if, flow step, parameter, constraint, context, description, return) has been considered and rejected before declaring the item UNMAPPED. Genuinely unmappable items are typically verbatim code-block snippets used as syntactic reference, frontmatter keys outside `name`/`description`/`effects`, or content with no actionable role."
+        "If any unmapped content remains after that re-check, append it verbatim to the end of {target} under a `// UNMAPPED` header comment, with each item on its own `// `-prefixed line."
+        "Report each unmapped item to the user as an error: name the original content, list which Glyph constructs you considered and rejected, and state why it has no Glyph equivalent."
+
+
+block retry_unmapped_with_fresh_eyes(target)
+    flow:
+        context decompile_by_semantic_content_not_shape
+        "Re-open {target} and scan for any remaining `// UNMAPPED` comments. For each unmapped item, run the classify-and-map procedure on it a second time with the fully-assembled file in front of you — content that resisted classification on the first pass sometimes places cleanly once the surrounding structure exists."
+        "If the second pass produces a mapping, apply it and re-run the compile-and-iterate loop on {target} to validate."
+        "If the second pass still cannot place an item, leave it as UNMAPPED in the file and flag the entire decompile as **uncertain** when reporting back to the user. In the user-facing report: name each remaining UNMAPPED item, list which Glyph constructs you considered and rejected for it, tell the user explicitly that the round-trip is incomplete, and ask them to review before trusting the output."
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Same-file consts — guiding principle and classifier reference table.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const decompile_by_semantic_content_not_shape = "Decompile by semantic content, not by Markdown shape. Authors write meaning in whatever packaging they have on hand — your job is to recover the meaning into Glyph constructs (block, if, flow step, parameter, constraint, context, description, return). UNMAPPED is a last resort, not a fallback for unfamiliar Markdown shapes."
+
+const classification_table = """
+Classify each unplaced unit of prose by meaning, not by Markdown shape:
+
+- "When X…" / "If you need Y…" / "For the case where…" / "Whenever Z…" prose, especially when it heads a sub-section → branch: define a `block` with `description:` set to the predicate, and dispatch from the parent flow with `if PROCNAME.applies()`.
+- A sequence of imperative actions under any header (numbered list, bulleted list, or ordered prose) → `block` with a `flow:` body. Call it from the parent flow.
+- "Always X" / "Must X" / "Never Y" / "Avoid Y" / "Prefer Z" / "Consider Z" → constraint marker. Pick polarity from the verb: `Always` / `Must` → `must` or `require`; `Never` / `Avoid` → `must avoid` or `avoid`; `Prefer` / `Consider` → `require` (soft).
+- "Note that…" / "Assume…" / informational background that does not direct action → `context:` entry on the enclosing skill or block.
+- A `## Variables` / `## Configuration` / `## Settings` block of user-editable knobs with defaults → skill parameters with defaults. The default literal becomes the parameter default.
+- "EXAMPLES: …" / "e.g. X, Y, Z" tied to a triggered behavior → fold into the trigger block's `description:` string. Do not create a separate construct.
+- "This produces / returns / outputs X" at the end of a flow → `return <\"X\">` (output target) or `-> DomainType` if a domain noun is named.
+- An import from another skill or shared library → `import` declaration at the top of the file.
+- Truly UNMAPPED only after every classifier above has been considered and rejected: verbatim code-block snippets used as syntactic reference, frontmatter keys outside `name` / `description` / `effects`, and content with no actionable role.
+"""

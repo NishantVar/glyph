@@ -1169,6 +1169,67 @@ pub enum FileOutcome {
     Skipped { failed_dep: PathBuf },
 }
 
+/// DFS-walk the import graph from a single entry file and return the canonical
+/// paths of every reachable `.glyph` file (entry inclusive), sorted for
+/// determinism.
+///
+/// Used by the CLI to seed the directory pipeline from a single-file entry.
+/// Skips `@glyph/...` stdlib imports (compiler-embedded, not on disk).
+/// Tolerates read/parse failures on transitive files — the pipeline will
+/// re-encounter and diagnose them. Terminates on import cycles via a visited
+/// set.
+pub fn compute_import_closure(entry: &Path, enable_effects: bool) -> Vec<PathBuf> {
+    let canonical_entry = match entry.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return vec![entry.to_path_buf()],
+    };
+
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut stack: Vec<PathBuf> = vec![canonical_entry];
+
+    while let Some(current) = stack.pop() {
+        if !visited.insert(current.clone()) {
+            continue;
+        }
+        out.push(current.clone());
+
+        let source = match std::fs::read_to_string(&current) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let label = current.display().to_string();
+        let line_index = LineIndex::new(&source);
+        let mut throwaway = DiagBag::new();
+        let parsed = parse::parse_with_diagnostics_opts(
+            &source,
+            0,
+            &label,
+            &line_index,
+            &mut throwaway,
+            enable_effects,
+        );
+
+        if let Some(file) = parsed {
+            for decl in &file.decls {
+                if let Decl::Import(import_spanned) = decl {
+                    if import_spanned.node.path.starts_with("@glyph/") {
+                        continue;
+                    }
+                    if let Some(resolved) =
+                        resolve_import_path(&current, &import_spanned.node.path)
+                    {
+                        stack.push(resolved);
+                    }
+                }
+            }
+        }
+    }
+
+    out.sort();
+    out
+}
+
 /// Compile all `.glyph` files in `sources` (already collected and sorted).
 ///
 /// Builds the import DAG, topological-sorts, compiles each file in order.

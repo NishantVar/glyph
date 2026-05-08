@@ -1,0 +1,45 @@
+// semantic_validation.glyph — Glyph post-compile semantic validation
+//
+// Independently invokable LLM validation skill. Loaded by /glyph:compile
+// after the compiler has reached exit code 0 (parse + analyze clean).
+// Currently runs the Phase 3c constraint-conflict scan; future passes
+// (name-quality checks, dead-code detection, prose-tone audits) will be
+// added here as additional flow steps.
+
+skill semantic_validation(constraint_set) -> ConflictReport
+    description: "Use during a /glyph:compile run after the compiler has reached exit code 0 on a Glyph source file. Walk the resolved IR's `constraints:` sets and emit a structured JSON conflict report covering every declaration with two or more constraints."
+
+    require classify_every_pair_in_the_input
+    must use_only_three_classification_values
+    must avoid modifying_glyph_source
+
+    context:
+        runs_after_compile_exit_zero
+        invoked_only_when_constraint_set_has_at_least_two_entries
+        constraint_ids_are_local_indices
+        each_input_entry_carries_id_text_strength_polarity
+
+    flow:
+        classify_each_constraint_pair()
+        emit_conflict_report_json()
+        return <"the structured JSON conflict report">
+
+block classify_each_constraint_pair()
+    "For every unordered pair of entries in the constraint_set, classify the pair as one of `contradiction`, `tension`, or `none`. A contradiction is a strict conflict the constraints cannot both satisfy; a tension is a soft pull in opposing directions that can coexist; `none` means the pair is independent."
+
+block emit_conflict_report_json()
+    "Emit one JSON object of the form `{ conflicts: [{ pair: [id_A, id_B], type: \"contradiction\" | \"tension\" | \"none\", explanation: \"...\" }, ...] }`. Pairs classified `none` may be omitted from the explicit list, but every pair must have been considered."
+
+const classify_every_pair_in_the_input = "Classify every unordered pair of entries in the input constraint set. Pairs classified `none` may be omitted from the explicit `conflicts` list, but every pair must have been considered."
+
+const use_only_three_classification_values = "Use exactly one of `contradiction`, `tension`, or `none` as the `type` field on each conflict entry. Any other value fails validation."
+
+const modifying_glyph_source = "modify the Glyph source file. Phase 3c is read-only — it emits structured diagnostics only."
+
+const runs_after_compile_exit_zero = "Phase 3c runs only after `glyph compile` reaches exit code 0. It is independent of Phase 2 diagnostics."
+
+const invoked_only_when_constraint_set_has_at_least_two_entries = "Phase 3c is invoked once per declaration whose `constraints:` set contains 2 or more entries. Declarations with 0 or 1 constraints are skipped by the caller without an LLM call."
+
+const constraint_ids_are_local_indices = "Each constraint entry in the input carries a declaration-local index `c0`, `c1`, … in source order. Output must reuse those identifiers exactly."
+
+const each_input_entry_carries_id_text_strength_polarity = "Each input constraint entry has the shape `{ id, resolved_text, strength, polarity }`. Strength is `hard` or `soft`; polarity is `positive` or `negative`."

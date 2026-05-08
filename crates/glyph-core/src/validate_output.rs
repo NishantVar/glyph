@@ -636,71 +636,103 @@ fn compute_expected_step_count(flow: &[Value]) -> usize {
     count
 }
 
+#[derive(Clone, Copy)]
+enum StepKeyKind {
+    /// Body prose (resolved_body_text or inline_instruction text). Match by
+    /// phrase-prefix containment so common stop words don't mask reordering.
+    Prose,
+    /// Identifier-shaped key (snake_case/kebab target, procedure ref name,
+    /// branch condition). Match by any-word substring after splitting on
+    /// whitespace and identifier separators.
+    Identifier,
+}
+
 fn check_step_order(md_struct: &MdStructure, flow: &[Value], violations: &mut Vec<Violation>) {
-    // Extract step-projecting node targets/texts from IR in order
-    let mut ir_step_keys: Vec<String> = Vec::new();
+    let mut ir_step_keys: Vec<(String, StepKeyKind)> = Vec::new();
     for node in flow {
         let kind = node.get("kind").and_then(|k| k.as_str()).unwrap_or("");
         match kind {
             "call" => {
                 let role = node.get("role").and_then(|r| r.as_str()).unwrap_or("");
                 if role == "step" {
-                    let target = node.get("target").and_then(|t| t.as_str()).unwrap_or("");
-                    ir_step_keys.push(target.to_string());
+                    // Only `inline` projection writes the body prose into the
+                    // Step text. Other projections (same_file_procedure,
+                    // external_file) write a short reference whose distinctive
+                    // token is the call target — match against the identifier
+                    // in those cases.
+                    let projection = node
+                        .get("projection_mode")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("");
+                    let body = node
+                        .get("resolved_body_text")
+                        .and_then(|t| t.as_str())
+                        .filter(|s| !s.is_empty());
+                    if projection == "inline" && body.is_some() {
+                        ir_step_keys
+                            .push((body.unwrap().to_string(), StepKeyKind::Prose));
+                    } else {
+                        let target = node.get("target").and_then(|t| t.as_str()).unwrap_or("");
+                        ir_step_keys.push((target.to_string(), StepKeyKind::Identifier));
+                    }
                 }
             }
             "inline_instruction" => {
                 let role = node.get("role").and_then(|r| r.as_str()).unwrap_or("");
                 if role == "step" {
                     let text = node.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                    // Use first few words as key
-                    let key: String = text
-                        .split_whitespace()
-                        .take(5)
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    ir_step_keys.push(key);
+                    ir_step_keys.push((text.to_string(), StepKeyKind::Prose));
                 }
             }
             "instruction_ref" => {
                 let role = node.get("role").and_then(|r| r.as_str()).unwrap_or("");
                 if role == "step" {
                     let name = node.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    ir_step_keys.push(name.to_string());
+                    ir_step_keys.push((name.to_string(), StepKeyKind::Identifier));
                 }
             }
             "branch" => {
                 let cond = node.get("condition").and_then(|c| c.as_str()).unwrap_or("");
-                ir_step_keys.push(format!("branch:{}", cond));
+                ir_step_keys.push((format!("branch:{}", cond), StepKeyKind::Identifier));
             }
             _ => {}
         }
     }
 
-    // Get md step texts
     let steps_section = find_instructions_h3(md_struct, "Steps");
     if let Some(section) = steps_section {
         if section.items.len() == ir_step_keys.len() {
-            // Check if items contain the expected content (partial match)
-            // For step-order-mismatch, we check if each IR step's content appears
-            // in the corresponding md step. This is approximate but catches
-            // obvious reorderings.
-            for (i, (ir_key, md_item)) in ir_step_keys.iter().zip(section.items.iter()).enumerate()
+            for (i, ((ir_key, key_kind), md_item)) in
+                ir_step_keys.iter().zip(section.items.iter()).enumerate()
             {
-                if ir_key.starts_with("branch:") {
-                    continue; // Branch steps are harder to match; skip for now
+                if matches!(key_kind, StepKeyKind::Identifier) && ir_key.starts_with("branch:") {
+                    continue;
                 }
-                // Check if the IR key words appear somewhere in the md item
-                let ir_words: Vec<&str> = ir_key.split_whitespace().collect();
+                if ir_key.is_empty() {
+                    continue;
+                }
                 let md_lower = md_item.text.to_lowercase();
-                let mut found = false;
-                for word in &ir_words {
-                    if md_lower.contains(&word.to_lowercase()) {
-                        found = true;
-                        break;
+                let found = match key_kind {
+                    StepKeyKind::Prose => {
+                        let phrase: String = ir_key
+                            .split_whitespace()
+                            .take(3)
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                            .to_lowercase();
+                        !phrase.is_empty() && md_lower.contains(&phrase)
                     }
-                }
-                if !found && !ir_key.is_empty() {
+                    StepKeyKind::Identifier => {
+                        let ir_words: Vec<&str> = ir_key
+                            .split(|c: char| c.is_whitespace() || c == '_' || c == '-')
+                            .filter(|w| !w.is_empty())
+                            .collect();
+                        ir_words
+                            .iter()
+                            .any(|w| md_lower.contains(&w.to_lowercase()))
+                    }
+                };
+                if !found {
                     violations.push(Violation::new(
                         "G::expand::step-order-mismatch",
                         format!(
@@ -965,31 +997,85 @@ fn collect_local_refs_from_flow(flow: &[Value], names: &mut Vec<String>) {
 }
 
 fn find_curly_refs(md: &str) -> Vec<String> {
+    // Scan the Markdown for `{ident}` runtime-slot tokens, but skip code regions
+    // — inline backtick spans, fenced code blocks, and 4-space-indented blocks —
+    // since their contents are example/literal text, not prose that resolves
+    // against the skill's InputContract.
     let mut refs = Vec::new();
-    let bytes = md.as_bytes();
+    let mut in_fence = false;
+
+    for line in md.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        if line.starts_with("    ") || line.starts_with('\t') {
+            continue;
+        }
+        scan_line_for_curly_refs(line, &mut refs);
+    }
+    refs
+}
+
+fn scan_line_for_curly_refs(line: &str, refs: &mut Vec<String>) {
+    let bytes = line.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
+        if bytes[i] == b'`' {
+            let run_start = i;
+            while i < bytes.len() && bytes[i] == b'`' {
+                i += 1;
+            }
+            let run_len = i - run_start;
+            // Find the next backtick run of the same length to close the span.
+            let mut j = i;
+            let mut closed_at = None;
+            while j < bytes.len() {
+                if bytes[j] == b'`' {
+                    let close_start = j;
+                    while j < bytes.len() && bytes[j] == b'`' {
+                        j += 1;
+                    }
+                    if j - close_start == run_len {
+                        closed_at = Some(j);
+                        break;
+                    }
+                } else {
+                    j += 1;
+                }
+            }
+            if let Some(end) = closed_at {
+                i = end;
+            }
+            // If unclosed, leave i past the opening run; anything after on this
+            // line is treated as prose.
+            continue;
+        }
         if bytes[i] == b'{' {
             let start = i + 1;
             let mut end = start;
-            while end < bytes.len() && bytes[end] != b'}' && bytes[end] != b'\n' {
+            while end < bytes.len() && bytes[end] != b'}' {
                 end += 1;
             }
             if end < bytes.len() && bytes[end] == b'}' {
-                let name = &md[start..end];
-                // Only consider simple identifiers (no spaces, no special chars)
+                let name = &line[start..end];
                 if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
                     if !refs.contains(&name.to_string()) {
                         refs.push(name.to_string());
                     }
                 }
+                i = end + 1;
+            } else {
+                i += 1;
             }
-            i = end + 1;
         } else {
             i += 1;
         }
     }
-    refs
 }
 
 fn collect_param_refs_from_ir(skill: &Value, param_names: &[String]) -> Vec<String> {
@@ -2147,6 +2233,139 @@ mod tests {
         );
     }
 
+    #[test]
+    fn step_order_inlined_call_uses_resolved_body_text() {
+        let ir = serde_json::json!({
+            "ir_version": 1,
+            "compiler": "glyph 0.1.0",
+            "source_file": "test.glyph",
+            "skill": {
+                "node_id": "n0",
+                "kind": "skill",
+                "name": "test_skill",
+                "description": "A test skill.",
+                "params": [],
+                "effects": [],
+                "context": [],
+                "constraints": [],
+                "flow": [
+                    { "node_id": "n1", "kind": "call", "target": "read_source_and_compiled", "args": {}, "output": null, "return_type": null, "effects": [], "site_modifier": null, "role": "step", "scoped_constraints": [], "resolved_body_text": "Read the source and resolve the sibling compiled output.", "local_refs": [], "projection_mode": "inline", "callee_flow": null, "callee_context": null, "callee_constraints": null, "procedure_path": null },
+                    { "node_id": "n2", "kind": "call", "target": "verify_paired_consistency", "args": {}, "output": null, "return_type": null, "effects": [], "site_modifier": null, "role": "step", "scoped_constraints": [], "resolved_body_text": "Re-read both files and confirm they remain in sync.", "local_refs": [], "projection_mode": "inline", "callee_flow": null, "callee_context": null, "callee_constraints": null, "procedure_path": null }
+                ]
+            }
+        }).to_string();
+
+        let md_correct = "## Instructions\n\n### Steps\n\n1. Read the source and resolve the sibling compiled output.\n2. Re-read both files and confirm they remain in sync.\n";
+        let violations = validate_output(&ir, md_correct);
+        assert!(
+            !violations
+                .iter()
+                .any(|v| v.id == "G::expand::step-order-mismatch"),
+            "expected no step-order-mismatch, got: {:?}",
+            violations
+        );
+
+        let md_reversed = "## Instructions\n\n### Steps\n\n1. Re-read both files and confirm they remain in sync.\n2. Read the source and resolve the sibling compiled output.\n";
+        let violations = validate_output(&ir, md_reversed);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::step-order-mismatch"),
+            "expected step-order-mismatch on reversed bodies, got: {:?}",
+            violations
+        );
+    }
+
+    #[test]
+    fn step_order_same_file_procedure_matches_kebab_target_in_step() {
+        // Tier-2: projection_mode=same_file_procedure populates resolved_body_text
+        // with the procedure body, but the rendered Step says
+        // "Follow the <kebab-target> procedure below.". Identifier-mode match
+        // against the snake_case target tokens must hit that step text.
+        let ir = serde_json::json!({
+            "ir_version": 1,
+            "compiler": "glyph 0.1.0",
+            "source_file": "test.glyph",
+            "skill": {
+                "node_id": "n0",
+                "kind": "skill",
+                "name": "test_skill",
+                "description": "A test skill.",
+                "params": [],
+                "effects": [],
+                "context": [],
+                "constraints": [],
+                "flow": [
+                    { "node_id": "n1", "kind": "call", "target": "compile_with_repair", "args": {}, "output": null, "return_type": null, "effects": [], "site_modifier": null, "role": "step", "scoped_constraints": [], "resolved_body_text": "Run the full compile pipeline with repair.", "local_refs": [], "projection_mode": "same_file_procedure", "callee_flow": null, "callee_context": null, "callee_constraints": null, "procedure_path": null },
+                    { "node_id": "n2", "kind": "call", "target": "expand_and_validate", "args": {}, "output": null, "return_type": null, "effects": [], "site_modifier": null, "role": "step", "scoped_constraints": [], "resolved_body_text": "Expand the IR and validate the rendered output.", "local_refs": [], "projection_mode": "same_file_procedure", "callee_flow": null, "callee_context": null, "callee_constraints": null, "procedure_path": null }
+                ]
+            }
+        }).to_string();
+
+        let md_correct = "## Instructions\n\n### Steps\n\n1. Follow the compile-with-repair procedure below.\n2. Follow the expand-and-validate procedure below.\n";
+        let violations = validate_output(&ir, md_correct);
+        assert!(
+            !violations
+                .iter()
+                .any(|v| v.id == "G::expand::step-order-mismatch"),
+            "expected no step-order-mismatch for tier-2 procedure refs, got: {:?}",
+            violations
+        );
+
+        let md_reversed = "## Instructions\n\n### Steps\n\n1. Follow the expand-and-validate procedure below.\n2. Follow the compile-with-repair procedure below.\n";
+        let violations = validate_output(&ir, md_reversed);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::step-order-mismatch"),
+            "expected step-order-mismatch on reversed tier-2 refs, got: {:?}",
+            violations
+        );
+    }
+
+    #[test]
+    fn step_order_non_inline_call_tokenizes_snake_case() {
+        let ir = serde_json::json!({
+            "ir_version": 1,
+            "compiler": "glyph 0.1.0",
+            "source_file": "test.glyph",
+            "skill": {
+                "node_id": "n0",
+                "kind": "skill",
+                "name": "test_skill",
+                "description": "A test skill.",
+                "params": [],
+                "effects": [],
+                "context": [],
+                "constraints": [],
+                "flow": [
+                    { "node_id": "n1", "kind": "call", "target": "read_source_and_compiled", "args": {}, "output": null, "return_type": null, "effects": [], "site_modifier": null, "role": "step", "scoped_constraints": [], "resolved_body_text": null, "local_refs": [], "projection_mode": "procedure", "callee_flow": null, "callee_context": null, "callee_constraints": null, "procedure_path": null },
+                    { "node_id": "n2", "kind": "call", "target": "verify_paired_consistency", "args": {}, "output": null, "return_type": null, "effects": [], "site_modifier": null, "role": "step", "scoped_constraints": [], "resolved_body_text": null, "local_refs": [], "projection_mode": "procedure", "callee_flow": null, "callee_context": null, "callee_constraints": null, "procedure_path": null }
+                ]
+            }
+        }).to_string();
+
+        let md_correct = "## Instructions\n\n### Steps\n\n1. Read the source and the compiled output.\n2. Verify the paired files are consistent.\n";
+        let violations = validate_output(&ir, md_correct);
+        assert!(
+            !violations
+                .iter()
+                .any(|v| v.id == "G::expand::step-order-mismatch"),
+            "expected no step-order-mismatch when snake_case target words appear in prose, got: {:?}",
+            violations
+        );
+
+        let md_reversed = "## Instructions\n\n### Steps\n\n1. Verify the paired files are consistent.\n2. Read the source and the compiled output.\n";
+        let violations = validate_output(&ir, md_reversed);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.id == "G::expand::step-order-mismatch"),
+            "expected step-order-mismatch on reversed steps, got: {:?}",
+            violations
+        );
+    }
+
     // --- invented-param-ref ---
     #[test]
     fn invented_param_ref() {
@@ -2155,6 +2374,32 @@ mod tests {
         assert!(violations
             .iter()
             .any(|v| v.id == "G::expand::invented-param-ref"));
+    }
+
+    #[test]
+    fn invented_param_ref_skipped_in_code_regions() {
+        // {ident} tokens inside inline backticks, fenced code blocks, and
+        // 4-space-indented blocks are example text, not runtime slots — the
+        // validator must not flag them as invented-param-ref.
+        let md = "## Instructions\n\n### Steps\n\n\
+            1. Inline example like `{ctx}` and ``{name}`` are documentation only.\n\
+            2. A fenced block follows.\n\n\
+            ```\n\
+            block foo({scope})\n\
+                \"Use {scope} here\"\n\
+            ```\n\n\
+            3. An indented block follows.\n\n    \
+            block bar({IDENTIFIER})\n        \
+            \"Reference {IDENTIFIER}\"\n\n\
+            4. Plain prose with no slots.\n";
+        let violations = validate_output(&minimal_ir(), md);
+        assert!(
+            !violations
+                .iter()
+                .any(|v| v.id == "G::expand::invented-param-ref"),
+            "expected no invented-param-ref violations, got: {:?}",
+            violations
+        );
     }
 
     // --- dropped-param-ref ---

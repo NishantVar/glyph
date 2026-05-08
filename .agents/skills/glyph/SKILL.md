@@ -5,6 +5,16 @@ description: Entry point for the Glyph toolkit. Use when the user wants to autho
 
 ## Instructions
 
+### Context
+
+- **toolkit-slash-commands**
+
+  User-facing slash commands: `/glyph:teach` (author or edit a `.glyph` source file), `/glyph:compile` (run a `.glyph` file or directory through the full pipeline), `/glyph:decompile` (reverse-engineer an existing `.md` skill back into `.glyph`).
+
+- **toolkit-internal-skills**
+
+  Internal skills loaded by `/glyph:compile` when the pipeline reaches their stage: `repair` (Phase 3b LLM source-rewrite, loaded when the compiler exits 2 with repairable diagnostics), `semantic_validation` (Phase 3c LLM validation, loaded after the compiler reaches exit 0; currently runs the constraint-conflict scan), and `expand` (Phase 4 LLM span-fill, loaded to fill the marked prose spans in the scaffolded compiled `.md` against its resolved IR side-map).
+
 ### Steps
 
 1. Decide which of the following applies and follow only that path:
