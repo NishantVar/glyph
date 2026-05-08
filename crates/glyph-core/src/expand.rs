@@ -6,7 +6,8 @@
 //! - Tier 1 (inline): callee body < 150 words → call keeps inline projection metadata.
 
 use crate::condition::ConditionTokenKind;
-use crate::ir::{IrArena, IrNode, NodeId};
+use crate::ir::{IrArena, IrNode, LocalRef, NodeId};
+use crate::slot;
 use std::collections::{BTreeMap, HashMap};
 
 /// Count words in resolved prose per `compiled-output.md` §Word Counting Rule.
@@ -245,6 +246,41 @@ pub fn expand_step1_with_imported_descriptions(
         }
     }
 
+    // Phase 2c: Flow-position-assignments §8.3 — populate `local_refs`.
+    //
+    // Walk the skill's flow tree in source order, building a producer table
+    // (`bound_name → producing IrCall.node_id`) that respects the lexical
+    // scope rules from `.flow-assign-spec.md` §6.1:
+    //   * a binding becomes visible only after its declaring statement
+    //     (handled by table mutation order),
+    //   * branch-arm bindings stay scoped to the arm (handled by recursing
+    //     with a *clone* of the table per arm — the clone is dropped on
+    //     return, so the parent scope never sees the arm's additions),
+    //   * outer bindings remain visible inside arms (handled by cloning the
+    //     parent table into the recursion).
+    //
+    // For each `IrInlineInstruction.text` and each `IrCall.resolved_body`
+    // encountered during the walk, run `slot::scan_slots` and classify:
+    //   * `{name}` whose `name` is in the producer table → push
+    //     `LocalRef { name, node_id }` into the node's `local_refs`.
+    //     The literal `{name}` token STAYS in the IR text per §8.3 — IR is
+    //     the source of truth for downstream Phase 6b checks; deterministic
+    //     substitution into the rendered scaffold is Emit's job (§9.2).
+    //   * Anything else (parameters, unknown names) is left untouched —
+    //     existing analyze paths emit diagnostics for unknowns.
+    //
+    // Skill-only: block calls are a separate IR shape and never carry
+    // flow-locals (§8.1 / Codex Round 3 High 2).
+    if let Some(root_id) = arena.root_skill() {
+        let step_ids: Vec<NodeId> = if let IrNode::Skill(s) = arena.get(root_id) {
+            s.steps.clone()
+        } else {
+            Vec::new()
+        };
+        let mut producers: HashMap<String, NodeId> = HashMap::new();
+        populate_local_refs_in_steps(&mut arena, &step_ids, &mut producers);
+    }
+
     // Phase 3: Return folding (Phase 6 Step 1).
     // If the skill has a return_text, append it to the final step's text.
     //
@@ -366,6 +402,137 @@ fn populate_resolved_predicates(
     }
 
     branch.resolved_predicates = if rp.is_empty() { None } else { Some(rp) };
+}
+
+/// Resolve `{name}` slots in `text` against the producer table and return the
+/// resulting `local_refs` vec. Each slot whose name is in `producers` yields
+/// one `LocalRef` (deduplicated: repeat occurrences of the same name produce
+/// one ref so emit's substitution remains O(n)). Slots not in the producer
+/// table are ignored — analyze handles unknown-name diagnostics, and the
+/// parameter slot machinery handles parameter slots.
+fn collect_local_refs(text: &str, producers: &HashMap<String, NodeId>) -> Vec<LocalRef> {
+    if producers.is_empty() {
+        return Vec::new();
+    }
+    let mut refs: Vec<LocalRef> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for sm in slot::scan_slots(text) {
+        if let Some(node_id) = producers.get(&sm.name) {
+            if seen.insert(sm.name.clone()) {
+                refs.push(LocalRef {
+                    name: sm.name.clone(),
+                    node_id: *node_id,
+                });
+            }
+        }
+    }
+    refs
+}
+
+/// Walk a flat sequence of step `NodeId`s in source order, populating
+/// `local_refs` on each `IrInlineInstruction` / `IrCall` whose text contains
+/// `{name}` slots that match the live producer table. Mutates `producers` to
+/// add a binding ONLY AFTER its declaring `IrCall` is processed (so a slot in
+/// the declaring call's own body does not see the binding), then recurses
+/// into branch arms with a clone (arm bindings don't leak).
+fn populate_local_refs_in_steps(
+    arena: &mut IrArena,
+    step_ids: &[NodeId],
+    producers: &mut HashMap<String, NodeId>,
+) {
+    for &nid in step_ids {
+        // Snapshot fields we need from the immutable borrow before we mutate.
+        let snapshot = match arena.get(nid) {
+            IrNode::InlineInstruction(i) => StepSnapshot::Inline {
+                text: i.text.clone(),
+            },
+            IrNode::Call(c) => StepSnapshot::Call {
+                bound_name: c.bound_name.clone(),
+                node_id: c.node_id,
+                body_text: c.resolved_body.clone(),
+            },
+            IrNode::Branch(b) => StepSnapshot::Branch {
+                then_body: b.then_body.clone(),
+                elif_bodies: b.elif_branches.iter().map(|e| e.body.clone()).collect(),
+                else_body: b.else_body.clone(),
+            },
+            _ => StepSnapshot::Other,
+        };
+
+        match snapshot {
+            StepSnapshot::Inline { text } => {
+                let refs = collect_local_refs(&text, producers);
+                if !refs.is_empty() {
+                    if let IrNode::InlineInstruction(i) = &mut arena.nodes_mut()[nid.0 as usize] {
+                        i.local_refs = refs;
+                    }
+                }
+            }
+            StepSnapshot::Call {
+                bound_name,
+                node_id,
+                body_text,
+            } => {
+                if let Some(text) = body_text {
+                    let refs = collect_local_refs(&text, producers);
+                    if !refs.is_empty() {
+                        if let IrNode::Call(c) = &mut arena.nodes_mut()[nid.0 as usize] {
+                            c.local_refs = refs;
+                        }
+                    }
+                }
+                // Producer table records the binding AFTER processing the
+                // declaring statement — a `{ctx}` inside `inspect_repo`'s own
+                // body resolved here is a parameter slot of the callee, not a
+                // self-reference (the callee's body uses param slots like
+                // `{scope}` populated from the caller's args, not its own
+                // bound name).
+                if let Some(name) = bound_name {
+                    producers.insert(name, node_id);
+                }
+            }
+            StepSnapshot::Branch {
+                then_body,
+                elif_bodies,
+                else_body,
+            } => {
+                // Each arm gets a CLONE of the producer table so arm-local
+                // bindings stay scoped to the arm; outer bindings remain
+                // visible because the clone carries them in.
+                let mut arm_producers = producers.clone();
+                populate_local_refs_in_steps(arena, &then_body, &mut arm_producers);
+                for body in &elif_bodies {
+                    let mut elif_producers = producers.clone();
+                    populate_local_refs_in_steps(arena, body, &mut elif_producers);
+                }
+                if let Some(eb) = else_body {
+                    let mut else_producers = producers.clone();
+                    populate_local_refs_in_steps(arena, &eb, &mut else_producers);
+                }
+            }
+            StepSnapshot::Other => {}
+        }
+    }
+}
+
+/// Local snapshot of the per-node fields needed for `local_refs` resolution.
+/// Decouples the read-only inspection from the mutable write-back, since the
+/// arena owns its `IrNode` storage by index.
+enum StepSnapshot {
+    Inline {
+        text: String,
+    },
+    Call {
+        bound_name: Option<String>,
+        node_id: NodeId,
+        body_text: Option<String>,
+    },
+    Branch {
+        then_body: Vec<NodeId>,
+        elif_bodies: Vec<Vec<NodeId>>,
+        else_body: Option<Vec<NodeId>>,
+    },
+    Other,
 }
 
 #[cfg(test)]
@@ -726,5 +893,54 @@ skill foo()
             .expect("resolved_predicates should be populated for PredicateConst");
         assert_eq!(rp.get("big"), Some(&"the change is big".to_string()));
         assert_eq!(rp.get("small"), Some(&"the change is small".to_string()));
+    }
+
+    /// Phase 4 Step 1 (`.flow-assign-spec.md` §8.3): walk inline-instruction
+    /// text downstream of a flow-local binding, classify each `{name}` slot
+    /// against the in-scope producer table, and push a `LocalRef` referencing
+    /// the producing IrCall. The literal `{name}` token must STAY in
+    /// `IrInlineInstruction.text` — IR is the source of truth for downstream
+    /// Phase 6b checks; substitution is Emit's job (§9.2).
+    #[test]
+    fn step1_populates_local_refs() {
+        let src = r#"
+block inspect_repo(scope = ".") -> RepoContext
+    "Inspect {scope}."
+
+skill demo()
+    description: "demo"
+    flow:
+        ctx = inspect_repo(".")
+        "Use the result {ctx} to find issues"
+        return ctx
+"#;
+        let arena = lower_analyzed(src);
+        let arena = expand_step1(arena);
+        // Find the producing IrCall.
+        let producer = arena
+            .nodes()
+            .iter()
+            .find_map(|n| match n {
+                crate::ir::IrNode::Call(c) if c.bound_name.as_deref() == Some("ctx") => Some(c),
+                _ => None,
+            })
+            .expect("arena should contain a producer IrCall with bound_name `ctx`");
+        // Find the IrInlineInstruction whose text references `{ctx}`.
+        let inline = arena
+            .nodes()
+            .iter()
+            .find_map(|n| match n {
+                crate::ir::IrNode::InlineInstruction(i) if i.text.contains("{ctx}") => Some(i),
+                _ => None,
+            })
+            .expect("arena should contain an inline instruction referencing `{ctx}`");
+        let lref = inline
+            .local_refs
+            .iter()
+            .find(|l| l.name == "ctx")
+            .expect("inline-instruction should carry a `ctx` local_ref");
+        assert_eq!(lref.node_id, producer.node_id);
+        // IR-level token stays literal per §8.3.
+        assert!(inline.text.contains("{ctx}"));
     }
 }

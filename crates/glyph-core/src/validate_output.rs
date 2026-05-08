@@ -2587,7 +2587,6 @@ mod tests {
         );
     }
 
-
     // --- procedure-count-mismatch ---
     #[test]
     fn procedure_count_mismatch() {

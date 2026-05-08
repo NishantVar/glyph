@@ -188,6 +188,22 @@ fn serialize_context(c: &IrContext) -> Value {
     Value::Object(m)
 }
 
+/// Serialize a `Vec<LocalRef>` as `[{ "name": ..., "node_id": "n<id>" }]`
+/// per `design/ir-json-schema.md:146-186`. The `node_id` field name (not
+/// `producing_node_id`) is fixed by the worked example in that doc.
+fn serialize_local_refs(refs: &[crate::ir::LocalRef]) -> Value {
+    let arr: Vec<Value> = refs
+        .iter()
+        .map(|r| {
+            json!({
+                "name": r.name,
+                "node_id": node_id_str(r.node_id),
+            })
+        })
+        .collect();
+    Value::Array(arr)
+}
+
 /// Serialize an InlineInstruction node to JSON.
 fn serialize_inline_instruction(i: &IrInlineInstruction) -> Value {
     let mut m = Map::new();
@@ -195,6 +211,10 @@ fn serialize_inline_instruction(i: &IrInlineInstruction) -> Value {
     m.insert("kind".into(), Value::String("inline_instruction".into()));
     m.insert("text".into(), Value::String(i.text.clone()));
     m.insert("role".into(), Value::String(role_str(i.role).into()));
+    // Flow-position-assignments §8.1: the `{name}` slots in `text` that
+    // resolve to flow-locals (populated by Phase 4 Expand Step 1; empty
+    // array post-Phase-3).
+    m.insert("local_refs".into(), serialize_local_refs(&i.local_refs));
     Value::Object(m)
 }
 
@@ -250,8 +270,23 @@ fn serialize_call(c: &IrCall, arena: &IrArena) -> Value {
         Value::String(c.resolved_body.clone().unwrap_or_default()),
     );
 
-    // local_refs: empty for current IR (no local-binding tracking yet).
-    m.insert("local_refs".into(), json!([]));
+    // Flow-position-assignments §8.1: bound_name + local_refs + is_agent.
+    // `bound_name` carries the `<name>` half of `<name> = <call>`; `null`
+    // for unassigned calls (Codex Round 3 Med 3 — was missing before).
+    m.insert(
+        "bound_name".into(),
+        match &c.bound_name {
+            Some(n) => Value::String(n.clone()),
+            None => Value::Null,
+        },
+    );
+    // `local_refs` lists each `{name}` slot in `resolved_body_text` that
+    // resolves to a flow-local. Phase 4 populates; pre-Phase-4 emits an
+    // empty array (the schema requires the field be present).
+    m.insert("local_refs".into(), serialize_local_refs(&c.local_refs));
+    // `is_agent` selects between agent prose and value prose at emit time
+    // (§9.1). `false` for unassigned and non-agent callees.
+    m.insert("is_agent".into(), Value::Bool(c.is_agent));
 
     // projection_mode
     m.insert(
@@ -560,6 +595,19 @@ pub fn serialize_ir_json(
         "output_contract".into(),
         output_contract_json(arena, skill.output_contract),
     );
+
+    // Flow-position-assignments §8.1: when the skill's `return <ident>`
+    // resolves to a flow-local producer, surface the `LocalRef`. `null`
+    // otherwise. Mirrors the IrCall.local_refs JSON shape:
+    // `{ "name": <binding>, "node_id": "n<id>" }`.
+    let return_local_ref = match &skill.return_local_ref {
+        Some(r) => json!({
+            "name": r.name,
+            "node_id": node_id_str(r.node_id),
+        }),
+        None => Value::Null,
+    };
+    skill_obj.insert("return_local_ref".into(), return_local_ref);
 
     envelope.insert("skill".into(), Value::Object(skill_obj));
 
