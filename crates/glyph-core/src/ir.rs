@@ -8,6 +8,21 @@ use std::collections::HashMap;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct NodeId(pub u32);
 
+/// Flow-local binding reference (`<name> = <call>` flow-position assignment).
+///
+/// Points from a consumer node (an `IrCall.resolved_body` slot or an
+/// `IrInlineInstruction.text` slot) back to the producing call's `node_id`.
+/// Spec §8.1; populated by Phase 4 (Expand Step 1) — Phase 3 (Lower) leaves
+/// the per-node `local_refs` vec empty.
+///
+/// Derives mirror the surrounding IR types (Serialize only — no caller
+/// deserializes IR; the JSON shape is built explicitly in `emit_ir.rs`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+pub struct LocalRef {
+    pub name: String,
+    pub node_id: NodeId,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum IrNode {
@@ -72,6 +87,18 @@ pub struct IrSkill {
     /// the `TypeRegistry` description by source-text key. `None` mirrors `return_type`.
     #[serde(skip)]
     pub return_type_text: Option<String>,
+    /// Flow-position-assignments §8.1: when the skill's `return <ident>` resolves
+    /// to a flow-local binding (an upstream `IrCall` with `bound_name = Some(n)`),
+    /// the matched producer's `node_id` is captured here. Emit consumes this to
+    /// render the §9.3 return-prose template (`Your result is <name> (<noun
+    /// phrase>).`); when `Some`, lower also forces `return_text = None` so
+    /// Expand's legacy return-folding does not double-emit (§8.2 single source
+    /// of truth). `None` for bare `return`, inline-string returns, parameter
+    /// returns, and any callee that isn't bound. Codex Round 3 High 2:
+    /// `IrBlock` does NOT gain this field — block-flow assignments are
+    /// rejected at analyze time (`G::analyze::flow-assign-in-block-unsupported`).
+    #[serde(skip)]
+    pub return_local_ref: Option<LocalRef>,
 }
 
 /// Resolved parameter metadata threaded through Phase 6 Step 1 into the
@@ -94,6 +121,13 @@ pub struct IrInlineInstruction {
     pub node_id: NodeId,
     pub text: String,
     pub role: Role,
+    /// Flow-position-assignments §8.1: one entry per `{name}` slot in `text`
+    /// that resolves to a flow-local binding in scope at this instruction's
+    /// position. Populated by Phase 4 (Expand Step 1) via
+    /// `slot::scan_slots`; Phase 3 (Lower) initializes to `Vec::new()`.
+    /// The JSON emitter renders this as `[{ "name": ..., "node_id": ... }]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_refs: Vec<LocalRef>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -214,6 +248,36 @@ pub struct IrCall {
     /// has no OC of its own). `None` for stdlib and untyped callees.
     #[serde(skip)]
     pub callee_return_type_text: Option<String>,
+    /// Flow-position-assignments §8.1: the `<name>` half of `<name> = <call>`,
+    /// copied verbatim from the AST `FlowStmt::Call.bound_name` at lower time.
+    /// `None` for unassigned calls. Codex Round 3 Med 3: must be JSON-serialized
+    /// (consumed by Phase 4 Emit prose, §9.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_name: Option<String>,
+    /// Flow-position-assignments §8.1: one entry per `{name}` slot in
+    /// `resolved_body` that resolves to a flow-local in scope at this call's
+    /// position. Populated by Phase 4 (Expand Step 1) via `slot::scan_slots`;
+    /// Phase 3 (Lower) initializes to `Vec::new()`. JSON shape:
+    /// `[{ "name": <binding>, "node_id": <producer-node-id> }]`
+    /// (`design/ir-json-schema.md:146-186`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_refs: Vec<LocalRef>,
+    /// Flow-position-assignments §9.1 agent-shape rule: true iff the callee's
+    /// declared return-type is `Agent` (matches `TypeTag::Agent`). Resolution
+    /// path mirrors analyze's `resolve_callee_return_for_assign`: same-file
+    /// blocks → imported blocks → `crate::stdlib_sig` (which marks `subagent`
+    /// as `is_agent: true`). Phase 4 Emit reads this to pick between the
+    /// agent prose ("Refer to this agent as 'n.'", §18.4 of the language
+    /// guide) and the value prose ("Refer to this result as n."). For
+    /// non-bound calls, this is `false` (the field is meaningful only when
+    /// `bound_name = Some(_)`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_agent: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Shape classification for a branch predicate. Populated by Tasks 2.5/2.6.

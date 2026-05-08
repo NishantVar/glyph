@@ -1,0 +1,12 @@
+block inspect_repo(scope = ".") -> Report
+    description: "Inspect the repo."
+    flow:
+        "Examine {scope}."
+        return context
+
+skill diagnose(scope = ".") -> Report
+    description: "Reference a name that is never bound."
+    flow:
+        ctx = inspect_repo(scope)
+        "Summarize {never_bound}."
+        return ctx

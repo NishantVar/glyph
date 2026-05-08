@@ -3,9 +3,127 @@
 //! See `obsidian/plans/expand-emitter-design-2026-05-04.md`.
 
 use super::templates;
-use crate::ir::{BranchPredicateShape, IrArena, IrNode, NodeId, OutputTargetForm};
+use crate::ir::{
+    BranchPredicateShape, IrArena, IrCall, IrNode, LocalRef, NodeId, OutputTargetForm,
+};
+use crate::slot;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
+
+/// Flow-position-assignments §9.1 — naming sentence for an `IrCall` whose
+/// `bound_name` is `Some(n)`. Returns `None` when the call carries no binding.
+///
+/// - Agent shape (`is_agent == true`): *"Refer to this agent as '<n>.'"* —
+///   single quotes around `n`, matching GLYPH_LANGUAGE_GUIDE §18.4 verbatim.
+/// - Value shape: *"Refer to this result as <n>."* — bare `n`, no quotes.
+pub(super) fn naming_sentence_for_call(c: &IrCall) -> Option<String> {
+    let n = c.bound_name.as_deref()?;
+    if c.is_agent {
+        Some(format!("Refer to this agent as '{}.'", n))
+    } else {
+        Some(format!("Refer to this result as {}.", n))
+    }
+}
+
+/// Append a sentence to a Step body, separated by `". "` and stripping any
+/// trailing period from the body so the transition reads naturally. Mirrors
+/// `templates::append_return_sentence` but exposed locally for the
+/// flow-assignment naming sentence.
+pub(super) fn append_sentence(body: &str, sentence: &str) -> String {
+    let trimmed = body.trim_end().trim_end_matches('.').trim_end();
+    if trimmed.is_empty() {
+        sentence.to_string()
+    } else {
+        format!("{trimmed}. {sentence}")
+    }
+}
+
+/// Flow-position-assignments §9.2 — substitute `{name}` slots in `text` whose
+/// `name` is in `local_refs` with the bare `name`. Slots whose `name` is not
+/// in `local_refs` (parameters, unknown-but-non-flow-local — though analyze
+/// rejects those) pass through verbatim.
+pub(super) fn substitute_local_refs_in(text: &str, local_refs: &[LocalRef]) -> String {
+    if local_refs.is_empty() {
+        return text.to_string();
+    }
+    slot::substitute_local_refs(text, |name| local_refs.iter().any(|l| l.name == name))
+}
+
+/// Flow-position-assignments §9.3 noun-phrase priority chain. Given a producer
+/// `IrCall`, derive a noun phrase for the return-prose template:
+///
+/// 1. `callee_output_contract`:
+///    - `Description(text)` → `"the <text>"` (e.g. *"the root cause and …"*).
+///    - `Identifier(name)`  → `"the <name>"`.
+/// 2. else `callee_return_type_text` → `"the <humanized type>"`.
+/// 3. else `"the result"`.
+///
+/// The humanizer breaks CamelCase / snake_case into lowercase space-separated
+/// words (e.g. `RepoContext` → `"repo context"`). No registry lookup is
+/// performed — the canonical descriptive path is the `Description` form.
+fn noun_phrase_for_producer(c: &IrCall) -> String {
+    if let Some(form) = &c.callee_output_contract {
+        match form {
+            OutputTargetForm::Description(text) => {
+                let cleaned = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                return format!("the {}", cleaned);
+            }
+            OutputTargetForm::Identifier(name) => {
+                return format!("the {}", name);
+            }
+        }
+    }
+    if let Some(t) = &c.callee_return_type_text {
+        return format!("the {}", humanize_type_text(t));
+    }
+    "the result".to_string()
+}
+
+/// Convert a type-text source spelling (CamelCase, snake_case, or mixed) into
+/// a lowercase space-separated phrase. Used by §9.3 fallback noun-phrase.
+///
+/// Examples:
+/// - `RepoContext`  → `"repo context"`
+/// - `repo_context` → `"repo context"`
+/// - `URL`          → `"url"`
+/// - `Diagnosis`    → `"diagnosis"`
+fn humanize_type_text(t: &str) -> String {
+    let mut out = String::with_capacity(t.len() + 4);
+    let chars: Vec<char> = t.chars().collect();
+    let mut prev_was_lower_or_digit = false;
+    for (i, &ch) in chars.iter().enumerate() {
+        if ch == '_' {
+            // Underscore → word break (collapse runs).
+            if !out.ends_with(' ') && !out.is_empty() {
+                out.push(' ');
+            }
+            prev_was_lower_or_digit = false;
+            continue;
+        }
+        if ch.is_uppercase() {
+            // CamelCase boundary: insert space before an uppercase letter
+            // when the previous char was lowercase/digit (e.g. `RepoContext`
+            // → `Repo Context`), or when it starts a new word in an acronym
+            // followed by lowercase (e.g. `URLPath` → `URL Path`).
+            let next_is_lower = chars.get(i + 1).is_some_and(|c| c.is_lowercase());
+            let previous_was_upper = chars
+                .get(i.wrapping_sub(1))
+                .is_some_and(|c| c.is_uppercase());
+            if !out.is_empty()
+                && (prev_was_lower_or_digit || (previous_was_upper && next_is_lower))
+                && !out.ends_with(' ')
+            {
+                out.push(' ');
+            }
+            out.extend(ch.to_lowercase());
+            prev_was_lower_or_digit = false;
+        } else {
+            out.push(ch);
+            prev_was_lower_or_digit = ch.is_alphanumeric();
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
 
 /// Look up the `OutputTargetForm` for a block by name, returning an owned clone.
 fn block_output_form_owned(arena: &IrArena, block_name: &str) -> Option<OutputTargetForm> {
@@ -327,23 +445,40 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                 let is_last = idx + 1 == skill_step_count;
                 match arena.get(*step_id) {
                     IrNode::InlineInstruction(i) => {
+                        // Flow-position-assignments §9.2: rewrite `{name}` →
+                        // bare `name` for any slot whose name resolves to a
+                        // flow-local in scope here.
+                        let text = substitute_local_refs_in(&i.text, &i.local_refs);
                         if is_last {
-                            let sentence = templates::compute_return_sentence(
-                                skill_rt_text.as_deref(),
-                                skill_oc_form.as_ref(),
-                                &arena.type_registry,
-                            );
+                            // Codex M1 (round 2): when the §9.3 return-prose
+                            // step is about to be emitted (the skill returns
+                            // a flow-local binding), suppress the §8.4 generic
+                            // "Return a `<T>`." suffix on this last inline
+                            // step too. The §9.3 step that follows already
+                            // states the return; appending the suffix here
+                            // duplicates the return prose. Mirrors the same
+                            // gate on the tier-1 Call last-step path below.
+                            let suppress_return_suffix = skill.return_local_ref.is_some();
+                            let sentence = if suppress_return_suffix {
+                                None
+                            } else {
+                                templates::compute_return_sentence(
+                                    skill_rt_text.as_deref(),
+                                    skill_oc_form.as_ref(),
+                                    &arena.type_registry,
+                                )
+                            };
                             match sentence {
                                 Some(sent) => {
-                                    let body = templates::append_return_sentence(&i.text, &sent);
+                                    let body = templates::append_return_sentence(&text, &sent);
                                     s.push_literal(format!("{}. {}\n", idx + 1, body));
                                 }
                                 None => {
-                                    s.push_literal(format!("{}. {}\n", idx + 1, i.text));
+                                    s.push_literal(format!("{}. {}\n", idx + 1, text));
                                 }
                             }
                         } else {
-                            s.push_literal(format!("{}. {}\n", idx + 1, i.text));
+                            s.push_literal(format!("{}. {}\n", idx + 1, text));
                         }
                     }
                     IrNode::Branch(br) => {
@@ -356,8 +491,25 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                         );
                     }
                     IrNode::Call(c) if c.projection_tier == Some(1) => {
-                        let body = c.resolved_body.as_deref().unwrap_or_default();
+                        // §9.2: substitute `{n}` → bare `n` for flow-locals in
+                        // the inlined body. Parameter slots pass through and
+                        // are filled by the existing stub-fill machinery.
+                        let raw_body = c.resolved_body.as_deref().unwrap_or_default();
+                        let body_owned = substitute_local_refs_in(raw_body, &c.local_refs);
+                        let body = body_owned.as_str();
                         if is_last {
+                            // Codex M4: when this final call IS the producer
+                            // whose result the skill returns (`skill.return_local_ref`
+                            // points at this `c.node_id`), the §9.3 return-prose
+                            // step ("Your result is <name> …") will be emitted
+                            // immediately below. Suppress the §8.4 generic
+                            // "Return a `<T>`." suffix here so the two prose
+                            // forms don't both render and duplicate the return
+                            // statement.
+                            let is_returned_producer = skill
+                                .return_local_ref
+                                .as_ref()
+                                .is_some_and(|lr| lr.node_id == c.node_id);
                             // For tier-1 calls, the enclosing skill's output_contract
                             // wins when both exist: the skill's `return <…>` is the
                             // author's stated final return, so its template must take
@@ -374,50 +526,81 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                                     c.callee_return_type_text.as_deref(),
                                 ),
                             };
-                            let sentence = templates::compute_return_sentence(
-                                effective_rt,
-                                effective_form,
-                                &arena.type_registry,
-                            );
+                            let sentence = if is_returned_producer {
+                                None
+                            } else {
+                                templates::compute_return_sentence(
+                                    effective_rt,
+                                    effective_form,
+                                    &arena.type_registry,
+                                )
+                            };
                             // A return-only callee (e.g. `block helper: do { return <x> }`)
                             // inlines with an empty resolved_body. Suffixing onto an
                             // empty body would yield a malformed leading-comma line;
                             // emit the §8.4 sentence as a standalone step instead.
                             let body_is_empty = body.trim().is_empty();
-                            match (sentence, body_is_empty) {
-                                (Some(sent), true) => {
-                                    s.push_literal(format!("{}. {}\n", idx + 1, sent));
-                                }
+                            // Pre-fold the §8.4 sentence (if any) onto the
+                            // body first; the §9.1 naming sentence — when
+                            // applicable — then trails the whole thing so the
+                            // step renders `<body>. <return-sentence>. Refer
+                            // to this … as <n>.`
+                            let mut step_text = match (sentence, body_is_empty) {
+                                (Some(sent), true) => sent,
                                 (Some(sent), false) => {
-                                    let folded = templates::append_return_sentence(body, &sent);
-                                    s.push_literal(format!("{}. {}\n", idx + 1, folded));
+                                    templates::append_return_sentence(body, &sent)
                                 }
-                                (None, _) => {
-                                    s.push_literal(format!("{}. {}\n", idx + 1, body));
-                                }
+                                (None, _) => body.to_string(),
+                            };
+                            if let Some(naming) = naming_sentence_for_call(c) {
+                                step_text = append_sentence(&step_text, &naming);
                             }
+                            s.push_literal(format!("{}. {}\n", idx + 1, step_text));
                         } else {
-                            s.push_literal(format!("{}. {}\n", idx + 1, body));
+                            // Producer step in a non-last position. Append the
+                            // §9.1 naming sentence directly to the inlined
+                            // body — this is the "action sentence + naming
+                            // sentence in the same Step" rule from §9.1.
+                            let mut step_text = body.to_string();
+                            if let Some(naming) = naming_sentence_for_call(c) {
+                                step_text = append_sentence(&step_text, &naming);
+                            }
+                            s.push_literal(format!("{}. {}\n", idx + 1, step_text));
                         }
                     }
                     IrNode::Call(c) if c.projection_tier == Some(2) => {
                         let kebab_name = c.target.replace('_', "-");
-                        s.push_literal(format!(
-                            "{}. Follow the {} procedure below.\n",
-                            idx + 1,
-                            kebab_name
-                        ));
+                        let mut step_text = format!("Follow the {} procedure below.", kebab_name);
+                        if let Some(naming) = naming_sentence_for_call(c) {
+                            step_text = append_sentence(&step_text, &naming);
+                        }
+                        s.push_literal(format!("{}. {}\n", idx + 1, step_text));
                         if procedure_seen.insert(c.target.clone()) {
                             procedure_order.push(c.target.clone());
                         }
                     }
                     IrNode::Call(c) if c.projection_tier == Some(3) => {
                         let proc_path = c.procedure_path.as_deref().unwrap_or("unknown");
-                        s.push_literal(format!(
-                            "{}. {}\n",
-                            idx + 1,
-                            templates::external_file_step(proc_path)
-                        ));
+                        let mut step_text = templates::external_file_step(proc_path);
+                        if let Some(naming) = naming_sentence_for_call(c) {
+                            step_text = append_sentence(&step_text, &naming);
+                        }
+                        s.push_literal(format!("{}. {}\n", idx + 1, step_text));
+                    }
+                    IrNode::Call(c) if c.bound_name.is_some() => {
+                        // Flow-position-assignments §9.1: a stdlib or otherwise
+                        // unresolved producer (no `resolved_body`, no
+                        // projection_tier) — most commonly `subagent(...)` —
+                        // still needs an action sentence so the §9.1 naming
+                        // sentence has somewhere to attach. Synthesize a
+                        // generic `Call <target>.` action; Step 2 (LLM) is
+                        // free to weave it more fluently when a `with`
+                        // modifier is present.
+                        let mut step_text = format!("Call `{}`.", c.target);
+                        if let Some(naming) = naming_sentence_for_call(c) {
+                            step_text = append_sentence(&step_text, &naming);
+                        }
+                        s.push_literal(format!("{}. {}\n", idx + 1, step_text));
                     }
                     IrNode::Call(c) => {
                         panic!(
@@ -428,6 +611,24 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                     _ => panic!("Step node was not an InlineInstruction, Branch, or Call"),
                 };
             }
+        }
+        // Flow-position-assignments §9.3: when the skill's `return <ident>`
+        // resolved to a flow-local producer, append the return-prose template
+        // as an extra step paragraph after the regular flow steps.
+        if let Some(lref) = skill.return_local_ref.as_ref() {
+            // Look up the producing IrCall to derive the noun phrase.
+            let producer = arena.nodes().iter().find_map(|n| match n {
+                IrNode::Call(c) if c.node_id == lref.node_id => Some(c),
+                _ => None,
+            });
+            let noun = producer
+                .map(noun_phrase_for_producer)
+                .unwrap_or_else(|| "the result".to_string());
+            let next_step_num = skill.steps.len() + 1;
+            s.push_literal(format!(
+                "{}. Your result is {} ({} produced above).\n",
+                next_step_num, lref.name, noun
+            ));
         }
         s.push_literal("\n");
     }
@@ -641,6 +842,7 @@ mod tests {
             return_type: None,
             output_contract: None,
             return_type_text: None,
+            return_local_ref: None,
         }));
         arena.set_root_skill(s_id);
 
@@ -651,5 +853,154 @@ mod tests {
             .filter(|c| matches!(c, Chunk::Span(sp) if sp.kind == SpanKind::ParamDescription))
             .count();
         assert_eq!(span_count, 1, "one ParamDescription span per param");
+    }
+
+    /// Phase 4 Emit prose tests (`.flow-assign-spec.md` §9).
+    ///
+    /// We build via parse → analyze → lower → expand → emit directly so the
+    /// pipeline ignores Repairable diagnostics that don't affect lower (e.g.,
+    /// `missing-effects`, `stdlib-missing-import` — the latter does not
+    /// suppress lower's stdlib-aware lookup, so the IR carries `is_agent`
+    /// regardless). Mirrors the test rig in `lower::flow_assign_lower_tests`.
+    fn compile_to_md(src: &str) -> String {
+        use crate::analyze::analyze_with_diagnostics;
+        use crate::diagnostic::DiagBag;
+        use crate::domain_registry::Registry;
+        use crate::span::LineIndex;
+        let (file, _) = crate::parse::parse(src, 0).expect("source should parse");
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let mut registry = Registry::new();
+        let analyzed =
+            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
+        let arena = crate::lower::lower(&analyzed).expect("source should lower");
+        let arena = crate::expand::expand_step1(arena);
+        crate::emit::emit(&arena, false)
+    }
+
+    /// §9.1 (value shape): producer step appends `Refer to this result as <n>.`
+    /// (bare `n`, no quotes).
+    #[test]
+    fn emit_value_binding_naming_sentence() {
+        let src = r#"
+block inspect_repo(scope = ".") -> RepoContext
+    "Inspect {scope}."
+
+skill demo() -> RepoContext
+    description: "demo"
+    flow:
+        ctx = inspect_repo(".")
+        return ctx
+"#;
+        let md = compile_to_md(src);
+        assert!(
+            md.contains("Refer to this result as ctx."),
+            "missing value-binding naming sentence:\n{md}"
+        );
+    }
+
+    /// §9.1 (agent shape): `subagent` callee → `Refer to this agent as 'n.'`
+    /// (single quotes around `n`, matching GLYPH_LANGUAGE_GUIDE §18.4).
+    #[test]
+    fn emit_agent_binding_naming_sentence() {
+        let src = r#"
+import "@glyph/std" { subagent }
+
+skill demo()
+    description: "demo"
+    flow:
+        researcher = subagent("investigate this area")
+        return researcher
+"#;
+        let md = compile_to_md(src);
+        assert!(
+            md.contains("Refer to this agent as 'researcher.'"),
+            "missing agent-binding naming sentence:\n{md}"
+        );
+    }
+
+    /// §9.2: deterministic local-ref substitution turns `{ctx}` into bare `ctx`
+    /// in inline-instruction text BEFORE `push_literal`. Parameter slots
+    /// (different name) must pass through untouched — covered indirectly by
+    /// the producer's resolved body containing `{scope}`.
+    #[test]
+    fn emit_substitutes_local_refs_in_inline_text() {
+        let src = r#"
+block inspect_repo(scope = ".") -> RepoContext
+    "Inspect {scope}."
+
+skill demo()
+    description: "demo"
+    flow:
+        ctx = inspect_repo(".")
+        "Use the result {ctx} to find issues"
+        return ctx
+"#;
+        let md = compile_to_md(src);
+        assert!(
+            md.contains("Use the result ctx to find issues"),
+            "expected `{{ctx}}` substituted to bare `ctx`:\n{md}"
+        );
+        assert!(
+            !md.contains("{ctx}"),
+            "literal `{{ctx}}` leaked into output:\n{md}"
+        );
+    }
+
+    /// §9.2: substitution must apply to inline-instruction text emitted inside
+    /// a branch arm body, not just at the top level. A `{ctx}` slot whose name
+    /// is a flow-local in scope at the arm site must become bare `ctx`.
+    #[test]
+    fn emit_substitutes_local_refs_in_arm_body() {
+        let src = r#"
+const big_change = "the change is big"
+
+block inspect_repo(scope = ".") -> RepoContext
+    "Inspect {scope}."
+
+skill demo() -> RepoContext
+    description: "demo"
+    flow:
+        ctx = inspect_repo(".")
+        if big_change:
+            "Use the result {ctx} inside this arm"
+        return ctx
+"#;
+        let md = compile_to_md(src);
+        assert!(
+            md.contains("Use the result ctx inside this arm"),
+            "expected `{{ctx}}` substituted to bare `ctx` inside arm body:\n{md}"
+        );
+        assert!(
+            !md.contains("{ctx}"),
+            "literal `{{ctx}}` leaked into arm body:\n{md}"
+        );
+    }
+
+    /// §9.3: return prose uses noun phrase derived from
+    /// `callee_output_contract` → `callee_return_type_text` → "the result".
+    /// Here the callee block declares `-> RepoContext` (no descriptive output
+    /// contract), so the noun phrase falls back to the type-text path.
+    #[test]
+    fn emit_return_prose_uses_noun_phrase() {
+        let src = r#"
+block inspect_repo(scope = ".") -> RepoContext
+    "Inspect {scope}."
+
+skill demo() -> RepoContext
+    description: "demo"
+    flow:
+        ctx = inspect_repo(".")
+        return ctx
+"#;
+        let md = compile_to_md(src);
+        assert!(
+            md.contains("Your result is ctx"),
+            "expected return prose `Your result is ctx`:\n{md}"
+        );
+        assert!(
+            md.contains("produced above"),
+            "expected `produced above` parenthetical in return prose:\n{md}"
+        );
     }
 }

@@ -291,17 +291,48 @@ fn emit_lettered_substeps(s: &mut Scaffold, arena: &IrArena, body: &[NodeId]) {
     let mut letter = b'a';
     for node_id in body {
         let text = match arena.get(*node_id) {
-            IrNode::InlineInstruction(i) => i.text.clone(),
+            // Flow-position-assignments §9.2: rewrite `{name}` → bare `name`
+            // for any slot whose name is a flow-local in scope. Mirrors the
+            // top-level `IrInlineInstruction` emission path in scaffold.rs.
+            IrNode::InlineInstruction(i) => {
+                crate::emit::scaffold::substitute_local_refs_in(&i.text, &i.local_refs)
+            }
             IrNode::Call(c) if c.projection_tier == Some(1) => {
-                c.resolved_body.clone().unwrap_or_default()
+                // Flow-position-assignments §9.1: when an arm-local
+                // `<name> = <call>(...)` lives inside a branch body, the
+                // producer naming sentence ("Refer to this result as
+                // `<n>`." / "Refer to this agent as '<n>'.") must trail
+                // the inlined body — same convention as the skill flow
+                // root in `scaffold.rs`. Without this, downstream
+                // substeps that reference `{<n>}` can render as bare
+                // `<n>` (the §9.2 substitution still runs) but the
+                // reader has no introduction tying that bare name to
+                // the producer above.
+                let raw = c.resolved_body.as_deref().unwrap_or_default();
+                let body = crate::emit::scaffold::substitute_local_refs_in(raw, &c.local_refs);
+                if let Some(naming) = crate::emit::scaffold::naming_sentence_for_call(c) {
+                    crate::emit::scaffold::append_sentence(&body, &naming)
+                } else {
+                    body
+                }
             }
             IrNode::Call(c) if c.projection_tier == Some(2) => {
                 let kebab = crate::emit::templates::kebab_case(&c.target);
-                format!("Follow the {kebab} procedure.")
+                let body = format!("Follow the {kebab} procedure.");
+                if let Some(naming) = crate::emit::scaffold::naming_sentence_for_call(c) {
+                    crate::emit::scaffold::append_sentence(&body, &naming)
+                } else {
+                    body
+                }
             }
             IrNode::Call(c) if c.projection_tier == Some(3) => {
                 let path = c.procedure_path.as_deref().unwrap_or("unknown");
-                crate::emit::templates::external_file_step(path)
+                let body = crate::emit::templates::external_file_step(path);
+                if let Some(naming) = crate::emit::scaffold::naming_sentence_for_call(c) {
+                    crate::emit::scaffold::append_sentence(&body, &naming)
+                } else {
+                    body
+                }
             }
             IrNode::Call(c) => panic!("Call to `{}` survived past expand", c.target),
             IrNode::Branch(_) => "(nested branch)".into(),

@@ -80,6 +80,34 @@ pub fn first_slot_offset(content: &str) -> Option<usize> {
     scan_slots(content).first().map(|s| s.start_in_content)
 }
 
+/// Flow-position-assignments §9.2: substitute `{name}` slots whose `name` is in
+/// `is_local_ref` with the bare `name`; pass other slots (parameters, unknown
+/// names) through verbatim. Operates on `scan_slots` output to reuse the strict
+/// slot grammar — never re-implements parsing.
+pub fn substitute_local_refs<F: Fn(&str) -> bool>(content: &str, is_local_ref: F) -> String {
+    let slots = scan_slots(content);
+    if slots.is_empty() {
+        return content.to_string();
+    }
+    let mut out = String::with_capacity(content.len());
+    let mut cursor = 0;
+    for sm in &slots {
+        // Append literal text up to the slot's opening `{`.
+        out.push_str(&content[cursor..sm.start_in_content]);
+        if is_local_ref(&sm.name) {
+            // Substitute `{name}` → bare `name`.
+            out.push_str(&sm.name);
+        } else {
+            // Pass slot through verbatim.
+            out.push_str(&content[sm.start_in_content..sm.end_in_content]);
+        }
+        cursor = sm.end_in_content;
+    }
+    // Trailing literal after the last slot.
+    out.push_str(&content[cursor..]);
+    out
+}
+
 fn is_ident_start(b: u8) -> bool {
     b.is_ascii_alphabetic() || b == b'_'
 }
@@ -129,5 +157,31 @@ mod tests {
     fn first_slot_offset_helper() {
         assert_eq!(first_slot_offset("plain"), None);
         assert_eq!(first_slot_offset("a {x} b"), Some(2));
+    }
+
+    #[test]
+    fn substitute_local_refs_basic() {
+        // `ctx` is a flow-local; `scope` is a parameter — only `ctx` is rewritten.
+        let out = substitute_local_refs("Use {ctx} from {scope} now", |name| name == "ctx");
+        assert_eq!(out, "Use ctx from {scope} now");
+    }
+
+    #[test]
+    fn substitute_local_refs_no_slots_passthrough() {
+        let out = substitute_local_refs("plain text, no slots", |_| true);
+        assert_eq!(out, "plain text, no slots");
+    }
+
+    #[test]
+    fn substitute_local_refs_all_params() {
+        // No name matches — text passes through verbatim including slot tokens.
+        let out = substitute_local_refs("{a} and {b}", |_| false);
+        assert_eq!(out, "{a} and {b}");
+    }
+
+    #[test]
+    fn substitute_local_refs_multiple_matches() {
+        let out = substitute_local_refs("{a} {a} {b}", |name| name == "a");
+        assert_eq!(out, "a a {b}");
     }
 }

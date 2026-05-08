@@ -14,3 +14,5 @@ docs/supwerpowers
 crates/glyph-cli/tests/corpus/**/*.md
 !crates/glyph-cli/tests/corpus/**/*.glyph
 index.scip
+.flow-assign-spec.md
+.flow-assign-plan.md

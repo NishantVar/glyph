@@ -240,6 +240,36 @@ fn lower_output_contract_for_flow(
     None
 }
 
+/// Flow-position-assignments §9.1 agent-shape rule. Determine whether a flow
+/// call's callee returns an agent-shape value (`TypeTag::Agent`), so emit can
+/// pick between "Refer to this agent as 'n.'" vs "Refer to this result as n.".
+///
+/// Resolution mirrors analyze's `resolve_callee_return_for_assign`:
+///   1. Same-file blocks / export-blocks — case-insensitive "Agent" on the
+///      raw `-> Type` text.
+///   2. Stdlib — `crate::stdlib_sig(name).is_agent` (covers `subagent`).
+/// Anything else (unresolved callee, plain `-> DomainType`, no annotation)
+/// is treated as not-agent.
+fn callee_is_agent(
+    target: &str,
+    blocks: &BTreeMap<String, &BlockDecl>,
+    export_blocks: &BTreeMap<String, &ExportBlockDecl>,
+) -> bool {
+    if let Some(b) = blocks.get(target) {
+        if let Some(rt) = b.return_type.as_ref() {
+            return rt.node.eq_ignore_ascii_case("Agent");
+        }
+    }
+    if let Some(eb) = export_blocks.get(target) {
+        if let Some(rt) = eb.return_type.as_ref() {
+            return rt.node.eq_ignore_ascii_case("Agent");
+        }
+    }
+    crate::stdlib_sig(target)
+        .map(|s| s.is_agent)
+        .unwrap_or(false)
+}
+
 /// Lower a list of flow statements into IR nodes, returning node IDs.
 /// Used for branch body lowering. Constraint/context markers inside branch
 /// bodies stay inline (not hoisted) per pipeline.md §Phase 4.
@@ -259,6 +289,7 @@ fn lower_flow_body(
                     node_id: next,
                     text: text.clone(),
                     role: Role::Step,
+                    local_refs: Vec::new(),
                 }));
                 ids.push(id);
             }
@@ -281,6 +312,7 @@ fn lower_flow_body(
                     node_id: next,
                     text: format!("{}{}", prefix, resolved),
                     role: Role::Constraint,
+                    local_refs: Vec::new(),
                 }));
                 ids.push(id);
             }
@@ -292,6 +324,7 @@ fn lower_flow_body(
                     node_id: next,
                     text: format!("Note: {}", resolved),
                     role: Role::Context,
+                    local_refs: Vec::new(),
                 }));
                 ids.push(id);
             }
@@ -299,6 +332,7 @@ fn lower_flow_body(
                 target,
                 args,
                 site_modifier,
+                bound_name,
             } => {
                 let resolved_body = if let Some(block) = blocks.get(target.node.as_str()) {
                     let body_text = resolve_block_body_text(block, texts)?;
@@ -330,6 +364,12 @@ fn lower_flow_body(
                             .get(target.node.as_str())
                             .and_then(|eb| export_block_callee_output_form(eb))
                     });
+                // Flow-position-assignments §8.1: copy the AST-side bound name
+                // verbatim. §9.1: pre-compute the agent-shape flag here so
+                // emit doesn't have to re-resolve the callee.
+                let bound_name_lowered = bound_name.as_ref().map(|s| s.node.clone());
+                let is_agent = bound_name_lowered.is_some()
+                    && callee_is_agent(target.node.as_str(), blocks, export_blocks);
                 let next = NodeId(arena.len() as u32);
                 let id = arena.push(IrNode::Call(IrCall {
                     node_id: next,
@@ -342,6 +382,9 @@ fn lower_flow_body(
                     return_type,
                     callee_output_contract,
                     callee_return_type_text,
+                    bound_name: bound_name_lowered,
+                    local_refs: Vec::new(),
+                    is_agent,
                 }));
                 ids.push(id);
             }
@@ -358,6 +401,7 @@ fn lower_flow_body(
                     node_id: branch_id,
                     text: String::new(),
                     role: Role::Step,
+                    local_refs: Vec::new(),
                 }));
                 let then_ids = lower_flow_body(then_body, arena, texts, blocks, export_blocks)?;
                 let mut ir_elifs = Vec::new();
@@ -590,6 +634,7 @@ pub fn lower_with_imports(
         return_type: skill_return_type.clone(),
         output_contract: None,
         return_type_text: skill_return_type_text,
+        return_local_ref: None,
     }));
 
     // Lower block declarations to IrBlock nodes.
@@ -673,6 +718,7 @@ pub fn lower_with_imports(
                         node_id: branch_id,
                         text: String::new(),
                         role: Role::Step,
+                        local_refs: Vec::new(),
                     }));
                     let then_ids =
                         lower_flow_body(then_body, &mut arena, &texts, &blocks, &export_blocks)?;
@@ -770,6 +816,12 @@ pub fn lower_with_imports(
     let mut flow_hoisted_context_ids: Vec<NodeId> = Vec::new();
     let mut return_text: Option<String> = None;
     let mut skill_output_contract: Option<NodeId> = None;
+    // Flow-position-assignments §8.2 producer table: bound_name → producing
+    // IrCall.node_id. Populated only by top-level skill-flow calls; branch-arm
+    // bindings do not leak (§6.1 lexical scoping). Consumed below to wire
+    // `return_local_ref` when the skill returns a flow-local name.
+    let mut skill_producers: BTreeMap<String, NodeId> = BTreeMap::new();
+    let mut skill_return_local_ref: Option<crate::ir::LocalRef> = None;
     for stmt in &skill.flow {
         match stmt {
             FlowStmt::InlineString(text) => {
@@ -778,6 +830,7 @@ pub fn lower_with_imports(
                     node_id: next,
                     text: text.clone(),
                     role: Role::Step,
+                    local_refs: Vec::new(),
                 }));
                 step_ids.push(id);
             }
@@ -818,6 +871,7 @@ pub fn lower_with_imports(
                 target,
                 args,
                 site_modifier,
+                bound_name,
             } => {
                 // Create an IrCall node. Resolve callee body if block exists.
                 let resolved_body = if let Some(block) = blocks.get(target.node.as_str()) {
@@ -849,6 +903,11 @@ pub fn lower_with_imports(
                             .get(target.node.as_str())
                             .and_then(|eb| export_block_callee_output_form(eb))
                     });
+                // Flow-position-assignments §8.1/§9.1: copy bound_name verbatim
+                // and pre-compute the agent-shape flag for emit.
+                let bound_name_lowered = bound_name.as_ref().map(|s| s.node.clone());
+                let is_agent = bound_name_lowered.is_some()
+                    && callee_is_agent(target.node.as_str(), &blocks, &export_blocks);
                 let next = NodeId(arena.len() as u32);
                 let id = arena.push(IrNode::Call(IrCall {
                     node_id: next,
@@ -861,10 +920,38 @@ pub fn lower_with_imports(
                     return_type,
                     callee_output_contract,
                     callee_return_type_text,
+                    bound_name: bound_name_lowered.clone(),
+                    local_refs: Vec::new(),
+                    is_agent,
                 }));
+                // §8.2 producer table for return_local_ref resolution. Top-level
+                // skill-flow calls are visible to a top-level `return <name>`.
+                // Branch-arm bindings do NOT leak (§6.1 lexical scoping mirror)
+                // so they are intentionally not registered here. The producer
+                // table is consumed below where `return_text`/
+                // `return_local_ref` get computed.
+                if let Some(n) = bound_name_lowered {
+                    skill_producers.insert(n, id);
+                }
                 step_ids.push(id);
             }
             FlowStmt::Return(expr) => {
+                // Flow-position-assignments §8.2: when `return <name>` resolves
+                // to a flow-local producer, lift the binding into
+                // `IrSkill.return_local_ref` and clear `return_text` so
+                // Expand's legacy return-folding does not double-emit. Bare
+                // `return`, inline-string returns, and `return <param>` (no
+                // producer-table hit) keep the legacy `return_text` path.
+                let mut bound_match: Option<crate::ir::LocalRef> = None;
+                if let ReturnExpr::Name(name) = expr {
+                    if let Some(producer_id) = skill_producers.get(&name.node) {
+                        bound_match = Some(crate::ir::LocalRef {
+                            name: name.node.clone(),
+                            node_id: *producer_id,
+                        });
+                    }
+                }
+
                 // Capture the return expression text for return folding in Expand.
                 let text = match expr {
                     ReturnExpr::None => None,
@@ -881,7 +968,14 @@ pub fn lower_with_imports(
                     // `IrOutputContract` instead of folding into return text.
                     ReturnExpr::OutputTarget(_) => None,
                 };
-                return_text = text;
+                if let Some(local_ref) = bound_match {
+                    // Single source of truth: when return_local_ref is Some,
+                    // emit owns the return prose. Force return_text = None.
+                    skill_return_local_ref = Some(local_ref);
+                    return_text = None;
+                } else {
+                    return_text = text;
+                }
                 let form = match expr {
                     ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id)) => {
                         Some(OutputTargetForm::Identifier(id.name.clone()))
@@ -920,6 +1014,7 @@ pub fn lower_with_imports(
                     node_id: branch_id,
                     text: String::new(),
                     role: Role::Step,
+                    local_refs: Vec::new(),
                 }));
                 let then_ids =
                     lower_flow_body(then_body, &mut arena, &texts, &blocks, &export_blocks)?;
@@ -1045,6 +1140,7 @@ pub fn lower_with_imports(
             s.constraints = constraint_ids;
             s.return_text = return_text;
             s.output_contract = skill_output_contract;
+            s.return_local_ref = skill_return_local_ref;
         }
     }
     arena.set_root_skill(skill_id);
@@ -2152,5 +2248,143 @@ skill foo()
         assert!(branch.predicate_shape.has_predicate_token);
         assert!(!branch.predicate_shape.has_boolean_token);
         assert!(!branch.predicate_shape.has_compositional_operator);
+    }
+}
+
+#[cfg(test)]
+mod flow_assign_lower_tests {
+    //! Phase 3 (Lower + IR + emit_ir) for flow-position assignments
+    //! (`.flow-assign-spec.md` §8.1, §8.2).
+    //!
+    //! Verifies that:
+    //! 1. Lower copies `FlowStmt::Call.bound_name` into `IrCall.bound_name`.
+    //! 2. Lower wires `IrSkill.return_local_ref` and clears legacy
+    //!    `return_text` when the skill returns a flow-local name (§8.2
+    //!    single-source-of-truth rule).
+    //! 3. `is_agent` is set on `IrCall` for agent-shape callees (`subagent`
+    //!    via `crate::stdlib_sig`).
+    //! 4. `emit_ir::serialize_ir_json` round-trips `bound_name`,
+    //!    `local_refs`, `is_agent`, and `return_local_ref`.
+    use super::*;
+    use crate::analyze::analyze_with_diagnostics;
+    use crate::diagnostic::DiagBag;
+    use crate::domain_registry::Registry;
+    use crate::emit_ir::serialize_ir_json;
+    use crate::ir::{IrCall, IrNode, IrSkill};
+    use crate::parse;
+    use crate::span::LineIndex;
+
+    fn lower_str(src: &str) -> IrArena {
+        let (file, _) = parse::parse(src, 0).expect("source should parse");
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let mut registry = Registry::new();
+        let analyzed =
+            analyze_with_diagnostics(file, 0, "test", &line_index, &mut bag, &mut registry);
+        lower(&analyzed).expect("source should lower")
+    }
+
+    fn first_ir_skill(arena: &IrArena) -> &IrSkill {
+        let root = arena.root_skill().expect("arena should have a root skill");
+        match arena.get(root) {
+            IrNode::Skill(s) => s,
+            other => panic!("root_skill node was not Skill: {:?}", other),
+        }
+    }
+
+    fn first_ir_call<'a>(arena: &'a IrArena, skill: &IrSkill) -> &'a IrCall {
+        for id in &skill.steps {
+            if let IrNode::Call(c) = arena.get(*id) {
+                return c;
+            }
+        }
+        panic!("expected an IrCall in skill.steps");
+    }
+
+    /// Source that uses a same-file block as the assignment RHS so analyze's
+    /// no-value check passes; the block returns a domain type. Avoids
+    /// pulling in stdlib for the bound_name plumbing tests.
+    const VALUE_SRC: &str = r#"
+block inspect_repo(scope) -> RepoContext
+    "Inspect {scope}."
+skill demo()
+    flow:
+        ctx = inspect_repo("scope")
+        return ctx
+"#;
+
+    #[test]
+    fn lower_copies_bound_name() {
+        let arena = lower_str(VALUE_SRC);
+        let skill = first_ir_skill(&arena);
+        let call = first_ir_call(&arena, skill);
+        assert_eq!(call.bound_name.as_deref(), Some("ctx"));
+    }
+
+    #[test]
+    fn lower_sets_return_local_ref() {
+        let arena = lower_str(VALUE_SRC);
+        let skill = first_ir_skill(&arena);
+        let lref = skill
+            .return_local_ref
+            .as_ref()
+            .expect("skill should have return_local_ref");
+        assert_eq!(lref.name, "ctx");
+        let producer = first_ir_call(&arena, skill);
+        assert_eq!(lref.node_id, producer.node_id);
+        // Single-source-of-truth: legacy return_text must be cleared so
+        // Expand's return-folding doesn't double-emit (Codex Round 2 High 2).
+        assert!(skill.return_text.is_none());
+    }
+
+    #[test]
+    fn emit_ir_serializes_bound_name_and_local_refs() {
+        let arena = lower_str(VALUE_SRC);
+        let json_text =
+            serialize_ir_json(&arena, "test.glyph", false).expect("arena should produce IR JSON");
+        let value: serde_json::Value =
+            serde_json::from_str(&json_text).expect("IR JSON should parse");
+        let skill = &value["skill"];
+        let flow = skill["flow"]
+            .as_array()
+            .expect("skill.flow should be an array");
+        // First flow node is the bound IrCall.
+        let call = flow
+            .iter()
+            .find(|n| n["kind"] == "call")
+            .expect("flow should contain a call node");
+        assert_eq!(call["bound_name"], serde_json::json!("ctx"));
+        // Phase 4 populates entries; Phase 3 emits an empty array but the
+        // field MUST be present (per ir-json-schema.md `local_refs` is `yes`).
+        assert!(call["local_refs"].is_array(), "local_refs must be an array");
+        assert_eq!(call["is_agent"], serde_json::json!(false));
+        // Skill-level return_local_ref is an object with name + node_id.
+        let lref = &skill["return_local_ref"];
+        assert!(lref.is_object(), "return_local_ref should be an object");
+        assert_eq!(lref["name"], serde_json::json!("ctx"));
+        assert!(
+            lref["node_id"].is_string() || lref["node_id"].is_number(),
+            "node_id should be a string or number"
+        );
+    }
+
+    /// `researcher = subagent("...")`: analyze's stdlib-signature lookup
+    /// reports `is_agent = true`; lower's `callee_is_agent` mirrors via
+    /// `crate::stdlib_sig`. Confirms §9.1 rule 3 (stdlib_sig.is_agent path).
+    #[test]
+    fn lower_is_agent_for_subagent() {
+        let src = r#"
+import "@glyph/std" { subagent }
+
+skill demo()
+    flow:
+        researcher = subagent("investigate")
+        return researcher
+"#;
+        let arena = lower_str(src);
+        let skill = first_ir_skill(&arena);
+        let call = first_ir_call(&arena, skill);
+        assert_eq!(call.bound_name.as_deref(), Some("researcher"));
+        assert!(call.is_agent, "subagent callee should be agent-shape");
     }
 }

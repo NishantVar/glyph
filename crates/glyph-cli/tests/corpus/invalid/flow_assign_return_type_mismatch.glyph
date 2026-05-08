@@ -1,0 +1,11 @@
+block inspect_repo(scope = ".") -> Report
+    description: "Inspect the repo."
+    flow:
+        "Examine {scope}."
+        return context
+
+skill diagnose(scope = ".") -> Plan
+    description: "Returned binding type does not match skill return."
+    flow:
+        ctx = inspect_repo(scope)
+        return ctx

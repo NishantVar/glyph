@@ -1,0 +1,16 @@
+block inspect_repo(scope = ".") -> Report
+    description: "Inspect the repo."
+    flow:
+        "Examine {scope}."
+        return context
+
+block outer(scope = ".") -> Report
+    description: "Block flow with a forbidden binding."
+    flow:
+        ctx = inspect_repo(scope)
+        return ctx
+
+skill diagnose(scope = ".") -> Report
+    description: "Wrap the block in a skill so the file has a skill."
+    flow:
+        return outer(scope)

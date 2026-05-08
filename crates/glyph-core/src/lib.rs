@@ -36,6 +36,61 @@ use crate::ir::OutputTargetForm;
 use crate::output_target::OutputTargetExpr;
 use crate::span::{LineIndex, Span, Spanned};
 
+// ---------------------------------------------------------------------------
+// Stdlib call signatures (flow-position-assignments §4 lib.rs touch row,
+// Codex Round 2 Med 5).
+//
+// Analyze's no-value check (§6.2.b) needs to know whether `subagent` /
+// `send` declare a return type. Today the AST-side path for `@glyph/std`
+// imports (around L880-918 below) only registers names in `imported_blocks`
+// — it does not capture per-name return-type metadata.
+//
+// We expose a small inline registry keyed by the bare stdlib name:
+// - `subagent → Some("Agent"), is_agent: true`
+// - `send     → None,           is_agent: false`
+//
+// `is_agent` mirrors `TypeTag::Agent`; we keep it as an explicit flag
+// because the agent-shape rule (§9.1 Codex Round 3 Med 5) lives at the
+// flow-local-type layer, which doesn't have to round-trip the kind_infer
+// enum for stdlib-only callees.
+// ---------------------------------------------------------------------------
+
+/// Return-type signature for a `@glyph/std` block. Used by analyze (and
+/// later phases) to resolve flow-position assignment RHS types when the
+/// callee is a stdlib import.
+#[derive(Debug, Clone, Copy)]
+pub struct StdlibCallSig {
+    /// Declared `-> Type` text, or `None` if the callee returns no value.
+    pub return_type: Option<&'static str>,
+    /// Whether the callee's return is agent-shape (matches `TypeTag::Agent`).
+    pub is_agent: bool,
+}
+
+const STDLIB_SIGS: &[(&str, StdlibCallSig)] = &[
+    (
+        "subagent",
+        StdlibCallSig {
+            return_type: Some("Agent"),
+            is_agent: true,
+        },
+    ),
+    (
+        "send",
+        StdlibCallSig {
+            return_type: None,
+            is_agent: false,
+        },
+    ),
+];
+
+/// Look up the return-type signature for a stdlib block by bare name.
+///
+/// Returns `None` if `name` is not a registered stdlib block (or is
+/// `load`, which is compiler-internal and not author-facing).
+pub(crate) fn stdlib_sig(name: &str) -> Option<&'static StdlibCallSig> {
+    STDLIB_SIGS.iter().find(|(n, _)| *n == name).map(|(_, s)| s)
+}
+
 #[derive(Debug)]
 pub enum CompileError {
     Read {
@@ -1905,6 +1960,15 @@ fn build_resolved_imports(
     for decl in &parsed.decls {
         if let Decl::Import(import_spanned) = decl {
             let import = &import_spanned.node;
+            // TODO(flow-assign-subagent-cli): `@glyph/std` imports skipped
+            // here means the CLI compile path never resolves stdlib
+            // subagent end-to-end. Combined with the fast-path bail-out
+            // in `compile_file_with_resolved_imports` (see TODO ~L2194),
+            // a consumer like `import "@glyph/std" { subagent }` followed
+            // by `researcher = subagent(...)` falls through to the
+            // non-import-aware compile and fires
+            // `G::analyze::stdlib-missing-import`. Tracked as deferred
+            // on PR #149: https://github.com/NishantVar/glyph/pull/149
             if import.path.starts_with("@glyph/") {
                 continue;
             }
@@ -2136,6 +2200,14 @@ fn compile_file_with_resolved_imports(
     // Phase B.7: also check `type_descriptions` so a types-only consumer
     // (no imported texts/blocks/procedure-paths) still routes through the
     // resolved-imports path that folds imported types into the TypeRegistry.
+    // TODO(flow-assign-subagent-cli): the `build_resolved_imports` pass
+    // skips `@glyph/*` paths (see TODO ~L1963), so a stdlib-only consumer
+    // arrives here with empty collections and falls through to the
+    // non-import-aware `compile_file_with_effects`. That path sees no
+    // import names and `subagent(...)` / `send(...)` references fire
+    // `G::analyze::stdlib-missing-import`. End-to-end stdlib subagent via
+    // CLI compile is deferred. Tracked on PR #149:
+    // https://github.com/NishantVar/glyph/pull/149
     if imported_procedure_paths.is_empty()
         && resolved_imports.text_names.is_empty()
         && resolved_imports.block_names.is_empty()
@@ -4291,6 +4363,7 @@ skill main()
                 target,
                 args,
                 site_modifier,
+                bound_name: _,
             } => {
                 assert_eq!(target.node, "inspect_repo");
                 assert_eq!(args, &["scope".to_string()]);

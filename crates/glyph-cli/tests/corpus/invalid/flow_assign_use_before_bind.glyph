@@ -1,0 +1,12 @@
+block inspect_repo(scope = ".") -> Report
+    description: "Inspect the repo."
+    flow:
+        "Examine {scope}."
+        return context
+
+skill diagnose(scope = ".") -> Report
+    description: "Use before bind."
+    flow:
+        "Summarize {ctx}."
+        ctx = inspect_repo(scope)
+        return ctx

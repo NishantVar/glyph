@@ -1,0 +1,10 @@
+block notify(msg = "hello")
+    description: "Send a message; no return type."
+    flow:
+        "Notify with {msg}."
+
+skill diagnose() -> Report
+    description: "RHS callee has no return type."
+    flow:
+        x = notify("hello")
+        return x

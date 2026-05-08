@@ -1,0 +1,22 @@
+block inspect_repo(scope = ".") -> Report
+    description: "Inspect the repository at the given scope."
+    flow:
+        "Examine the repository at {scope} and produce a report."
+        return context
+
+block summarize_fast(input = "x") -> Report
+    description: "Summarize the input quickly."
+    flow:
+        "Quickly review {input} and emit a brief report."
+        return context
+
+skill diagnose(scope = ".", mode = "fast") -> Report
+    description: "Arm-local binding produced and consumed inside the same arm."
+    flow:
+        outer_ctx = inspect_repo(scope)
+        if mode == "fast"
+            local_summary = summarize_fast(scope)
+            "Use {local_summary} for the fast path."
+        else
+            "Carefully summarize {outer_ctx}."
+        return outer_ctx

@@ -144,6 +144,25 @@ pub fn tokenize_condition(s: &str) -> Vec<String> {
     out
 }
 
+/// Lightweight typed metadata about a flow-local binding, attached to
+/// `ConditionContext` for branch-condition classification. Mirrors a subset
+/// of `analyze::FlowLocalType` — the classifier itself only needs the
+/// agent-shape flag today, but the field is reserved so future kind-aware
+/// classification (e.g. distinguishing agent-bindings from value-bindings
+/// when used bare) can land without re-plumbing the context.
+///
+/// Spec `.flow-assign-spec.md` §6.3 (Codex Round 2 High 4): the existing
+/// `ConditionContext.bindings` field is untyped (`HashSet<&str>`). The spec
+/// asks the implementer to extend it OR add a parallel typed map so
+/// flow-local types reach the matcher. We add the typed map here; the
+/// untyped `bindings` set is preserved for backward compatibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConditionFlowLocal {
+    /// True iff the producer call returns an agent-shape value (e.g.
+    /// `subagent(...)`). See spec §9.1 for the agent-shape rule.
+    pub is_agent: bool,
+}
+
 /// Context for classifying a single condition. Owned by Analyze; built once
 /// per enclosing decl (skill or block) and reused for every branch inside.
 pub struct ConditionContext<'a> {
@@ -156,9 +175,12 @@ pub struct ConditionContext<'a> {
     pub params_with_string_default: HashSet<&'a str>,
     /// Local bindings produced by `name = call(...)`. MVP: classified as
     /// Boolean. Kind-tracking deferred (see Out of Scope §1 in design spec).
-    /// Currently always empty: the AST has no binding-form `FlowStmt` variant
-    /// yet. Reserved for the kind-tracking work that will land later.
+    /// Populated for skill-flow contexts via `for_branch_with_consts`; empty
+    /// for block-flow contexts (block flow rejects bindings at analyze time).
     pub bindings: HashSet<&'a str>,
+    /// Typed flow-local metadata, parallel to `bindings`. See
+    /// [`ConditionFlowLocal`] doc for the rationale.
+    pub flow_local_bindings: HashMap<&'a str, ConditionFlowLocal>,
 }
 
 /// Walk same-file decls and imported-const data into a single
@@ -253,19 +275,46 @@ impl<'a> ConditionContext<'a> {
             }
         }
 
-        // Bindings: LHS of `name = call(...)` flow statements. The AST has no
-        // binding variant yet, so this loop currently inserts nothing. The
-        // walk is retained so future bindings light up automatically once a
-        // binding-form variant is added.
+        // Bindings: LHS of `name = call(...)` flow statements. The default
+        // `for_decl` constructor pre-bakes once per decl with no live walk
+        // state, so it cannot accumulate per-branch bindings — callers that
+        // need flow-local awareness use `for_branch_with_consts`.
         let bindings: HashSet<&'a str> = HashSet::new();
         for _stmt in enclosing_flow {
-            // No binding-form variant in current AST — see field doc.
+            // The walk is preserved so a future binding-form variant lights up
+            // automatically; today it inserts nothing.
         }
 
         Self {
             consts,
             params_with_string_default,
             bindings,
+            flow_local_bindings: HashMap::new(),
+        }
+    }
+
+    /// Per-branch constructor for skill-flow walks (spec `.flow-assign-spec.md`
+    /// §6.3 / Codex Round 2 High 4). The caller has just walked some prefix of
+    /// the enclosing skill flow, accumulated a live `FlowScope`, and is about
+    /// to classify a branch condition. The `flow_local_bindings` snapshot here
+    /// reflects the bindings visible at that branch site (outer bindings only;
+    /// arm-local bindings have not yet been introduced — they live in the
+    /// child scope).
+    ///
+    /// `for_branch_with_consts` reuses the per-decl `consts` /
+    /// `params_with_string_default` snapshots; only the bindings differ
+    /// per-branch.
+    pub fn for_branch_with_consts(
+        consts: HashMap<&'a str, crate::kind_infer::TypeTag>,
+        params_with_string_default: HashSet<&'a str>,
+        flow_local_bindings: HashMap<&'a str, ConditionFlowLocal>,
+    ) -> Self {
+        let bindings: HashSet<&'a str> = flow_local_bindings.keys().copied().collect();
+        Self {
+            consts,
+            params_with_string_default,
+            bindings,
+            flow_local_bindings,
         }
     }
 }

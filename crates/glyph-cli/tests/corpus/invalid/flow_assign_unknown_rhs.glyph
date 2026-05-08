@@ -1,0 +1,5 @@
+skill diagnose(scope = ".") -> Report
+    description: "Unknown RHS callee should fire one repairable diagnostic."
+    flow:
+        x = unknown(scope)
+        return x

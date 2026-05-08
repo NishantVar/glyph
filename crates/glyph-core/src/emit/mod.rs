@@ -134,6 +134,7 @@ mod tests {
             node_id: NodeId(0),
             text: "Do something.".into(),
             role: crate::ir::Role::Step,
+            local_refs: Vec::new(),
         }));
         let skill_id = arena.push(IrNode::Skill(IrSkill {
             node_id: NodeId(1),
@@ -148,6 +149,7 @@ mod tests {
             return_type: None,
             output_contract: None,
             return_type_text: None,
+            return_local_ref: None,
         }));
         arena.set_root_skill(skill_id);
         arena

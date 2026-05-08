@@ -167,11 +167,13 @@ mod tests {
             return_type: None,
             output_contract: None,
             return_type_text: None,
+            return_local_ref: None,
         }));
         arena.push(IrNode::InlineInstruction(IrInlineInstruction {
             node_id: NodeId(1),
             text: step_text.into(),
             role: Role::Step,
+            local_refs: Vec::new(),
         }));
         arena.set_root_skill(NodeId(0));
         arena
@@ -193,6 +195,7 @@ mod tests {
             return_type: None,
             output_contract: None,
             return_type_text: None,
+            return_local_ref: None,
         }));
         arena.set_root_skill(NodeId(0));
         // Manually push a node with the same ID.
@@ -202,6 +205,7 @@ mod tests {
                 node_id: NodeId(0), // duplicate!
                 text: "step".into(),
                 role: Role::Step,
+                local_refs: Vec::new(),
             }));
         let err = validate(&arena).unwrap_err();
         assert_eq!(err, ValidateError::DuplicateNodeId(0));
@@ -240,6 +244,7 @@ mod tests {
             return_type: None,
             output_contract: None,
             return_type_text: None,
+            return_local_ref: None,
         }));
         arena.push(IrNode::Call(IrCall {
             node_id: NodeId(1),
@@ -252,6 +257,9 @@ mod tests {
             return_type: None,
             callee_output_contract: None,
             callee_return_type_text: None,
+            bound_name: None,
+            local_refs: Vec::new(),
+            is_agent: false,
         }));
         arena.set_root_skill(skill_id);
         let err = validate(&arena).unwrap_err();
@@ -275,6 +283,7 @@ mod tests {
             return_type: None,
             output_contract: None,
             return_type_text: None,
+            return_local_ref: None,
         }));
         arena.push(IrNode::Call(IrCall {
             node_id: NodeId(1),
@@ -287,6 +296,9 @@ mod tests {
             return_type: None,
             callee_output_contract: None,
             callee_return_type_text: None,
+            bound_name: None,
+            local_refs: Vec::new(),
+            is_agent: false,
         }));
         // Block "foo" that calls itself (direct recursion).
         arena.push(IrNode::Block(IrBlock {
@@ -326,6 +338,7 @@ mod tests {
             return_type: None,
             output_contract: None,
             return_type_text: None,
+            return_local_ref: None,
         }));
         arena.push(IrNode::Branch(crate::ir::IrBranch {
             node_id: NodeId(1),
@@ -360,6 +373,7 @@ mod tests {
             return_type: None,
             output_contract: None,
             return_type_text: None,
+            return_local_ref: None,
         }));
         arena.push(IrNode::Call(IrCall {
             node_id: NodeId(1),
@@ -372,6 +386,9 @@ mod tests {
             return_type: None,
             callee_output_contract: None,
             callee_return_type_text: None,
+            bound_name: None,
+            local_refs: Vec::new(),
+            is_agent: false,
         }));
         // Block "foo" calls "bar".
         arena.push(IrNode::Block(IrBlock {
