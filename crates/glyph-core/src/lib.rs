@@ -1430,7 +1430,9 @@ pub fn compile_directory_with_options(
             }
             Ok(CompileOutcome::Diagnostics(bag)) => {
                 failed_files.insert(file.clone());
-                any_failure = true;
+                if bag.has_error() {
+                    any_failure = true;
+                }
                 outcomes.push((file.clone(), FileOutcome::Failed { diagnostics: bag }));
             }
             Err(CompileError::Lower(lower::LowerError::NoSkill)) => {
@@ -1464,7 +1466,20 @@ pub fn compile_directory_with_options(
         }
     }
 
-    let exit_code = if any_failure { 1 } else { 0 };
+    let diag_worst = outcomes
+        .iter()
+        .map(|(_, o)| match o {
+            FileOutcome::Compiled { diagnostics } | FileOutcome::Failed { diagnostics } => {
+                diagnostics.exit_code()
+            }
+            FileOutcome::Skipped { .. } => 0,
+        })
+        .fold(0u8, |acc, code| match (acc, code) {
+            (1, _) | (_, 1) => 1,
+            (2, _) | (_, 2) => 2,
+            _ => 0,
+        });
+    let exit_code = if any_failure { 1 } else { diag_worst };
     BuildResult {
         outcomes,
         exit_code,
