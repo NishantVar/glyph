@@ -282,6 +282,33 @@ impl Scaffold {
     }
 }
 
+fn collect_tier2_targets(
+    nodes: &[NodeId],
+    arena: &IrArena,
+    seen: &mut HashSet<String>,
+    order: &mut Vec<String>,
+) {
+    for nid in nodes {
+        match arena.get(*nid) {
+            IrNode::Call(c) if c.projection_tier == Some(2) => {
+                if seen.insert(c.target.clone()) {
+                    order.push(c.target.clone());
+                }
+            }
+            IrNode::Branch(b) => {
+                collect_tier2_targets(&b.then_body, arena, seen, order);
+                for elif in &b.elif_branches {
+                    collect_tier2_targets(&elif.body, arena, seen, order);
+                }
+                if let Some(else_body) = &b.else_body {
+                    collect_tier2_targets(else_body, arena, seen, order);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
     let root_id = arena
         .root_skill()
@@ -414,6 +441,7 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
     // ### Steps
     let mut procedure_order: Vec<String> = Vec::new();
     let mut procedure_seen: HashSet<String> = HashSet::new();
+    collect_tier2_targets(&skill.steps, arena, &mut procedure_seen, &mut procedure_order);
 
     // Pre-compute skill output_contract form once (owned), for use in the
     // last-step suffix logic below.

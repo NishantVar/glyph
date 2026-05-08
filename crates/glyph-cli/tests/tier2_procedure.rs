@@ -72,3 +72,20 @@ fn explicit_blocks_tier2_projection() {
         "procedure section ordering should be deterministic across runs"
     );
 }
+
+#[test]
+fn branch_only_tier2_emits_procedure_section() {
+    let output = compile_fixture("branch_only_procedure");
+
+    assert!(
+        output.contains("Follow the deep-clean procedure"),
+        "expected sub-step reference to deep-clean procedure; got:\n{}",
+        output
+    );
+
+    assert!(
+        output.contains("### Procedure: deep-clean"),
+        "expected ### Procedure: deep-clean section; got:\n{}",
+        output
+    );
+}

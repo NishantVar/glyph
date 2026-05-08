@@ -1,0 +1,14 @@
+block deep_clean()
+    flow:
+        "Sweep the staging directory."
+        "Drop temporary indexes."
+        "Run the verification suite."
+        "Report any leftover artifacts."
+
+skill nightly_run()
+    description: "Nightly housekeeping."
+    flow:
+        "Snapshot the current state."
+        if run_mode == "deep"
+            deep_clean()
+        "Record the run summary."

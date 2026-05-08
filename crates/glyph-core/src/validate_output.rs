@@ -138,7 +138,9 @@ struct ListItem {
 }
 
 #[derive(Debug)]
-struct SubItem;
+struct SubItem {
+    text: String,
+}
 
 fn parse_md_structure(md: &str) -> MdStructure {
     let mut structure = MdStructure::default();
@@ -218,7 +220,8 @@ fn parse_md_structure(md: &str) -> MdStructure {
                 } else if is_lettered_subitem(trimmed) {
                     // Lettered sub-item: "a. ...", "b. ...", etc.
                     if let Some(ref mut item) = current_item {
-                        item.sub_items.push(SubItem);
+                        let text = strip_letter_prefix(trimmed);
+                        item.sub_items.push(SubItem { text });
                     }
                 } else if let Some(ref mut item) = current_item {
                     // Continuation line
@@ -293,6 +296,13 @@ fn strip_bullet_prefix(s: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+fn strip_letter_prefix(s: &str) -> String {
+    // Caller guarantees `is_lettered_subitem(s)` — a 3-byte
+    // `<lowercase ASCII>. ` prefix. Slice past it directly.
+    debug_assert!(is_lettered_subitem(s));
+    s[3..].to_string()
 }
 
 fn is_lettered_subitem(s: &str) -> bool {
@@ -1225,6 +1235,11 @@ fn check_modifier_leaked_in_flow(flow: &[Value], md: &str, violations: &mut Vec<
 // Check: procedure checks
 // ---------------------------------------------------------------------------
 
+fn step_mentions(item: &ListItem, needle: &str) -> bool {
+    item.text.contains(needle)
+        || item.sub_items.iter().any(|s| s.text.contains(needle))
+}
+
 fn check_procedures(md_struct: &MdStructure, skill: &Value, violations: &mut Vec<Violation>) {
     let flow = match skill.get("flow").and_then(|f| f.as_array()) {
         Some(f) => f,
@@ -1331,7 +1346,7 @@ fn check_procedures(md_struct: &MdStructure, skill: &Value, violations: &mut Vec
     if let Some(steps) = find_instructions_h3(md_struct, "Steps") {
         for proc_name in &unique_procedures {
             let kebab = kebab_case(proc_name);
-            let referenced = steps.items.iter().any(|item| item.text.contains(&kebab));
+            let referenced = steps.items.iter().any(|item| step_mentions(item, &kebab));
             if !referenced {
                 violations.push(Violation::new(
                     "G::expand::procedure-ref-missing",
@@ -1350,7 +1365,7 @@ fn check_procedures(md_struct: &MdStructure, skill: &Value, violations: &mut Vec
             // Check if step references a procedure name that doesn't have a section
             for proc_name in &unique_procedures {
                 let kebab = kebab_case(proc_name);
-                if item.text.contains(&kebab) && !actual_names.contains(&kebab) {
+                if step_mentions(item, &kebab) && !actual_names.contains(&kebab) {
                     violations.push(Violation::new(
                         "G::expand::procedure-ref-dangling",
                         format!(
@@ -1369,7 +1384,7 @@ fn check_procedures(md_struct: &MdStructure, skill: &Value, violations: &mut Vec
             let mut first_ref_order: Vec<String> = Vec::new();
             for item in &steps.items {
                 for name in &actual_names {
-                    if item.text.contains(name) && !first_ref_order.contains(name) {
+                    if step_mentions(item, name) && !first_ref_order.contains(name) {
                         first_ref_order.push(name.clone());
                     }
                 }
@@ -2965,6 +2980,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_md_structure_captures_lettered_substep_text() {
+        let md = "## Instructions\n\n### Steps\n\n1. Top-level step.\n   a. First sub-step.\n   b. Second sub-step.\n";
+        let s = parse_md_structure(md);
+        let h2 = s.h2_sections.iter().find(|h| h.name == "Instructions").unwrap();
+        let h3 = h2.h3_sections.iter().find(|h| h.name == "Steps").unwrap();
+        assert_eq!(h3.items.len(), 1);
+        let item = &h3.items[0];
+        assert_eq!(item.sub_items.len(), 2);
+        assert_eq!(item.sub_items[0].text, "First sub-step.");
+        assert_eq!(item.sub_items[1].text, "Second sub-step.");
+    }
+
     // --- format output ---
     #[test]
     fn json_output_format() {
@@ -3262,6 +3290,124 @@ mod tests {
                 .any(|v| v.id == "G::expand::predicate-prose-missing"),
             "expected G::expand::predicate-prose-missing; got: {:?}",
             violations
+        );
+    }
+
+    // --- procedure-ref checks scan sub-step text ---
+    #[test]
+    fn procedure_ref_in_lettered_substep_is_recognized() {
+        let ir = serde_json::json!({
+            "skill": {
+                "flow": [
+                    { "kind": "branch",
+                      "condition": "always",
+                      "then_body": [
+                          { "kind": "call",
+                            "target": "do_thing",
+                            "projection_mode": "same_file_procedure",
+                            "callee_flow": [{}, {}] }
+                      ],
+                      "elif_branches": [],
+                      "else_body": null }
+                ]
+            }
+        });
+        let md = "\
+## Instructions
+
+### Steps
+
+1. Decide which path applies.
+   a. Follow the do-thing procedure.
+
+### Procedure: do-thing
+
+1. step one
+2. step two
+";
+        let viols = validate_output(&ir.to_string(), md);
+        assert!(
+            viols.iter().all(|v| v.id != "G::expand::procedure-ref-missing"),
+            "did not expect procedure-ref-missing; got: {:?}", viols
+        );
+    }
+
+    #[test]
+    fn procedure_ref_dangling_detected_in_substep() {
+        let ir = serde_json::json!({
+            "skill": {
+                "flow": [
+                    { "kind": "branch",
+                      "condition": "always",
+                      "then_body": [
+                          { "kind": "call",
+                            "target": "do_thing",
+                            "projection_mode": "same_file_procedure",
+                            "callee_flow": [{}] }
+                      ],
+                      "elif_branches": [],
+                      "else_body": null }
+                ]
+            }
+        });
+        let md = "\
+## Instructions
+
+### Steps
+
+1. Decide.
+   a. Follow the do-thing procedure.
+";
+        let viols = validate_output(&ir.to_string(), md);
+        assert!(
+            viols.iter().any(|v| v.id == "G::expand::procedure-ref-dangling"),
+            "expected procedure-ref-dangling; got: {:?}", viols
+        );
+    }
+
+    #[test]
+    fn procedure_order_uses_first_substep_reference() {
+        let ir = serde_json::json!({
+            "skill": {
+                "flow": [
+                    { "kind": "branch",
+                      "condition": "always",
+                      "then_body": [
+                          { "kind": "call",
+                            "target": "alpha",
+                            "projection_mode": "same_file_procedure",
+                            "callee_flow": [{}] }
+                      ],
+                      "elif_branches": [],
+                      "else_body": null },
+                    { "kind": "call",
+                      "target": "beta",
+                      "projection_mode": "same_file_procedure",
+                      "callee_flow": [{}] }
+                ]
+            }
+        });
+        let md = "\
+## Instructions
+
+### Steps
+
+1. Decide.
+   a. Follow the alpha procedure.
+2. Follow the beta procedure below.
+
+### Procedure: beta
+
+1. step
+
+### Procedure: alpha
+
+1. step
+";
+        let viols = validate_output(&ir.to_string(), md);
+        assert!(
+            viols.iter().any(|v| v.id == "G::expand::procedure-order"),
+            "expected procedure-order; got: {:?}", viols
         );
     }
 }
