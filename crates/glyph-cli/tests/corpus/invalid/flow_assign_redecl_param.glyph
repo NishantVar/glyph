@@ -1,0 +1,11 @@
+block inspect_repo(scope = ".") -> Report
+    description: "Inspect the repo."
+    flow:
+        "Examine {scope}."
+        return context
+
+skill diagnose(scope = ".") -> Report
+    description: "Binding shadows a parameter."
+    flow:
+        scope = inspect_repo(".")
+        return scope

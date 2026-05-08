@@ -1,0 +1,15 @@
+block inspect_repo(scope = ".") -> Report
+    description: "Inspect the repository at the given scope."
+    flow:
+        "Examine the repository at {scope} and produce a report."
+        return context
+
+skill diagnose(scope = ".", mode = "fast") -> Report
+    description: "Conditionally summarize the inspection — exercises outer binding visible inside arms."
+    flow:
+        ctx = inspect_repo(scope)
+        if mode == "fast"
+            "Quickly summarize {ctx}."
+        else
+            "Carefully summarize {ctx}."
+        return ctx

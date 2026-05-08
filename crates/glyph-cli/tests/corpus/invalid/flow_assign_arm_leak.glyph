@@ -1,0 +1,12 @@
+block inspect_repo(scope = ".") -> Report
+    description: "Inspect the repo."
+    flow:
+        "Examine {scope}."
+        return context
+
+skill diagnose(scope = ".", mode = "fast") -> Report
+    description: "Binding declared in arm, referenced after."
+    flow:
+        if mode == "fast"
+            ctx = inspect_repo(scope)
+        return ctx

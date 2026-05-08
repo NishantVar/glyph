@@ -1,0 +1,11 @@
+block inspect_repo(scope = ".") -> Report
+    description: "Inspect the repository at the given scope."
+    flow:
+        "Examine the repository at {scope} and produce a report."
+        return context
+
+skill diagnose(scope = ".") -> Report
+    description: "Inspect the scope with a focus area."
+    flow:
+        ctx = inspect_repo(scope) with "focus on lint failures"
+        return ctx

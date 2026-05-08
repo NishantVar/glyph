@@ -1,0 +1,18 @@
+block inspect_repo(scope = ".") -> RepoContext
+    description: "Inspect the repo."
+    flow:
+        "Examine {scope}."
+        return context
+
+block render(input: Plan = "p") -> Report
+    description: "Render the plan."
+    flow:
+        "Render {input}."
+        return context
+
+skill diagnose(scope = ".") -> Report
+    description: "Pass a flow-local of the wrong type to a typed param."
+    flow:
+        ctx = inspect_repo(scope)
+        out = render(ctx)
+        return out

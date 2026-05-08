@@ -1,0 +1,5 @@
+skill diagnose() -> Report
+    description: "RHS is not a call expression."
+    flow:
+        x = "literal"
+        return x
