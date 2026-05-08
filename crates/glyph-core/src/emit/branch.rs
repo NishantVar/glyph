@@ -184,7 +184,9 @@ fn render_condition_for_arm(
     classification: Option<&crate::condition::ConditionClassification>,
     resolved_predicates: Option<&std::collections::BTreeMap<String, String>>,
 ) -> String {
-    if let (Some(c), Some(rp)) = (classification, resolved_predicates) {
+    if let Some(c) = classification {
+        let empty = std::collections::BTreeMap::new();
+        let rp = resolved_predicates.unwrap_or(&empty);
         return render_substituted_condition(c, rp);
     }
     let (token, kind) = extract_predicate_token(condition).unwrap_or_else(|| {

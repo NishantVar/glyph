@@ -241,6 +241,16 @@ fn fixture_predicate_inline_literal() {
 }
 
 #[test]
+fn fixture_predicate_literal_or_literal() {
+    snapshot_test("predicate_literal_or_literal");
+}
+
+#[test]
+fn fixture_predicate_literal_and_literal() {
+    snapshot_test("predicate_literal_and_literal");
+}
+
+#[test]
 fn mixed_predicate_const_with_not_emits_branch_condition_span() {
     let src = r#"
 const big = "the change is big"

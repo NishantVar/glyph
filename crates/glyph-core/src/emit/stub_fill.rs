@@ -17,11 +17,9 @@ pub fn fill(scaffold: &Scaffold) -> HashMap<SpanId, String> {
                         .condition_expression
                         .clone()
                         .unwrap_or_default();
-                    if let Some(rp) = &span.payload.resolved_predicates {
-                        substitute_predicate_tokens(&raw, rp, span.payload.classification.as_ref())
-                    } else {
-                        raw
-                    }
+                    let empty = BTreeMap::new();
+                    let rp = span.payload.resolved_predicates.as_ref().unwrap_or(&empty);
+                    substitute_predicate_tokens(&raw, rp, span.payload.classification.as_ref())
                 }
                 SpanKind::CallBodyShape => span.payload.resolved_body.clone().unwrap_or_default(),
             };
