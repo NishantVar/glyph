@@ -1509,10 +1509,25 @@ pub fn compile_directory_with_options(
                     },
                 ));
             }
-            Err(_e) => {
+            Err(e) => {
                 failed_files.insert(file.clone());
                 any_failure = true;
-                let bag = DiagBag::new();
+                // Synthesise a diagnostic so the CLI surfaces *something*
+                // instead of a silent exit-1 for Read/Write/Parse/Lower/Validate
+                // errors that aren't already wired to structured IDs.
+                let mut bag = DiagBag::new();
+                let source = std::fs::read_to_string(file).unwrap_or_default();
+                let line_index = LineIndex::new(&source);
+                let label = file.display().to_string();
+                let span = Span::new(0, 0, 0);
+                bag.push(
+                    Diagnostic::error(
+                        "G::build::compile-error",
+                        format!("compile pipeline failed: {:?}", e),
+                        SourceSpan::from_byte_span(&label, span, &line_index),
+                    ),
+                    span,
+                );
                 outcomes.push((file.clone(), FileOutcome::Failed { diagnostics: bag }));
             }
         }

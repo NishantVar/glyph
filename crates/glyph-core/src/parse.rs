@@ -294,12 +294,36 @@ pub fn parse_with_diagnostics_opts(
 
     let file = match parsed_result {
         Ok(f) => f,
-        Err(_e) => {
-            // Other parse errors are not yet wired to structured diagnostic IDs
-            // in this slice. The caller (compile_source) handles `None` by
-            // surfacing the bag — which will be empty — and returning a
-            // CompileError::Parse via the legacy path. For slice 2 we only
-            // need empty-file and empty-flow to flow through the bag.
+        Err(e) => {
+            // Surface unstructured ParseErrors as a generic Repairable
+            // diagnostic so the CLI doesn't silently exit with no output.
+            // Specific error IDs (e.g. `G::parse::if-string-predicate-missing-colon`)
+            // can be wired up incrementally; until then this catch-all keeps
+            // the parser from failing without a message.
+            if !bag.has_error() && !bag.has_repairable() {
+                let (span, message) = match &e {
+                    ParseError::Unexpected { span, message } => (*span, message.clone()),
+                    ParseError::Eof { message } => {
+                        let last = source.len() as u32;
+                        (Span::new(file_id, last, last), message.clone())
+                    }
+                    ParseError::Tokenize(_) => {
+                        let last = source.len() as u32;
+                        (Span::new(file_id, last, last), format!("{:?}", &e))
+                    }
+                };
+                bag.push(
+                    Diagnostic {
+                        id: "G::parse::unexpected".into(),
+                        classification: Classification::Repairable,
+                        message,
+                        span: SourceSpan::from_byte_span(file_label, span, line_index),
+                        related: Vec::new(),
+                        hints: Vec::new(),
+                    },
+                    span,
+                );
+            }
             return None;
         }
     };
