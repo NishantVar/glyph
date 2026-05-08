@@ -278,10 +278,16 @@ pub enum FlowStmt {
     /// A call expression: `name()` or `name(arg1, arg2)`, with optional
     /// `with "modifier"` site modifier. `target` carries the source span of
     /// the callee token so the LSP can answer go-to-def (M2).
+    ///
+    /// `bound_name = Some(_)` indicates a flow-position assignment
+    /// (`<name> = <call>`); the spanned binding name is captured at parse
+    /// time. Analyze, lower, and emit consume this to wire flow-local
+    /// bindings (see flow-position-assignments design §2-§9).
     Call {
         target: Spanned<String>,
         args: Vec<String>,
         site_modifier: Option<String>,
+        bound_name: Option<Spanned<String>>,
     },
     /// `return <expr>` — terminal-only at flow root.
     Return(ReturnExpr),

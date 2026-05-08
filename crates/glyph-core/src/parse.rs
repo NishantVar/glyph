@@ -2934,8 +2934,103 @@ impl<'a> Parser<'a> {
                         })
                     }
                     _ => {
-                        // Could be a call (name followed by `(`) or a bare name.
+                        // Could be a call (name followed by `(`), a flow-position
+                        // assignment (name followed by `=`), or a bare name.
                         self.pos += 1;
+                        // Flow-position assignment: `<name> = <call>`
+                        // (spec §5). `kw_val` / `kw_val_span` are the binding
+                        // name. Peek the next non-trivia token for `=`.
+                        if matches!(self.peek().kind, TokenKind::Equals) {
+                            let name_spanned = Spanned::new(kw_val.clone(), kw_val_span);
+                            self.pos += 1; // consume `=`
+                                           // The valid RHS in MVP is `Ident` followed by
+                                           // `Lparen` (a call expression). Peek two tokens
+                                           // ahead manually since there is no `peek_n` helper.
+                            let rhs_is_call = matches!(self.peek().kind, TokenKind::Ident(_))
+                                && self.pos + 1 < self.tokens.len()
+                                && matches!(self.tokens[self.pos + 1].kind, TokenKind::Lparen);
+                            if !rhs_is_call {
+                                // Non-call RHS — Repairable diagnostic.
+                                let span = self.peek().span;
+                                self.bag.push(
+                                    Diagnostic {
+                                        id: "G::parse::assign-rhs-not-call".into(),
+                                        classification: Classification::Repairable,
+                                        message: "the right-hand side of a flow assignment must be a call expression".into(),
+                                        span: SourceSpan::from_byte_span(
+                                            self.file_label,
+                                            span,
+                                            self.line_index,
+                                        ),
+                                        related: Vec::new(),
+                                        hints: vec![
+                                            "wrap the value in a call: `x = some_call(...)`. Bare-name aliasing is not supported.".into(),
+                                        ],
+                                    },
+                                    span,
+                                );
+                                // Recovery: skip to next LineStart / Eof and
+                                // return BareName(name) — same recovery pattern
+                                // used at the `applies()`-outside-cond and
+                                // `with`-on-bare-name paths below.
+                                while !matches!(
+                                    self.peek().kind,
+                                    TokenKind::LineStart { .. } | TokenKind::Eof
+                                ) {
+                                    self.pos += 1;
+                                }
+                                return Ok(FlowStmt::BareName(name_spanned));
+                            }
+                            // Parse the RHS call. The call-parse logic below
+                            // (target ident → `(` → arg loop → `)` →
+                            // `try_parse_with_modifier`) is duplicated here
+                            // because there is no extracted helper today; the
+                            // duplication is small and contained.
+                            let target_span = self.peek().span;
+                            let target = match &self.peek().kind {
+                                TokenKind::Ident(t) => t.clone(),
+                                _ => unreachable!(
+                                    "rhs_is_call check guarantees Ident at this position"
+                                ),
+                            };
+                            self.pos += 1; // consume target ident
+                            self.pos += 1; // consume `(`
+                            let mut args: Vec<String> = Vec::new();
+                            if !matches!(self.peek().kind, TokenKind::Rparen) {
+                                loop {
+                                    match &self.peek().kind {
+                                        TokenKind::Ident(a) => {
+                                            args.push(a.clone());
+                                            self.pos += 1;
+                                        }
+                                        TokenKind::StringLit(a) => {
+                                            args.push(a.clone());
+                                            self.pos += 1;
+                                        }
+                                        _ => {
+                                            return Err(ParseError::Unexpected {
+                                                span: self.peek().span,
+                                                message: "expected argument in call".into(),
+                                            });
+                                        }
+                                    }
+                                    match &self.peek().kind {
+                                        TokenKind::Comma => {
+                                            self.pos += 1;
+                                        }
+                                        _ => break,
+                                    }
+                                }
+                            }
+                            self.expect(&TokenKind::Rparen)?;
+                            let site_modifier = self.try_parse_with_modifier()?;
+                            return Ok(FlowStmt::Call {
+                                target: Spanned::new(target, target_span),
+                                args,
+                                site_modifier,
+                                bound_name: Some(name_spanned),
+                            });
+                        }
                         if matches!(self.peek().kind, TokenKind::Lparen) {
                             // Call expression: name(args)
                             self.pos += 1; // consume `(`
@@ -2974,6 +3069,7 @@ impl<'a> Parser<'a> {
                                 target: Spanned::new(kw_val, kw_val_span),
                                 args,
                                 site_modifier,
+                                bound_name: None,
                             })
                         } else if matches!(self.peek().kind, TokenKind::Dot) {
                             // Detect `name.applies()` used outside a branch condition.
@@ -6363,5 +6459,130 @@ mod type_decl_tests {
         assert_eq!(td.name, "RiskLevel");
         assert_eq!(td.description.node, "one of: low, medium, high");
         assert!(td.exported);
+    }
+}
+
+// Pins parser behavior for flow-position assignment syntax
+// (`<name> = <call>`). See spec `.flow-assign-spec.md` §5.
+#[cfg(test)]
+mod flow_assign_tests {
+    use super::*;
+    use crate::ast::{Decl, FlowStmt, Skill};
+    use crate::diagnostic::DiagBag;
+    use crate::span::LineIndex;
+
+    fn first_skill(file: &SourceFile) -> &Skill {
+        file.decls
+            .iter()
+            .find_map(|d| match d {
+                Decl::Skill(s) => Some(&s.node),
+                _ => None,
+            })
+            .expect("expected a skill declaration")
+    }
+
+    fn skill_flow_stmts(skill: &Skill) -> &[FlowStmt] {
+        &skill.flow
+    }
+
+    /// Parse with diagnostics into a DiagBag (mirrors
+    /// `parse_first_skill_with_bag` but does not panic when the
+    /// parser returns Some).
+    fn parse_with_bag(src: &str) -> (SourceFile, DiagBag) {
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let file =
+            parse_with_diagnostics_opts(src, 0, "flow_assign.glyph", &line_index, &mut bag, true)
+                .expect("parser should still produce a file (recovery branch)");
+        (file, bag)
+    }
+
+    #[test]
+    fn flow_assign_call_parses() {
+        let src = "\
+skill demo()
+    flow:
+        ctx = inspect_repo(scope)
+        return ctx
+";
+        let (file, _) = parse(src, 0).expect("parse ok");
+        let skill = first_skill(&file);
+        let stmts = skill_flow_stmts(skill);
+        let FlowStmt::Call {
+            target,
+            args,
+            site_modifier,
+            bound_name,
+        } = &stmts[0]
+        else {
+            panic!("expected Call, got {:?}", &stmts[0]);
+        };
+        assert_eq!(target.node, "inspect_repo");
+        assert_eq!(args, &["scope".to_string()]);
+        assert!(site_modifier.is_none());
+        assert_eq!(
+            bound_name.as_ref().map(|s| s.node.as_str()),
+            Some("ctx"),
+            "expected bound_name=Some(\"ctx\")"
+        );
+    }
+
+    #[test]
+    fn flow_assign_rhs_not_call_recovers_to_barename() {
+        let src = "\
+skill demo()
+    flow:
+        ctx = \"literal\"
+        return ctx
+";
+        let (file, bag) = parse_with_bag(src);
+        // The repairable diagnostic is emitted.
+        assert!(
+            bag.iter().any(|d| d.id == "G::parse::assign-rhs-not-call"),
+            "expected G::parse::assign-rhs-not-call, got: {:?}",
+            bag.iter().map(|d| d.id.clone()).collect::<Vec<_>>()
+        );
+        // Recovery yields BareName(ctx) at position 0.
+        let skill = first_skill(&file);
+        let stmts = skill_flow_stmts(skill);
+        match &stmts[0] {
+            FlowStmt::BareName(s) => {
+                assert_eq!(s.node, "ctx", "expected recovered BareName(ctx)");
+            }
+            other => panic!("expected BareName(ctx), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn flow_assign_with_modifier() {
+        let src = "\
+skill demo()
+    flow:
+        x = foo(scope) with \"investigate this area\"
+        return x
+";
+        let (file, _) = parse(src, 0).expect("parse ok");
+        let skill = first_skill(&file);
+        let stmts = skill_flow_stmts(skill);
+        let FlowStmt::Call {
+            target,
+            bound_name,
+            site_modifier,
+            ..
+        } = &stmts[0]
+        else {
+            panic!("expected Call, got {:?}", &stmts[0]);
+        };
+        assert_eq!(target.node, "foo");
+        assert_eq!(
+            bound_name.as_ref().map(|s| s.node.as_str()),
+            Some("x"),
+            "expected bound_name=Some(\"x\")"
+        );
+        assert_eq!(
+            site_modifier.as_deref(),
+            Some("investigate this area"),
+            "site_modifier must be preserved"
+        );
     }
 }
