@@ -1,0 +1,18 @@
+const big_change = "the change is big"
+
+block plan_big_change()
+    description: "Plan a big change."
+    flow:
+        "Pause and consider impact."
+        if big_change:
+            "Stop and confirm with user."
+        "Document the decision."
+        "Proceed once authorized."
+
+skill main()
+    description: "Test branch in block procedure."
+    flow:
+        plan_big_change()
+        "After the procedure."
+        "More steps."
+        "Even more."

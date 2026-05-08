@@ -147,6 +147,16 @@ pub struct IrBlock {
     /// field's doc for why the canonicalized `return_type` is insufficient.
     #[serde(skip)]
     pub return_type_text: Option<String>,
+    /// Codex review Finding 2: per-flow-statement override pointing at the
+    /// `IrBranch` node lowered for a `FlowStmt::Branch` inside the block's
+    /// flow. Keyed by the index in `flow_statements`. The Tier 2 procedure
+    /// emitter consults this map and, when present, renders the branch via
+    /// the same `branch::emit_to_scaffold` path as skill steps — instead of
+    /// printing the raw `if {condition}` placeholder string and silently
+    /// dropping the branch body. Empty when the block contains no branches
+    /// (the common case), so existing fixtures keep their identical IR.
+    #[serde(skip)]
+    pub branch_steps: std::collections::HashMap<usize, NodeId>,
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -256,6 +256,11 @@ fn fixture_predicate_param_default() {
 }
 
 #[test]
+fn fixture_predicate_branch_in_block_procedure() {
+    snapshot_test("predicate_branch_in_block_procedure");
+}
+
+#[test]
 fn mixed_predicate_const_with_not_emits_branch_condition_span() {
     let src = r#"
 const big = "the change is big"

@@ -647,6 +647,78 @@ pub fn lower_with_imports(
             // store the id in `IrBlock.output_contract`.
             let block_output_contract: Option<NodeId> =
                 lower_output_contract_for_flow(&block.flow, &mut arena, block_return_type.clone());
+            // Codex review Finding 2: lower every `FlowStmt::Branch` in the
+            // block's flow into a structured `IrBranch` node so the Tier 2
+            // procedure emitter can dispatch to `branch::emit_to_scaffold`
+            // instead of printing the raw `if {condition}` placeholder
+            // produced for `flow_statements`. Indexed by the position in
+            // `flow_statements` so emit can override per-step. The bodies
+            // re-use `lower_flow_body` so nested `if`/elif/else arms get the
+            // same InlineInstruction/Call/Branch treatment as skill arms.
+            let mut branch_steps: std::collections::HashMap<usize, NodeId> =
+                std::collections::HashMap::new();
+            for (idx, stmt) in block.flow.iter().enumerate() {
+                if let FlowStmt::Branch {
+                    condition,
+                    then_body,
+                    elif_branches,
+                    else_body,
+                    condition_classification,
+                } = stmt
+                {
+                    let branch_id = NodeId(arena.len() as u32);
+                    // Reserve a slot so recursively-lowered children get
+                    // node IDs strictly greater than `branch_id`.
+                    arena.push(IrNode::InlineInstruction(IrInlineInstruction {
+                        node_id: branch_id,
+                        text: String::new(),
+                        role: Role::Step,
+                    }));
+                    let then_ids =
+                        lower_flow_body(then_body, &mut arena, &texts, &blocks, &export_blocks)?;
+                    let mut ir_elifs = Vec::new();
+                    for elif in elif_branches {
+                        let elif_ids = lower_flow_body(
+                            &elif.body,
+                            &mut arena,
+                            &texts,
+                            &blocks,
+                            &export_blocks,
+                        )?;
+                        ir_elifs.push(IrElifBranch {
+                            condition: elif.condition.clone(),
+                            body: elif_ids,
+                            predicate_shape: predicate_shape_from(
+                                elif.condition_classification.as_ref(),
+                            ),
+                            classification: elif.condition_classification.clone(),
+                        });
+                    }
+                    let ir_else = if let Some(eb) = else_body {
+                        Some(lower_flow_body(
+                            eb,
+                            &mut arena,
+                            &texts,
+                            &blocks,
+                            &export_blocks,
+                        )?)
+                    } else {
+                        None
+                    };
+                    let nodes = arena.nodes_mut();
+                    nodes[branch_id.0 as usize] = IrNode::Branch(IrBranch {
+                        node_id: branch_id,
+                        condition: condition.clone(),
+                        then_body: then_ids,
+                        elif_branches: ir_elifs,
+                        else_body: ir_else,
+                        resolved_predicates: None,
+                        predicate_shape: predicate_shape_from(condition_classification.as_ref()),
+                        classification: condition_classification.clone(),
+                    });
+                    branch_steps.insert(idx, branch_id);
+                }
+            }
             let next = NodeId(arena.len() as u32);
             arena.push(IrNode::Block(IrBlock {
                 node_id: next,
@@ -659,6 +731,7 @@ pub fn lower_with_imports(
                 return_type: block_return_type,
                 output_contract: block_output_contract,
                 return_type_text: block_return_type_text,
+                branch_steps,
             }));
         }
     }

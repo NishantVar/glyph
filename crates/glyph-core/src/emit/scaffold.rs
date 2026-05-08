@@ -468,10 +468,26 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
         };
         if let Some(stmts) = flow_stmts {
             s.push_literal(format!("### Procedure: {}\n\n", kebab_name));
+            // Codex review Finding 2: Tier 2 procedures must project block-level
+            // `if`/elif/else through the same `branch::emit_to_scaffold` path the
+            // skill flow uses. Pre-fix, `flow_statements` carried `if {condition}`
+            // verbatim and the body was dropped entirely. The block's
+            // `branch_steps` map (idx -> IrBranch NodeId) lets us swap the raw
+            // string in for the structured node at the matching original index.
+            let branch_steps: std::collections::HashMap<usize, NodeId> = arena
+                .nodes()
+                .iter()
+                .find_map(|node| {
+                    if let IrNode::Block(b) = node {
+                        if b.name == *target_name {
+                            return Some(b.branch_steps.clone());
+                        }
+                    }
+                    None
+                })
+                .unwrap_or_default();
             // Filter out raw "return" markers; they are replaced by the §8.4 sentence.
-            let visible_stmts: Vec<&String> =
-                stmts.iter().filter(|st| st.as_str() != "return").collect();
-            let visible_count = visible_stmts.len();
+            let visible_count = stmts.iter().filter(|st| st.as_str() != "return").count();
             let proc_sentence = templates::compute_return_sentence(
                 proc_rt_text.as_deref(),
                 proc_oc_form.as_ref(),
@@ -482,20 +498,38 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                 // Return-only block: emit the §8.4 sentence as a standalone step.
                 s.push_literal(format!("1. {}\n", proc_sentence.unwrap()));
             } else {
-                for (i, stmt) in visible_stmts.iter().enumerate() {
-                    let is_last = i + 1 == visible_count;
+                let mut visible_idx: usize = 0;
+                for (orig_idx, stmt) in stmts.iter().enumerate() {
+                    if stmt == "return" {
+                        continue;
+                    }
+                    visible_idx += 1;
+                    let step_num = visible_idx;
+                    let is_last = visible_idx == visible_count;
+                    if let Some(branch_id) = branch_steps.get(&orig_idx) {
+                        if let IrNode::Branch(br) = arena.get(*branch_id) {
+                            super::branch::emit_to_scaffold(
+                                &mut s,
+                                arena,
+                                br,
+                                step_num,
+                                &mut next_span_id,
+                            );
+                            continue;
+                        }
+                    }
                     if is_last {
                         match proc_sentence.as_deref() {
                             Some(sent) => {
                                 let body = templates::append_return_sentence(stmt, sent);
-                                s.push_literal(format!("{}. {}\n", i + 1, body));
+                                s.push_literal(format!("{}. {}\n", step_num, body));
                             }
                             None => {
-                                s.push_literal(format!("{}. {}\n", i + 1, stmt));
+                                s.push_literal(format!("{}. {}\n", step_num, stmt));
                             }
                         }
                     } else {
-                        s.push_literal(format!("{}. {}\n", i + 1, stmt));
+                        s.push_literal(format!("{}. {}\n", step_num, stmt));
                     }
                 }
             }
