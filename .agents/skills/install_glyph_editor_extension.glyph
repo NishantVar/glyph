@@ -18,12 +18,30 @@ skill install_glyph_editor_extension(repo_root = ".")
     must avoid modifying_user_settings_automatically
 
     flow:
+        verify_build_prerequisites()
         vsix_path = build_vsix(repo_root)
         detected_ides = detect_installed_ides()
         chosen_ides = confirm_targets_with_user(detected_ides)
         install_into_each_chosen_ide(chosen_ides, vsix_path)
-        check_glyph_lsp_on_path()
+        check_glyph_lsp_on_path(repo_root)
         return <"summary listing each IDE the extension was installed into, any per-IDE failures with their exact CLI output, and the glyph LSP availability check">
+
+
+block verify_build_prerequisites()
+    """
+    Before building, verify the host has the tools needed to package
+    the .vsix. Run `command -v node` and `command -v npm`. If either
+    is missing, tell the user exactly which one is missing and stop
+    the workflow — do not attempt the build. Suggest installing
+    Node.js LTS via the platform's standard package manager (Homebrew
+    on macOS — `brew install node`; apt on Debian/Ubuntu — `sudo apt
+    install nodejs npm`; the Node.js installer from
+    https://nodejs.org/ on Windows; or a version manager like `fnm`
+    or `nvm`). Do not attempt to install Node yourself, since it
+    requires platform-specific package-manager choices the user must
+    make. Only proceed past this block when both `node` and `npm`
+    resolve to executables.
+    """
 
 
 block build_vsix(repo_root) -> BuiltVsix
@@ -106,22 +124,28 @@ block install_into_each_chosen_ide(chosen_ides, vsix_path)
     """
 
 
-block check_glyph_lsp_on_path()
+block check_glyph_lsp_on_path(repo_root)
     """
     Run `command -v glyph` to locate the glyph LSP binary. If it
     resolves, print the absolute path to the resolved binary so the
-    user can confirm the LSP server is reachable; no further action is
-    needed. If it does not resolve, tell the user the glyph CLI is not
-    on PATH and be explicit: the extension installs cleanly without
-    it and the language is recognized in editors, but no syntax
-    highlighting will appear because all highlighting flows through
-    the LSP server's semantic tokens. Then suggest two remediation
-    paths and let the user choose: (1) run `cargo install --path
-    crates/glyph-cli` from the repo root to place the glyph binary on
-    PATH, or (2) set `glyph.serverPath` in each editor's user
-    settings.json to the absolute path of an existing glyph binary.
-    Do not modify settings.json from this skill — only describe the
-    change.
+    user can confirm the LSP server is reachable; no further action
+    is needed. If it does not resolve, tell the user the glyph CLI
+    is not on PATH and be explicit: the extension installs cleanly
+    without it and the language is recognized in editors, but no
+    syntax highlighting will appear because all highlighting flows
+    through the LSP server's semantic tokens. Then check for cargo
+    by running `command -v cargo`. If cargo is available, offer to
+    run `cargo install --path crates/glyph-cli` from {repo_root} on
+    the user's behalf and ask them to confirm before running it; on
+    confirmation, execute the install and report the path to the
+    newly-installed binary, or surface the cargo error verbatim and
+    stop on failure. If cargo is not available, tell the user Rust
+    is required to build the LSP and suggest installing it via
+    rustup from https://rustup.rs/ before re-running this skill.
+    Always also describe the alternative remediation: set
+    `glyph.serverPath` in each editor's user settings.json to the
+    absolute path of an existing glyph binary. Do not modify
+    settings.json from this skill — only describe the change.
     """
 
 

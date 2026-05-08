@@ -25,7 +25,19 @@ description: Build the Glyph VS Code extension and install it into every VS Code
 
 ### Steps
 
-1. Switch the working directory to `{repo_root}/editors/vscode/`. Run
+1. Before building, verify the host has the tools needed to package
+the .vsix. Run `command -v node` and `command -v npm`. If either
+is missing, tell the user exactly which one is missing and stop
+the workflow — do not attempt the build. Suggest installing
+Node.js LTS via the platform's standard package manager (Homebrew
+on macOS — `brew install node`; apt on Debian/Ubuntu — `sudo apt
+install nodejs npm`; the Node.js installer from
+https://nodejs.org/ on Windows; or a version manager like `fnm`
+or `nvm`). Do not attempt to install Node yourself, since it
+requires platform-specific package-manager choices the user must
+make. Only proceed past this block when both `node` and `npm`
+resolve to executables.
+2. Switch the working directory to `{repo_root}/editors/vscode/`. Run
 `npm install` to install devDependencies (esbuild, @vscode/vsce)
 and the runtime dep (vscode-languageclient); skip when
 `node_modules/` already exists and `package-lock.json` is unchanged
@@ -37,7 +49,7 @@ verbatim and stop. Then run `npm run package`, which invokes
 `glyph-language-<version>.vsix` next to `package.json`. If either
 step fails, surface the exact error and stop. Return the absolute
 path to the produced `glyph-language-<version>.vsix` file. Refer to this result as vsix_path.
-2. Probe for every VS Code-compatible editor by attempting two checks
+3. Probe for every VS Code-compatible editor by attempting two checks
 per candidate, in order: first run `command -v <cli>` to check
 PATH, and if that fails, check the OS-specific fallback path for
 the current platform. Record an IDE as detected only when one of
@@ -64,7 +76,7 @@ path that was probed, and stop the workflow before any install
 attempt. Return the list of detected IDE entries — each entry
 pairs a display name with the absolute CLI path that subsequent
 installs will use. Refer to this result as detected_ides.
-3. Print the detected IDEs from detected_ides as a numbered list,
+4. Print the detected IDEs from detected_ides as a numbered list,
 showing each entry's display name and the absolute CLI path that
 would be used. Then ask the user which IDEs to install into.
 Accept any of: pressing Enter with no input (= every detected IDE),
@@ -73,7 +85,7 @@ printed list, or a comma-separated list of IDE display names.
 Reject anything else and re-prompt until the input matches one of
 these forms. Return the list of IDE entries the user chose;
 defaults to every detected IDE when the user accepts the default. Refer to this result as chosen_ides.
-4. Iterate over every entry in chosen_ides. For each entry run two
+5. Iterate over every entry in chosen_ides. For each entry run two
 commands in order: first `<cli> --uninstall-extension
 glyph.glyph-language` (treat the `extension not installed` error
 as success and proceed), then `<cli> --install-extension
@@ -85,20 +97,7 @@ table with three columns: IDE display name, install status (ok or
 failed), and the captured CLI output for any failure. The table
 makes the outcome visible to the user without requiring them to
 scroll back through raw command output.
-5. Run `command -v glyph` to locate the glyph LSP binary. If it
-resolves, print the absolute path to the resolved binary so the
-user can confirm the LSP server is reachable; no further action is
-needed. If it does not resolve, tell the user the glyph CLI is not
-on PATH and be explicit: the extension installs cleanly without
-it and the language is recognized in editors, but no syntax
-highlighting will appear because all highlighting flows through
-the LSP server's semantic tokens. Then suggest two remediation
-paths and let the user choose: (1) run `cargo install --path
-crates/glyph-cli` from the repo root to place the glyph binary on
-PATH, or (2) set `glyph.serverPath` in each editor's user
-settings.json to the absolute path of an existing glyph binary.
-Do not modify settings.json from this skill — only describe the
-change. Produce: summary listing each IDE the extension was installed into, any per-IDE failures with their exact CLI output, and the glyph LSP availability check.
+6. Follow the check-glyph-lsp-on-path procedure below.
 
 ### Constraints
 
@@ -108,4 +107,27 @@ change. Produce: summary listing each IDE the extension was installed into, any 
 - After install, check that the glyph LSP binary is reachable on PATH and warn the user if it is missing — without it the extension activates but produces no highlighting.
 - You must never run any install or build command under sudo, or ask the user to elevate privileges — every install path here is per-user and runs without root.
 - You must never write into any editor's user settings.json from this skill — surface suggestions instead and let the user apply them by hand.
+
+### Procedure: check-glyph-lsp-on-path
+
+1. Run `command -v glyph` to locate the glyph LSP binary. If it
+resolves, print the absolute path to the resolved binary so the
+user can confirm the LSP server is reachable; no further action
+is needed. If it does not resolve, tell the user the glyph CLI
+is not on PATH and be explicit: the extension installs cleanly
+without it and the language is recognized in editors, but no
+syntax highlighting will appear because all highlighting flows
+through the LSP server's semantic tokens. Then check for cargo
+by running `command -v cargo`. If cargo is available, offer to
+run `cargo install --path crates/glyph-cli` from {repo_root} on
+the user's behalf and ask them to confirm before running it; on
+confirmation, execute the install and report the path to the
+newly-installed binary, or surface the cargo error verbatim and
+stop on failure. If cargo is not available, tell the user Rust
+is required to build the LSP and suggest installing it via
+rustup from https://rustup.rs/ before re-running this skill.
+Always also describe the alternative remediation: set
+`glyph.serverPath` in each editor's user settings.json to the
+absolute path of an existing glyph binary. Do not modify
+settings.json from this skill — only describe the change.
 
