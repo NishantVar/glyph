@@ -1216,8 +1216,7 @@ pub fn compute_import_closure(entry: &Path, enable_effects: bool) -> Vec<PathBuf
                     if import_spanned.node.path.starts_with("@glyph/") {
                         continue;
                     }
-                    if let Some(resolved) =
-                        resolve_import_path(&current, &import_spanned.node.path)
+                    if let Some(resolved) = resolve_import_path(&current, &import_spanned.node.path)
                     {
                         stack.push(resolved);
                     }

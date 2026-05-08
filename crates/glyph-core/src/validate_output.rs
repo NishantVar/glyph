@@ -669,8 +669,7 @@ fn check_step_order(md_struct: &MdStructure, flow: &[Value], violations: &mut Ve
                         .and_then(|t| t.as_str())
                         .filter(|s| !s.is_empty());
                     if projection == "inline" && body.is_some() {
-                        ir_step_keys
-                            .push((body.unwrap().to_string(), StepKeyKind::Prose));
+                        ir_step_keys.push((body.unwrap().to_string(), StepKeyKind::Prose));
                     } else {
                         let target = node.get("target").and_then(|t| t.as_str()).unwrap_or("");
                         ir_step_keys.push((target.to_string(), StepKeyKind::Identifier));
