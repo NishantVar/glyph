@@ -45,7 +45,7 @@ import "../../skills/glyph/constraints.glyph" {
 import "../../skills/glyph/passes.glyph" {
     factor_long_instructions_and_texts,
     sort_declarations,
-    compile_and_iterate,
+    compile_via_subagent,
 }
 
 skill decompile(source_md, target)
@@ -100,8 +100,12 @@ skill decompile(source_md, target)
         factor_long_instructions_and_texts()
         sort_declarations()
         rename_source_md_with_old_prefix(source_md)
-        compile_and_iterate(target)
-        retry_unmapped_with_fresh_eyes(target)
+        compile_outcome = compile_via_subagent(target)
+        if "there are no errors in compile_outcome":
+            retry_unmapped_with_fresh_eyes(target)
+            review_equivalence_via_subagent(source_md, target)
+        else:
+            surface_compile_errors(compile_outcome)
         return <"path to the produced .glyph file">
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -141,6 +145,13 @@ block write_initial_glyph_source(target)
 block rename_source_md_with_old_prefix(source_md)
     "Rename the file at {source_md} by prepending `old_` to its basename (e.g. `foo.md` becomes `old_foo.md` in the same directory). This preserves the original compiled skill so the upcoming Glyph compile of {target} does not overwrite it. If a file already exists at the destination, abort and surface the conflict to the user — do not overwrite."
 
+block surface_compile_errors(compile_outcome)
+    "Print every diagnostic in {compile_outcome} to the user verbatim and stop. The recompile of {target} failed, so equivalence review against the original is not meaningful — flag the decompile as incomplete and ask the user to fix the source before retrying."
+
+block review_equivalence_via_subagent(source_md, target)
+    flow:
+        "Spawn a sub-agent and instruct it to load `.agents/skills/glyph/decompile_review.md` and follow that procedure, passing the renamed original (same directory as {source_md}, with `old_` prepended to its basename) as `original_md`, and the freshly recompiled `.md` produced from {target} (same directory as {target}, same stem with the `.glyph` extension replaced by `.md`) as `recompiled_md`. Print the resulting equivalence report to the user verbatim."
+
 block append_unmapped_section(target)
     flow:
         context decompile_by_semantic_content_not_shape
@@ -153,7 +164,7 @@ block retry_unmapped_with_fresh_eyes(target)
     flow:
         context decompile_by_semantic_content_not_shape
         "Re-open {target} and scan for any remaining `// UNMAPPED` comments. For each unmapped item, run the classify-and-map procedure on it a second time with the fully-assembled file in front of you — content that resisted classification on the first pass sometimes places cleanly once the surrounding structure exists."
-        "If the second pass produces a mapping, apply it and re-run the compile-and-iterate loop on {target} to validate."
+        "If the second pass produces a mapping, apply it and re-run the compile-via-subagent step on {target} to validate."
         "If the second pass still cannot place an item, leave it as UNMAPPED in the file and flag the entire decompile as **uncertain** when reporting back to the user. In the user-facing report: name each remaining UNMAPPED item, list which Glyph constructs you considered and rejected for it, tell the user explicitly that the round-trip is incomplete, and ask them to review before trusting the output."
 
 

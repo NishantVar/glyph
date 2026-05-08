@@ -41,7 +41,7 @@ description: Use during a /glyph:compile run when the compiler has exited 2 with
 
 ### Constraints
 
-- Apply only rewrites that match a diagnostic in the input set. Do not introduce edits that no diagnostic asked for.
-- You must produce a Glyph source file that parses successfully under Phase 1 of the compiler. If it does not, the failed rewrite is discarded and the agent aborts without retry, surfacing `G::repair::output-invalid`.
+- Apply only rewrites that match a diagnostic in the input set, never introducing edits that no diagnostic asked for.
+- You must produce a Glyph source file that parses successfully under Phase 1 of the compiler — otherwise the failed rewrite is discarded and the agent aborts without retry, surfacing `G::repair::output-invalid`.
 - You must never regenerate a `generated const` or `generated block` whose name already resolves via an existing import, the standard library, or another local declaration.
 

@@ -46,7 +46,7 @@ import "../../skills/glyph/constraints.glyph" {
 import "../../skills/glyph/passes.glyph" {
     factor_long_instructions_and_texts,
     sort_declarations,
-    compile_and_iterate,
+    compile_via_subagent,
 }
 
 skill teach(target)
@@ -97,7 +97,7 @@ skill teach(target)
         promote_repeated_content()
         factor_long_instructions_and_texts()
         sort_declarations()
-        compile_and_iterate(target)
+        compile_via_subagent(target)
         return <"path to the authored or updated .glyph file">
 
 // ─────────────────────────────────────────────────────────────────────────────

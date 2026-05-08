@@ -174,7 +174,7 @@ The output must preserve the following structural invariants:
    - Every Call with `projection_mode: same_file_procedure` must additionally produce one `### Procedure: <name>` section with numbered items matching the callee's flow node count. The referencing Step includes the procedure name in its prose.
    - Calls with `projection_mode: external_file` produce one Step whose prose includes the file path from `procedure_path`. No `### Procedure:` section is emitted for external projections.
 4. **No invented content.** Step 2 may reshape wording but must not add new steps, new sub-steps, new constraints, new sections, or commentary.
-5. **Bounded length.** For non-conditional Steps, each step is **one instruction-sized paragraph** — at most three sentences, typically one or two. For conditional Steps (Branch projections), each **sub-step** is at most three sentences. Each constraint is **one sentence**. This is the floor and ceiling; longer items indicate Step 2 is inventing content, shorter items indicate Step 2 is stripping content.
+5. **Bounded length (guideline, not enforced).** For non-conditional Steps, each step typically reads as **one instruction-sized paragraph** — one to three sentences. For conditional Steps (Branch projections), each **sub-step** is similarly compact. Constraints typically read as one sentence, though some normative rules carry a brief justification clause. These are authorial guidelines for the Step 2 reshaping pass; Phase 6b no longer fails the build on length, since author content (long inline strings, multi-sentence imported constraint consts) is faithfully preserved through Expand and surfacing it as a hard error penalises the author rather than catching LLM drift. Structural drift in Expand is caught by the count, ordering, parity, and reference checks instead.
 6. **Parameter references preserved.** `{param}` references from the resolved IR must survive into the output unchanged. Step 2 must not substitute, remove, or rename them. Step 2 must not invent new `{param}` references for names not in the skill's parameter list.
 6b. **Local binding references resolved.** `local_ref` slots (e.g., `{diagnosis}` where `diagnosis` is a local binding, not a declared parameter) must be resolved by Step 2 into natural-language cross-references in the prose. They must **not** survive as literal `{name}` tokens in the output — the consuming LLM already produced the referenced value in a prior step. For example, `{diagnosis}` might become "the diagnosis from your earlier analysis" or "the diagnosis identified in step 1." Step 2 uses the local's name and the producing step's position/content to generate a clear cross-reference.
 6c. **Output target tokens resolved.** Output targets (`OutputContract.form`, per `ir-schema.md` §OutputContract) must be described in prose. The literal source token must not survive anywhere in the compiled Markdown:
@@ -265,18 +265,7 @@ For the Markdown returned by Step 2:
   - Each item must include the parameter name in bold and a brief description. Each item must end with either a `(default: <value>)` trailer (when the parameter has a default) or a `(required)` trailer (when it does not). Skill parameters use both forms; export-block parameters always carry a default per `language-surface.md` §3.8.
   - If the skill has no parameters, `## Parameters` must not be present.
 
-- **Content shape.**
-  - Each non-conditional `### Steps` item is at most three sentences.
-  - Each lettered sub-step within a conditional Step (Branch projection) is at most three sentences.
-  - Each `### Constraints` item is a single sentence.
-  - Markdown parses cleanly.
-
-  **Sentence-counting rule.** The sentence count for an item is computed deterministically, without a tokenizer:
-  1. **Strip backtick code spans** from the prose first (any text between matched single backticks). This prevents `.` inside an inline code span from being counted as a boundary.
-  2. **A sentence boundary is `.`, `!`, or `?` followed by whitespace or end-of-string.**
-  3. **No abbreviation special-casing.** "e.g." counts as a sentence boundary. Authors who do not want this should rewrite the sentence to avoid the abbreviation.
-
-  This rule is agent-implementable in a few lines of code and matches the algorithm specified in `agent-skill.md` §`validate-output`. It is the authoritative sentence-counting algorithm for both the agent-side validator and any future compiler-side implementation of Phase 6b.
+- **Markdown parses cleanly.** No structural malformation in the output.
 
 - **Frontmatter non-interference.** If Step 2 returned anything resembling YAML frontmatter (a `---` block at the top), 6b rejects the output. Frontmatter assembly is Emit's job.
 
@@ -302,8 +291,6 @@ For the Markdown returned by Step 2:
 | `G::expand::params-section-mismatch` | error | `## Parameters` item count does not match `InputContract` parameter count |
 | `G::expand::params-section-missing` | error | Skill has parameters but `## Parameters` section is absent |
 | `G::expand::params-section-spurious` | error | Skill has no parameters but `## Parameters` section is present |
-| `G::expand::step-too-long` | error | A non-conditional step exceeds three sentences, or a sub-step within a conditional step exceeds three sentences |
-| `G::expand::constraint-multi-sentence` | error | A constraint is more than one sentence |
 | `G::expand::frontmatter-returned` | error | Step 2 returned YAML frontmatter |
 | `G::expand::malformed-markdown` | error | Output does not parse as Markdown |
 | `G::expand::procedure-count-mismatch` | error | Number of `### Procedure:` sections does not match count of `same_file_procedure` projection calls |

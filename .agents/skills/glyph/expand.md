@@ -40,12 +40,12 @@ description: Use during a /glyph:compile run when the compiler has produced a sc
 
 ### Constraints
 
-- Edit only the prose inside marked spans the deterministic emitter laid down. Do not add, merge, split, or reorder Steps, sub-steps, constraints, sections, or commentary relative to the IR's flow order.
-- You must preserve every deterministic structure the emitter laid down: section headings, numbered Step ordering, sub-step lettering, `### Context` bullets, InlineInstruction and InstructionRef text, pure-`applies()` decision-frame headers, the `If <condition>:` and `Otherwise:` arm structure, the `## Parameters` bullet structure, every `### Constraints` bullet, the locked external-file Step template, and the OutputContract Identifier return-fold suffix. If any look malformed, do not edit them — that is a deterministic-emitter bug, surfaced by Phase 6b.
-- You must preserve every `{param}` token whose name matches a declared InputContract parameter verbatim into the output. If Step 1's resolved body contained a parameter slot, re-introduce it in the output prose — silent dropping is forbidden.
-- You must never quote a `with` modifier string verbatim in the compiled output. Modifiers are consumed by being woven into prose, never echoed.
-- You must never let any `{name}` token from a Call's `local_refs` array survive in the output. Every local-binding reference must be resolved to a natural-language cross-reference to the producing step.
-- You must never introduce a `{name}` token for any name that is not declared in the skill's InputContract. Inventing parameter references is forbidden.
-- You must never let `generated` markers, import paths, IR field names, IR node IDs, raw condition expressions, output-target tokens, surrounding angle brackets, YAML frontmatter, JSON, IR, or commentary appear in the compiled output. The output channel is Markdown text only.
-- You must never use HTML, tables, or fenced code blocks inside a Step body or sub-step body. Inline emphasis is fine; structural Markdown is the deterministic emitter's job.
+- Edit only the prose inside marked spans the deterministic emitter laid down, never adding, merging, splitting, or reordering Steps, sub-steps, constraints, sections, or commentary relative to the IR's flow order.
+- You must preserve every deterministic structure the emitter laid down — section headings, numbered Step ordering, sub-step lettering, Context bullets, inline-instruction text, pure-applies decision-frame headers, the If/Otherwise arm structure, the Parameters bullet structure, every Constraints bullet, the locked external-file Step template, and the OutputContract Identifier return-fold suffix — and leave any that look malformed alone, since that is a deterministic-emitter bug surfaced by Phase 6b.
+- You must preserve every InputContract parameter slot in Step 1's resolved body verbatim into the output prose, since silent dropping of a declared parameter slot is forbidden.
+- You must never quote a `with` modifier string verbatim in the compiled output, since modifiers are consumed by being woven into prose rather than echoed.
+- You must never let any local-binding reference from a Call's `local_refs` array survive as a literal token in the output, since every such reference must be resolved to a natural-language cross-reference to the producing step.
+- You must never introduce a parameter-shaped reference for any name that is not declared in the skill's InputContract, since inventing parameter references is forbidden.
+- You must never let `generated` markers, import paths, IR field names, IR node IDs, raw condition expressions, output-target tokens, surrounding angle brackets, YAML frontmatter, JSON, IR, or commentary appear in the compiled output, since the output channel is Markdown text only.
+- You must never use HTML, tables, or fenced code blocks inside a Step body or sub-step body, since structural Markdown is the deterministic emitter's job and only inline emphasis is fine.
 

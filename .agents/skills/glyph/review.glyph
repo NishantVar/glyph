@@ -3,70 +3,78 @@
 // Independently invokable LLM review skill. Loaded by /glyph:compile
 // after expand_and_validate has emitted the final compiled .md
 // artifacts. One invocation cross-reads a single emitted .md against
-// its source IR for grammar errors, internal contradictions, and IR
-// items missing from the prose, and either rewrites the .md in place
-// (simple-only) or surfaces a contradiction report verbatim.
+// its Glyph source plus its resolved IR for grammar errors,
+// contradictions, and items missing from the prose; applies any
+// auto-fixable changes in place; and prints a human-readable report
+// covering both the fixes it made and anything that needs the
+// author's attention.
 
-skill review(md_path, resolved_ir) -> ReviewReport
-    description: "Use during a /glyph:compile run after expand_and_validate has produced the final compiled .md artifacts. Read the .md plus its source IR, classify every finding as simple or contradiction, rewrite the .md in place when only simple findings are present, and emit a structured JSON review report covering rewrites, contradictions, and any residual warnings."
+skill review(md_path, source_path, resolved_ir) -> ReviewReport
+    description: "Use during a /glyph:compile run after expand_and_validate has produced the final compiled .md artifacts. Read the .md plus its Glyph source and resolved IR, classify every finding as auto-fixable or needing user input, apply the auto-fixable rewrites in place, and print a human-readable review report covering the fixes made and the items still requiring author attention."
 
     require classify_every_finding
     must use_only_two_severity_values
     must preserve_deterministic_structure_during_rewrite
     must parameter_slots_survive_verbatim
-    must avoid rewriting_when_contradiction_present
+    must avoid rewriting_findings_that_need_user_input
     must avoid modifying_glyph_source_or_ir
     must avoid restructuring_sections_or_steps
     must avoid inventing_undeclared_parameter_slots
+    must avoid emitting_findings_as_json
 
     context:
         runs_after_expand_and_validate
-        invocation_shape_is_one_md_with_resolved_ir
+        invocation_shape_is_md_with_source_and_resolved_ir
         md_is_the_agent_facing_artifact
-        ir_is_the_ground_truth_for_missed_item_checks
+        source_is_intent_and_ir_is_the_resolved_index
         caller_owns_retry_budget_and_revalidation
+        report_is_human_readable_text_for_the_user
 
     flow:
-        cross_read_md_against_ir()
+        cross_read_md_against_source_and_ir()
         classify_each_finding()
-        rewrite_md_when_only_simple_findings()
-        emit_review_report_json()
-        return <"the structured JSON review report">
+        rewrite_md_when_findings_are_auto_fix_only()
+        print_human_readable_report()
+        return <"the human-readable review report shown to the user">
 
-block cross_read_md_against_ir()
-    "Read the compiled Markdown at md_path and the resolved IR at resolved_ir. For every Step, Constraint, Context entry, Parameter, and OutputContract in the IR, locate its surfaced counterpart in the Markdown's `## Parameters`, `### Context`, `### Steps`, and `### Constraints` sections, and note any IR item that is absent from the prose. Independently scan the prose for grammar errors, awkward phrasing, and internal contradictions between sentences. Independently scan the prose for contradictions against the IR — for example, a constraint whose polarity is reversed, or a step whose intent is flipped."
+block cross_read_md_against_source_and_ir()
+    "Read the compiled Markdown at md_path, the Glyph source at source_path, and the resolved IR at resolved_ir. Treat the source as the record of author intent and the IR as the resolved structural index — every Step, Constraint, Context entry, Parameter, and OutputContract in the IR has a counterpart somewhere in the source. For each IR node, locate its surfaced counterpart in the Markdown's `## Parameters`, `### Context`, `### Steps`, and `### Constraints` sections, and note any item that is absent from the prose; when the source phrases that item differently than the IR's resolved text, prefer the source's phrasing as the intent reference. Independently scan the prose for grammar errors, awkward phrasing, and internal contradictions between sentences. Independently scan the prose for contradictions against the source or IR — for example, a constraint whose polarity is reversed, or a step whose intent is flipped relative to what the author wrote."
 
 block classify_each_finding()
-    "For each finding produced by the cross-read, assign a severity of `simple` or `contradiction`. Grammar errors, spelling errors, awkward phrasing, and minor missing-from-prose items (for example, a Context entry not surfaced) are `simple`. Any contradiction within the prose, or any contradiction between the prose and the IR (reversed polarity, flipped intent, missing constraint that materially changes meaning), is `contradiction`."
+    "For each finding produced by the cross-read, assign a severity of `auto_fix` or `needs_user_input`. A finding is `auto_fix` when the correct repair is unambiguous and safe to apply without author judgement — for example, a typo, a clearly mis-tensed sentence, or a Context or Constraint bullet that is missing from the prose but mechanically derivable from a single source or IR entry. A finding is `needs_user_input` whenever the right fix requires author judgement — including every contradiction (within the prose, or against the source or IR), any missing-from-prose item whose phrasing is genuinely ambiguous, and anything where multiple reasonable rewrites would produce different meanings."
 
-block rewrite_md_when_only_simple_findings()
-    "If every finding is severity `simple`, rewrite the Markdown in place at md_path with each fix applied: correct grammar inline, smooth awkward phrasing, and surface any missing-from-prose item by inserting a sentence into the appropriate Step, Context bullet, or Constraint bullet. If any finding is severity `contradiction`, do not rewrite — leave md_path untouched on disk."
+block rewrite_md_when_findings_are_auto_fix_only()
+    "If every finding is severity `auto_fix`, rewrite the Markdown in place at md_path with each fix applied: correct typos and grammar inline, smooth awkward phrasing, and surface any unambiguously missing item by inserting a sentence into the appropriate Step, Context bullet, or Constraint bullet. If any finding is severity `needs_user_input`, do not rewrite — leave md_path untouched on disk and defer every change to the author."
 
-block emit_review_report_json()
-    "Emit one JSON object of the form `{ outcome: \"rewritten\" | \"contradiction\" | \"no_findings\", change_summary: [{ location: \"...\", before: \"...\", after: \"...\", reason: \"...\" }, ...], contradictions: [{ location: \"...\", finding: \"...\", ir_evidence: \"...\" }, ...], residual_simple: [{ location: \"...\", finding: \"...\" }, ...] }`. The `change_summary` array is non-empty only when `outcome` is `rewritten`. The `contradictions` array is non-empty only when `outcome` is `contradiction`. The `residual_simple` array carries simple findings the rewrite intentionally did not address."
+block print_human_readable_report()
+    "Print a human-readable report directly to the user as plain text. Lead with a one-line summary that names the file reviewed and the overall outcome — one of `clean`, `auto-fixed N items`, or `N items need your attention`. Then under an `Auto-fixed` heading, list each applied change as a short bullet showing the section or step, a brief before-and-after snippet, and a one-sentence reason. Then under a `Needs your attention` heading, list each `needs_user_input` finding as a short bullet showing the section or step, the issue stated in plain prose, and any source or IR evidence when relevant. Omit a heading whose section has no entries. Never emit JSON, code-fenced data, or any other structured payload — the report is for a human reader."
 
 const classify_every_finding = "Classify every finding produced by the cross-read pass with a severity. A finding without a severity fails validation."
 
-const use_only_two_severity_values = "Use exactly one of `simple` or `contradiction` as the severity of each finding. Any other value fails validation."
+const use_only_two_severity_values = "Use exactly one of `auto_fix` or `needs_user_input` as the severity of each finding. `auto_fix` means the repair is unambiguous and safe to apply without author judgement; `needs_user_input` means the right fix requires author attention. Any other value fails validation."
 
 const preserve_deterministic_structure_during_rewrite = "Preserve every deterministic structure the emitter laid down: YAML frontmatter, section headings, numbered Step ordering, sub-step lettering, `### Context` bullets, `### Constraints` bullets, the `## Parameters` bullet structure, and the `If <condition>:` and `Otherwise:` arm structure. Edit only the prose inside Step bodies, sub-step bodies, parameter descriptions, Context bullets, and Constraint bullets."
 
 const parameter_slots_survive_verbatim = "Preserve every `{param}` token whose name matches a declared InputContract parameter verbatim into the output. Silent dropping is forbidden."
 
-const rewriting_when_contradiction_present = "rewrite the Markdown when any finding is severity `contradiction`. Contradictions require author attention; the pipeline hard-fails on them and the rewrite is intentionally suppressed."
+const rewriting_findings_that_need_user_input = "rewrite the Markdown for any finding classified `needs_user_input`. Those findings — which include every contradiction — require author attention; the pipeline surfaces them and the author edits the source and recompiles."
 
-const modifying_glyph_source_or_ir = "modify the Glyph source file or the IR JSON sidecar. The review pass writes only to md_path."
+const modifying_glyph_source_or_ir = "modify the Glyph source file at source_path or the IR JSON sidecar at resolved_ir. The review pass writes only to md_path; source and IR are read-only inputs."
 
 const restructuring_sections_or_steps = "add, merge, split, or reorder Steps, sub-steps, sections, constraints, or parameters during a rewrite. Edits are span-scoped within existing prose."
 
 const inventing_undeclared_parameter_slots = "introduce a `{name}` token for any name that is not declared in the skill's InputContract. Inventing parameter references is forbidden."
 
+const emitting_findings_as_json = "emit findings as JSON, code-fenced data, or any other structured payload. The review report is plain prose for a human reader, with section headings and bullets only."
+
 const runs_after_expand_and_validate = "The review pass runs after expand_and_validate has emitted the final compiled .md artifacts and they have passed `glyph validate-output`. The review pass is a prose-level audit independent of the structural validator."
 
-const invocation_shape_is_one_md_with_resolved_ir = "The LLM receives one compiled Markdown file plus the resolved IR side-map for the same source in a single prompt, and returns one structured JSON review report. When the report indicates a rewrite, the LLM also writes the updated Markdown back to md_path."
+const invocation_shape_is_md_with_source_and_resolved_ir = "The LLM receives one compiled Markdown file plus the Glyph source and the resolved IR side-map for the same source in a single prompt. When findings are auto-fix only, the LLM also writes the updated Markdown back to md_path. The LLM always returns a human-readable report."
 
-const md_is_the_agent_facing_artifact = "The compiled Markdown at md_path is the artifact a consuming coding agent will read at runtime. Prose-level defects degrade the consuming agent's behavior even when the IR is structurally correct."
+const md_is_the_agent_facing_artifact = "The compiled Markdown at md_path is the artifact a consuming coding agent will read at runtime. Prose-level defects degrade the consuming agent's behavior even when the source and IR are correct."
 
-const ir_is_the_ground_truth_for_missed_item_checks = "The IR is the compiler's ground truth for what the source declared. A missing-from-prose finding is an IR node that has no surfaced counterpart in the Markdown. Use IR node identity, not lexical similarity, when deciding whether an item is surfaced."
+const source_is_intent_and_ir_is_the_resolved_index = "The Glyph source is the record of author intent — it captures the author's original phrasing, comments, and organization. The IR is the resolved structural index — every Step, Constraint, Param, Context entry, and OutputContract is an enumerable node with imports resolved and references chased through. Use the source to judge fidelity to intent; use the IR to mechanically enumerate what should appear in the prose."
 
-const caller_owns_retry_budget_and_revalidation = "The /glyph:compile pipeline owns the retry budget and any post-rewrite re-run of `glyph validate-output`. The review skill performs one cross-read, one classification, and one optional rewrite per invocation."
+const caller_owns_retry_budget_and_revalidation = "The /glyph:compile pipeline owns the retry budget and any post-rewrite re-run of `glyph validate-output`. The review skill performs one cross-read, one classification, one optional rewrite, and one report print per invocation."
+
+const report_is_human_readable_text_for_the_user = "The report is plain prose for a human reader: a summary line, an `Auto-fixed` section listing each applied change, and a `Needs your attention` section listing each finding the author must address. No JSON, no code fences containing structured data."

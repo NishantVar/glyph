@@ -17,6 +17,8 @@ skill glyph()
             route_to_teach()
         elif route_to_compile.applies()
             route_to_compile()
+        elif route_to_icompile.applies()
+            route_to_icompile()
         elif route_to_decompile.applies()
             route_to_decompile()
         else
@@ -30,13 +32,17 @@ block route_to_compile()
     description: "User wants to compile an existing `.glyph` source file or directory through the full Glyph pipeline (compile, fmt, repair loop, constraint scan, prose reshape, validate-output) and surface the agent-facing `.md` output."
     "Hand off to the `/glyph:compile` slash command. Pass through the source `.glyph` file or directory path. Do not run `glyph compile` directly from this router — `/glyph:compile` owns the full pipeline."
 
+block route_to_icompile()
+    description: "User wants to apply a small, targeted change to both a `.glyph` source file and its sibling compiled `.md` in tandem, bypassing the full pipeline so unrelated prose is preserved. Triggers include phrases like `icompile`, `incremental compile`, or `patch both files`."
+    "Hand off to the `/glyph:icompile` slash command. Pass through the source `.glyph` path and the plain-language description of the change. Do not perform any edits in this router — `/glyph:icompile` owns the full procedure."
+
 block route_to_decompile()
     description: "User wants to convert an existing compiled-form skill (a `.md` file, a `SKILL.md`, an Anthropic-style skill, or any other Markdown skill) back into a Glyph source file (`.glyph`)."
     "Hand off to the `/glyph:decompile` slash command. Pass through the source `.md` path and the target `.glyph` path. Do not perform any reverse-mapping in this router — `/glyph:decompile` owns the full procedure."
 
 block ask_which_glyph_capability()
-    "Ask the user which Glyph capability they need: `teach` (author or learn the DSL), `compile` (build a `.glyph` into agent-facing Markdown), or `decompile` (reverse a `.md` skill back into `.glyph`). Once they answer, re-enter the matching branch."
+    "Ask the user which Glyph capability they need: `teach` (author or learn the DSL), `compile` (build a `.glyph` into agent-facing Markdown), `icompile` (apply a small targeted change to both the `.glyph` source and its compiled `.md` in tandem), or `decompile` (reverse a `.md` skill back into `.glyph`). Once they answer, re-enter the matching branch."
 
-const toolkit_slash_commands = "User-facing slash commands: `/glyph:teach` (author or edit a `.glyph` source file), `/glyph:compile` (run a `.glyph` file or directory through the full pipeline), `/glyph:decompile` (reverse-engineer an existing `.md` skill back into `.glyph`)."
+const toolkit_slash_commands = "User-facing slash commands: `/glyph:teach` (author or edit a `.glyph` source file), `/glyph:compile` (run a `.glyph` file or directory through the full pipeline), `/glyph:icompile` (apply a small targeted change to both the `.glyph` source and its compiled `.md` in tandem, bypassing the full pipeline), `/glyph:decompile` (reverse-engineer an existing `.md` skill back into `.glyph`)."
 
 const toolkit_internal_skills = "Internal skills loaded by `/glyph:compile` when the pipeline reaches their stage: `repair` (Phase 3b LLM source-rewrite, loaded when the compiler exits 2 with repairable diagnostics), `semantic_validation` (Phase 3c LLM validation, loaded after the compiler reaches exit 0; currently runs the constraint-conflict scan), and `expand` (Phase 4 LLM span-fill, loaded to fill the marked prose spans in the scaffolded compiled `.md` against its resolved IR side-map)."

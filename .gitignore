@@ -8,6 +8,7 @@ __pycache__
 .worktrees
 .claude/worktrees
 docs/supwerpowers
+*.ir.json
 
 # Compiler output emitted next to .glyph sources during tests
 crates/glyph-cli/tests/corpus/**/*.md

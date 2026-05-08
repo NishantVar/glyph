@@ -290,8 +290,6 @@ All checks are deterministic. The validator parses the Markdown structurally (he
 
 | ID | Check |
 |---|---|
-| `G::expand::step-too-long` | Each non-conditional Step and each sub-step must be ≤ 3 sentences. Sentence boundary: `.` / `!` / `?` followed by whitespace or end-of-line. |
-| `G::expand::constraint-multi-sentence` | Each Constraint bullet must be exactly 1 sentence. |
 | `G::expand::frontmatter-returned` | The `## Instructions` content must not begin with YAML frontmatter (`---`). |
 | `G::expand::modifier-leaked` | No `with` modifier string (from `site_modifier` fields in the IR) appears verbatim in the Markdown output. |
 | `G::expand::malformed-markdown` | Output doesn't parse as valid structural Markdown (e.g., unclosed headings, malformed list items). |
@@ -299,14 +297,6 @@ All checks are deterministic. The validator parses the Markdown structurally (he
 ### Counting Rules
 
 **Step counting under nested branches.** A top-level `Branch` contributes exactly **1** to the top-level Step count. Inside an arm, the sub-step count equals the number of direct Step-projecting children of that arm; a `Branch` nested inside another `Branch`'s arm counts as **1 sub-step** and does **not** expand into n sub-steps per its own arms — recursion stops at the first nesting level. In practice, Repair §4.9 auto-extracts nested branches into `generated block` declarations before Phase 6b runs, so the validator typically sees a `Call` to the extracted block rather than a literal nested `Branch`; this counting rule is the defensive fallback for cases where extraction did not run. The step-count formula in `expand.md` (`(Step nodes) + (Branch nodes × 1) − (Return folds)`) is consistent with this rule.
-
-**Sentence counting for content-shape checks.** `G::expand::step-too-long` and `G::expand::constraint-multi-sentence` count sentences by this deterministic, agent-implementable algorithm:
-
-1. Strip backtick code spans from the prose first (everything between matched `` ` `` pairs is removed before counting).
-2. A sentence boundary is `.`, `!`, or `?` followed by whitespace or end-of-string.
-3. No abbreviation special-casing — `e.g.`, `i.e.`, etc. count as sentence boundaries.
-
-The rule is purely lexical; no tokenizer or NLP library is required.
 
 ### Implementation Notes
 

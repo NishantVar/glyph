@@ -14,12 +14,8 @@ export block sort_declarations()
         "Reorder top-level declarations in the file so that the single `skill` declaration appears first, every `block` and `export block` follows it, and every `const` and `export const` constant comes last. Preserve `import` statements at the very top of the file, above the `skill` declaration."
         return none
 
-export block compile_and_iterate(target = ".")
+export block compile_via_subagent(target = ".") -> CompileOutcome
     flow:
-        "Run the Glyph compiler on {target} and read the diagnostics."
-        "If the compiler exits with repairable diagnostics (exit 2), run `glyph fmt` on {target}."
-        "If `glyph fmt` changes the file, re-invoke the compiler and re-evaluate the diagnostics."
-        "Treat errors as required fixes. If repairable diagnostics remain after `glyph fmt`, treat them as informational — the LLM repair pass will rewrite the source. Treat warnings as advisory."
-        "Review the source diff after the LLM repair pass. If repair inserted `generated const` or `generated block` definitions, decide whether each is acceptable as-is or should be promoted to hand-authored by renaming `generated const` to `const` and `generated block` to `block`."
-        "Iterate on remaining diagnostics until the file compiles cleanly with the intended structure."
-        return none
+        "Spawn a sub-agent and instruct it to run the `/glyph:compile` slash command on the Glyph source file at {target}, drive the full Glyph pipeline (deterministic compile, repair loop, expand, validate, review), and report a structured compilation outcome — on success, list the emitted `.md` paths; on failure, list every diagnostic verbatim. The deterministic compiler alone is not sufficient for verification: only the full pipeline catches expand/validate/review failures."
+        return <"the sub-agent's compilation outcome — either a success report listing the emitted .md paths, or the verbatim list of compilation errors">
+

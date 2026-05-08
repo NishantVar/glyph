@@ -34,7 +34,7 @@ description: Use during a /glyph:compile run after the compiler has reached exit
 
 ### Constraints
 
-- Classify every unordered pair of entries in the input constraint set. Pairs classified `none` may be omitted from the explicit `conflicts` list, but every pair must have been considered.
-- You must use exactly one of `contradiction`, `tension`, or `none` as the `type` field on each conflict entry. Any other value fails validation.
-- You must never modify the Glyph source file. Phase 3c is read-only — it emits structured diagnostics only.
+- Classify every unordered pair of entries in the input constraint set, omitting only those classified `none` from the explicit `conflicts` list while still considering every pair.
+- You must use exactly one of `contradiction`, `tension`, or `none` as the `type` field on each conflict entry — any other value fails validation.
+- You must never modify the Glyph source file, since Phase 3c is read-only and emits structured diagnostics only.
 

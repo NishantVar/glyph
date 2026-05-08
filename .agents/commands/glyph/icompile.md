@@ -5,8 +5,8 @@ description: Use when the user invokes /glyph:icompile on a Glyph skill. Apply a
 
 ## Parameters
 
-- **source_path**. Required.
-- **change**. Required.
+- **source_path** — filesystem path to the `.glyph` source whose paired compiled `.md` is to be patched in tandem. Required.
+- **change** — plain-language description of the targeted edit to make in both artifacts. Required.
 
 ## Instructions
 
@@ -16,7 +16,7 @@ description: Use when the user invokes /glyph:icompile on a Glyph skill. Apply a
 2. Decompose {change} into the smallest set of edits needed in the `.glyph` source and the corresponding edits in the compiled `.md`. Identify which source constructs are touched (skill header, parameter, constraint marker, flow step, block body, named constant, import) and the matching compiled regions (frontmatter `description`, `## Parameters` entry, `### Context` bullet, `### Steps` numbered item, `### Steps` lettered branch sub-step, `### Constraints` bullet, `### Procedure: <name>` numbered step). If the change requires regenerating multi-line prose that the LLM repair or prose-reshape pass originally authored — anything beyond a localised wording or value swap — stop and recommend `/glyph:compile` instead.
 3. Apply the planned edit to {source_path} using a targeted, exact-text replacement. Preserve 4-space indentation, comment placement, blank lines, and the order of unrelated declarations.
 4. Apply the matching edit to the compiled `.md` at the same basename. Mirror exactly the source change in the corresponding compiled region identified during planning. When the source edit rewords a constraint marker text, an inline instruction string, or a constant body, port the new wording into the compiled bullet or numbered step verbatim, adjusting only the minimal surrounding prose needed to read naturally.
-5. Re-read both files. Confirm the parameter list, constraint count, top-level step count, and any cross-references in the compiled `.md` still match the `.glyph` source after the edit. If anything is out of sync, surface the mismatch to the user and stop — do not attempt further fix-up edits in this run. Produce: summary of what was changed in both the .glyph source and the compiled .md, with the absolute paths to each file.
+5. Re-read both files. Confirm the parameter list, constraint count, top-level step count, and any cross-references in the compiled `.md` still match the `.glyph` source after the edit. If anything is out of sync, surface the mismatch to the user and stop — do not attempt further fix-up edits in this run. Produce: a recap of the edits applied to each artifact, with the absolute path to each file.
 
 ### Constraints
 

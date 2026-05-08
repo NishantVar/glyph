@@ -9,7 +9,7 @@ description: Entry point for the Glyph toolkit. Use when the user wants to autho
 
 - **toolkit-slash-commands**
 
-  User-facing slash commands: `/glyph:teach` (author or edit a `.glyph` source file), `/glyph:compile` (run a `.glyph` file or directory through the full pipeline), `/glyph:decompile` (reverse-engineer an existing `.md` skill back into `.glyph`).
+  User-facing slash commands: `/glyph:teach` (author or edit a `.glyph` source file), `/glyph:compile` (run a `.glyph` file or directory through the full pipeline), `/glyph:icompile` (apply a small targeted change to both the `.glyph` source and its compiled `.md` in tandem, bypassing the full pipeline), `/glyph:decompile` (reverse-engineer an existing `.md` skill back into `.glyph`).
 
 - **toolkit-internal-skills**
 
@@ -22,8 +22,10 @@ description: Entry point for the Glyph toolkit. Use when the user wants to autho
    a. Hand off to the `/glyph:teach` slash command. Pass through the target `.glyph` path the user mentioned, or ask for it if absent. Do not run any authoring steps in this router — `/glyph:teach` owns the full procedure.
    If User wants to compile an existing `.glyph` source file or directory through the full Glyph pipeline (compile, fmt, repair loop, constraint scan, prose reshape, validate-output) and surface the agent-facing `.md` output:
    a. Hand off to the `/glyph:compile` slash command. Pass through the source `.glyph` file or directory path. Do not run `glyph compile` directly from this router — `/glyph:compile` owns the full pipeline.
+   If User wants to apply a small, targeted change to both a `.glyph` source file and its sibling compiled `.md` in tandem, bypassing the full pipeline so unrelated prose is preserved. Triggers include phrases like `icompile`, `incremental compile`, or `patch both files`:
+   a. Hand off to the `/glyph:icompile` slash command. Pass through the source `.glyph` path and the plain-language description of the change. Do not perform any edits in this router — `/glyph:icompile` owns the full procedure.
    If User wants to convert an existing compiled-form skill (a `.md` file, a `SKILL.md`, an Anthropic-style skill, or any other Markdown skill) back into a Glyph source file (`.glyph`):
    a. Hand off to the `/glyph:decompile` slash command. Pass through the source `.md` path and the target `.glyph` path. Do not perform any reverse-mapping in this router — `/glyph:decompile` owns the full procedure.
    Otherwise:
-   a. Ask the user which Glyph capability they need: `teach` (author or learn the DSL), `compile` (build a `.glyph` into agent-facing Markdown), or `decompile` (reverse a `.md` skill back into `.glyph`). Once they answer, re-enter the matching branch.
+   a. Ask the user which Glyph capability they need: `teach` (author or learn the DSL), `compile` (build a `.glyph` into agent-facing Markdown), `icompile` (apply a small targeted change to both the `.glyph` source and its compiled `.md` in tandem), or `decompile` (reverse a `.md` skill back into `.glyph`). Once they answer, re-enter the matching branch.
 
