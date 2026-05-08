@@ -99,6 +99,16 @@ Top-level building blocks (column 0):
   in `flow:` without a marker (`context`/`require`/`avoid`/`must`) is an
   error — for instructions, use `block`.
 
+- `type <Name> = <"description">` (and `export type <Name> = <"description">`)
+  — top-level decl that attaches a default description to a domain type.
+  No body, no parameters, no return type. RHS uses `<"...">` (inline) or
+  `<\"\"\"...\"\"\">` (block-string). The decl emits nothing on its own; it
+  supplies the description used wherever `: Name` or `-> Name` appears,
+  unless a per-param `<"...">` overrides at that slot. Type imports are
+  selective only (`import "./types.glyph" { Foo }`); whole-module
+  qualified type refs are not supported. A library file containing only
+  `export type` decls is valid.
+
 - `import "<path>" as <alias>` — whole-module import. Exposes the file's
   `skill` (via `M.skill_name`) plus all `export …` declarations.
 
@@ -131,6 +141,21 @@ reference, a block reference, an arbitrary expression, or a call.
 Type annotations use domain types only — `name: Plan`,
 `name: BranchName`, `name: Severity`. There are no primitive type names
 in author-facing source. Annotations are optional in MVP.
+
+Per-parameter descriptions — append `<"...">` to a slot to set the
+parameter's text in the compiled `## Parameters` section. Four forms:
+
+    x = <"description only — no default value">
+    x = "foo" <"default with description">
+    x: T = <"typed, no default, with description">
+    x: T = "foo" <"typed, with default and description">
+
+Block-string form `<\"\"\"...\"\"\">` is accepted for multi-line descriptions.
+A per-param description wins over any description supplied by a
+`type Foo = <"...">` decl. When both are absent, the compiled bullet
+shows just the name + (optional) type + default-or-required marker.
+Per-param descriptions are author guidance for the compiler — `{name}`
+slots are not allowed inside them.
 
 Default-availability by declaration:
 - `skill`         — parameters without defaults are allowed; they become
@@ -230,12 +255,27 @@ Calls
 - Nested calls are legal but read better with intermediate named bindings.
 
 Branching — `if` / `elif` / `else`
-- Headers are bare keyword + condition with no trailing colon;
-  significant indentation marks the arm body.
+- Headers are bare keyword + condition; a trailing colon is optional and
+  accepted by the parser. Significant indentation marks the arm body.
 - Allowed conditions: boolean identifier or binding; boolean-returning
   call; single-level dot access (`ctx.has_tests`); `not`; equality
   (`==`) / inequality (`!=`); `and` / `or`; parenthesized grouping;
-  block trigger predicate (`block_name.applies()`).
+  block trigger predicate (`block_name.applies()`); named string
+  predicate (a `const` whose body is the natural-language predicate,
+  used bare in condition position — e.g.,
+  `if complex_change_required`); inline string predicate (a string
+  literal in condition position — e.g.,
+  `if "the user has explicitly opted out of compile-on-save"`).
+- The two string-predicate forms compose with `not`/`and`/`or` like any
+  other condition. A non-bool, non-string primitive in bare condition
+  position (e.g., an integer `const`) is a hard error — use `==`.
+- Carve-out: when a string-kinded name appears as an `==` operand
+  (`if risk == high_risk_const`), it is treated as a string equality
+  comparison, not a predicate.
+- Use the named-const or inline-literal form when the predicate stands
+  on its own. Use `.applies()` when the predicate ships bundled with a
+  block body — it is the canonical form whenever the natural-language
+  text is the `description:` of the block being dispatched to.
 - Standard precedence: `not` > `and` > `or`. No `<`, `>`, `<=`, `>=`,
   no arithmetic, no `in`. Bind a boolean call result instead.
 - Branch bodies may contain any flow statement form except `return`.
@@ -328,7 +368,7 @@ Identifiers
   dot-property access on bound values.
 
 Reserved keywords (cannot be used as identifiers):
-  skill, block, export, import, const, flow, call, if, elif,
+  skill, block, export, import, const, type, flow, call, if, elif,
   else, return, true, false, none, effects, constraints, inputs, outputs,
   when_to_use, description, as, generated, input, output, must, require,
   avoid, context, and, or, not.
@@ -362,8 +402,11 @@ Types
   surfaces them.
 - Use named domain types — `RepoContext`, `Plan`, `FailureReport`,
   `BranchName`, `Severity`, `Confirmation`, `Diagnosis`. They are
-  opaque tags, implicitly declared by first use in a `-> Type`
-  position; no separate `type Foo` declaration.
+  opaque tags, implicitly declared by first use in a `-> Type` or
+  `: Type` position. An explicit `type Foo = <"description">` decl
+  (and its `export type` form) is optional — it does not change
+  nominal matching, it only attaches a default description that
+  surfaces wherever `Foo` annotates a parameter or return.
 - The compiler does nominal matching at call boundaries: matching
   names = compatible; differing names = error; either side untyped =
   no check.
@@ -638,9 +681,18 @@ Top-level declarations:
     export block <name>(<params>) [-> Type]   # default required on every param; explicit return required
     const <name> = "..." | <int> | <float> | bare-name | qualified-name
     export const <name> = "..." | <int> | <float> | bare-name | qualified-name
+    type <Name> = <"description">              # default description for : Name / -> Name slots
+    export type <Name> = <"description">       # importable type-with-description
     import "<path>" as <alias>                 # whole-module
-    import "<path>" { name, name as alias }    # selective
+    import "<path>" { name, name as alias }    # selective (also imports `export type` decls)
     import "@glyph/std" { subagent, send }     # stdlib
+
+Parameter slot forms:
+    name                                       # untyped, no default
+    name = "default"                           # untyped, with default
+    name: Type                                 # typed, no default
+    name: Type = "default"                     # typed, with default
+    name = <"description">                     # plus per-param description (any of the four base forms)
 
 Sub-section headers (inside skill / block / export block body):
     description:   one-line string or const-name reference
@@ -670,7 +722,9 @@ Flow statement forms:
 
 Conditions:
     is_valid | foo(ctx) | ctx.has_tests | not x | a == b | a != b |
-    a and b | a or b | (a or b) and c | block_name.applies()
+    a and b | a or b | (a or b) and c | block_name.applies() |
+    string_const_name                # named string predicate (const body is the predicate)
+    "inline string predicate"        # inline string literal in condition position
 
 Stdlib type:  Agent
 Stdlib calls: subagent(task) -> Agent ;   send(agent: Agent, message)

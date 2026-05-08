@@ -47,6 +47,8 @@ import "../../skills/glyph/passes.glyph" {
     factor_long_instructions_and_texts,
     sort_declarations,
     compile_via_subagent,
+    compile_inline,
+    ask_user,
 }
 
 skill teach(target)
@@ -96,8 +98,12 @@ skill teach(target)
         write_flow_section()
         promote_repeated_content()
         factor_long_instructions_and_texts()
+        recognize_conditionals_as_branches()
         sort_declarations()
-        compile_via_subagent(target)
+        if ask_user("subagent or inline"):
+            compile_via_subagent(target)
+        else
+            compile_inline(target)
         return <"path to the authored or updated .glyph file">
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -114,7 +120,10 @@ block choose_file_shape()
     "Decide the file kind: a skill file with exactly one `skill` declaration, or a library file with zero `skill` declarations and at least one `export block` or `export const`."
 
 block write_skill_or_block_header()
-    "Write the declaration header. For `skill`, parameters may have no defaults (the agent extracts them from user context at runtime). For `export block`, every parameter must have a default. For return types, use a named domain type (`Plan`, `BranchName`, `Diagnosis`) or omit `->` entirely when there is no meaningful return value — never `String`/`Int`/`Float`/`Bool`/`None`."
+    flow:
+        "Write the declaration header. For `skill`, parameters may have no defaults (the agent extracts them from user context at runtime). For `export block`, every parameter must have a default. For return types, use a named domain type (`Plan`, `BranchName`, `Diagnosis`) or omit `->` entirely when there is no meaningful return value — never `String`/`Int`/`Float`/`Bool`/`None`."
+        "Decide each parameter's slot form: untyped `name`, defaulted `name = \"x\"`, typed `name: T`, or typed-and-defaulted `name: T = \"x\"`. Add a per-param description with `<\"...\">` (or block-string `<\"\"\"...\"\"\">`) when the parameter's role isn't obvious from the name."
+        "If two or more parameters across this file share a domain type, hoist the description into a top-level `type Foo = <\"...\">` decl (or `export type Foo = <\"...\">` when other files annotate the same type) instead of repeating per-param `<\"...\">` text. A per-param `<\"...\">` still wins over the type-level description on individual slots."
 
 block write_description_and_sub_sections()
     flow:
@@ -124,9 +133,17 @@ block write_description_and_sub_sections()
 
 block write_flow_section()
     flow:
-        "Write `flow:` as an ordered sequence of instruction strings, bindings, calls (bare, qualified, or UFCS), and branches. Use `with \"...\"` to specialize a single call site. Use `if`/`elif`/`else` with `BLOCKNAME.applies()` for description-driven dispatch."
+        "Write `flow:` as an ordered sequence of instruction strings, bindings, calls (bare, qualified, or UFCS), and branches. Use `with \"...\"` to specialize a single call site."
+        "Pick the right `if`/`elif` condition form for each branch: `BLOCKNAME.applies()` when the predicate is the description of an associated block body; a named string-`const` (`if predicate_name`) when the predicate stands on its own without a block; an inline string literal (`if \"the user has explicitly opted out\"`) for one-off predicates; otherwise the existing boolean / `==` / `!=` / `not`/`and`/`or` forms. Composition with `not`/`and`/`or` works for every form. Reach for `==` only for value comparison — a string-kinded name as an `==` operand compares as a string, not a predicate."
         "Reference parameters and local bindings inside instruction strings with `{name}` slots — only where the surrounding string is instruction-bearing."
         "End `flow:` with at most one top-level `return`, placed last (never inside a branch arm). Use `return <name>` or `return <\"description\">` only when the value is synthesized by the agent from prose; otherwise prefer a normal binding. For `export block`, the `return` must be explicit even when returning `none`."
 
 block promote_repeated_content()
     "Promote any inline string that repeats into a `const` constant. Promote any instruction sequence that repeats into a `block` (or `export block` if another file needs it)."
+
+block recognize_conditionals_as_branches()
+    flow:
+        "Walk every `flow:` body in the file. For each instruction string, block call, or sequence that expresses conditional behavior in prose (\"If X, do Y\", \"When Z, run W\", \"Only when …\", \"Otherwise …\"), lift the condition out of the prose and rewrite the site as a Glyph `if` / `elif` / `else` branching statement. Each arm body becomes the actions the prose originally described — inline instructions, calls, or further branches."
+        "Pick the right condition form: `BLOCKNAME.applies()` when the predicate is the `description:` of a same-file block (its arm body lives in that block); a named string-`const` (`if predicate_name`) when the predicate stands on its own without a block body and recurs; an inline string literal (`if \"the predicate prose\"`) for a one-off predicate that does not warrant a const; otherwise the standard boolean / `==` / `!=` / `not` / `and` / `or` forms over bindings or call results."
+        "Recurse into each arm — nested conditional prose becomes nested `if` / `else` statements. Stop when no arm contains unconverted conditional prose."
+        "Never place `return` inside an arm. If the original prose described a return-shaped outcome under a condition, keep `return` at the top level of `flow:` and let each arm bind the outgoing value beforehand (so the single trailing `return` references that binding)."

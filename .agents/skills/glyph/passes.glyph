@@ -19,3 +19,19 @@ export block compile_via_subagent(target = ".") -> CompileOutcome
         "Spawn a sub-agent and instruct it to run the `/glyph:compile` slash command on the Glyph source file at {target}, drive the full Glyph pipeline (deterministic compile, repair loop, expand, validate, review), and report a structured compilation outcome — on success, list the emitted `.md` paths; on failure, list every diagnostic verbatim. The deterministic compiler alone is not sufficient for verification: only the full pipeline catches expand/validate/review failures."
         return <"the sub-agent's compilation outcome — either a success report listing the emitted .md paths, or the verbatim list of compilation errors">
 
+export block compile_inline(target = ".") -> CompileOutcome
+    flow:
+        "Load the compile skill content from `.agents/commands/glyph/compile.md` (resolve via the `glyph:compile` slash command if available) and execute its steps yourself, in this conversation, against the Glyph source at {target}. Drive the full pipeline inline — deterministic compile, repair loop, expand, validate, review — without delegating to a sub-agent. On success, list every emitted `.md` path; on failure, list every diagnostic verbatim."
+        return <"the inline compilation outcome — either a success report listing the emitted .md paths, or the verbatim list of compilation errors">
+
+export block compile(target = ".") -> CompileOutcome
+    flow:
+        "Ask the user whether to compile the Glyph source at {target} in a sub-agent (isolated context, more reliable for large skills) or inline (faster, lower overhead). Then drive the full Glyph pipeline via the chosen path — deterministic compile, repair loop, expand, validate, review. If sub-agent: spawn one and have it run the `/glyph:compile` slash command. If inline: load the compile skill content from `.agents/commands/glyph/compile.md` (resolve via the `glyph:compile` slash command if available) and execute its steps yourself, in this conversation. The deterministic compiler alone is not sufficient for verification: only the full pipeline catches expand/validate/review failures. On success, list every emitted `.md` path; on failure, list every diagnostic verbatim."
+        return <"the compilation outcome — either a success report listing the emitted .md paths, or the verbatim list of compilation errors">
+
+export block ask_user(question = "") -> UserResponse
+    description: "Ask the user a yes/no or one-line choice question and return their answer."
+    flow:
+        "Pause the workflow and ask the user verbatim: {question}. Wait for the user's response before continuing."
+        return <"the user's response, interpreted as a boolean — affirmative answers and the first listed option are true; negative answers and the second listed option are false">
+

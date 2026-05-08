@@ -45,7 +45,7 @@ import "../../skills/glyph/constraints.glyph" {
 import "../../skills/glyph/passes.glyph" {
     factor_long_instructions_and_texts,
     sort_declarations,
-    compile_via_subagent,
+    compile,
 }
 
 skill decompile(source_md, target)
@@ -95,12 +95,13 @@ skill decompile(source_md, target)
         map_context_section()
         map_constraints_section()
         recover_flow_from_steps()
+        recover_conditionals_as_branches()
         write_initial_glyph_source(target)
         append_unmapped_section(target)
         factor_long_instructions_and_texts()
         sort_declarations()
         rename_source_md_with_old_prefix(source_md)
-        compile_outcome = compile_via_subagent(target)
+        compile_outcome = compile(target)
         if "there are no errors in compile_outcome":
             retry_unmapped_with_fresh_eyes(target)
             review_equivalence_via_subagent(source_md, target)
@@ -117,7 +118,10 @@ block parse_compiled_skill(source_md)
     "Read the file at {source_md}. Split the YAML frontmatter from the Markdown body. Within the body, locate the `## Parameters`, `### Context`, `### Steps`, and `### Constraints` sub-sections — note which are present and which are absent."
 
 block map_frontmatter_to_skill_header()
-    "Use the frontmatter `name`, `description`, and parameter list (if present) to author the `skill <name>(params)` declaration line and its `description:` sub-section. Recover parameter names from the `## Parameters` section when the frontmatter does not list them. If the skill has a `## Variables` section (or similarly named block of user-editable knobs with defaults), map each variable to a skill parameter with its default value. Do not invent parameters that are not in the source."
+    flow:
+        "Use the frontmatter `name`, `description`, and parameter list (if present) to author the `skill <name>(params)` declaration line and its `description:` sub-section. Recover parameter names from the `## Parameters` section when the frontmatter does not list them. If the skill has a `## Variables` section (or similarly named block of user-editable knobs with defaults), map each variable to a skill parameter with its default value. Do not invent parameters that are not in the source."
+        "When a `## Parameters` bullet carries description prose beyond name/default/required, attach that prose to the parameter as a per-param `<\"...\">` annotation. When the bullet names a domain noun (`branch`, `severity`, `plan`, `diagnosis`), add a `: PascalCaseType` annotation to the parameter and let the per-param description carry the meaning."
+        "If two or more parameters in the source skill share the same domain-type label and description prose, hoist the prose into a top-level `type Foo = <\"...\">` decl and drop the per-param `<\"...\">` from each shared slot, keeping only `: Foo`. Do not introduce `type` decls for one-off types — they only pay off when reused."
 
 block classify_and_map_unplaced_content()
     flow:
@@ -136,8 +140,16 @@ block map_constraints_section()
 
 block recover_flow_from_steps()
     flow:
-        "Map the remaining top-level numbered steps to instruction strings inside `flow:` in their original order. Branch sites already became `if PROCNAME.applies()` calls during extraction — leave them alone here."
+        "Map the remaining top-level numbered steps to instruction strings inside `flow:` in their original order. Branch sites already became `if PROCNAME.applies()` calls during extraction — leave them alone here. Steps that encode a conditional inline (an `If <predicate>:` clause with lettered sub-steps, optionally followed by an `Otherwise:` arm) are NOT extracted here either — preserve them verbatim as a placeholder so the next pass can convert them into Glyph branching statements."
         "If the final step describes what the skill produces, lift that into a top-level `return <\"description\">` statement at the end of `flow:` rather than restating it as another instruction."
+
+block recover_conditionals_as_branches()
+    flow:
+        context decompile_by_semantic_content_not_shape
+        "Walk the recovered `flow:` steps. For each step that encodes a conditional — an `If <predicate>:` clause with lettered sub-steps, optionally followed by an `Otherwise:` arm with its own sub-steps — break it down into a Glyph `if` / `else` branching statement inline in `flow:`, rather than leaving it as a single prose instruction. The clause's predicate becomes the `if` condition; each arm's lettered sub-steps become that arm's body, mapped to inline instructions, calls, or nested branches."
+        "Pick the right condition form for each branch: `BLOCKNAME.applies()` when the predicate is the `description:` of a same-file block (its arm body lives in that block); a named string-`const` (`if predicate_name`) when the predicate stands on its own without a block body and recurs; an inline string literal (`if \"the predicate prose\"`) for a one-off predicate that does not warrant a const; otherwise the standard boolean / `==` / `!=` / `not` / `and` / `or` forms over bindings or call results."
+        "Recurse on each arm body — nested `If <predicate>:` / `Otherwise:` structures inside an arm become nested Glyph `if` / `else` statements. Stop when no arm contains an unmapped conditional."
+        "Never lift a conditional arm's contents into a top-level `return`. `return` is forbidden inside branch arms; if the original final step described what the skill produces, that step is handled by `recover_flow_from_steps`, not here."
 
 block write_initial_glyph_source(target)
     "Write the assembled skill, blocks, and any extracted const constants to {target}. This is a verbose first draft — factoring and sorting will tidy it up next."
@@ -177,7 +189,7 @@ const decompile_by_semantic_content_not_shape = "Decompile by semantic content, 
 const classification_table = """
 Classify each unplaced unit of prose by meaning, not by Markdown shape:
 
-- "When X…" / "If you need Y…" / "For the case where…" / "Whenever Z…" prose, especially when it heads a sub-section → branch: define a `block` with `description:` set to the predicate, and dispatch from the parent flow with `if PROCNAME.applies()`.
+- "When X…" / "If you need Y…" / "For the case where…" / "Whenever Z…" prose, especially when it heads a sub-section → branch. Pick the minimal form: if the arm has a substantive body (multiple steps, its own context/constraints), define a `block` with `description:` set to the predicate and dispatch with `if PROCNAME.applies()`; if the arm is a single inline action and the predicate appears nowhere else, use an inline string predicate (`if "the predicate prose": single_action()`); if the predicate prose recurs across arms or files, factor it into a `const some_predicate = "the prose"` and dispatch with `if some_predicate`. Reach for `.applies()` only when the predicate ships bundled with a block body.
 - A sequence of imperative actions under any header (numbered list, bulleted list, or ordered prose) → `block` with a `flow:` body. Call it from the parent flow.
 - "Always X" / "Must X" / "Never Y" / "Avoid Y" / "Prefer Z" / "Consider Z" → constraint marker. Pick polarity from the verb: `Always` / `Must` → `must` or `require`; `Never` / `Avoid` → `must avoid` or `avoid`; `Prefer` / `Consider` → `require` (soft).
 - "Note that…" / "Assume…" / informational background that does not direct action → `context:` entry on the enclosing skill or block.

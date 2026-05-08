@@ -54,12 +54,16 @@ skill write_changelog(scope = ".", version) -> Changelog
 
 ## Skills
 
-| Skill | When to use |
-|---|---|
-| `/glyph:compile` | Compile a `.glyph` source file into a finished `.md` skill — runs the full pipeline (fmt, LLM repair loop, constraint conflict scan, prose reshape, validation). |
-| `/glyph:decompile` | Convert an existing compiled `.md` skill back into a `.glyph` source file for editing. |
-| `/glyph:teach` | Author or edit a `.glyph` source file. Use when writing a new skill from scratch or making changes to an existing `.glyph` file. |
-| `/glyph:icompile` | Apply a small targeted change to both the `.glyph` source and its compiled `.md` in tandem, without re-running the full pipeline. Use for localised wording or value swaps; fall back to `/glyph:compile` if prose needs to be regenerated. |
+| Skill              | When to use                                                                                                                                                                                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/glyph`           | Entry point — describe what you want to do and it routes to the right sub-skill. Useful for agents that don't support slash commands.                                                                                                       |
+| `/glyph:compile`   | Compile a `.glyph` source file into a finished `.md` skill — runs the full pipeline (fmt, LLM repair loop, constraint conflict scan, prose reshape, validation).                                                                            |
+| `/glyph:decompile` | Convert an existing compiled `.md` skill back into a `.glyph` source file for editing.                                                                                                                                                      |
+| `/glyph:teach`     | Author or edit a `.glyph` source file. Use when writing a new skill from scratch or making changes to an existing `.glyph` file.                                                                                                            |
+| `/glyph:icompile`  | Apply a small targeted change to both the `.glyph` source and its compiled `.md` in tandem, without re-running the full pipeline. Use for localised wording or value swaps; fall back to `/glyph:compile` if prose needs to be regenerated. |
+| `/install_glyph_editor_extension` | Build the Glyph VS Code extension and install it into every VS Code-compatible IDE detected on your machine (VS Code, Cursor, Antigravity, Windsurf, VSCodium). Idempotent — re-running uninstalls and reinstalls cleanly. |
+
+> **Work in progress.** The compiler may surface errors or incomplete output. Your agent should be able to recover from these — treat compiler feedback as guidance, not a hard stop.
 
 ## The Five Primitives
 
@@ -98,6 +102,27 @@ Every construct in Glyph decomposes into one or more of five semantic primitives
 - **`export block` has strict rules.** Must end with an explicit `return`. Must be self-contained — behavior depends only on declared inputs, imports, and same-file declarations. No hidden context.
 
 - **The compiler writes the prose.** You describe structure and intent. The compiler expands it into explicit, agent-followable instructions under `## Parameters`, `### Steps`, `### Constraints`. Don't try to write that layer by hand.
+
+## LLM Passes
+
+The full `/glyph:compile` pipeline runs four LLM passes after the deterministic compiler:
+
+- **Repair** — triggered only when the compiler emits repairable diagnostics (unresolved names, missing `description:`, ambiguous constraint roles). Rewrites source, then re-parses. Skipped entirely if the source is already valid.
+- **Semantic validation** — scans each declaration's constraint set for contradictions and tensions. Skipped for declarations with fewer than two constraints.
+- **Expand** — needed to apply complex modifiers like with statement.
+- **Review** — reads the finished `.md` against the IR and auto-fixes minor wording issues; flags anything structural for the author. Feel free to skip if it's a small skill or change.
+
+## Planned Features
+
+- Incremental Compilation
+- Agents & Inheritance
+- Standard Library
+- Effects Inference
+- Goal & Richer Output Contracts
+- Freeform Sections
+- Modular Testing & Evals
+- Expanded Semantic Validation
+- Fully Deterministic Compiler
 
 ## License
 
