@@ -301,6 +301,7 @@ mod tests {
             output_contract: None,
             return_type_text: None,
             branch_steps: std::collections::HashMap::new(),
+            string_default_params: std::collections::BTreeMap::new(),
         }));
         arena.set_root_skill(NodeId(0));
 
@@ -385,6 +386,7 @@ mod tests {
             output_contract: None,
             return_type_text: None,
             branch_steps: std::collections::HashMap::new(),
+            string_default_params: std::collections::BTreeMap::new(),
         }));
         // Block "bar" calls "foo" — completing the cycle.
         arena.push(IrNode::Block(IrBlock {
@@ -399,6 +401,7 @@ mod tests {
             output_contract: None,
             return_type_text: None,
             branch_steps: std::collections::HashMap::new(),
+            string_default_params: std::collections::BTreeMap::new(),
         }));
         arena.set_root_skill(NodeId(0));
 

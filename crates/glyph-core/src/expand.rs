@@ -177,6 +177,21 @@ pub fn expand_step1_with_imported_descriptions(
             }
         }
     }
+    // Codex review Finding (medium): block params with string defaults are
+    // ALSO classified as PredicateConst by Analyze. Lower stashed each block's
+    // string-default params on `IrBlock.string_default_params`; merge them all
+    // here so a `if param_name:` inside a block resolves to the param's prose
+    // instead of leaking the bare identifier. Same-name collisions are
+    // rejected by Analyze, so flat-merging is safe.
+    for n in arena.nodes() {
+        if let IrNode::Block(b) = n {
+            for (name, default) in &b.string_default_params {
+                consts_for_lookup
+                    .entry(name.clone())
+                    .or_insert_with(|| default.clone());
+            }
+        }
+    }
     // Walk Branch nodes and populate resolved_predicates by consuming the
     // Analyze-attached `classification.tokens` instead of re-tokenizing.
     // Tokens with `is_comparison_operand == true` are skipped per

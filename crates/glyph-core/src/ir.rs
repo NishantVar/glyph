@@ -157,6 +157,14 @@ pub struct IrBlock {
     /// (the common case), so existing fixtures keep their identical IR.
     #[serde(skip)]
     pub branch_steps: std::collections::HashMap<usize, NodeId>,
+    /// Codex review Finding (medium): block params with string defaults are
+    /// classified by Analyze (`condition.rs:304`) as PredicateConst and need
+    /// their unquoted default value available at branch-resolution time. We
+    /// stash a focused `name -> unquoted default` map here (instead of full
+    /// `IrParam`s) so Expand can merge them into `consts_for_lookup` without
+    /// re-walking the AST. Empty when the block has no string-default params.
+    #[serde(skip)]
+    pub string_default_params: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

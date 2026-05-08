@@ -719,6 +719,30 @@ pub fn lower_with_imports(
                     branch_steps.insert(idx, branch_id);
                 }
             }
+            // Codex review Finding (medium): collect string-default params
+            // (with the quoted form unwrapped) so Expand can merge them into
+            // `consts_for_lookup` for branch-predicate resolution. Mirrors
+            // the type-annotation guard in Analyze's classifier
+            // (`analyze.rs:3433-3438`): an explicit Bool/Int/Float annotation
+            // means the param is not a PredicateConst and must NOT be merged.
+            let mut block_string_default_params: BTreeMap<String, String> = BTreeMap::new();
+            for p in &block.params {
+                if p.default_is_name_ref {
+                    continue;
+                }
+                if let Some(ta) = &p.type_annotation {
+                    let name_lc = ta.node.to_ascii_lowercase();
+                    if matches!(name_lc.as_str(), "bool" | "int" | "float") {
+                        continue;
+                    }
+                }
+                if let Some(default) = &p.default {
+                    if default.starts_with('"') && default.ends_with('"') && default.len() >= 2 {
+                        let inner = &default[1..default.len() - 1];
+                        block_string_default_params.insert(p.name.clone(), inner.to_string());
+                    }
+                }
+            }
             let next = NodeId(arena.len() as u32);
             arena.push(IrNode::Block(IrBlock {
                 node_id: next,
@@ -732,6 +756,7 @@ pub fn lower_with_imports(
                 output_contract: block_output_contract,
                 return_type_text: block_return_type_text,
                 branch_steps,
+                string_default_params: block_string_default_params,
             }));
         }
     }
