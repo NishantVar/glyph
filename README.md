@@ -60,6 +60,7 @@ skill write_changelog(scope = ".", version) -> Changelog
 | `/glyph:decompile` | Convert an existing compiled `.md` skill back into a `.glyph` source file for editing. |
 | `/glyph:teach` | Author or edit a `.glyph` source file. Use when writing a new skill from scratch or making changes to an existing `.glyph` file. |
 | `/glyph:icompile` | Apply a small targeted change to both the `.glyph` source and its compiled `.md` in tandem, without re-running the full pipeline. Use for localised wording or value swaps; fall back to `/glyph:compile` if prose needs to be regenerated. |
+| `/install_glyph_editor_extension` | Build the Glyph VS Code extension and install it into every VS Code-compatible IDE detected on your machine (VS Code, Cursor, Antigravity, Windsurf, VSCodium). Idempotent — re-running uninstalls and reinstalls cleanly. |
 
 ## The Five Primitives
 
