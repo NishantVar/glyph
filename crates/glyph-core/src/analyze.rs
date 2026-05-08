@@ -3423,6 +3423,19 @@ fn annotate_file_branches(
             if p.default_is_name_ref {
                 continue;
             }
+            // Skip params with an explicit non-String built-in type annotation.
+            // `reviewable: Bool = "true"` stores its default as a quoted string
+            // (the AST `default` field is always pre-rendered text), but the
+            // param itself is a Bool. Without this guard the classifier would
+            // emit PredicateConst and Expand would substitute the literal
+            // `true` text into the condition, displacing the runtime param
+            // reference the author wrote.
+            if let Some(ta) = &p.type_annotation {
+                let name_lc = ta.node.to_ascii_lowercase();
+                if matches!(name_lc.as_str(), "bool" | "int" | "float") {
+                    continue;
+                }
+            }
             if let Some(d) = &p.default {
                 if d.starts_with('"') {
                     set.insert(p.name.clone());

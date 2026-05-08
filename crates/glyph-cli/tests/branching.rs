@@ -251,6 +251,11 @@ fn fixture_predicate_literal_and_literal() {
 }
 
 #[test]
+fn fixture_predicate_param_default() {
+    snapshot_test("predicate_param_default");
+}
+
+#[test]
 fn mixed_predicate_const_with_not_emits_branch_condition_span() {
     let src = r#"
 const big = "the change is big"

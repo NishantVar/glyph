@@ -149,7 +149,24 @@ pub fn expand_step1_with_imported_descriptions(
         }
     }
     // Clone the consts map so we can borrow it below without arena borrow conflict.
-    let consts_for_lookup: BTreeMap<String, String> = arena.consts.clone();
+    // Merge in the root skill's string-defaulted params: condition.rs:304 classifies
+    // those param names as PredicateConst, so resolve_branch_predicates must look
+    // them up alongside arena consts. (Same-name shadowing is rejected by Analyze.)
+    let mut consts_for_lookup: BTreeMap<String, String> = arena.consts.clone();
+    if let Some(root_id) = arena.root_skill() {
+        if let IrNode::Skill(s) = arena.get(root_id) {
+            for p in &s.params {
+                if let Some(default) = &p.default {
+                    if default.starts_with('"') && default.ends_with('"') && default.len() >= 2 {
+                        let inner = &default[1..default.len() - 1];
+                        consts_for_lookup
+                            .entry(p.name.clone())
+                            .or_insert_with(|| inner.to_string());
+                    }
+                }
+            }
+        }
+    }
     // Walk Branch nodes and populate resolved_predicates by consuming the
     // Analyze-attached `classification.tokens` instead of re-tokenizing.
     // Tokens with `is_comparison_operand == true` are skipped per
