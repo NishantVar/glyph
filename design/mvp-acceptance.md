@@ -423,8 +423,6 @@ Phase 6b structural validation, implemented in `glyph validate-output`. These di
 | `G::expand::params-section-mismatch` | error |
 | `G::expand::params-section-missing` | error |
 | `G::expand::params-section-spurious` | error |
-| `G::expand::step-too-long` | error |
-| `G::expand::constraint-multi-sentence` | error |
 | `G::expand::frontmatter-returned` | error |
 | `G::expand::malformed-markdown` | error |
 | `G::expand::procedure-count-mismatch` | error |
@@ -435,7 +433,7 @@ Phase 6b structural validation, implemented in `glyph validate-output`. These di
 | `G::expand::procedure-duplicate` | error |
 | `G::expand::procedure-order` | error |
 
-**Total: 82 compiler-scope diagnostic IDs** (19 Parse + 29 Analyze + 1 Imports + 5 Validate + 1 Build + 27 Validate-output).
+**Total: 80 compiler-scope diagnostic IDs** (19 Parse + 29 Analyze + 1 Imports + 5 Validate + 1 Build + 25 Validate-output).
 
 ### 4.2 Agent-scope diagnostics (not in compiler)
 

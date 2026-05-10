@@ -102,8 +102,6 @@ Single source of truth mapping every compiler-scope diagnostic ID to at least on
 | `G::expand::params-section-mismatch` | glyph-core::validate_output::tests::params_section_mismatch |
 | `G::expand::params-section-missing` | glyph-core::validate_output::tests::params_section_missing |
 | `G::expand::params-section-spurious` | glyph-core::validate_output::tests::params_section_spurious |
-| `G::expand::step-too-long` | glyph-core::validate_output::tests::step_too_long |
-| `G::expand::constraint-multi-sentence` | glyph-core::validate_output::tests::constraint_multi_sentence |
 | `G::expand::frontmatter-returned` | glyph-core::validate_output::tests::frontmatter_returned |
 | `G::expand::malformed-markdown` | glyph-core::validate_output::tests::malformed_markdown |
 | `G::expand::procedure-count-mismatch` | glyph-core::validate_output::tests::procedure_count_mismatch |
