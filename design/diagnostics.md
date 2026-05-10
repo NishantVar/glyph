@@ -197,8 +197,6 @@ By-construction-satisfied for scaffolded portions:
 | `G::expand::params-section-mismatch` | error | `## Parameters` item count does not match `InputContract` parameter count |
 | `G::expand::params-section-missing` | error | Skill has parameters but `## Parameters` section is absent |
 | `G::expand::params-section-spurious` | error | Skill has no parameters but `## Parameters` section is present |
-| `G::expand::step-too-long` | error | A non-conditional step or sub-step exceeds three sentences |
-| `G::expand::constraint-multi-sentence` | error | A constraint is more than one sentence |
 | `G::expand::frontmatter-returned` | error | Step 2 returned YAML frontmatter |
 | `G::expand::malformed-markdown` | error | Output does not parse as valid structural Markdown |
 | `G::expand::procedure-count-mismatch` | error | Number of `### Procedure:` sections does not match `same_file_procedure` projection count |

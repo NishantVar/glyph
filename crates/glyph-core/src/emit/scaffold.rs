@@ -4,11 +4,13 @@
 
 use super::templates;
 use crate::ir::{
-    BranchPredicateShape, IrArena, IrCall, IrNode, LocalRef, NodeId, OutputTargetForm,
+    BranchPredicateShape, IrArena, IrBlock, IrCall, IrNode, LocalRef, NodeId, OutputTargetForm,
 };
 use crate::slot;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 
 /// Flow-position-assignments §9.1 — naming sentence for an `IrCall` whose
 /// `bound_name` is `Some(n)`. Returns `None` when the call carries no binding.
@@ -282,31 +284,77 @@ impl Scaffold {
     }
 }
 
+/// Walk a slice of `NodeId`s and record any Tier-2 `IrCall.target` reached by
+/// recursing through `Branch.then_body` / `elif_branches` / `else_body`. Used
+/// both as the seed (over `skill.steps`) and as the per-procedure expansion
+/// step (over a discovered block's `branch_steps`) of the worklist BFS in
+/// `build()`.
 fn collect_tier2_targets(
     nodes: &[NodeId],
     arena: &IrArena,
     seen: &mut HashSet<String>,
     order: &mut Vec<String>,
+    queue: &mut VecDeque<String>,
 ) {
     for nid in nodes {
         match arena.get(*nid) {
             IrNode::Call(c) if c.projection_tier == Some(2) => {
-                if seen.insert(c.target.clone()) {
-                    order.push(c.target.clone());
-                }
+                record(&c.target, seen, order, queue);
             }
             IrNode::Branch(b) => {
-                collect_tier2_targets(&b.then_body, arena, seen, order);
+                collect_tier2_targets(&b.then_body, arena, seen, order, queue);
                 for elif in &b.elif_branches {
-                    collect_tier2_targets(&elif.body, arena, seen, order);
+                    collect_tier2_targets(&elif.body, arena, seen, order, queue);
                 }
                 if let Some(else_body) = &b.else_body {
-                    collect_tier2_targets(else_body, arena, seen, order);
+                    collect_tier2_targets(else_body, arena, seen, order, queue);
                 }
             }
             _ => {}
         }
     }
+}
+
+/// BFS bookkeeping: register a newly-discovered Tier-2 procedure name into
+/// `seen` (for cycle safety), `order` (for parent-before-child render order),
+/// and `queue` (for transitive expansion). Idempotent on already-seen names.
+fn record(
+    name: &str,
+    seen: &mut HashSet<String>,
+    order: &mut Vec<String>,
+    queue: &mut VecDeque<String>,
+) {
+    if seen.insert(name.to_string()) {
+        order.push(name.to_string());
+        queue.push_back(name.to_string());
+    }
+}
+
+/// Emit-time approximation for block-only outgoing edges, matching the expand
+/// criteria available from `IrBlock` metadata. Block top-level calls do not
+/// become `IrCall` nodes (they live as `outgoing_calls` strings + the
+/// `"call <name>"` placeholder in `flow_statements`), so `target_to_tier`
+/// gives a false negative for any block reached only via top-level outgoing
+/// edges. The structural legs of expand's Tier-2 rule
+/// (`stmt_count >= 4 || has_branches || wc >= 150`) are derivable from
+/// `IrBlock` metadata and are checked here. The `freq >= 2` leg is
+/// intentionally omitted: `freq` counts `IrCall` nodes, so if it would have
+/// fired, `target_to_tier` already carries the entry.
+fn classifies_as_tier2(
+    name: &str,
+    target_to_tier: &HashMap<String, u8>,
+    blocks_by_name: &HashMap<&str, &IrBlock>,
+) -> bool {
+    if target_to_tier.get(name) == Some(&2) {
+        return true;
+    }
+    let Some(b) = blocks_by_name.get(name) else {
+        return false;
+    };
+    let stmt_count = b.flow_statements.len();
+    let has_branches = !b.branch_steps.is_empty();
+    let wc = b.resolved_word_count.unwrap_or(0) as usize;
+    stmt_count >= 4 || has_branches || wc >= 150
 }
 
 pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
@@ -442,9 +490,94 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
     }
 
     // ### Steps
+    //
+    // Procedure discovery (Tier 2) is a transitive closure: a procedure
+    // reachable only by walking through another procedure's body must still
+    // get its `### Procedure: <name>` section emitted, otherwise the call-site
+    // `Follow the <X> procedure.` reference dangles. We seed from `skill.steps`
+    // and then drain a queue, opening each discovered procedure's
+    // `branch_steps` (structural branches) and `outgoing_calls` (top-level
+    // call edges) to find further Tier-2 callees. Cycle-safe via `seen`.
+    // See specs/nested-procedure-discovery-2026-05-10.md.
     let mut procedure_order: Vec<String> = Vec::new();
     let mut procedure_seen: HashSet<String> = HashSet::new();
-    collect_tier2_targets(&skill.steps, arena, &mut procedure_seen, &mut procedure_order);
+    let mut procedure_queue: VecDeque<String> = VecDeque::new();
+
+    // Pre-compute lookup maps off `arena.nodes()` once.
+    // - `target_to_tier` is authoritative for any callee reached via an
+    //   `IrCall` (skill flow + branch arms); insert only `Some(tier)` entries
+    //   and prefer `2` if duplicates ever appear (expand keeps tiers
+    //   consistent per target — this just makes the map robust).
+    // - `blocks_by_name` lets the BFS open a discovered procedure's body.
+    let mut target_to_tier: HashMap<String, u8> = HashMap::new();
+    let mut blocks_by_name: HashMap<&str, &IrBlock> = HashMap::new();
+    for node in arena.nodes() {
+        match node {
+            IrNode::Call(c) => {
+                if let Some(tier) = c.projection_tier {
+                    let entry = target_to_tier.entry(c.target.clone()).or_insert(tier);
+                    if tier == 2 {
+                        *entry = 2;
+                    }
+                }
+            }
+            IrNode::Block(b) => {
+                blocks_by_name.insert(b.name.as_str(), b);
+            }
+            _ => {}
+        }
+    }
+
+    // Seed: walk skill.steps with the existing recursion through Branch nodes.
+    collect_tier2_targets(
+        &skill.steps,
+        arena,
+        &mut procedure_seen,
+        &mut procedure_order,
+        &mut procedure_queue,
+    );
+
+    // Drain the worklist: open each discovered procedure's body and discover
+    // further Tier-2 callees transitively.
+    while let Some(name) = procedure_queue.pop_front() {
+        let Some(block) = blocks_by_name.get(name.as_str()).copied() else {
+            // Imported / cross-file block — the existing library-procedures
+            // path handles those separately. Skip.
+            continue;
+        };
+
+        // Sort branch_steps by usize key (original flow_statements index)
+        // before walking. The field is `HashMap<usize, NodeId>`, so raw
+        // iteration is nondeterministic — sorting preserves source order
+        // and gives deterministic procedure_order output.
+        let mut indexed: Vec<(usize, NodeId)> =
+            block.branch_steps.iter().map(|(k, v)| (*k, *v)).collect();
+        indexed.sort_by_key(|(idx, _)| *idx);
+        let sorted_branch_ids: Vec<NodeId> = indexed.into_iter().map(|(_, v)| v).collect();
+        collect_tier2_targets(
+            &sorted_branch_ids,
+            arena,
+            &mut procedure_seen,
+            &mut procedure_order,
+            &mut procedure_queue,
+        );
+
+        // Walk top-level outgoing_calls: these are block-level call edges
+        // that DO NOT become IrCall nodes (they live as `outgoing_calls`
+        // strings + the `"call <name>"` placeholder in `flow_statements`),
+        // so target_to_tier alone misses them. Use the metadata-based
+        // classifier as a fallback.
+        for callee in &block.outgoing_calls {
+            if classifies_as_tier2(callee, &target_to_tier, &blocks_by_name) {
+                record(
+                    callee,
+                    &mut procedure_seen,
+                    &mut procedure_order,
+                    &mut procedure_queue,
+                );
+            }
+        }
+    }
 
     // Pre-compute skill output_contract form once (owned), for use in the
     // last-step suffix logic below.

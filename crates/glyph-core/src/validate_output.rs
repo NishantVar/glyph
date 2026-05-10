@@ -1,7 +1,7 @@
 //! Phase 6b: validate-output structural checks.
 //!
 //! Validates that a compiled `.md` file structurally matches its `.ir.json`
-//! counterpart. Implements the 26 `G::expand::*` diagnostic IDs from
+//! counterpart. Implements the 24 `G::expand::*` diagnostic IDs from
 //! `design/expand.md` §4.1.
 //!
 //! This module operates on external files (not the compiler's internal IR),
@@ -2551,55 +2551,6 @@ mod tests {
         assert!(violations
             .iter()
             .any(|v| v.id == "G::expand::params-section-spurious"));
-    }
-
-    // --- step-too-long ---
-    #[test]
-    fn step_too_long() {
-        let md = "## Instructions\n\n### Steps\n\n1. First sentence. Second sentence. Third sentence. Fourth sentence.\n";
-        let violations = validate_output(&minimal_ir(), md);
-        assert!(
-            violations
-                .iter()
-                .any(|v| v.id == "G::expand::step-too-long"),
-            "violations: {:?}",
-            violations
-        );
-    }
-
-    // --- constraint-multi-sentence ---
-    #[test]
-    fn constraint_multi_sentence() {
-        let ir = serde_json::json!({
-            "ir_version": 2,
-            "compiler": "glyph 0.1.0",
-            "source_file": "test.glyph",
-            "skill": {
-                "node_id": "n0",
-                "kind": "skill",
-                "name": "test_skill",
-                "description": "A test skill.",
-                "params": [],
-                "effects": [],
-                "context": [],
-                "constraints": [
-                    { "node_id": "n2", "kind": "constraint", "text": "Don't do bad things.", "strength": "soft", "polarity": "avoid" }
-                ],
-                "flow": [
-                    { "node_id": "n1", "kind": "inline_instruction", "text": "Do something.", "role": "step" }
-                ]
-            }
-        }).to_string();
-
-        let md = "## Instructions\n\n### Steps\n\n1. Do something.\n\n### Constraints\n\n- Don't do bad things. Also don't do other bad things.\n";
-        let violations = validate_output(&ir, md);
-        assert!(
-            violations
-                .iter()
-                .any(|v| v.id == "G::expand::constraint-multi-sentence"),
-            "violations: {:?}",
-            violations
-        );
     }
 
     // --- procedure-count-mismatch ---

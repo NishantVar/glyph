@@ -1,0 +1,20 @@
+skill foo()
+    description: "Two-hop nested procedure discovery test."
+    flow:
+        outer()
+
+block outer()
+    description: "Outer wrapper that branches into bar."
+    flow:
+        if bar.applies()
+            bar()
+        else
+            "do nothing"
+
+block bar()
+    description: "Multi-step inner work."
+    flow:
+        "First inner step."
+        "Second inner step."
+        "Third inner step."
+        "Fourth inner step."
