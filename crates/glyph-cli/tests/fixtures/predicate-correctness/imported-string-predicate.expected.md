@@ -1,6 +1,6 @@
 ---
 name: main
-description: Gate on the imported predicate.
+description: 'Gate on the imported predicate.'
 ---
 
 ## Instructions

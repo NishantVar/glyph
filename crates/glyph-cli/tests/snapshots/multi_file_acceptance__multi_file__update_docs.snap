@@ -4,7 +4,7 @@ expression: md
 ---
 ---
 name: update_docs
-description: Update repository documentation to match current code.
+description: 'Update repository documentation to match current code.'
 ---
 
 ## Instructions

@@ -1,6 +1,6 @@
 ---
 name: predicate_inline_literal
-description: Demonstrate inline literal predicate form.
+description: 'Demonstrate inline literal predicate form.'
 ---
 
 ## Instructions

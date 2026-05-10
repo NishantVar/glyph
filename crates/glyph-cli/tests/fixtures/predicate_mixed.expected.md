@@ -1,7 +1,7 @@
 <!-- mixed-condition fixture: only the const-form predicate is resolved deterministically; compound phrasing/word-order is deferred to the Expand Step 2 LLM pass (design/expand.md). -->
 ---
 name: predicate_mixed
-description: Demonstrate mixed condition: predicate const AND-NOT inline literal.
+description: 'Demonstrate mixed condition: predicate const AND-NOT inline literal.'
 ---
 
 ## Instructions

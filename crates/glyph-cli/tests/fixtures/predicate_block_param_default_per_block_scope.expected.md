@@ -1,7 +1,7 @@
 <!-- Codex review Finding (medium): expand.rs flat-merged every block's string-default params into one file-level lookup, so duplicate names across blocks collided. With per-block scoping, each branch resolves predicate consts against (skill consts ∪ owning-block params) only. -->
 ---
 name: main
-description: Two blocks share param name `flag`; each branch must resolve to its own block's default.
+description: 'Two blocks share param name `flag`; each branch must resolve to its own block''s default.'
 ---
 
 ## Instructions

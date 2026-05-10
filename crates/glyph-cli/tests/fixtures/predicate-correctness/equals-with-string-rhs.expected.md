@@ -1,6 +1,6 @@
 ---
 name: main
-description: Branch on risk and complexity.
+description: 'Branch on risk and complexity.'
 ---
 
 ## Parameters

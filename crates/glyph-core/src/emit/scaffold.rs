@@ -324,7 +324,10 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
     // Frontmatter
     s.push_literal("---\n");
     s.push_literal(format!("name: {}\n", skill.name));
-    s.push_literal(format!("description: {}\n", skill.description));
+    s.push_literal(format!(
+        "description: '{}'\n",
+        skill.description.replace('\'', "''")
+    ));
     if enable_effects && !skill.effects.is_empty() {
         let mut sorted_effects = skill.effects.clone();
         sorted_effects.sort();

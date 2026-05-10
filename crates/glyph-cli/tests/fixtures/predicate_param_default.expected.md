@@ -1,7 +1,7 @@
 <!-- Param with quoted string default classified as PredicateConst. Expand must resolve it from the containing decl's params, not just arena.consts. -->
 ---
 name: predicate_param_default
-description: Resolve a string-defaulted param in condition position.
+description: 'Resolve a string-defaulted param in condition position.'
 ---
 
 ## Parameters

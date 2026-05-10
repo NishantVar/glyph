@@ -1,6 +1,6 @@
 ---
 name: predicate_const_multi_arm
-description: Demonstrate multi-arm pure-predicate const form.
+description: 'Demonstrate multi-arm pure-predicate const form.'
 ---
 
 ## Instructions

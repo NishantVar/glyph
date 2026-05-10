@@ -1,6 +1,6 @@
 ---
 name: predicate_const_single_arm
-description: Demonstrate single-arm pure-predicate const form.
+description: 'Demonstrate single-arm pure-predicate const form.'
 ---
 
 ## Instructions

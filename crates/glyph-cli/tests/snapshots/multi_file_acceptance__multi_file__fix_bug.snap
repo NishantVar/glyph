@@ -1,11 +1,10 @@
 ---
 source: crates/glyph-cli/tests/multi_file_acceptance.rs
-assertion_line: 113
 expression: md
 ---
 ---
 name: fix_bug
-description: Debug and fix a bug in the codebase with minimal, targeted changes.
+description: 'Debug and fix a bug in the codebase with minimal, targeted changes.'
 ---
 
 ## Parameters

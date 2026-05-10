@@ -1,6 +1,6 @@
 ---
 name: main
-description: Branch on grouped predicates.
+description: 'Branch on grouped predicates.'
 ---
 
 ## Parameters

@@ -1,7 +1,7 @@
 <!-- Codex review Finding 2: a Branch inside a private block's flow must render through the branch emitter when the block is projected as a Tier 2 procedure. Pre-fix the procedure printed `if {condition}` raw and silently dropped the then_body. -->
 ---
 name: main
-description: Test branch in block procedure.
+description: 'Test branch in block procedure.'
 ---
 
 ## Instructions

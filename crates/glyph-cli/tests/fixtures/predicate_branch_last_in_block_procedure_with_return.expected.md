@@ -1,7 +1,7 @@
 <!-- Codex review Finding (medium): when a Tier 2 procedure's final visible step is a Branch, the §8.4 return sentence must still render. Pre-fix the branch dispatch's `continue` skipped the is_last suffix path and the sentence was dropped. -->
 ---
 name: main
-description: Test branch as last procedure step with return sentence.
+description: 'Test branch as last procedure step with return sentence.'
 ---
 
 ## Instructions

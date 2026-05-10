@@ -1,7 +1,7 @@
 <!-- literal-or-literal: both operands are PredicateLiteral, resolved_predicates is None. `or` does not disqualify pure predicate (by design), so this renders via the pure-predicate single-arm template. Classification-driven substitution must still strip quotes. -->
 ---
 name: predicate_literal_or_literal
-description: Demonstrate literal-or-literal predicate composition.
+description: 'Demonstrate literal-or-literal predicate composition.'
 ---
 
 ## Instructions

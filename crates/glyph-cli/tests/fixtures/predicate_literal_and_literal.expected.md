@@ -1,7 +1,7 @@
 <!-- literal-and-literal: both operands are PredicateLiteral, so resolved_predicates is empty/None. The mixed-condition emit path must still render via classification (quotes stripped). -->
 ---
 name: predicate_literal_and_literal
-description: Demonstrate literal-and-literal predicate composition..
+description: 'Demonstrate literal-and-literal predicate composition..'
 ---
 
 ## Instructions

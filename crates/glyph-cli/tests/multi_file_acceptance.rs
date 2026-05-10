@@ -423,7 +423,7 @@ fn fix_bug_frontmatter() {
     let md = std::fs::read_to_string(path.join("fix_bug.md")).unwrap();
     assert!(md.contains("name: fix_bug"), "frontmatter name");
     assert!(
-        md.contains("description: Debug and fix a bug"),
+        md.contains("description: 'Debug and fix a bug"),
         "frontmatter description"
     );
 }
@@ -437,7 +437,7 @@ fn review_pr_frontmatter() {
     let md = std::fs::read_to_string(path.join("review_pr.md")).unwrap();
     assert!(md.contains("name: review_pr"), "frontmatter name");
     assert!(
-        md.contains("description: Review a pull request"),
+        md.contains("description: 'Review a pull request"),
         "frontmatter description"
     );
 }
