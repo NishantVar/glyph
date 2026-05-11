@@ -26,7 +26,7 @@ Single source of truth mapping every compiler-scope diagnostic ID to at least on
 | `G::parse::malformed-output-target` | glyph-core::parse::output_target_return_tests::malformed_output_target_surfaces_structured_diagnostic |
 | `G::parse::output-target-outside-return` | glyph-core::parse::output_target_return_tests::output_target_outside_terminal_return_surfaces_structured_diagnostic |
 
-## Analyze diagnostics (29)
+## Analyze diagnostics (30)
 
 | Diagnostic ID | Test Location |
 |---|---|
@@ -46,6 +46,7 @@ Single source of truth mapping every compiler-scope diagnostic ID to at least on
 | `G::analyze::nominal-mismatch` | glyph-core::analyze::tests::nominal_mismatch_fires |
 | `G::analyze::lossy-coercion` | glyph-core::analyze::tests::lossy_coercion_fires |
 | `G::analyze::missing-return` | glyph-core::tests::export_block_requires_return |
+| `G::analyze::typed-decl-missing-return` | crates/glyph-cli/tests/typed_decl_missing_return.rs |
 | `G::analyze::output-target-shadows-binding` | glyph-core::analyze::tests::output_target_name_must_not_shadow_visible_binding |
 | `G::analyze::placeholder-string-return` | glyph-core::analyze::tests::placeholder_string_return_is_repairable_on_domain_typed_skill |
 | `G::analyze::closure-violation` | glyph-core::tests::ac3_closure_violation_on_private_free_variable |
@@ -114,6 +115,6 @@ Single source of truth mapping every compiler-scope diagnostic ID to at least on
 
 ## Summary
 
-- **Total diagnostic IDs:** 82
-- **Total with triggering tests:** 82
+- **Total diagnostic IDs:** 83
+- **Total with triggering tests:** 83
 - **Coverage:** 100%

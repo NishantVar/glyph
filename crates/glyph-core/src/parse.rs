@@ -3168,9 +3168,7 @@ impl<'a> Parser<'a> {
     /// The list is the source of truth for the resolution-table walkers
     /// (analyze.rs) that wire goto-def for branch-condition references.
     /// Validates applies() syntax: no-parens and with-args diagnostics.
-    fn parse_branch_condition(
-        &mut self,
-    ) -> Result<(String, Vec<Spanned<String>>), ParseError> {
+    fn parse_branch_condition(&mut self) -> Result<(String, Vec<Spanned<String>>), ParseError> {
         let mut parts: Vec<String> = Vec::new();
         let mut refs: Vec<Spanned<String>> = Vec::new();
         loop {
@@ -3245,10 +3243,7 @@ impl<'a> Parser<'a> {
                     // identifier sitting in dotted-method position (prev part
                     // is `.`). Goto-def and usage-tracking should never wire
                     // either of these to an imported/local symbol.
-                    let is_boolean_operator = matches!(
-                        ident.as_str(),
-                        "not" | "and" | "or"
-                    );
+                    let is_boolean_operator = matches!(ident.as_str(), "not" | "and" | "or");
                     let is_method_position = parts.last().map(String::as_str) == Some(".");
                     if !is_boolean_operator && !is_method_position {
                         refs.push(Spanned::new(ident.clone(), ident_span));
