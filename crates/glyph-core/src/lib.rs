@@ -4793,6 +4793,154 @@ skill main()
         );
     }
 
+    /// An imported block consumed *only* as a branch condition
+    /// (`if imported_block(...)`) should be recognized as used. Pre-fix,
+    /// `track_flow_usage`'s `Branch` arm (analyze.rs) recursed into
+    /// `then_body` / `elif_branches[i].body` / `else_body` but never inspected
+    /// the `condition` strings, so a call that lived only in condition
+    /// position left the import looking unused. Post-fix, the condition is
+    /// tokenized via `condition::tokenize_condition` and matching imported
+    /// names are marked used — symmetric with the `Return(Call)` arm.
+    #[test]
+    fn imported_block_used_in_branch_condition_does_not_fire_unused_import() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let lib_path = dir.path().join("lib.glyph");
+        std::fs::write(
+            &lib_path,
+            r#"export block ask_user(question = "") -> Bool
+    description: "Ask the user a yes/no question."
+    flow:
+        return <"the user's response as a bool">
+"#,
+        )
+        .unwrap();
+
+        let main_path = dir.path().join("main.glyph");
+        std::fs::write(
+            &main_path,
+            r#"import "./lib.glyph" { ask_user }
+
+skill main()
+    description: "Main."
+    flow:
+        if ask_user("yes or no"):
+            "do the yes thing"
+        else
+            "do the no thing"
+"#,
+        )
+        .unwrap();
+
+        let bag = check_file(&main_path);
+        let unused_for_ask_user = bag
+            .iter()
+            .any(|d| d.id == "G::analyze::unused-import" && d.message.contains("ask_user"));
+        assert!(
+            !unused_for_ask_user,
+            "`if ask_user(...)` should mark `ask_user` as used; got diagnostics: {:?}",
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    /// Companion to the branch-condition `Call` test — a bare imported
+    /// predicate const referenced only as `if imported_const` should also
+    /// mark the import as used. Same `tokenize_condition` sweep covers both
+    /// `imported_blocks` and `imported_texts`.
+    #[test]
+    fn imported_text_used_in_branch_condition_does_not_fire_unused_import() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let lib_path = dir.path().join("lib.glyph");
+        std::fs::write(
+            &lib_path,
+            r#"export const should_proceed = "the user has confirmed they want to proceed"
+"#,
+        )
+        .unwrap();
+
+        let main_path = dir.path().join("main.glyph");
+        std::fs::write(
+            &main_path,
+            r#"import "./lib.glyph" { should_proceed }
+
+skill main()
+    description: "Main."
+    flow:
+        if should_proceed:
+            "do it"
+        else
+            "skip it"
+"#,
+        )
+        .unwrap();
+
+        let bag = check_file(&main_path);
+        let unused_for_should_proceed = bag
+            .iter()
+            .any(|d| d.id == "G::analyze::unused-import" && d.message.contains("should_proceed"));
+        assert!(
+            !unused_for_should_proceed,
+            "`if should_proceed` should mark `should_proceed` as used; got diagnostics: {:?}",
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    /// An imported block consumed only as `if imported_block.applies()` (the
+    /// predicate-applies form) should also be recognized as used. The
+    /// branch-condition sweep tokenizes via `condition::tokenize_condition`,
+    /// which keeps `name.applies()` as a single token — so the receiver
+    /// recovery must strip `.applies()` before matching against
+    /// `imported_blocks`. Without the strip, the receiver became
+    /// `imported_block.applies` and missed.
+    #[test]
+    fn imported_block_used_in_branch_applies_condition_does_not_fire_unused_import() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let lib_path = dir.path().join("lib.glyph");
+        std::fs::write(
+            &lib_path,
+            r#"export block fast_mode()
+    description: "the user has opted into fast mode"
+    flow:
+        "noop"
+"#,
+        )
+        .unwrap();
+
+        let main_path = dir.path().join("main.glyph");
+        std::fs::write(
+            &main_path,
+            r#"import "./lib.glyph" { fast_mode }
+
+skill main()
+    description: "Main."
+    flow:
+        if fast_mode.applies():
+            "go fast"
+        else
+            "go slow"
+"#,
+        )
+        .unwrap();
+
+        let bag = check_file(&main_path);
+        let unused_for_fast_mode = bag
+            .iter()
+            .any(|d| d.id == "G::analyze::unused-import" && d.message.contains("fast_mode"));
+        assert!(
+            !unused_for_fast_mode,
+            "`if fast_mode.applies()` should mark `fast_mode` as used; got diagnostics: {:?}",
+            bag.iter()
+                .map(|d| (d.id.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>(),
+        );
+    }
+
     /// Codex finding (typed-params follow-up #1): an imported `const` used
     /// only as a `name_ref` parameter default must count as a use of the
     /// import. Before the fix, the type-annotation/return-type sweep at

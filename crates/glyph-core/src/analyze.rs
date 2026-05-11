@@ -3272,11 +3272,39 @@ fn track_flow_usage(
                 }
             }
             crate::ast::FlowStmt::Branch {
+                condition,
                 then_body,
                 elif_branches,
                 else_body,
                 ..
             } => {
+                // Condition position can reference imported names directly:
+                // `if imported_block(...)`, `if imported_predicate_const`, or
+                // composed via `not`/`and`/`or`/`==`. Tokenize and mark any
+                // matching imported name as used — symmetric with the
+                // `Return(Call)` / `Return(Name)` arms below.
+                for cond in std::iter::once(condition.as_str())
+                    .chain(elif_branches.iter().map(|e| e.condition.as_str()))
+                {
+                    for tok in crate::condition::tokenize_condition(cond) {
+                        // `tokenize_condition` keeps `name(args...)` and
+                        // `name.applies()` as one token. Recover the bare
+                        // receiver: drop a `.applies()` suffix first (the
+                        // predicate-applies form), then strip any remaining
+                        // call paren.
+                        let stripped =
+                            tok.strip_suffix(".applies()").unwrap_or(tok.as_str());
+                        let receiver = match stripped.find('(') {
+                            Some(i) => &stripped[..i],
+                            None => stripped,
+                        };
+                        if imported_blocks.contains(receiver)
+                            || imported_texts.contains(receiver)
+                        {
+                            used.insert(receiver.to_string());
+                        }
+                    }
+                }
                 track_flow_usage(then_body, imported_texts, imported_blocks, used);
                 for elif in elif_branches {
                     track_flow_usage(&elif.body, imported_texts, imported_blocks, used);
