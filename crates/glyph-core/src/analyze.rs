@@ -2601,8 +2601,32 @@ fn walk_flow_for_resolutions(
                 then_body,
                 elif_branches,
                 else_body,
+                condition_refs,
                 ..
             } => {
+                // Branch-condition references: an imported or local name used
+                // only as `if name(...)`, `if name`, or `if name.applies()`
+                // must produce a Resolution so goto-def works on the use
+                // site. The parser filtered `condition_refs` down to real
+                // reference candidates (no `not`/`and`/`or`, no `applies`
+                // method-name, no other dotted-method ident). Dispatch each
+                // through both helpers — they are no-ops on miss, so the
+                // first matching def-pool wins, mirroring how `Call` vs
+                // `BareName` are routed elsewhere in this walker.
+                for r in condition_refs
+                    .iter()
+                    .chain(elif_branches.iter().flat_map(|e| e.condition_refs.iter()))
+                {
+                    record_call_target(
+                        r,
+                        file_path,
+                        block_defs,
+                        export_block_defs,
+                        stdlib_names,
+                        out,
+                    );
+                    record_text_use(&r.node, r.span, text_defs, file_path, out);
+                }
                 walk_flow_for_resolutions(
                     then_body,
                     file_path,
@@ -2708,8 +2732,22 @@ fn walk_flow_for_cross_file(
                 then_body,
                 elif_branches,
                 else_body,
+                condition_refs,
                 ..
             } => {
+                // Cross-file mirror of the same-file branch-condition sweep
+                // in `walk_flow_for_resolutions`. An imported name used only
+                // as `if imported_name(...)` / `if imported_const` /
+                // `if imported_name.applies()` lands here when its def lives
+                // in a sibling .glyph. Dispatch each filtered ref through
+                // both cross-file helpers.
+                for r in condition_refs
+                    .iter()
+                    .chain(elif_branches.iter().flat_map(|e| e.condition_refs.iter()))
+                {
+                    record_cross_file_call(r, targets, out);
+                    record_cross_file_text_use(r, targets, out);
+                }
                 walk_flow_for_cross_file(then_body, targets, out);
                 for elif in elif_branches {
                     walk_flow_for_cross_file(&elif.body, targets, out);
@@ -4184,6 +4222,7 @@ fn annotate_branch_classifications(
             then_body,
             elif_branches,
             else_body,
+            condition_refs: _,
         } = stmt
         {
             *condition_classification = Some(crate::condition::classify_condition(condition, ctx));
@@ -4263,6 +4302,7 @@ fn annotate_skill_flow_with_locals(
                 then_body,
                 elif_branches,
                 else_body,
+                condition_refs: _,
             } => {
                 // Snapshot the bindings at this branch site. Build a
                 // ConditionContext with the snapshot and classify.

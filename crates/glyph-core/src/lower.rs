@@ -394,6 +394,7 @@ fn lower_flow_body(
                 elif_branches,
                 else_body,
                 condition_classification,
+                condition_refs: _,
             } => {
                 let branch_id = NodeId(arena.len() as u32);
                 // Reserve a slot for the Branch node.
@@ -709,6 +710,7 @@ pub fn lower_with_imports(
                     elif_branches,
                     else_body,
                     condition_classification,
+                    condition_refs: _,
                 } = stmt
                 {
                     let branch_id = NodeId(arena.len() as u32);
@@ -1007,6 +1009,7 @@ pub fn lower_with_imports(
                 elif_branches,
                 else_body,
                 condition_classification,
+                condition_refs: _,
             } => {
                 let branch_id = NodeId(arena.len() as u32);
                 // Reserve a placeholder slot.

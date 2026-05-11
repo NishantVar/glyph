@@ -298,6 +298,13 @@ pub enum FlowStmt {
         elif_branches: Vec<ElifBranch>,
         else_body: Option<Vec<FlowStmt>>,
         condition_classification: Option<crate::condition::ConditionClassification>,
+        /// Spanned identifier tokens from `condition` that are real reference
+        /// candidates — receivers of calls, bare-name predicates, or
+        /// composed via `not`/`and`/`or`. Excludes the `applies` method-name
+        /// token in `.applies()`, any other dotted-method token, and the
+        /// boolean operator words. Wired into the resolution table so
+        /// goto-def works for imports/locals used only in branch conditions.
+        condition_refs: Vec<Spanned<String>>,
     },
 }
 
@@ -307,6 +314,8 @@ pub struct ElifBranch {
     pub condition: String,
     pub body: Vec<FlowStmt>,
     pub condition_classification: Option<crate::condition::ConditionClassification>,
+    /// See [`FlowStmt::Branch::condition_refs`].
+    pub condition_refs: Vec<Spanned<String>>,
 }
 
 /// The expression following `return`.
@@ -443,6 +452,7 @@ mod tests {
             elif_branches: vec![],
             else_body: None,
             condition_classification: None,
+            condition_refs: vec![],
         };
         if let FlowStmt::Branch {
             condition_classification,

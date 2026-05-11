@@ -855,6 +855,247 @@ block validate_plan()
         assert_eq!(def_text, "export");
     }
 
+    /// Cursor on an imported block used only as `if imported_block(args)`
+    /// (cross-file branch-condition call form) resolves to the `export
+    /// block` declaration in the dep. Pre-fix, the resolution-table walkers
+    /// recursed into branch bodies but never inspected the condition, so no
+    /// Resolution was emitted for the use site and goto-def returned `None`.
+    #[test]
+    fn cross_file_import_in_branch_condition_call_resolves() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dep_path = dir.path().join("passes.glyph");
+        let dep_src = "export block ask_user(question = \"\") -> Bool\n    description: \"Ask the user.\"\n    flow:\n        return <\"the user's response as a bool\">\n";
+        std::fs::write(&dep_path, dep_src).expect("write dep");
+
+        let importer_path = dir.path().join("main.glyph");
+        let importer_src = "import \"./passes.glyph\" { ask_user }\n\nskill main()\n    description: \"main.\"\n    flow:\n        if ask_user(\"yes or no\"):\n            \"do the yes thing\"\n        else\n            \"do the no thing\"\n";
+        std::fs::write(&importer_path, importer_src).expect("write importer");
+
+        let view = glyph_core::check_source_with_resolutions_at_path(
+            importer_src,
+            0,
+            &importer_path,
+            false,
+        )
+        .expect("parse");
+
+        // Skip the import's `ask_user` token — find the second occurrence
+        // (the one inside `if ask_user(...)`).
+        let first_ask = importer_src.find("ask_user").unwrap();
+        let condition_ask = importer_src[first_ask + 1..].find("ask_user").unwrap()
+            + first_ask
+            + 1;
+        let off = condition_ask as u32 + 2;
+        let r = view
+            .resolutions
+            .iter()
+            .find(|r| off >= r.use_span.start && off < r.use_span.end)
+            .expect("expected a cross-file resolution under the condition `ask_user`");
+        assert_eq!(r.kind, ResolutionKind::ExportBlock);
+        let dep_canon = dep_path.canonicalize().expect("canon dep");
+        assert_eq!(r.def_file, dep_canon);
+    }
+
+    /// Same as the call-form test but with the predicate-applies form
+    /// `if imported_block.applies()`. The parser does NOT push the
+    /// `applies` method-name to `condition_refs`, so the only resolution
+    /// at the cursor is for the receiver (`fast_mode`).
+    #[test]
+    fn cross_file_import_in_branch_applies_condition_resolves() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dep_path = dir.path().join("passes.glyph");
+        let dep_src = "export block fast_mode()\n    description: \"the user has opted into fast mode\"\n    flow:\n        \"noop\"\n";
+        std::fs::write(&dep_path, dep_src).expect("write dep");
+
+        let importer_path = dir.path().join("main.glyph");
+        let importer_src = "import \"./passes.glyph\" { fast_mode }\n\nskill main()\n    description: \"main.\"\n    flow:\n        if fast_mode.applies():\n            \"go fast\"\n        else\n            \"go slow\"\n";
+        std::fs::write(&importer_path, importer_src).expect("write importer");
+
+        let view = glyph_core::check_source_with_resolutions_at_path(
+            importer_src,
+            0,
+            &importer_path,
+            false,
+        )
+        .expect("parse");
+
+        // Cursor on the receiver `fast_mode` inside the condition.
+        let first_fm = importer_src.find("fast_mode").unwrap();
+        let condition_fm = importer_src[first_fm + 1..].find("fast_mode").unwrap()
+            + first_fm
+            + 1;
+        let off = condition_fm as u32 + 2;
+        let r = view
+            .resolutions
+            .iter()
+            .find(|r| off >= r.use_span.start && off < r.use_span.end)
+            .expect("expected a cross-file resolution under condition `fast_mode`");
+        assert_eq!(r.kind, ResolutionKind::ExportBlock);
+        let dep_canon = dep_path.canonicalize().expect("canon dep");
+        assert_eq!(r.def_file, dep_canon);
+
+        // Sanity: the `applies` method-name token must NOT have a
+        // resolution. If it did, a same-named imported symbol would steal
+        // the jump target.
+        let applies_idx = importer_src.find(".applies()").unwrap() + 1;
+        let applies_off = applies_idx as u32 + 2;
+        let applies_hit = view
+            .resolutions
+            .iter()
+            .find(|r| applies_off >= r.use_span.start && applies_off < r.use_span.end);
+        assert!(
+            applies_hit.is_none(),
+            "the `applies` method-name token must not produce a resolution; got {:?}",
+            applies_hit,
+        );
+    }
+
+    /// Cursor on a bare imported predicate const used only as `if name`
+    /// resolves to the `export const` declaration in the dep.
+    #[test]
+    fn cross_file_import_const_in_branch_condition_resolves() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dep_path = dir.path().join("passes.glyph");
+        let dep_src = "export const should_proceed = \"the user has confirmed they want to proceed\"\n";
+        std::fs::write(&dep_path, dep_src).expect("write dep");
+
+        let importer_path = dir.path().join("main.glyph");
+        let importer_src = "import \"./passes.glyph\" { should_proceed }\n\nskill main()\n    description: \"main.\"\n    flow:\n        if should_proceed:\n            \"do it\"\n        else\n            \"skip it\"\n";
+        std::fs::write(&importer_path, importer_src).expect("write importer");
+
+        let view = glyph_core::check_source_with_resolutions_at_path(
+            importer_src,
+            0,
+            &importer_path,
+            false,
+        )
+        .expect("parse");
+
+        let first_sp = importer_src.find("should_proceed").unwrap();
+        let condition_sp = importer_src[first_sp + 1..].find("should_proceed").unwrap()
+            + first_sp
+            + 1;
+        let off = condition_sp as u32 + 2;
+        let r = view
+            .resolutions
+            .iter()
+            .find(|r| off >= r.use_span.start && off < r.use_span.end)
+            .expect("expected a cross-file Text resolution under condition `should_proceed`");
+        assert_eq!(r.kind, ResolutionKind::Text);
+        let dep_canon = dep_path.canonicalize().expect("canon dep");
+        assert_eq!(r.def_file, dep_canon);
+    }
+
+    /// Composed condition `if not imported_block(...) and imported_const`
+    /// produces resolutions for both imported names and none for the
+    /// `not`/`and` operator words. Verifies the parser's reference filter.
+    #[test]
+    fn cross_file_imports_in_composed_condition_both_resolve_no_operator_resolutions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dep_path = dir.path().join("passes.glyph");
+        let dep_src = "export block ask_user(question = \"\") -> Bool\n    description: \"Ask.\"\n    flow:\n        return <\"answer\">\n\nexport const should_proceed = \"the user has confirmed\"\n";
+        std::fs::write(&dep_path, dep_src).expect("write dep");
+
+        let importer_path = dir.path().join("main.glyph");
+        let importer_src = "import \"./passes.glyph\" { ask_user, should_proceed }\n\nskill main()\n    description: \"main.\"\n    flow:\n        if not ask_user(\"yes or no\") and should_proceed:\n            \"do it\"\n        else\n            \"skip it\"\n";
+        std::fs::write(&importer_path, importer_src).expect("write importer");
+
+        let view = glyph_core::check_source_with_resolutions_at_path(
+            importer_src,
+            0,
+            &importer_path,
+            false,
+        )
+        .expect("parse");
+
+        // `ask_user` in the condition resolves to the export block.
+        let first_au = importer_src.find("ask_user").unwrap();
+        let condition_au = importer_src[first_au + 1..].find("ask_user").unwrap()
+            + first_au
+            + 1;
+        let off_au = condition_au as u32 + 2;
+        let r_au = view
+            .resolutions
+            .iter()
+            .find(|r| off_au >= r.use_span.start && off_au < r.use_span.end)
+            .expect("expected resolution for `ask_user` in composed condition");
+        assert_eq!(r_au.kind, ResolutionKind::ExportBlock);
+
+        // `should_proceed` in the condition resolves to the export const.
+        let first_sp = importer_src.find("should_proceed").unwrap();
+        let condition_sp = importer_src[first_sp + 1..].find("should_proceed").unwrap()
+            + first_sp
+            + 1;
+        let off_sp = condition_sp as u32 + 2;
+        let r_sp = view
+            .resolutions
+            .iter()
+            .find(|r| off_sp >= r.use_span.start && off_sp < r.use_span.end)
+            .expect("expected resolution for `should_proceed` in composed condition");
+        assert_eq!(r_sp.kind, ResolutionKind::Text);
+
+        // `not` and `and` operators must NOT have resolutions — they were
+        // filtered out by the parser before reaching `condition_refs`.
+        for op in ["not", "and"] {
+            let op_pat = format!(" {} ", op);
+            let op_idx = importer_src.find(&op_pat).unwrap() + 1;
+            let op_off = op_idx as u32 + 1;
+            let op_hit = view
+                .resolutions
+                .iter()
+                .find(|r| op_off >= r.use_span.start && op_off < r.use_span.end);
+            assert!(
+                op_hit.is_none(),
+                "operator `{}` must not produce a resolution; got {:?}",
+                op,
+                op_hit,
+            );
+        }
+    }
+
+    /// Nested branches: `if outer(): if inner(): ...`. Both imported names
+    /// resolve at their respective depths. Verifies the body recursion in
+    /// `walk_flow_for_cross_file` re-enters the Branch arm and runs the
+    /// condition sweep again at every level.
+    #[test]
+    fn cross_file_imports_in_nested_branch_conditions_both_resolve() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dep_path = dir.path().join("passes.glyph");
+        let dep_src = "export block outer_pred() -> Bool\n    description: \"outer.\"\n    flow:\n        return <\"true\">\n\nexport block inner_pred() -> Bool\n    description: \"inner.\"\n    flow:\n        return <\"true\">\n";
+        std::fs::write(&dep_path, dep_src).expect("write dep");
+
+        let importer_path = dir.path().join("main.glyph");
+        let importer_src = "import \"./passes.glyph\" { outer_pred, inner_pred }\n\nskill main()\n    description: \"main.\"\n    flow:\n        if outer_pred():\n            if inner_pred():\n                \"both true\"\n            else\n                \"only outer\"\n        else\n            \"neither\"\n";
+        std::fs::write(&importer_path, importer_src).expect("write importer");
+
+        let view = glyph_core::check_source_with_resolutions_at_path(
+            importer_src,
+            0,
+            &importer_path,
+            false,
+        )
+        .expect("parse");
+
+        for name in ["outer_pred", "inner_pred"] {
+            let first = importer_src.find(name).unwrap();
+            let condition_idx = importer_src[first + 1..].find(name).unwrap() + first + 1;
+            let off = condition_idx as u32 + 2;
+            let r = view
+                .resolutions
+                .iter()
+                .find(|r| off >= r.use_span.start && off < r.use_span.end)
+                .unwrap_or_else(|| {
+                    panic!("expected a resolution for nested-condition `{}`", name)
+                });
+            assert_eq!(
+                r.kind,
+                ResolutionKind::ExportBlock,
+                "nested-condition `{}` should resolve as ExportBlock",
+                name,
+            );
+        }
+    }
+
     /// M3 cross-file diagnostics: when an importer's clean buffer triggers
     /// the analyzer to surface a diagnostic in an imported dep, the LSP
     /// must be able to map the dep's path → URI for the publish.

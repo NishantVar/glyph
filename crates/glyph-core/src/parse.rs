@@ -2876,7 +2876,7 @@ impl<'a> Parser<'a> {
                     }
                     "if" => {
                         self.pos += 1;
-                        let condition = self.parse_branch_condition()?;
+                        let (condition, condition_refs) = self.parse_branch_condition()?;
                         let body_indent = current_indent + 1;
                         let then_body = self.parse_flow_body(body_indent)?;
 
@@ -2893,12 +2893,14 @@ impl<'a> Parser<'a> {
                                     match &self.peek().kind {
                                         TokenKind::Ident(kw) if kw == "elif" => {
                                             self.pos += 1;
-                                            let cond = self.parse_branch_condition()?;
+                                            let (cond, cond_refs) =
+                                                self.parse_branch_condition()?;
                                             let body = self.parse_flow_body(body_indent)?;
                                             elif_branches.push(ElifBranch {
                                                 condition: cond,
                                                 body,
                                                 condition_classification: None,
+                                                condition_refs: cond_refs,
                                             });
                                         }
                                         TokenKind::Ident(kw) if kw == "else" => {
@@ -2931,6 +2933,7 @@ impl<'a> Parser<'a> {
                             elif_branches,
                             else_body,
                             condition_classification: None,
+                            condition_refs,
                         })
                     }
                     _ => {
@@ -3154,10 +3157,22 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a branch condition: consume all tokens until the next LineStart or Eof.
-    /// Returns the condition as a reconstructed string.
+    /// Returns `(rendered_condition, condition_refs)`. `condition_refs` carries
+    /// the spanned identifier tokens that are real reference candidates —
+    /// receivers of calls, bare predicates, or operands in `not`/`and`/`or`
+    /// composition. Excluded:
+    ///   * `not` / `and` / `or` — boolean operators (lexed as `Ident`)
+    ///   * any identifier whose preceding token in `parts` is `.` — covers
+    ///     the `applies` method-name in `.applies()` and any other dotted
+    ///     accessor that might land here in malformed input
+    /// The list is the source of truth for the resolution-table walkers
+    /// (analyze.rs) that wire goto-def for branch-condition references.
     /// Validates applies() syntax: no-parens and with-args diagnostics.
-    fn parse_branch_condition(&mut self) -> Result<String, ParseError> {
+    fn parse_branch_condition(
+        &mut self,
+    ) -> Result<(String, Vec<Spanned<String>>), ParseError> {
         let mut parts: Vec<String> = Vec::new();
+        let mut refs: Vec<Spanned<String>> = Vec::new();
         loop {
             match &self.peek().kind {
                 TokenKind::LineStart { .. } | TokenKind::Eof => break,
@@ -3217,6 +3232,8 @@ impl<'a> Parser<'a> {
                             if matches!(self.peek().kind, TokenKind::Rparen) {
                                 self.pos += 1;
                             }
+                            // `applies` here is a method-name token, not a
+                            // reference — do NOT push to `refs`.
                             parts.push(ident);
                             parts.push("(".into());
                             parts.push(")".into());
@@ -3224,6 +3241,18 @@ impl<'a> Parser<'a> {
                         }
                     }
 
+                    // Reference filter: skip boolean operators, and skip any
+                    // identifier sitting in dotted-method position (prev part
+                    // is `.`). Goto-def and usage-tracking should never wire
+                    // either of these to an imported/local symbol.
+                    let is_boolean_operator = matches!(
+                        ident.as_str(),
+                        "not" | "and" | "or"
+                    );
+                    let is_method_position = parts.last().map(String::as_str) == Some(".");
+                    if !is_boolean_operator && !is_method_position {
+                        refs.push(Spanned::new(ident.clone(), ident_span));
+                    }
                     parts.push(ident);
                 }
                 TokenKind::StringLit(s) => {
@@ -3316,7 +3345,7 @@ impl<'a> Parser<'a> {
             }
             result.push_str(part);
         }
-        Ok(result)
+        Ok((result, refs))
     }
 
     /// Try to parse `with "modifier text"` after a call expression.
