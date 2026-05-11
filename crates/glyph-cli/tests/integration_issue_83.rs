@@ -47,12 +47,12 @@ fn ac7_pretty_stderr_emits_generic_type_name_warnings() {
 skill summarize() -> String
     description: \"Summarize.\"
     flow:
-        enumerate()
+        return enumerate()
 
 block enumerate() -> List
     description: \"Enumerate.\"
     flow:
-        \"do it\"
+        return \"do it\"
 ",
     )
     .unwrap();

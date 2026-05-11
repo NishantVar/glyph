@@ -246,7 +246,7 @@ import \"./lib.glyph\" { imported_foo }
 skill main() -> Report
     description: \"Main.\"
     flow:
-        helper()
+        return helper()
 
 block helper() -> Report
     description: \"Helper.\"

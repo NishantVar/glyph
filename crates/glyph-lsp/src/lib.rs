@@ -882,9 +882,7 @@ block validate_plan()
         // Skip the import's `ask_user` token — find the second occurrence
         // (the one inside `if ask_user(...)`).
         let first_ask = importer_src.find("ask_user").unwrap();
-        let condition_ask = importer_src[first_ask + 1..].find("ask_user").unwrap()
-            + first_ask
-            + 1;
+        let condition_ask = importer_src[first_ask + 1..].find("ask_user").unwrap() + first_ask + 1;
         let off = condition_ask as u32 + 2;
         let r = view
             .resolutions
@@ -921,9 +919,7 @@ block validate_plan()
 
         // Cursor on the receiver `fast_mode` inside the condition.
         let first_fm = importer_src.find("fast_mode").unwrap();
-        let condition_fm = importer_src[first_fm + 1..].find("fast_mode").unwrap()
-            + first_fm
-            + 1;
+        let condition_fm = importer_src[first_fm + 1..].find("fast_mode").unwrap() + first_fm + 1;
         let off = condition_fm as u32 + 2;
         let r = view
             .resolutions
@@ -956,7 +952,8 @@ block validate_plan()
     fn cross_file_import_const_in_branch_condition_resolves() {
         let dir = tempfile::tempdir().expect("tempdir");
         let dep_path = dir.path().join("passes.glyph");
-        let dep_src = "export const should_proceed = \"the user has confirmed they want to proceed\"\n";
+        let dep_src =
+            "export const should_proceed = \"the user has confirmed they want to proceed\"\n";
         std::fs::write(&dep_path, dep_src).expect("write dep");
 
         let importer_path = dir.path().join("main.glyph");
@@ -972,9 +969,8 @@ block validate_plan()
         .expect("parse");
 
         let first_sp = importer_src.find("should_proceed").unwrap();
-        let condition_sp = importer_src[first_sp + 1..].find("should_proceed").unwrap()
-            + first_sp
-            + 1;
+        let condition_sp =
+            importer_src[first_sp + 1..].find("should_proceed").unwrap() + first_sp + 1;
         let off = condition_sp as u32 + 2;
         let r = view
             .resolutions
@@ -1010,9 +1006,7 @@ block validate_plan()
 
         // `ask_user` in the condition resolves to the export block.
         let first_au = importer_src.find("ask_user").unwrap();
-        let condition_au = importer_src[first_au + 1..].find("ask_user").unwrap()
-            + first_au
-            + 1;
+        let condition_au = importer_src[first_au + 1..].find("ask_user").unwrap() + first_au + 1;
         let off_au = condition_au as u32 + 2;
         let r_au = view
             .resolutions
@@ -1023,9 +1017,8 @@ block validate_plan()
 
         // `should_proceed` in the condition resolves to the export const.
         let first_sp = importer_src.find("should_proceed").unwrap();
-        let condition_sp = importer_src[first_sp + 1..].find("should_proceed").unwrap()
-            + first_sp
-            + 1;
+        let condition_sp =
+            importer_src[first_sp + 1..].find("should_proceed").unwrap() + first_sp + 1;
         let off_sp = condition_sp as u32 + 2;
         let r_sp = view
             .resolutions
@@ -1084,9 +1077,7 @@ block validate_plan()
                 .resolutions
                 .iter()
                 .find(|r| off >= r.use_span.start && off < r.use_span.end)
-                .unwrap_or_else(|| {
-                    panic!("expected a resolution for nested-condition `{}`", name)
-                });
+                .unwrap_or_else(|| panic!("expected a resolution for nested-condition `{}`", name));
             assert_eq!(
                 r.kind,
                 ResolutionKind::ExportBlock,

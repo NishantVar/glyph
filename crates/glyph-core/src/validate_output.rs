@@ -1236,8 +1236,7 @@ fn check_modifier_leaked_in_flow(flow: &[Value], md: &str, violations: &mut Vec<
 // ---------------------------------------------------------------------------
 
 fn step_mentions(item: &ListItem, needle: &str) -> bool {
-    item.text.contains(needle)
-        || item.sub_items.iter().any(|s| s.text.contains(needle))
+    item.text.contains(needle) || item.sub_items.iter().any(|s| s.text.contains(needle))
 }
 
 fn check_procedures(md_struct: &MdStructure, skill: &Value, violations: &mut Vec<Violation>) {
@@ -2935,7 +2934,11 @@ mod tests {
     fn parse_md_structure_captures_lettered_substep_text() {
         let md = "## Instructions\n\n### Steps\n\n1. Top-level step.\n   a. First sub-step.\n   b. Second sub-step.\n";
         let s = parse_md_structure(md);
-        let h2 = s.h2_sections.iter().find(|h| h.name == "Instructions").unwrap();
+        let h2 = s
+            .h2_sections
+            .iter()
+            .find(|h| h.name == "Instructions")
+            .unwrap();
         let h3 = h2.h3_sections.iter().find(|h| h.name == "Steps").unwrap();
         assert_eq!(h3.items.len(), 1);
         let item = &h3.items[0];
@@ -3278,8 +3281,11 @@ mod tests {
 ";
         let viols = validate_output(&ir.to_string(), md);
         assert!(
-            viols.iter().all(|v| v.id != "G::expand::procedure-ref-missing"),
-            "did not expect procedure-ref-missing; got: {:?}", viols
+            viols
+                .iter()
+                .all(|v| v.id != "G::expand::procedure-ref-missing"),
+            "did not expect procedure-ref-missing; got: {:?}",
+            viols
         );
     }
 
@@ -3311,8 +3317,11 @@ mod tests {
 ";
         let viols = validate_output(&ir.to_string(), md);
         assert!(
-            viols.iter().any(|v| v.id == "G::expand::procedure-ref-dangling"),
-            "expected procedure-ref-dangling; got: {:?}", viols
+            viols
+                .iter()
+                .any(|v| v.id == "G::expand::procedure-ref-dangling"),
+            "expected procedure-ref-dangling; got: {:?}",
+            viols
         );
     }
 
@@ -3358,7 +3367,8 @@ mod tests {
         let viols = validate_output(&ir.to_string(), md);
         assert!(
             viols.iter().any(|v| v.id == "G::expand::procedure-order"),
-            "expected procedure-order; got: {:?}", viols
+            "expected procedure-order; got: {:?}",
+            viols
         );
     }
 }

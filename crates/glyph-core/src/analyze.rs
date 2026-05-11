@@ -1871,6 +1871,103 @@ fn sweep_param_default_name_refs(
     }
 }
 
+/// Walks a `flow: Vec<FlowStmt>` body looking for any `FlowStmt::Return`
+/// whose expression is value-producing (not `none` in any case, not bare
+/// `return`). Used by `sweep_typed_decl_missing_return` for `Skill` and
+/// `BlockDecl`, both of which carry structured `flow` and (unlike
+/// `ExportBlockDecl`) have no precomputed `has_meaningful_return` field.
+fn flow_has_meaningful_return(flow: &[FlowStmt]) -> bool {
+    for stmt in flow {
+        if let FlowStmt::Return(expr) = stmt {
+            match expr {
+                ReturnExpr::None => continue,
+                ReturnExpr::Name(spanned) if spanned.node.eq_ignore_ascii_case("none") => {
+                    continue;
+                }
+                _ => return true,
+            }
+        }
+    }
+    false
+}
+
+/// `G::analyze::typed-decl-missing-return` — fires when a `skill`, private
+/// `block`, or `export block` declares `-> SomeType` but the body has no
+/// value-producing `return`. Hard error (no LLM repair): a typed contract
+/// must be honored by the author, not synthesized.
+fn sweep_typed_decl_missing_return(
+    file: &SourceFile,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    for decl in &file.decls {
+        match decl {
+            Decl::Skill(s) => {
+                let rt = match s.node.return_type.as_ref() {
+                    Some(rt) => rt,
+                    None => continue,
+                };
+                if flow_has_meaningful_return(&s.node.flow) {
+                    continue;
+                }
+                bag.push(
+                    Diagnostic::error(
+                        "G::analyze::typed-decl-missing-return",
+                        format!(
+                            "`skill {}` declares `-> {}` but has no explicit value-producing `return` statement",
+                            s.node.name, rt.node
+                        ),
+                        SourceSpan::from_byte_span(file_label, rt.span, line_index),
+                    ),
+                    rt.span,
+                );
+            }
+            Decl::Block(b) => {
+                let rt = match b.node.return_type.as_ref() {
+                    Some(rt) => rt,
+                    None => continue,
+                };
+                if flow_has_meaningful_return(&b.node.flow) {
+                    continue;
+                }
+                bag.push(
+                    Diagnostic::error(
+                        "G::analyze::typed-decl-missing-return",
+                        format!(
+                            "`block {}` declares `-> {}` but has no explicit value-producing `return` statement",
+                            b.node.name, rt.node
+                        ),
+                        SourceSpan::from_byte_span(file_label, rt.span, line_index),
+                    ),
+                    rt.span,
+                );
+            }
+            Decl::ExportBlock(b) => {
+                let rt = match b.node.return_type.as_ref() {
+                    Some(rt) => rt,
+                    None => continue,
+                };
+                if b.node.has_meaningful_return {
+                    continue;
+                }
+                bag.push(
+                    Diagnostic::error(
+                        "G::analyze::typed-decl-missing-return",
+                        format!(
+                            "`export block {}` declares `-> {}` but has no explicit value-producing `return` statement",
+                            b.node.name, rt.node
+                        ),
+                        SourceSpan::from_byte_span(file_label, rt.span, line_index),
+                    ),
+                    rt.span,
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Run Phase 2 with diagnostic emission.
 ///
 /// Pushes any structured diagnostics onto `bag` and returns the AST unchanged.
@@ -2187,6 +2284,7 @@ pub fn analyze_with_diagnostics(
     // `risk = default_risk` (when `default_risk` is a block / unknown name)
     // leaks into the lowerer's IR as the bare identifier.
     sweep_param_default_name_refs(&file, file_label, line_index, bag, None);
+    sweep_typed_decl_missing_return(&file, file_label, line_index, bag);
 
     // Library detection: file with zero skills.
     let has_skill = file.decls.iter().any(|d| matches!(d, Decl::Skill(_)));
@@ -3161,6 +3259,7 @@ pub fn analyze_with_imports(
     // already carries `alias.name` entries for whole-module imports, so a
     // single-shape lookup covers both selective and aliased forms.
     sweep_param_default_name_refs(file, file_label, line_index, bag, Some(imported_texts));
+    sweep_typed_decl_missing_return(file, file_label, line_index, bag);
 
     // Library detection: file with zero skills.
     let has_skill = file.decls.iter().any(|d| matches!(d, Decl::Skill(_)));
@@ -3330,15 +3429,12 @@ fn track_flow_usage(
                         // receiver: drop a `.applies()` suffix first (the
                         // predicate-applies form), then strip any remaining
                         // call paren.
-                        let stripped =
-                            tok.strip_suffix(".applies()").unwrap_or(tok.as_str());
+                        let stripped = tok.strip_suffix(".applies()").unwrap_or(tok.as_str());
                         let receiver = match stripped.find('(') {
                             Some(i) => &stripped[..i],
                             None => stripped,
                         };
-                        if imported_blocks.contains(receiver)
-                            || imported_texts.contains(receiver)
-                        {
+                        if imported_blocks.contains(receiver) || imported_texts.contains(receiver) {
                             used.insert(receiver.to_string());
                         }
                     }
@@ -5040,7 +5136,8 @@ fn analyze_export_block(
     // argument for a required parameter.
 
     // G::analyze::missing-return — export block must have an explicit return.
-    if !decl.has_return {
+    // Typed export blocks route through G::analyze::typed-decl-missing-return instead.
+    if !decl.has_return && decl.return_type.is_none() {
         let span = spanned.span;
         bag.push(
             Diagnostic {

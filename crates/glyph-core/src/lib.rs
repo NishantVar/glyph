@@ -3323,7 +3323,7 @@ skill foo() -> BranchName
 skill foo() -> String
     description: \"Foo.\"
     flow:
-        \"do something\"
+        return \"do something\"
 ";
         let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
