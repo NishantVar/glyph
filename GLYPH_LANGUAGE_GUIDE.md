@@ -492,26 +492,26 @@ Body-level and flow-top-level markers are **hoisted** into the declaration's `co
 
 `must` should be reserved for genuinely hard constraints. Strong wording (`must`, `never`) inferred from name prefixes also signals hard strength.
 
-#### Canonical form for constraint text
+#### Constraint rendering shape
 
-Constraint text is rendered through a locked four-form template:
+Constraint bullets are rendered with a **bold colon-marker label** followed by the const body verbatim:
 
 | Strength × Polarity | Template |
 |---|---|
-| `must` (hard require) | `You must <text>.` |
-| `must avoid` (hard avoid) | `You must never <text>.` |
-| `require` (soft require) | `<Text>.` |
-| `avoid` (soft avoid) | `Avoid <text>.` |
+| `must` (hard require) | `**Must:** <text>` |
+| `must avoid` (hard avoid) | `**Must avoid:** <text>` |
+| `require` (soft require) | `**Require:** <text>` |
+| `avoid` (soft avoid) | `**Avoid:** <text>` |
 
-Write the text as a **noun phrase or imperative clause**: lowercase first word, no trailing period. The compiler applies defensive normalization for capitalization and trailing periods, but downstream the text is slotted into the template literally — non-canonical text produces grammatical mismatches.
+The label sits in its own bold span and is separated from the body by a colon, so the body is its own clause — capitalization, phrasing, and punctuation are the author's choice. The emitter trims surrounding whitespace and appends a terminal `.` only when the body does not already end in sentence punctuation; it does not rewrite case or graft verbs onto the body.
 
 Examples:
 
-- `avoid: leaving references to removed symbols` → `Avoid leaving references to removed symbols.`
-- `require: tests pass before merging` → `Tests pass before merging.`
-- `must avoid: editing files outside the declared scope` → `You must never editing files outside the declared scope.` *(grammatical mismatch — author should rewrite as `edit files outside the declared scope`)*
+- `avoid stale_references` where `const stale_references = "leaving references to removed symbols"` → `**Avoid:** leaving references to removed symbols.`
+- `require pass_tests` where `const pass_tests = "Tests pass before merging."` → `**Require:** Tests pass before merging.`
+- `must avoid out_of_scope` where `const out_of_scope = "Editing files outside the declared scope."` → `**Must avoid:** Editing files outside the declared scope.`
 
-A future Repair pass may auto-canonicalize non-conforming text; today, this is the author's responsibility.
+One thing to watch: an `avoid`/`must avoid` const body that starts with a negation word (`do not`, `never`, `no`) produces a double-negative bullet (`Avoid do not touch …`). Phrase those bodies as a noun or gerund phrase that completes `Avoid X` cleanly.
 
 ### 7.3 `context:` and context markers
 

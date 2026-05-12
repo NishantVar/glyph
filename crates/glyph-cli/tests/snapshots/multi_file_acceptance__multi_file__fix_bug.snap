@@ -41,5 +41,5 @@ description: 'Debug and fix a bug in the codebase with minimal, targeted changes
 
 ### Constraints
 
-- Prefer the repository's existing patterns, helper APIs, naming, and file organization before introducing a new abstraction or style.
-- Avoid making changes outside the requested scope or fixing unrelated issues.
+- **Require:** prefer the repository's existing patterns, helper APIs, naming, and file organization before introducing a new abstraction or style.
+- **Avoid:** making changes outside the requested scope or fixing unrelated issues.

@@ -49,7 +49,7 @@ fn compile_fixture(name: &str) -> (tempfile::TempDir, String) {
 fn const_string_inlines_into_compiled_md() {
     let (_d, md) = compile_fixture("const_string.glyph");
     assert!(
-        md.contains("- Hello, world."),
+        md.contains("- **Require:** Hello, world."),
         "expected string const value in ### Constraints, got:\n{}",
         md
     );
@@ -60,7 +60,7 @@ fn const_int_inlines_into_compiled_md() {
     // Inferer's no-`.` → Int rule (kind_infer.rs).
     let (_d, md) = compile_fixture("const_int.glyph");
     assert!(
-        md.contains("- 3"),
+        md.contains("- **Require:** 3."),
         "expected int const value `3` in ### Constraints, got:\n{}",
         md
     );
@@ -71,7 +71,7 @@ fn const_float_inlines_into_compiled_md() {
     // Inferer's `.`-present → Float rule (kind_infer.rs).
     let (_d, md) = compile_fixture("const_float.glyph");
     assert!(
-        md.contains("- 0.001"),
+        md.contains("- **Require:** 0.001."),
         "expected float const value `0.001` in ### Constraints, got:\n{}",
         md
     );
@@ -81,8 +81,8 @@ fn const_float_inlines_into_compiled_md() {
 fn const_bool_inlines_into_compiled_md() {
     let (_d, md) = compile_fixture("const_bool.glyph");
     assert!(
-        md.contains("- True."),
-        "expected bool const value `True.` in ### Constraints, got:\n{}",
+        md.contains("- **Require:** true."),
+        "expected bool const value `true.` in ### Constraints, got:\n{}",
         md
     );
 }
@@ -93,12 +93,12 @@ fn const_bool_uppercase_normalizes_to_lowercase() {
     // literals (`True`, `TRUE`) normalize to lowercase `true` in IR. Chunk 4
     // applies the normalization at the lowering boundary
     // (`lower::collect_consts`), so the rendered value reaching emit is
-    // always lowercase regardless of source-text casing.
-    // The four-form renderer (Soft/Require) capitalizes and appends a period.
+    // always lowercase regardless of source-text casing. The bold colon-marker
+    // renderer preserves the value verbatim and appends a terminal period.
     let (_d, md) = compile_fixture("const_bool_uppercase.glyph");
     assert!(
-        md.contains("- True."),
-        "expected bool const value normalized to `True.` in ### Constraints, got:\n{}",
+        md.contains("- **Require:** true."),
+        "expected bool const value normalized to `true.` in ### Constraints, got:\n{}",
         md
     );
 }

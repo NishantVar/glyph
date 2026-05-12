@@ -104,7 +104,7 @@ fn require_text_resolves_and_renders_constraint() {
 
     let md = std::fs::read_to_string(&out).expect("compiled .md file is missing");
     assert!(
-        md.contains("Ensure all documentation accurately reflects the current code."),
+        md.contains("**Require:** ensure all documentation accurately reflects the current code."),
         "expected resolved text content in ### Constraints; got:\n{}",
         md
     );
@@ -126,14 +126,14 @@ fn body_level_avoid_hoists_to_constraints_section() {
     assert_eq!(result.status.code(), Some(0));
 
     let md = std::fs::read_to_string(&out).expect("compiled .md file is missing");
-    // Avoid polarity should render as "Avoid ..." phrasing (Soft/Avoid form).
+    // Avoid polarity should render as "**Avoid:** ..." phrasing (Soft/Avoid form).
     assert!(
         md.contains("### Constraints"),
         "expected ### Constraints section; got:\n{}",
         md
     );
     assert!(
-        md.contains("Avoid leaving references to removed or renamed symbols."),
+        md.contains("**Avoid:** leaving references to removed or renamed symbols."),
         "expected avoid-polarity constraint phrasing; got:\n{}",
         md
     );

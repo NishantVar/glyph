@@ -27,5 +27,5 @@ description: 'Review a pull request for correctness, style, and safety.'
 
 ### Constraints
 
-- Review every changed file, not just the ones that look interesting.
-- Verify that tests exist for changed behavior and that they pass.
+- **Require:** review every changed file, not just the ones that look interesting.
+- **Require:** verify that tests exist for changed behavior and that they pass.

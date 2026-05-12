@@ -18,5 +18,5 @@ description: 'Update repository documentation to match current code.'
 
 ### Constraints
 
-- Ensure all documentation accurately reflects the current code.
-- Avoid leaving references to removed or renamed symbols.
+- **Require:** ensure all documentation accurately reflects the current code.
+- **Avoid:** leaving references to removed or renamed symbols.
