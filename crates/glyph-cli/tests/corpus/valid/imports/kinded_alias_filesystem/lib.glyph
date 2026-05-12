@@ -1,0 +1,6 @@
+export type Mode = <"a mode value">
+
+export block mode_name() -> Mode
+    description: "Returns a mode."
+    flow:
+        return <"x">

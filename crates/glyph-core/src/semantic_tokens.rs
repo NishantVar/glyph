@@ -652,9 +652,13 @@ fn classify_import(
                 // the AST. Locate by scanning forward from the name span end
                 // for ` as <ident>` within the decl span.
                 if let Some(alias) = &n.alias {
-                    if let Some(alias_span) =
-                        find_alias_span(source, file_id, n.name.span.end, spanned.span.end, alias)
-                    {
+                    if let Some(alias_span) = find_alias_span(
+                        source,
+                        file_id,
+                        n.name.span.end,
+                        spanned.span.end,
+                        &alias.node,
+                    ) {
                         push_span(
                             out,
                             alias_span,
@@ -671,9 +675,13 @@ fn classify_import(
             // The decl span starts at `import`; the alias sits after a
             // string literal and the `as` keyword. Scan for ` as <alias>`
             // anywhere in the decl slice.
-            if let Some(alias_span) =
-                find_alias_span(source, file_id, spanned.span.start, spanned.span.end, alias)
-            {
+            if let Some(alias_span) = find_alias_span(
+                source,
+                file_id,
+                spanned.span.start,
+                spanned.span.end,
+                &alias.node,
+            ) {
                 push_span(
                     out,
                     alias_span,

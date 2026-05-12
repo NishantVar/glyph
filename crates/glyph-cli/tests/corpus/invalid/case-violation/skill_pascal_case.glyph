@@ -1,0 +1,4 @@
+skill MyInstall()
+    description: "Pascal-case skill name is illegal."
+    flow:
+        return <"x">

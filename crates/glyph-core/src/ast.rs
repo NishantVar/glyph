@@ -48,7 +48,7 @@ pub enum ImportKind {
     /// `import "<path>" { name1, name2 as alias2 }` — named imports.
     Selective(Vec<ImportName>),
     /// `import "<path>" as <alias>` — whole-module import.
-    WholeModule { alias: String },
+    WholeModule { alias: Spanned<String> },
 }
 
 /// A single name in a selective import, optionally aliased.
@@ -58,8 +58,10 @@ pub struct ImportName {
     /// the source span of the name token, used by the LSP go-to-def handler
     /// (M2 onwards) to map cursor → import → declaration.
     pub name: Spanned<String>,
-    /// Optional local alias (`as <alias>`).
-    pub alias: Option<String>,
+    /// Optional local alias (`as <alias>`). The `Spanned` wrapper carries the
+    /// source span of the alias token so case-violation diagnostics can pin
+    /// the alias rather than the whole import.
+    pub alias: Option<Spanned<String>>,
 }
 
 #[derive(Clone, Debug)]

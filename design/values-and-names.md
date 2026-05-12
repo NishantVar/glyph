@@ -151,13 +151,14 @@ Dots are reserved for module-qualified access (`repo_tools.inspect_repo`). Contr
 
 ### Case Normalization
 
-The compiler normalizes all identifiers to a canonical form for resolution. `makePlan`, `make_plan`, `MakePlan`, and `MAKE_PLAN` all resolve to the same name. The source preserves what the author wrote; the IR stores the canonical form.
+The compiler normalizes all identifiers to a canonical form for collision detection across each namespace. `make_plan` and `MakePlan` canonicalize equally; whether that canonical equality is a collision depends on which namespace each identifier lives in (see §No Shadowing).
 
-If two declarations in different files or scopes use different casings for the same normalized name and both are visible, the compiler emits a collision diagnostic so the author can settle on one spelling.
+**Per-namespace case is strictly enforced.** Case is not "convention" in MVP — each namespace requires a single canonical casing:
 
-### Convention
+- **Type identifiers MUST be PascalCase** with no underscores. Violations are a hard error: `G::analyze::type-case-violation`. Examples of legal type names: `RepoContext`, `Plan`, `Diagnosis`. Examples that fail: `repo_context`, `plan`, `Repo_Context`, `MAKE_PLAN`.
+- **Value identifiers MUST be snake_case** (lowercase letters, digits, and underscores; no uppercase). Violations are a hard error: `G::analyze::value-case-violation`. Examples of legal value names: `make_plan`, `repo_context`, `risk_level`. Examples that fail: `MakePlan`, `makePlan`, `RepoContext`.
 
-`snake_case` is recommended by convention but not enforced by the compiler.
+Strict casing is what makes the two-namespace split unambiguous in source: an author can read `Mode` versus `mode_name` and know immediately which namespace each belongs to.
 
 ### Reserved Words
 
@@ -202,9 +203,19 @@ Examples of conflicts that produce hard errors:
 
 The author's fix is always to rename one of the conflicting names. This is cheap, obvious, and permanent.
 
-**Type names share the universal value namespace — there is no separate type namespace.** A name introduced by a `type` decl (see `types.md`, Explicit `type` Declarations section) participates in the same flat scope as `const`, `block`, `export block`, parameters, and import aliases. `type Foo` therefore collides with any other in-scope `Foo` and is a hard error under the same no-shadowing rule.
+**Two namespaces: type and value.** Glyph splits identifiers into two disjoint namespaces by syntactic kind:
 
-The canonical pairing of `type Foo` with `-> Foo` annotations is **not** a collision: the `type` decl attaches a description to the same nominal type the `-> Foo` annotation references. Implicit type registration via first use of `-> Foo` and an explicit `type Foo` decl coexist; only conflicting bindings of the same name (`type Foo` vs `const Foo`, etc.) are rejected.
+- The **type namespace** holds names introduced or referenced as types: `type` decls, `-> Foo` return annotations, `param: Foo` parameter type annotations, and selective type imports (`import "./x.glyph" { Foo }`). Type identifiers must be PascalCase.
+- The **value namespace** holds everything callable, bindable, or referenceable as a value: `const`, `block`, `export block`, parameters, local bindings, import aliases (selective and whole-module), and stdlib value entries. Value identifiers must be snake_case.
+
+**Cross-namespace pairs are legal.** `type Mode` and `block mode_name()` coexist cleanly even though they canonicalize equally under case-insensitive comparison — they live in disjoint namespaces. The canonical pairing of `type Foo` with `-> Foo` annotations is **not** a collision: the `type` decl and the return annotation refer to the same nominal type in the type namespace.
+
+**Same-namespace canonical-equal pairs are collisions:**
+
+- Two type decls with canonically-equal names → `G::analyze::duplicate-type-decl`.
+- Two value-namespace declarations with canonically-equal names (e.g., a parameter and a `const`, two `block`s, an `import` alias and a `block`) → `G::analyze::name-collision`.
+
+The author's fix is always to rename one of the conflicting names.
 
 ### Generated Definitions Must Be Visible
 

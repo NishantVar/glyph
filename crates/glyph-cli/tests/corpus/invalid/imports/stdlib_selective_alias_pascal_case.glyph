@@ -1,0 +1,6 @@
+import "@glyph/std" { subagent as Foo }
+
+skill main()
+    description: "Stdlib selective alias forced to PascalCase — illegal."
+    flow:
+        Foo("nested")

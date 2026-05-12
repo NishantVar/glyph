@@ -149,15 +149,21 @@ skill main() -> Report
     );
 }
 
-/// AC8 success path 2 — case/underscore-divergent spellings still match.
+/// AC8 success path 2 — case-divergent (but still PascalCase) spellings
+/// still match via canonicalization.
 ///
-/// Library exports `compute() -> Repo_Context`; consumer skill declares
-/// `-> repocontext`. Both spellings canonicalize to `"repocontext"` per
+/// Library exports `compute() -> RepoContext`; consumer skill declares
+/// `-> Repocontext`. Both spellings canonicalize to `"repocontext"` per
 /// `domain_registry::canonicalize_identifier` (D6: ASCII-lowercase + strip
 /// `_`), so cross-file nominal equality holds and `glyph check` exits 0.
 /// This pins that the matcher uses canonicalized equality, not byte-equal
 /// equality on the raw spelling — a regression here would silently break
 /// AC8 for any author who imports across casing styles.
+///
+/// Task 8 rewrite: under the type-namespace case rule (`type-case-violation`)
+/// both spellings must be PascalCase; the historical underscore-bearing form
+/// `Repo_Context` is no longer legal, so the fixture uses `RepoContext` and
+/// `Repocontext` instead.
 #[test]
 fn ac8_cross_file_nominal_match_canonicalization_succeeds() {
     let dir = tempfile::tempdir().unwrap();
@@ -166,7 +172,7 @@ fn ac8_cross_file_nominal_match_canonicalization_succeeds() {
     std::fs::write(
         &lib_path,
         "\
-export block compute() -> Repo_Context
+export block compute() -> RepoContext
     description: \"Build the repo context.\"
     flow:
         return \"ctx\"
@@ -180,7 +186,7 @@ export block compute() -> Repo_Context
         "\
 import \"./lib.glyph\" { compute }
 
-skill main() -> repocontext
+skill main() -> Repocontext
     description: \"Main.\"
     flow:
         return compute()

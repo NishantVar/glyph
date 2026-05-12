@@ -1,0 +1,6 @@
+import "./aliased_value_lib.glyph" as Mod
+
+skill main()
+    description: "Whole-module alias forced to PascalCase — illegal."
+    flow:
+        return <"x">

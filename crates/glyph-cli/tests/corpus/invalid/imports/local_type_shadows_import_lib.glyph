@@ -1,0 +1,1 @@
+export type LinkMode = <"how the user wants files linked">

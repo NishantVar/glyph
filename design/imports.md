@@ -67,13 +67,23 @@ A whole-module import of a file that contains `export type` decls remains valid 
 
 ## 3. Name Collision Rules
 
-Imported names participate in the universal no-shadowing rule defined in `values-and-names.md`. That rule is the single authoritative source for collision semantics across all name sources (locals, parameters, const declarations, imports). Key import-specific points:
+Imported names participate in the per-namespace no-shadowing rule defined in `values-and-names.md`. That rule is the single authoritative source for collision semantics across all name sources (locals, parameters, const declarations, imports). Key import-specific points:
 
-**Selective imports.** Each imported name (or its `as` alias) enters the importing file's flat namespace. If it collides with any other visible name after case normalization, the compiler emits a collision error. The fix is to alias on the import side or rename the local declaration.
+**Selective imports.** Each imported name (or its `as` alias) enters one of the importing file's two namespaces (type or value) based on the imported declaration's kind. If it collides with any other visible name in the **same namespace** after case normalization, the compiler emits a collision error. The fix is to alias on the import side or rename the local declaration. Cross-namespace canonical-equal pairs (e.g., importing `type Mode` while a local `block mode_name()` exists) do not collide.
 
-**Whole-module imports.** `import "path" as M` reserves `M` as a single identifier. Members are accessed only via qualified names (`M.name`) and do not enter the flat namespace. Two whole-module imports (`as M` and `as N`) may expose identically-named exports without collision because `M.foo` and `N.foo` are distinct.
+**Whole-module imports.** `import "path" as M` reserves `M` as a single identifier in the **value namespace**. Members are accessed only via qualified names (`M.name`) and do not enter either namespace as bare identifiers. Two whole-module imports (`as M` and `as N`) may expose identically-named exports without collision because `M.foo` and `N.foo` are distinct.
 
 `M` itself is not callable -- `M()` is invalid. It is a namespace, not a value.
+
+### `ResolvedImportKind`
+
+Internally, every resolved selective import alias carries a `ResolvedImportKind` tag with two variants — `Type` and `Value` — that determines which namespace it enters:
+
+- A selective alias inherits its kind from the imported declaration: `dep_exports.types` → `Type`; `dep_exports.blocks` and `dep_exports.texts` → `Value`. So `import "./types.glyph" { Foo }` adds `Foo` to the type namespace, and `import "./lib.glyph" { run_check }` adds `run_check` to the value namespace.
+- **Whole-module aliases** (filesystem `import "path" as M` and stdlib `import "@glyph/std" as std`) are always `Value` — the alias names a module handle in the value namespace, even when the module also exports `type` decls.
+- **Whole-module qualified type references** (e.g., `param: M.Foo` after `import "./types.glyph" as M`) remain out of MVP scope; type slots accept bare identifiers only. See `types.md` Deferred section.
+
+Two-namespace collision detection runs over the joined set of local declarations and selectively-imported aliases, partitioned by `ResolvedImportKind` and local-decl kind, so the import pipeline and the local sweep share a single mechanism.
 
 ## 4. Re-Export Policy
 

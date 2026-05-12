@@ -1,0 +1,6 @@
+import "./aliased_type_lib.glyph" { LinkMode as link_mode }
+
+skill main(mode: link_mode)
+    description: "Type alias forced to snake_case — illegal."
+    flow:
+        "do something with {mode}"

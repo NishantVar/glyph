@@ -1,0 +1,7 @@
+const link_mode = "a value"
+const LinkMode = "Pascal-case const name — illegal AND would collide with link_mode"
+
+skill demo()
+    description: "Carrier."
+    flow:
+        return <"x">

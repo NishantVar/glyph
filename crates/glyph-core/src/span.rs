@@ -6,7 +6,7 @@
 ///
 /// Half-open range: `start <= end`, inclusive of `start`, exclusive of `end`.
 /// For a single-character span, `end == start + 1`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Span {
     pub file_id: u32,
     pub start: u32,

@@ -279,6 +279,105 @@ pub fn analyze(file: SourceFile) -> SourceFile {
     file
 }
 
+/// Kind of type-position use, drives the diagnostic emitted on collision /
+/// drift. Spec §"Implicit type registration semantics".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TypeUseKind {
+    /// `type Foo = <"…">` declaration header.
+    ExplicitDecl,
+    /// `-> Foo` return-type annotation on a skill/block/export-block header.
+    ReturnAnnotation,
+    /// `param: Foo` parameter type annotation.
+    ParamAnnotation,
+    /// Selective type-import alias (`import "x" { Foo as Bar }` where `Foo`
+    /// is an exported `type`).
+    SelectiveImport,
+}
+
+/// Unified registration helper for every type-position site (spec §"Unified
+/// implicit-type-registration helper"). Idempotent on D6 canonical form;
+/// diagnoses three drift scenarios:
+///
+/// - Two `ExplicitDecl` calls with canonical-equal keys → existing
+///   `G::analyze::duplicate-type-decl`.
+/// - Any subsequent call with a raw spelling differing from the registered
+///   `raw_first_use` (when at least one of the two sides is implicit) →
+///   warning `G::analyze::inconsistent-type-spelling`.
+/// - First call (any kind) → registers, no diagnostic.
+///
+/// Builtins (`Agent`, `String`, …) are skipped per the existing
+/// `is_builtin_type_name` gate. Banned-generic names (issue #83) must be
+/// handled by the caller (`warn_if_banned_return_type` still owns that check)
+/// before invoking this helper.
+pub(crate) fn register_type_use(
+    raw: &str,
+    span: Span,
+    use_kind: TypeUseKind,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+    registry: &mut crate::domain_registry::Registry,
+    explicit_decl_seen: &mut HashSet<String>,
+) {
+    if is_builtin_type_name(raw) {
+        return;
+    }
+    // For `ExplicitDecl`, drive `G::analyze::duplicate-type-decl` from the
+    // per-file set of canonical keys that have been observed as an in-file
+    // `type` declaration — NOT from `registry.lookup`. A prior selective
+    // type-import alias populates the registry too, but a local `type X`
+    // that shadows an import is a name-collision (handled by
+    // `sweep_type_decl_name_collisions`), not a duplicate-decl. The first
+    // ExplicitDecl falls through to the spelling-drift / first-use arms.
+    if let TypeUseKind::ExplicitDecl = use_kind {
+        let canon = crate::domain_registry::canonicalize_identifier(raw);
+        if explicit_decl_seen.contains(&canon) {
+            bag.push(
+                Diagnostic::error(
+                    crate::diagnostic::DUPLICATE_TYPE_DECL_DIAG_ID,
+                    format!("duplicate `type {}` declaration in this file", raw),
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+            return;
+        }
+        explicit_decl_seen.insert(canon);
+    }
+    let already = registry.lookup(raw).cloned();
+    match (already, use_kind) {
+        (Some(prev), _) if prev.raw_first_use != raw => {
+            bag.push(
+                Diagnostic {
+                    id: crate::diagnostic::INCONSISTENT_TYPE_SPELLING_DIAG_ID.into(),
+                    classification: Classification::Warning,
+                    message: format!(
+                        "type spelling `{}` refers to existing type `{}` (canonically equal); use one spelling consistently",
+                        raw, prev.raw_first_use
+                    ),
+                    span: SourceSpan::from_byte_span(file_label, span, line_index),
+                    related: vec![SourceSpan::from_byte_span(
+                        file_label,
+                        prev.first_use_span,
+                        line_index,
+                    )],
+                    hints: vec![format!(
+                        "rename this occurrence to `{}` (the first-use spelling)",
+                        prev.raw_first_use
+                    )],
+                },
+                span,
+            );
+        }
+        (Some(_), _) => {
+            // Same raw spelling as the registered first use — idempotent no-op.
+        }
+        (None, _) => {
+            registry.register_first_use(raw, span);
+        }
+    }
+}
+
 /// Issue #83 AC2 + AC3: warn when a header `-> DomainType` annotation names
 /// a banned generic type. Warning tier — non-blocking; analyze continues so
 /// every banned occurrence in the file gets flagged. No-op when the
@@ -298,8 +397,13 @@ fn warn_if_banned_return_type(
     line_index: &LineIndex,
     bag: &mut DiagBag,
     registry: &mut crate::domain_registry::Registry,
+    case_bad: &HashSet<Span>,
+    explicit_decl_seen: &mut HashSet<String>,
 ) {
     let Some(rt) = rt else { return };
+    if case_bad.contains(&rt.span) {
+        return;
+    }
     match crate::type_position::validate_type_position(&rt.node) {
         Err(w) => {
             bag.push(
@@ -328,10 +432,21 @@ fn warn_if_banned_return_type(
             if is_builtin_type_name(&rt.node) {
                 return;
             }
-            // Issue #84 Chunk 2: legitimate domain-type name → record first
-            // use. Idempotent on canonical form; subsequent same-canonical
-            // calls preserve the original `first_use_span`.
-            registry.register_first_use(&rt.node, rt.span);
+            // Issue #84 Chunk 2 (B.5 unification): legitimate domain-type name
+            // → record first use through the unified `register_type_use`
+            // helper. Idempotent on canonical form; if a prior site (explicit
+            // decl / param / selective import) already registered a different
+            // raw spelling, emits `G::analyze::inconsistent-type-spelling`.
+            register_type_use(
+                &rt.node,
+                rt.span,
+                TypeUseKind::ReturnAnnotation,
+                file_label,
+                line_index,
+                bag,
+                registry,
+                explicit_decl_seen,
+            );
         }
     }
 }
@@ -603,232 +718,334 @@ fn check_flow_placeholder_string_returns(
     }
 }
 
-/// Issue #84 Chunk 3 (AC5): post-hoc sweep that flags any domain-type name
-/// (registered via `-> DomainType` on a header) that collides — after
-/// canonicalization (D6) — with a parameter or `const` declaration in the
-/// same file. Emits `G::analyze::name-collision` Error per collision; the
-/// primary span pins the `-> Type` annotation that introduced the type, the
-/// related span pins the offending param / const.
+/// Spec §"New pass `validate_identifier_case()`". Validates every
+/// identifier-position pair in the file against its required case form.
+/// Emits hard errors on mismatch; returns a `HashSet<Span>` of declaration /
+/// annotation spans that failed case validation so downstream sweeps and
+/// type-registration can short-circuit on those decls (avoids cascade
+/// diagnostics).
+fn validate_identifier_case(
+    file: &SourceFile,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) -> HashSet<Span> {
+    use crate::name_kind::{is_pascal_case, is_snake_case};
+    let mut bad: HashSet<Span> = HashSet::new();
+
+    fn emit_value(
+        raw: &str,
+        span: Span,
+        site: &str,
+        file_label: &str,
+        line_index: &LineIndex,
+        bag: &mut DiagBag,
+    ) {
+        let mut diag = Diagnostic::error(
+            crate::diagnostic::VALUE_CASE_VIOLATION_DIAG_ID,
+            format!(
+                "{} identifier `{}` must be snake_case (lowercase letters, digits, underscores; first character lowercase or underscore)",
+                site, raw
+            ),
+            SourceSpan::from_byte_span(file_label, span, line_index),
+        );
+        diag.hints
+            .push("rename to snake_case — e.g. `link_mode`, `repo_root`".into());
+        bag.push(diag, span);
+    }
+
+    fn emit_type(
+        raw: &str,
+        span: Span,
+        site: &str,
+        file_label: &str,
+        line_index: &LineIndex,
+        bag: &mut DiagBag,
+    ) {
+        let mut diag = Diagnostic::error(
+            crate::diagnostic::TYPE_CASE_VIOLATION_DIAG_ID,
+            format!(
+                "{} identifier `{}` must be PascalCase (first letter uppercase, no underscores)",
+                site, raw
+            ),
+            SourceSpan::from_byte_span(file_label, span, line_index),
+        );
+        diag.hints
+            .push("rename to PascalCase — e.g. `LinkMode`, `Summary`".into());
+        bag.push(diag, span);
+    }
+
+    fn check_param(
+        p: &ast::Param,
+        file_label: &str,
+        line_index: &LineIndex,
+        bag: &mut DiagBag,
+        bad: &mut HashSet<Span>,
+    ) {
+        if !is_snake_case(&p.name) {
+            emit_value(&p.name, p.span, "parameter", file_label, line_index, bag);
+            bad.insert(p.span);
+        }
+        if let Some(ta) = &p.type_annotation {
+            if crate::type_position::validate_type_position(&ta.node).is_ok()
+                && !is_builtin_type_name(&ta.node)
+                && !is_pascal_case(&ta.node)
+            {
+                emit_type(
+                    &ta.node,
+                    ta.span,
+                    "parameter type annotation",
+                    file_label,
+                    line_index,
+                    bag,
+                );
+                bad.insert(ta.span);
+            }
+        }
+    }
+
+    fn check_return_type(
+        rt: &Spanned<String>,
+        file_label: &str,
+        line_index: &LineIndex,
+        bag: &mut DiagBag,
+        bad: &mut HashSet<Span>,
+    ) {
+        if crate::type_position::validate_type_position(&rt.node).is_ok()
+            && !is_builtin_type_name(&rt.node)
+            && !is_pascal_case(&rt.node)
+        {
+            emit_type(
+                &rt.node,
+                rt.span,
+                "return type annotation",
+                file_label,
+                line_index,
+                bag,
+            );
+            bad.insert(rt.span);
+        }
+    }
+
+    for decl in &file.decls {
+        match decl {
+            Decl::Skill(s) => {
+                if !is_snake_case(&s.node.name) {
+                    emit_value(&s.node.name, s.span, "skill", file_label, line_index, bag);
+                    bad.insert(s.span);
+                }
+                for p in &s.node.params {
+                    check_param(p, file_label, line_index, bag, &mut bad);
+                }
+                if let Some(rt) = &s.node.return_type {
+                    check_return_type(rt, file_label, line_index, bag, &mut bad);
+                }
+            }
+            Decl::Block(b) => {
+                if !is_snake_case(&b.node.name) {
+                    emit_value(&b.node.name, b.span, "block", file_label, line_index, bag);
+                    bad.insert(b.span);
+                }
+                for p in &b.node.params {
+                    check_param(p, file_label, line_index, bag, &mut bad);
+                }
+                if let Some(rt) = &b.node.return_type {
+                    check_return_type(rt, file_label, line_index, bag, &mut bad);
+                }
+            }
+            Decl::ExportBlock(e) => {
+                if !is_snake_case(&e.node.name) {
+                    emit_value(
+                        &e.node.name,
+                        e.span,
+                        "export block",
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                    bad.insert(e.span);
+                }
+                for p in &e.node.params {
+                    check_param(p, file_label, line_index, bag, &mut bad);
+                }
+                if let Some(rt) = &e.node.return_type {
+                    check_return_type(rt, file_label, line_index, bag, &mut bad);
+                }
+            }
+            Decl::Const(c) => {
+                if !is_snake_case(&c.node.name) {
+                    emit_value(&c.node.name, c.span, "const", file_label, line_index, bag);
+                    bad.insert(c.span);
+                }
+            }
+            Decl::TypeDecl(t) => {
+                if !is_pascal_case(&t.node.name) {
+                    emit_type(&t.node.name, t.span, "type", file_label, line_index, bag);
+                    bad.insert(t.span);
+                }
+            }
+            Decl::Import(imp) => {
+                // Import alias case-validation happens in the lib.rs import
+                // resolution path where the kind tag (Task 9) is known.
+                let _ = imp;
+            }
+        }
+    }
+
+    // Flow-local bindings (skill flow only — block flow rejects assignments).
+    for decl in &file.decls {
+        if let Decl::Skill(s) = decl {
+            for stmt in &s.node.flow {
+                walk_flow_for_case(stmt, file_label, line_index, bag, &mut bad);
+            }
+        }
+    }
+    bad
+}
+
+/// Recursively walks flow statements emitting `value-case-violation` for any
+/// `<name> = call(...)` bound name that is not snake_case.
+fn walk_flow_for_case(
+    stmt: &FlowStmt,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+    bad: &mut HashSet<Span>,
+) {
+    use crate::name_kind::is_snake_case;
+    match stmt {
+        FlowStmt::Call {
+            bound_name: Some(bn),
+            ..
+        } => {
+            if !is_snake_case(&bn.node) {
+                let mut diag = Diagnostic::error(
+                    crate::diagnostic::VALUE_CASE_VIOLATION_DIAG_ID,
+                    format!("binding `{}` must be snake_case", bn.node),
+                    SourceSpan::from_byte_span(file_label, bn.span, line_index),
+                );
+                diag.hints.push("rename to snake_case".into());
+                bag.push(diag, bn.span);
+                bad.insert(bn.span);
+            }
+        }
+        FlowStmt::Branch {
+            then_body,
+            elif_branches,
+            else_body,
+            ..
+        } => {
+            for s in then_body {
+                walk_flow_for_case(s, file_label, line_index, bag, bad);
+            }
+            for e in elif_branches {
+                for s in &e.body {
+                    walk_flow_for_case(s, file_label, line_index, bag, bad);
+                }
+            }
+            if let Some(eb) = else_body {
+                for s in eb {
+                    walk_flow_for_case(s, file_label, line_index, bag, bad);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Spec §"Behavior under the new rule" (Task 8): cross-kind canonical-equal
+/// pairs are now legal under the two-namespace split. A `type Foo` (type
+/// namespace) does not collide with `const foo`, `block foo`, a parameter
+/// `foo`, or a flow-local `foo` (value namespace).
 ///
-/// File-level scope (not per-decl): a type registered on one decl can collide
-/// with a param on a different decl, since the `-> Type` annotation puts the
-/// name in scope across the whole file. Banned-generic names (#83) skip
-/// registration (D8) and so cannot collide via this path.
-///
-/// D10 scope-defer: type-vs-import collisions are out of scope for this
-/// chunk; only param and const collisions are emitted here.
+/// Preserved as a no-op so existing call sites stay valid until Task 9
+/// cleanup. The value-namespace duplicate check now lives in
+/// `sweep_value_name_collisions`; type-vs-type-import collisions live in
+/// `sweep_type_decl_name_collisions`; type-vs-type-decl collisions are
+/// emitted by `register_type_use` (`G::analyze::duplicate-type-decl`).
 fn sweep_name_collisions(
     file: &SourceFile,
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
     registry: &crate::domain_registry::Registry,
+    case_bad: &HashSet<Span>,
 ) {
-    if registry.iter().next().is_none() {
-        return;
-    }
-
-    // Collect every parameter (across all decl kinds) and every const at
-    // file level, paired with the span we want pinned in the `related`
-    // field of the collision diagnostic.
-    //
-    // `type Foo` decls are deliberately omitted from this sweep. A previous
-    // version iterated over them and fired `name-collision` whenever a
-    // `type Foo` matched a domain-registry entry seeded by `-> Foo`
-    // annotations — that is a false positive for the canonical
-    // `type Foo = <"...">` + `-> Foo` pattern endorsed by the spec
-    // (`typed-params-with-descriptions §282`). Legitimate `type Foo` vs
-    // `const Foo` / `block Foo` / parameter `Foo` collisions (spec §100)
-    // are not currently caught anywhere; that is a pre-existing gap parked
-    // for a follow-up universal-namespace pass and is independent of this
-    // omission.
-    let mut params: Vec<(&str, Span)> = Vec::new();
-    let mut consts: Vec<(&str, Span)> = Vec::new();
-    for decl in &file.decls {
-        match decl {
-            Decl::Skill(s) => {
-                for p in &s.node.params {
-                    params.push((p.name.as_str(), p.span));
-                }
-            }
-            Decl::ExportBlock(e) => {
-                for p in &e.node.params {
-                    params.push((p.name.as_str(), p.span));
-                }
-            }
-            Decl::Block(b) => {
-                for p in &b.node.params {
-                    params.push((p.name.as_str(), p.span));
-                }
-            }
-            Decl::Const(c) => {
-                consts.push((c.node.name.as_str(), c.span));
-            }
-            Decl::Import(_) => {}
-            Decl::TypeDecl(_) => {}
-        }
-    }
-
-    for entry in registry.iter() {
-        for (param_raw, param_span) in &params {
-            if crate::domain_registry::canonicalize_identifier(param_raw) == entry.canonical_name {
-                emit_name_collision(
-                    "parameter",
-                    entry,
-                    param_raw,
-                    *param_span,
-                    file_label,
-                    line_index,
-                    bag,
-                );
-            }
-        }
-        for (const_raw, const_span) in &consts {
-            if crate::domain_registry::canonicalize_identifier(const_raw) == entry.canonical_name {
-                emit_name_collision(
-                    "const",
-                    entry,
-                    const_raw,
-                    *const_span,
-                    file_label,
-                    line_index,
-                    bag,
-                );
-            }
-        }
-    }
+    let _ = (file, file_label, line_index, bag, registry, case_bad);
 }
 
-/// Construct and push one `G::analyze::name-collision` Error diagnostic.
+/// Type-namespace duplicate check (Task 8 slim): a `type Foo` decl can only
+/// collide with another type-namespace binding. The only remaining cross-decl
+/// path is type-vs-type-import (a selective import whose local alias is
+/// PascalCase, treated here as a proxy for "type-kinded import" until Task 9
+/// plumbs `ResolvedImportKind` through). Type-vs-type-decl collisions are
+/// already caught by `register_type_use` emitting
+/// `G::analyze::duplicate-type-decl`.
 ///
-/// `kind` is the human-readable noun for the offending site (`"parameter"`
-/// or `"const"`). `entry.raw_first_use` is what the author wrote at the
-/// first `-> Type` annotation; `offender_raw` is the param/const spelling.
-/// The `Diagnostic::error` constructor seeds an empty `related` vec, which
-/// we then populate in-place — this mirrors the existing convention in
-/// `analyze.rs` (no `with_related` builder method exists in `diagnostic.rs`).
-fn emit_name_collision(
-    kind: &str,
-    entry: &crate::domain_registry::RegistryEntry,
-    offender_raw: &str,
-    offender_span: Span,
-    file_label: &str,
-    line_index: &LineIndex,
-    bag: &mut DiagBag,
-) {
-    let primary = SourceSpan::from_byte_span(file_label, entry.first_use_span, line_index);
-    let related = SourceSpan::from_byte_span(file_label, offender_span, line_index);
-    let mut diag = Diagnostic::error(
-        "G::analyze::name-collision",
-        format!(
-            "domain type `{}` collides with {} `{}`",
-            entry.raw_first_use, kind, offender_raw
-        ),
-        primary,
-    );
-    diag.related.push(related);
-    bag.push(diag, entry.first_use_span);
-}
-
-/// Universal-namespace check (`design/values-and-names.md` §No-Shadowing,
-/// `design/types.md` §Same-file duplicates): a `type Foo` decl participates in
-/// the same flat scope as `const`, `block`, `export block`, parameters, and
-/// import aliases. Any other in-scope `Foo` is a hard `name-collision`.
-///
-/// This sweep complements `sweep_name_collisions` (which fires from the
-/// registry direction — `-> Foo` annotations vs param/const names) by firing
-/// from the type-decl direction. The canonical `type Foo = <"…">` + `-> Foo`
-/// pairing is **not** a collision (`design/types.md` §Same-file duplicates) and
-/// the registry sweep already covers param/const collisions when `Foo` is in
-/// the registry — so we skip those slots in that case to avoid a double-
-/// diagnostic for the same logical issue. Block-decl collisions are not
-/// covered by the registry sweep regardless, so they always fire here.
-///
-/// Import aliases (selective `name as alias`, whole-module `as alias`) are
-/// included; the host file's bare imported `name` (without `as`) is also a
-/// local binding (`design/imports.md` §Selective Imports) and counts as an
-/// alias for collision purposes.
+/// Cross-kind matches (`type Foo` vs `const foo`, `block foo`, parameter
+/// `foo`, flow-local `foo`, whole-module import `foo`) are LEGAL under the
+/// two-namespace rule and are not flagged here.
 fn sweep_type_decl_name_collisions(
     file: &SourceFile,
     file_label: &str,
     line_index: &LineIndex,
     bag: &mut DiagBag,
     registry: &crate::domain_registry::Registry,
+    case_bad: &HashSet<Span>,
+    type_alias_locals: &HashSet<String>,
 ) {
+    use crate::domain_registry::canonicalize_identifier;
     let type_decls: Vec<(&str, Span)> = file
         .decls
         .iter()
         .filter_map(|d| match d {
-            Decl::TypeDecl(t) => Some((t.node.name.as_str(), t.span)),
+            Decl::TypeDecl(t) if !case_bad.contains(&t.span) => {
+                Some((t.node.name.as_str(), t.span))
+            }
             _ => None,
         })
         .collect();
     if type_decls.is_empty() {
+        let _ = (registry, file_label, line_index, bag);
         return;
     }
 
-    let mut params: Vec<(&str, Span)> = Vec::new();
-    let mut consts: Vec<(&str, Span)> = Vec::new();
-    // (kind_label, raw_name, span) — kept separate from params/consts because
-    // block collisions fire even when the registry already covers the name.
-    let mut blocks: Vec<(&'static str, &str, Span)> = Vec::new();
-    // (raw_local_name, span). `imports` carries owned `String`s because
-    // selective alias names live behind an `Option<String>` — the caller
-    // owns the storage to keep `&str` lifetimes clean.
-    let mut imports: Vec<(String, Span)> = Vec::new();
+    // Type-kinded selective imports — looked up by the real
+    // `ResolvedImportKind` tag (Task 9). Whole-module imports always bind to
+    // the value namespace and are excluded by construction in
+    // `import_alias_kinds`.
+    let mut type_imports: Vec<(String, Span)> = Vec::new();
     for decl in &file.decls {
-        match decl {
-            Decl::Skill(s) => {
-                for p in &s.node.params {
-                    params.push((p.name.as_str(), p.span));
-                }
-            }
-            Decl::ExportBlock(e) => {
-                blocks.push(("export block", e.node.name.as_str(), e.span));
-                for p in &e.node.params {
-                    params.push((p.name.as_str(), p.span));
-                }
-            }
-            Decl::Block(b) => {
-                blocks.push(("block", b.node.name.as_str(), b.span));
-                for p in &b.node.params {
-                    params.push((p.name.as_str(), p.span));
-                }
-            }
-            Decl::Const(c) => {
-                consts.push((c.node.name.as_str(), c.span));
-            }
-            Decl::Import(imp) => match &imp.node.kind {
-                ast::ImportKind::Selective(names) => {
-                    for n in names {
-                        let local = n.alias.clone().unwrap_or_else(|| n.name.node.clone());
-                        imports.push((local, n.name.span));
+        if let Decl::Import(imp) = decl {
+            if let ast::ImportKind::Selective(names) = &imp.node.kind {
+                for n in names {
+                    let local_raw = n
+                        .alias
+                        .as_ref()
+                        .map(|a| a.node.clone())
+                        .unwrap_or_else(|| n.name.node.clone());
+                    let local_span = n.alias.as_ref().map(|a| a.span).unwrap_or(n.name.span);
+                    if case_bad.contains(&local_span) {
+                        continue;
+                    }
+                    if type_alias_locals.contains(&local_raw) {
+                        type_imports.push((local_raw, local_span));
                     }
                 }
-                ast::ImportKind::WholeModule { alias } => {
-                    imports.push((alias.clone(), imp.span));
-                }
-            },
-            Decl::TypeDecl(_) => {}
+            }
         }
     }
 
+    let _ = registry;
+
     for (tname, tspan) in &type_decls {
-        let canonical = crate::domain_registry::canonicalize_identifier(tname);
-        let in_registry = registry.iter().any(|e| e.canonical_name == canonical);
-        for (bkind, bname, bspan) in &blocks {
-            if crate::domain_registry::canonicalize_identifier(bname) == canonical {
-                emit_type_decl_collision(
-                    tname, *tspan, bkind, bname, *bspan, file_label, line_index, bag,
-                );
-            }
-        }
-        for (iname, ispan) in &imports {
-            if crate::domain_registry::canonicalize_identifier(iname) == canonical {
+        let canonical = canonicalize_identifier(tname);
+        for (iname, ispan) in &type_imports {
+            if canonicalize_identifier(iname) == canonical {
                 emit_type_decl_collision(
                     tname,
                     *tspan,
-                    "import alias",
+                    "type import",
                     iname,
                     *ispan,
                     file_label,
@@ -837,36 +1054,318 @@ fn sweep_type_decl_name_collisions(
                 );
             }
         }
-        if !in_registry {
-            for (pname, pspan) in &params {
-                if crate::domain_registry::canonicalize_identifier(pname) == canonical {
-                    emit_type_decl_collision(
-                        tname,
-                        *tspan,
-                        "parameter",
-                        pname,
-                        *pspan,
+    }
+}
+
+/// Spec §"New `sweep_value_name_collisions`". Detects value-vs-value
+/// canonical-key collisions across file-level value-namespace declarations
+/// (consts, blocks, export blocks, skill name, value-kinded import aliases)
+/// and per-skill flow scope (params + flow-local bindings).
+///
+/// Excludes any decl whose span is in `case_bad` (spec §"Diagnostic
+/// precedence": case-violation short-circuits collision sweeps). Selective
+/// type-imports are proxied by PascalCase until Task 9 plumbs
+/// `ResolvedImportKind` through; PascalCase aliases are skipped here so they
+/// do not contaminate the value namespace.
+fn sweep_value_name_collisions(
+    file: &SourceFile,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+    case_bad: &HashSet<Span>,
+    type_alias_locals: &HashSet<String>,
+) {
+    use crate::domain_registry::canonicalize_identifier;
+
+    fn record(
+        raw: &str,
+        span: Span,
+        kind: &str,
+        bag: &mut DiagBag,
+        seen: &mut HashMap<String, (String, Span)>,
+        case_bad: &HashSet<Span>,
+        file_label: &str,
+        line_index: &LineIndex,
+    ) {
+        if case_bad.contains(&span) {
+            return;
+        }
+        let c = canonicalize_identifier(raw);
+        if let Some((prev_raw, prev_span)) = seen.get(&c).cloned() {
+            let mut diag = Diagnostic::error(
+                "G::analyze::name-collision",
+                format!(
+                    "{} `{}` collides with earlier `{}` (canonically equal)",
+                    kind, raw, prev_raw
+                ),
+                SourceSpan::from_byte_span(file_label, span, line_index),
+            );
+            diag.related.push(SourceSpan::from_byte_span(
+                file_label, prev_span, line_index,
+            ));
+            bag.push(diag, span);
+        } else {
+            seen.insert(c, (raw.to_string(), span));
+        }
+    }
+
+    // (canonical, raw, span) — file-level value-namespace bindings.
+    let mut seen: HashMap<String, (String, Span)> = HashMap::new();
+
+    for decl in &file.decls {
+        match decl {
+            Decl::Const(c) => record(
+                c.node.name.as_str(),
+                c.span,
+                "const",
+                bag,
+                &mut seen,
+                case_bad,
+                file_label,
+                line_index,
+            ),
+            Decl::Block(b) => record(
+                b.node.name.as_str(),
+                b.span,
+                "block",
+                bag,
+                &mut seen,
+                case_bad,
+                file_label,
+                line_index,
+            ),
+            Decl::ExportBlock(b) => record(
+                b.node.name.as_str(),
+                b.span,
+                "export block",
+                bag,
+                &mut seen,
+                case_bad,
+                file_label,
+                line_index,
+            ),
+            Decl::Skill(s) => record(
+                s.node.name.as_str(),
+                s.span,
+                "skill",
+                bag,
+                &mut seen,
+                case_bad,
+                file_label,
+                line_index,
+            ),
+            Decl::Import(imp) => match &imp.node.kind {
+                ast::ImportKind::Selective(names) => {
+                    for n in names {
+                        // Skip selective type-imports here — Task 9 lookup
+                        // by `ResolvedImportKind`. Value-kinded aliases
+                        // (constants, blocks) fall through to `record`.
+                        let local_raw = n
+                            .alias
+                            .as_ref()
+                            .map(|a| a.node.as_str())
+                            .unwrap_or(n.name.node.as_str());
+                        let local_span = n.alias.as_ref().map(|a| a.span).unwrap_or(n.name.span);
+                        if type_alias_locals.contains(local_raw) {
+                            continue;
+                        }
+                        record(
+                            local_raw,
+                            local_span,
+                            "import alias",
+                            bag,
+                            &mut seen,
+                            case_bad,
+                            file_label,
+                            line_index,
+                        );
+                    }
+                }
+                ast::ImportKind::WholeModule { alias } => {
+                    record(
+                        alias.node.as_str(),
+                        alias.span,
+                        "import alias",
+                        bag,
+                        &mut seen,
+                        case_bad,
                         file_label,
                         line_index,
+                    );
+                }
+            },
+            Decl::TypeDecl(_) => {}
+        }
+    }
+
+    // Per-skill scope: params + flow-local bindings, plus inherited
+    // top-level value names (so a param can collide with a top-level const).
+    for decl in &file.decls {
+        match decl {
+            Decl::Skill(s) => {
+                let mut local_seen = seen.clone();
+                for p in &s.node.params {
+                    record(
+                        p.name.as_str(),
+                        p.span,
+                        "parameter",
                         bag,
+                        &mut local_seen,
+                        case_bad,
+                        file_label,
+                        line_index,
+                    );
+                }
+                for stmt in &s.node.flow {
+                    walk_flow_for_value_bindings(
+                        stmt,
+                        "flow binding",
+                        bag,
+                        &mut local_seen,
+                        file_label,
+                        line_index,
+                        case_bad,
                     );
                 }
             }
-            for (cname, cspan) in &consts {
-                if crate::domain_registry::canonicalize_identifier(cname) == canonical {
-                    emit_type_decl_collision(
-                        tname, *tspan, "const", cname, *cspan, file_label, line_index, bag,
+            Decl::Block(b) => {
+                let mut local_seen = seen.clone();
+                for p in &b.node.params {
+                    record(
+                        p.name.as_str(),
+                        p.span,
+                        "parameter",
+                        bag,
+                        &mut local_seen,
+                        case_bad,
+                        file_label,
+                        line_index,
                     );
                 }
             }
+            Decl::ExportBlock(e) => {
+                let mut local_seen = seen.clone();
+                for p in &e.node.params {
+                    record(
+                        p.name.as_str(),
+                        p.span,
+                        "parameter",
+                        bag,
+                        &mut local_seen,
+                        case_bad,
+                        file_label,
+                        line_index,
+                    );
+                }
+            }
+            _ => {}
         }
     }
 }
 
+/// Recursive walk to apply the value-namespace collision rule to flow-local
+/// bindings (`<name> = call(...)`) inside a skill's `flow:`. Branch arms
+/// inherit the enclosing skill's `seen` set so a binding in `then_body` can
+/// still collide with a top-level const, a parameter, or an earlier binding
+/// on the path. Sibling branch arms (`then` / `elif` / `else`) are scope-
+/// isolated from each other and from the parent's `seen` — each arm gets a
+/// clone, mirroring the per-arm `scope.child()` pattern used by
+/// `walk_skill_flow_assign_checks`. Sequential statements at the same level
+/// still share `seen` and therefore still collide.
+fn walk_flow_for_value_bindings(
+    stmt: &FlowStmt,
+    kind: &str,
+    bag: &mut DiagBag,
+    seen: &mut HashMap<String, (String, Span)>,
+    file_label: &str,
+    line_index: &LineIndex,
+    case_bad: &HashSet<Span>,
+) {
+    use crate::domain_registry::canonicalize_identifier;
+    match stmt {
+        FlowStmt::Call {
+            bound_name: Some(bn),
+            ..
+        } => {
+            if case_bad.contains(&bn.span) {
+                return;
+            }
+            let c = canonicalize_identifier(&bn.node);
+            if let Some((prev_raw, prev_span)) = seen.get(&c).cloned() {
+                let mut diag = Diagnostic::error(
+                    "G::analyze::name-collision",
+                    format!(
+                        "{} `{}` collides with earlier `{}` (canonically equal)",
+                        kind, bn.node, prev_raw
+                    ),
+                    SourceSpan::from_byte_span(file_label, bn.span, line_index),
+                );
+                diag.related.push(SourceSpan::from_byte_span(
+                    file_label, prev_span, line_index,
+                ));
+                bag.push(diag, bn.span);
+            } else {
+                seen.insert(c, (bn.node.clone(), bn.span));
+            }
+        }
+        FlowStmt::Branch {
+            then_body,
+            elif_branches,
+            else_body,
+            ..
+        } => {
+            // Each branch arm is scope-isolated: clone `seen` per arm so
+            // bindings in one arm cannot leak to sibling arms or to the
+            // parent scope. Within a single arm, statements share the arm's
+            // clone and therefore still collide sequentially.
+            let mut arm_seen = seen.clone();
+            for s in then_body {
+                walk_flow_for_value_bindings(
+                    s,
+                    kind,
+                    bag,
+                    &mut arm_seen,
+                    file_label,
+                    line_index,
+                    case_bad,
+                );
+            }
+            for e in elif_branches {
+                let mut arm_seen = seen.clone();
+                for s in &e.body {
+                    walk_flow_for_value_bindings(
+                        s,
+                        kind,
+                        bag,
+                        &mut arm_seen,
+                        file_label,
+                        line_index,
+                        case_bad,
+                    );
+                }
+            }
+            if let Some(eb) = else_body {
+                let mut arm_seen = seen.clone();
+                for s in eb {
+                    walk_flow_for_value_bindings(
+                        s,
+                        kind,
+                        bag,
+                        &mut arm_seen,
+                        file_label,
+                        line_index,
+                        case_bad,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Push one `G::analyze::name-collision` Error against a `type` decl.
-/// Mirrors `emit_name_collision` but anchors the primary span on the type
-/// declaration (the binding site that introduces the name) rather than on a
-/// `-> Type` use.
+/// Anchors the primary span on the type declaration (the binding site that
+/// introduces the name) and uses `offender_span` as the related span.
 fn emit_type_decl_collision(
     type_name: &str,
     type_span: Span,
@@ -1989,6 +2488,10 @@ pub fn analyze_with_diagnostics(
     // skipped, Analyze must reject the AST so it never reaches Lower in a
     // state where extras matter.
     check_unmerged_duplicate_subsections(&file, file_label, line_index, bag);
+    // Spec §"New pass `validate_identifier_case()`": hard-error on case
+    // violations and collect flagged spans so downstream sweeps and the
+    // type-registry walk skip them (avoids cascade diagnostics).
+    let case_bad: HashSet<Span> = validate_identifier_case(&file, file_label, line_index, bag);
     // Collect value-binding names for bare-name detection in flow. Post-#81,
     // `const` is the sole value-binding form; the variable name `text_names`
     // is retained to keep diagnostic IDs (`G::analyze::text-in-flow`) and
@@ -2129,6 +2632,71 @@ pub fn analyze_with_diagnostics(
     let empty_imported_block_return_types: HashMap<String, Spanned<String>> = HashMap::new();
     let empty_imported_block_params: HashMap<String, Vec<crate::ast::Param>> = HashMap::new();
 
+    // Per-file set of canonical keys that have been observed as in-file
+    // `type` declarations. Drives `G::analyze::duplicate-type-decl` for the
+    // ExplicitDecl arm of `register_type_use`, so a selective type-import
+    // alias entry in the registry does not falsely flag a local `type`
+    // declaration as a duplicate (the alias-shadow case is handled by
+    // `sweep_type_decl_name_collisions` instead).
+    let mut explicit_decl_seen: HashSet<String> = HashSet::new();
+
+    // Type-position registry pass (spec §"Unified implicit-type-registration
+    // helper"): walk every type-position site in declaration order — explicit
+    // `type Foo` decls first (so subsequent implicit uses don't fire spurious
+    // `duplicate-type-decl`), then param `x: Foo` annotations. Header
+    // `-> Foo` return annotations are registered later by
+    // `warn_if_banned_return_type` during the per-decl walk below. The helper
+    // canonicalizes per §D6 and emits:
+    //  - `G::analyze::duplicate-type-decl` on a second `ExplicitDecl`,
+    //  - `G::analyze::inconsistent-type-spelling` on raw-spelling drift,
+    //  - nothing on first-use or idempotent same-spelling re-registration.
+    // Must run before `sweep_name_collisions` /
+    // `sweep_type_decl_name_collisions`, which read the populated registry.
+    for d in &file.decls {
+        if let Decl::TypeDecl(t) = d {
+            if case_bad.contains(&t.span) {
+                continue;
+            }
+            register_type_use(
+                t.node.name.as_str(),
+                t.span,
+                TypeUseKind::ExplicitDecl,
+                file_label,
+                line_index,
+                bag,
+                registry,
+                &mut explicit_decl_seen,
+            );
+        }
+    }
+    for decl in &file.decls {
+        let params: &[ast::Param] = match decl {
+            Decl::Skill(s) => &s.node.params,
+            Decl::Block(b) => &b.node.params,
+            Decl::ExportBlock(b) => &b.node.params,
+            _ => continue,
+        };
+        for p in params {
+            if let Some(ta) = &p.type_annotation {
+                if case_bad.contains(&ta.span) {
+                    continue;
+                }
+                if crate::type_position::validate_type_position(&ta.node).is_ok() {
+                    register_type_use(
+                        &ta.node,
+                        ta.span,
+                        TypeUseKind::ParamAnnotation,
+                        file_label,
+                        line_index,
+                        bag,
+                        registry,
+                        &mut explicit_decl_seen,
+                    );
+                }
+            }
+        }
+    }
+
     for decl in &file.decls {
         match decl {
             Decl::Skill(spanned) => analyze_skill(
@@ -2148,6 +2716,8 @@ pub fn analyze_with_diagnostics(
                 &empty_imported_block_return_types,
                 &context_skill_names,
                 &constraint_skill_names,
+                &case_bad,
+                &mut explicit_decl_seen,
             ),
             Decl::ExportBlock(spanned) => {
                 analyze_export_block(
@@ -2158,6 +2728,8 @@ pub fn analyze_with_diagnostics(
                     registry,
                     &private_names,
                     &visible_binding_names,
+                    &case_bad,
+                    &mut explicit_decl_seen,
                 );
             }
             Decl::Block(spanned) => {
@@ -2169,6 +2741,8 @@ pub fn analyze_with_diagnostics(
                     line_index,
                     bag,
                     registry,
+                    &case_bad,
+                    &mut explicit_decl_seen,
                 );
                 let visible_names = visible_names_for_decl(
                     spanned.node.params.iter().map(|p| p.name.as_str()),
@@ -2244,41 +2818,53 @@ pub fn analyze_with_diagnostics(
         }
     }
 
-    // Duplicate `type Foo` in the same file is a hard error. Keys are
-    // canonicalized per §D6 so `type RepoContext` and `type repo_context` are
-    // treated as the same name (the language guide's case-insensitive +
-    // underscore-insensitive rule applies to *every* identifier namespace,
-    // not just primitive types — Codex finding #3 follow-up).
-    {
-        use crate::domain_registry::canonicalize_identifier;
-        let mut seen_types: HashMap<String, Span> = HashMap::new();
-        for d in &file.decls {
-            if let Decl::TypeDecl(t) = d {
-                let name = t.node.name.as_str();
-                let canonical = canonicalize_identifier(name);
-                let span = t.span;
-                if let Some(_prev_span) = seen_types.get(&canonical) {
-                    bag.push(
-                        Diagnostic::error(
-                            "G::analyze::duplicate-type-decl",
-                            format!("duplicate `type {}` declaration in this file", name),
-                            SourceSpan::from_byte_span(file_label, span, line_index),
-                        ),
-                        span,
-                    );
-                } else {
-                    seen_types.insert(canonical, span);
+    // Spec §"New `sweep_value_name_collisions`": value-vs-value canonical-key
+    // collision sweep. Must run before the cross-kind sweeps so a same-kind
+    // value collision is reported with the dedicated wording and a single
+    // diagnostic rather than via the legacy generic sweeps.
+    // No-imports path (`check_source` / single-file callers): the import
+    // graph isn't resolved here, so kinds can't come from `dep_exports`.
+    // Fall back to the PascalCase proxy for selective-import aliases so the
+    // type-decl-vs-type-import collision sweep still fires single-file.
+    let mut type_alias_locals: HashSet<String> = HashSet::new();
+    for decl in &file.decls {
+        if let Decl::Import(imp) = decl {
+            if let ast::ImportKind::Selective(names) = &imp.node.kind {
+                for n in names {
+                    let local = n
+                        .alias
+                        .as_ref()
+                        .map(|a| a.node.as_str())
+                        .unwrap_or(n.name.node.as_str());
+                    if crate::name_kind::is_pascal_case(local) {
+                        type_alias_locals.insert(local.to_string());
+                    }
                 }
             }
         }
     }
-
+    sweep_value_name_collisions(
+        &file,
+        file_label,
+        line_index,
+        bag,
+        &case_bad,
+        &type_alias_locals,
+    );
     // Issue #84 Chunk 3 (AC5): domain-type-vs-param/const collision sweep.
-    sweep_name_collisions(&file, file_label, line_index, bag, registry);
+    sweep_name_collisions(&file, file_label, line_index, bag, registry, &case_bad);
     // Universal-namespace check (`design/values-and-names.md` §No-Shadowing):
     // type-decl-vs-param/const/block collision sweep, complementary to the
     // registry-direction sweep above.
-    sweep_type_decl_name_collisions(&file, file_label, line_index, bag, registry);
+    sweep_type_decl_name_collisions(
+        &file,
+        file_label,
+        line_index,
+        bag,
+        registry,
+        &case_bad,
+        &type_alias_locals,
+    );
     // Reject name_ref param defaults that don't resolve to an in-scope `const`
     // (Codex finding #1 follow-up): without this sweep an unresolved ref like
     // `risk = default_risk` (when `default_risk` is a block / unknown name)
@@ -2393,7 +2979,8 @@ pub fn collect_same_file_resolutions(file: &SourceFile, file_path: &PathBuf) -> 
                             if imp_name.name.node == "subagent" || imp_name.name.node == "send" {
                                 let local = imp_name
                                     .alias
-                                    .clone()
+                                    .as_ref()
+                                    .map(|a| a.node.clone())
                                     .unwrap_or_else(|| imp_name.name.node.clone());
                                 stdlib_names.insert(local, imp_name.name.span);
                             }
@@ -2565,7 +3152,8 @@ pub fn collect_cross_file_resolutions(
                     for imp_name in names {
                         let local = imp_name
                             .alias
-                            .clone()
+                            .as_ref()
+                            .map(|a| a.node.clone())
                             .unwrap_or_else(|| imp_name.name.node.clone());
                         if let Some(t) = targets.get(&local) {
                             out.push(Resolution {
@@ -2939,11 +3527,92 @@ pub fn analyze_with_imports(
     // name treated as String) — see `condition::collect_consts_for_file`.
     imported_text_values: &std::collections::BTreeMap<String, String>,
     imported_const_types: &std::collections::BTreeMap<String, crate::kind_infer::TypeTag>,
+    // B.5 / spec §"Unified implicit-type-registration helper": consumer-local
+    // type-import alias spans, keyed by the consumer-side local name
+    // (post-alias when `as Bar` is present, else the producer's exported
+    // name). Each entry registers as a `TypeUseKind::SelectiveImport` so the
+    // type-position drift sweep (`inconsistent-type-spelling`) sees the
+    // imported spelling as the first-use anchor. Whole-module imports do
+    // NOT contribute — qualified `alias.Type` refs are MVP-unsupported.
+    imported_type_spans: &HashMap<String, Span>,
+    // Task 9: per-import-alias resolved namespace kind. Keys are
+    // consumer-local names (selective: post-alias spelling; whole-module:
+    // the bare alias). Drives the alias-case rule and the kind-aware
+    // lookups in the value/type-decl collision sweeps. Empty in the
+    // no-imports path (`analyze_with_diagnostics`).
+    import_alias_kinds: &HashMap<String, (crate::name_kind::ResolvedImportKind, Span)>,
 ) -> SourceFile {
     // Issue #109 chunk 3 — Analyze invariant. Enforced on the import-aware
     // path too so multi-file compiles get identical guarantees. See
     // `check_unmerged_duplicate_subsections` doc-comment for rationale.
     check_unmerged_duplicate_subsections(file, file_label, line_index, bag);
+
+    // Spec §"New pass `validate_identifier_case()`": hard-error on case
+    // violations and collect flagged spans so downstream sweeps and the
+    // type-registry walk skip them (avoids cascade diagnostics).
+    let mut case_bad: HashSet<Span> = validate_identifier_case(file, file_label, line_index, bag);
+
+    // Task 9: alias-case rule. Import aliases inherit the kind of the
+    // imported declaration (selective: Type if the dep exports a type by
+    // that name, Value otherwise; whole-module: always Value). Type aliases
+    // must be strict PascalCase; value aliases must be strict snake_case.
+    // Flagged alias spans join `case_bad` so subsequent kind-aware sweeps
+    // skip them.
+    for (local, (kind, span)) in import_alias_kinds {
+        let ok = match kind {
+            crate::name_kind::ResolvedImportKind::Type => crate::name_kind::is_pascal_case(local),
+            crate::name_kind::ResolvedImportKind::Value => crate::name_kind::is_snake_case(local),
+        };
+        if ok {
+            continue;
+        }
+        if case_bad.contains(span) {
+            continue;
+        }
+        let (id, message) = match kind {
+            crate::name_kind::ResolvedImportKind::Type => (
+                crate::diagnostic::TYPE_CASE_VIOLATION_DIAG_ID,
+                format!("type-import alias `{}` must be PascalCase", local),
+            ),
+            crate::name_kind::ResolvedImportKind::Value => (
+                crate::diagnostic::VALUE_CASE_VIOLATION_DIAG_ID,
+                format!("value-import alias `{}` must be snake_case", local),
+            ),
+        };
+        bag.push(
+            Diagnostic::error(
+                id,
+                message,
+                SourceSpan::from_byte_span(file_label, *span, line_index),
+            ),
+            *span,
+        );
+        case_bad.insert(*span);
+    }
+
+    // Per-file set of canonical keys that have been observed as in-file
+    // `type` declarations. See `analyze_with_diagnostics` for rationale —
+    // mirrors that pass.
+    let mut explicit_decl_seen: HashSet<String> = HashSet::new();
+
+    // B.5 / spec §"Unified implicit-type-registration helper": register every
+    // selective type-import under the consumer-local name first, so the
+    // imported spelling anchors the registry and subsequent same-file param /
+    // return-type / explicit-decl uses with a drifted raw spelling fire
+    // `G::analyze::inconsistent-type-spelling`. Must precede the per-file
+    // type-position pass (TypeDecl + param walk) below.
+    for (name, span) in imported_type_spans {
+        register_type_use(
+            name,
+            *span,
+            TypeUseKind::SelectiveImport,
+            file_label,
+            line_index,
+            bag,
+            registry,
+            &mut explicit_decl_seen,
+        );
+    }
 
     // Collect local value-binding names (post-#81: `const` is the sole form;
     // the `local_text_names` variable name is kept for parity with the legacy
@@ -3115,6 +3784,56 @@ pub fn analyze_with_imports(
         })
         .collect();
 
+    // Type-position registry pass — imports-path parity with
+    // `analyze_with_diagnostics`. Walk explicit `type Foo` decls first, then
+    // param `x: Foo` annotations. Header `-> Foo` annotations register later
+    // via `warn_if_banned_return_type` during the per-decl walk below. Must
+    // run before `sweep_name_collisions` / `sweep_type_decl_name_collisions`.
+    for d in &file.decls {
+        if let Decl::TypeDecl(t) = d {
+            if case_bad.contains(&t.span) {
+                continue;
+            }
+            register_type_use(
+                t.node.name.as_str(),
+                t.span,
+                TypeUseKind::ExplicitDecl,
+                file_label,
+                line_index,
+                bag,
+                registry,
+                &mut explicit_decl_seen,
+            );
+        }
+    }
+    for decl in &file.decls {
+        let params: &[ast::Param] = match decl {
+            Decl::Skill(s) => &s.node.params,
+            Decl::Block(b) => &b.node.params,
+            Decl::ExportBlock(b) => &b.node.params,
+            _ => continue,
+        };
+        for p in params {
+            if let Some(ta) = &p.type_annotation {
+                if case_bad.contains(&ta.span) {
+                    continue;
+                }
+                if crate::type_position::validate_type_position(&ta.node).is_ok() {
+                    register_type_use(
+                        &ta.node,
+                        ta.span,
+                        TypeUseKind::ParamAnnotation,
+                        file_label,
+                        line_index,
+                        bag,
+                        registry,
+                        &mut explicit_decl_seen,
+                    );
+                }
+            }
+        }
+    }
+
     for decl in &file.decls {
         match decl {
             Decl::Skill(spanned) => {
@@ -3140,6 +3859,8 @@ pub fn analyze_with_imports(
                     imported_block_return_types,
                     &context_skill_names,
                     &constraint_skill_names,
+                    &case_bad,
+                    &mut explicit_decl_seen,
                 );
             }
             Decl::ExportBlock(spanned) => {
@@ -3151,6 +3872,8 @@ pub fn analyze_with_imports(
                     registry,
                     &private_names,
                     &visible_binding_names,
+                    &case_bad,
+                    &mut explicit_decl_seen,
                 );
             }
             Decl::Block(spanned) => {
@@ -3163,6 +3886,8 @@ pub fn analyze_with_imports(
                     line_index,
                     bag,
                     registry,
+                    &case_bad,
+                    &mut explicit_decl_seen,
                 );
                 let visible_names = visible_names_for_decl(
                     spanned.node.params.iter().map(|p| p.name.as_str()),
@@ -3247,13 +3972,40 @@ pub fn analyze_with_imports(
         }
     }
 
+    // Task 9: derive the set of Type-kinded import alias locals so the
+    // value/type-decl sweeps can skip type aliases (resp. recognise them).
+    let type_alias_locals: HashSet<String> = import_alias_kinds
+        .iter()
+        .filter_map(|(local, (kind, _))| match kind {
+            crate::name_kind::ResolvedImportKind::Type => Some(local.clone()),
+            crate::name_kind::ResolvedImportKind::Value => None,
+        })
+        .collect();
+    // Spec §"New `sweep_value_name_collisions`": value-vs-value canonical-key
+    // collision sweep. Imports-path parity with `analyze_with_diagnostics`.
+    sweep_value_name_collisions(
+        file,
+        file_label,
+        line_index,
+        bag,
+        &case_bad,
+        &type_alias_locals,
+    );
     // Issue #84 Chunk 3 (AC5): domain-type-vs-param/const collision sweep.
     // Imports-path parity with `analyze_with_diagnostics`.
-    sweep_name_collisions(file, file_label, line_index, bag, registry);
+    sweep_name_collisions(file, file_label, line_index, bag, registry, &case_bad);
     // Universal-namespace check (`design/values-and-names.md` §No-Shadowing):
     // type-decl-vs-param/const/block collision sweep, complementary to the
     // registry-direction sweep above. Imports-path parity.
-    sweep_type_decl_name_collisions(file, file_label, line_index, bag, registry);
+    sweep_type_decl_name_collisions(
+        file,
+        file_label,
+        line_index,
+        bag,
+        registry,
+        &case_bad,
+        &type_alias_locals,
+    );
     // Codex finding #1 follow-up: reject name_ref param defaults that don't
     // resolve to an in-scope `const` (same-file or imported). `imported_texts`
     // already carries `alias.name` entries for whole-module imports, so a
@@ -3318,6 +4070,8 @@ fn analyze_skill_with_usage_tracking(
     imported_block_return_types: &HashMap<String, Spanned<String>>,
     context_skill_names: &HashSet<&str>,
     constraint_skill_names: &HashSet<&str>,
+    case_bad: &HashSet<Span>,
+    explicit_decl_seen: &mut HashSet<String>,
 ) {
     // Run the normal analysis.
     analyze_skill(
@@ -3337,6 +4091,8 @@ fn analyze_skill_with_usage_tracking(
         imported_block_return_types,
         context_skill_names,
         constraint_skill_names,
+        case_bad,
+        explicit_decl_seen,
     );
 
     // Track usage: walk flow/constraints/context to see which imported names are referenced.
@@ -3487,6 +4243,8 @@ fn analyze_skill(
     imported_block_return_types: &HashMap<String, Spanned<String>>,
     context_skill_names: &HashSet<&str>,
     constraint_skill_names: &HashSet<&str>,
+    case_bad: &HashSet<Span>,
+    explicit_decl_seen: &mut HashSet<String>,
 ) {
     let skill = &spanned.node;
     let visible_names = visible_names_for_decl(
@@ -3504,6 +4262,8 @@ fn analyze_skill(
         line_index,
         bag,
         registry,
+        case_bad,
+        explicit_decl_seen,
     );
     check_flow_output_target_shadows_binding(
         &skill.flow,
@@ -5097,6 +5857,8 @@ fn analyze_export_block(
     registry: &mut crate::domain_registry::Registry,
     private_names: &HashSet<&str>,
     visible_binding_names: &HashSet<&str>,
+    case_bad: &HashSet<Span>,
+    explicit_decl_seen: &mut HashSet<String>,
 ) {
     let decl = &spanned.node;
 
@@ -5108,6 +5870,8 @@ fn analyze_export_block(
         line_index,
         bag,
         registry,
+        case_bad,
+        explicit_decl_seen,
     );
 
     if let Some(expr) = decl.terminal_return.as_ref() {
@@ -5236,12 +6000,16 @@ pub fn fmt_signals(file: &SourceFile) -> FmtSignals {
             Decl::Import(imp) => match &imp.node.kind {
                 ast::ImportKind::Selective(names) => {
                     for n in names {
-                        let local = n.alias.clone().unwrap_or_else(|| n.name.node.clone());
+                        let local = n
+                            .alias
+                            .as_ref()
+                            .map(|a| a.node.clone())
+                            .unwrap_or_else(|| n.name.node.clone());
                         bound.insert(local);
                     }
                 }
                 ast::ImportKind::WholeModule { alias } => {
-                    bound.insert(alias.clone());
+                    bound.insert(alias.node.clone());
                 }
             },
             Decl::TypeDecl(_) => {} // TODO: handled in Task B.4+
@@ -5808,6 +6576,8 @@ skill current() -> BranchName
             &HashMap::new(),
             &std::collections::BTreeMap::new(),
             &std::collections::BTreeMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
         );
         let entry = registry
             .lookup("Report")
@@ -6028,183 +6798,11 @@ const accuracy = "Be accurate."
             .collect()
     }
 
-    #[test]
-    fn t1_skill_return_type_collides_with_skill_param() {
-        // Tracer: skill `foo(report = "x") -> Report` collides — the param
-        // `report` and the return type `Report` canonicalize to the same key.
-        // Emits one `G::analyze::name-collision` Error; primary span covers
-        // the `-> Report` annotation, related span covers the `report` param.
-        let src = "skill foo(report = \"x\") -> Report\n    description: \"Foo.\"\n    flow:\n        \"do\"\n";
-        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
-        let mut bag = DiagBag::new();
-        let mut registry = crate::domain_registry::Registry::new();
-        let _ =
-            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
-
-        let diags = collision_diags(&bag);
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly one domain-type collision diagnostic, got: {:?}",
-            bag.iter()
-                .map(|d| (d.id.as_str(), d.message.as_str()))
-                .collect::<Vec<_>>()
-        );
-        let d = diags[0];
-        assert_eq!(d.classification, crate::diagnostic::Classification::Error);
-        assert!(
-            d.message.contains("Report") && d.message.contains("report"),
-            "message must name both sides of the collision, got: {:?}",
-            d.message
-        );
-        assert!(
-            d.message.contains("parameter"),
-            "message must say `parameter` for param-side collision, got: {:?}",
-            d.message
-        );
-
-        // Primary span: the `-> Report` annotation.
-        let arrow_byte = src.find("->").unwrap();
-        let report_byte = src.find("Report").unwrap();
-        let primary_start_col = (arrow_byte + 1) as u32; // 1-indexed col on line 1
-        let primary_end_col = (report_byte + "Report".len()) as u32; // inclusive
-        assert_eq!(d.span.start.line, 1);
-        assert_eq!(d.span.start.col, primary_start_col);
-        assert_eq!(d.span.end.line, 1);
-        assert_eq!(d.span.end.col, primary_end_col);
-
-        // Related span: the `report` param identifier inside `foo(...)`.
-        assert_eq!(d.related.len(), 1, "expected exactly one related span");
-        let related_param_start = (src.find("report").unwrap() + 1) as u32;
-        // The Param.span is the parameter's full header position (name plus
-        // optional default). We don't want to pin its exact end here — the
-        // start-of-line marker is enough to prove the param-side span lands.
-        assert_eq!(d.related[0].start.line, 1);
-        assert_eq!(d.related[0].start.col, related_param_start);
-    }
-
-    #[test]
-    fn t2_export_block_return_type_collides_with_export_block_param() {
-        // Export-block visit site: `export block bar(report = "x") -> Report`
-        // — both the param and the return type canonicalize to `report`. The
-        // sweep must enumerate `Decl::ExportBlock` params (not just skill
-        // params), so this pinpoints the export-block branch of the match.
-        let src = "export block bar(report = \"x\") -> Report\n    flow:\n        \"x\"\n        return report\n";
-        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
-        let mut bag = DiagBag::new();
-        let mut registry = crate::domain_registry::Registry::new();
-        let _ =
-            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
-
-        let diags = collision_diags(&bag);
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly one domain-type collision diagnostic, got: {:?}",
-            bag.iter()
-                .map(|d| (d.id.as_str(), d.message.as_str()))
-                .collect::<Vec<_>>()
-        );
-        let d = diags[0];
-        assert_eq!(d.classification, crate::diagnostic::Classification::Error);
-        assert!(d.message.contains("Report"));
-        assert!(d.message.contains("report"));
-        assert!(d.message.contains("parameter"));
-    }
-
-    #[test]
-    fn t4_cross_decl_collision_uses_file_level_scope() {
-        // File-level scope: a `-> Report` annotation on the skill collides
-        // with a param `report` on a *different* decl. Catches a regression
-        // where the sweep is per-decl instead of file-level.
-        let src = "skill main() -> Report\n    description: \"Main.\"\n    flow:\n        helper()\n\nblock helper(report = \"x\")\n    description: \"Helper.\"\n    flow:\n        \"work\"\n";
-        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
-        let mut bag = DiagBag::new();
-        let mut registry = crate::domain_registry::Registry::new();
-        let _ =
-            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
-
-        let diags = collision_diags(&bag);
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly one cross-decl collision diagnostic, got: {:?}",
-            bag.iter()
-                .map(|d| (d.id.as_str(), d.message.as_str()))
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn t5_underscore_cross_spelling_collision_via_canonicalization() {
-        // D6 canonicalization (ASCII-lower + strip `_`): `makePlan` and
-        // `make_plan` share canonical key `makeplan`. The skill's return
-        // type and the block's param spell it differently in source — the
-        // sweep must canonicalize before comparing or this regresses.
-        let src = "skill main() -> makePlan\n    description: \"Main.\"\n    flow:\n        helper()\n\nblock helper(make_plan = \"x\")\n    description: \"Helper.\"\n    flow:\n        \"work\"\n";
-        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
-        let mut bag = DiagBag::new();
-        let mut registry = crate::domain_registry::Registry::new();
-        let _ =
-            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
-
-        let diags = collision_diags(&bag);
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected one canonicalized collision (`makePlan` vs `make_plan`), got: {:?}",
-            bag.iter()
-                .map(|d| (d.id.as_str(), d.message.as_str()))
-                .collect::<Vec<_>>()
-        );
-        // Message must use raw author spellings on both sides, not the
-        // canonicalized `makeplan` form.
-        let msg = &diags[0].message;
-        assert!(
-            msg.contains("makePlan"),
-            "message must use raw type spelling `makePlan`, got: {:?}",
-            msg
-        );
-        assert!(
-            msg.contains("make_plan"),
-            "message must use raw param spelling `make_plan`, got: {:?}",
-            msg
-        );
-    }
-
-    #[test]
-    fn t6_skill_return_type_collides_with_const() {
-        // Const-side enumeration: `const report = "x"` collides with skill
-        // return type `-> Report`. Pinpoints the `Decl::Const` branch of the
-        // sweep's enumeration loop and exercises the `"const"` arm of the
-        // emit helper (message must say `const`, not `parameter`).
-        let src = "skill main() -> Report\n    description: \"Main.\"\n    flow:\n        \"do\"\n\nconst report = \"x\"\n";
-        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
-        let mut bag = DiagBag::new();
-        let mut registry = crate::domain_registry::Registry::new();
-        let _ =
-            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
-
-        let diags = collision_diags(&bag);
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly one type-vs-const collision, got: {:?}",
-            bag.iter()
-                .map(|d| (d.id.as_str(), d.message.as_str()))
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            diags[0].message.contains("const"),
-            "message must say `const` for const-side collision, got: {:?}",
-            diags[0].message
-        );
-        assert!(
-            !diags[0].message.contains("parameter"),
-            "const-side collision message must not say `parameter`, got: {:?}",
-            diags[0].message
-        );
-    }
+    // Task 8 — `t1`/`t2`/`t3`/`t4`/`t6` (cross-kind type-vs-param/const
+    // collision assertions) were deleted: under the two-namespace rule a
+    // domain-type return annotation no longer collides with a same-canonical
+    // value-namespace binding. Same-namespace collisions are exercised by
+    // `sweep_value_name_collisions` tests and the type-decl tests below.
 
     #[test]
     fn t7_no_collision_when_canonical_names_differ() {
@@ -6275,71 +6873,10 @@ const accuracy = "Be accurate."
         );
     }
 
-    #[test]
-    fn t10_imports_path_parity_emits_collision() {
-        // Imports-path parity with T1: when analyze runs through
-        // `analyze_with_imports` (used for files that import other files),
-        // the chunk-3 sweep must fire there too. Catches a regression where
-        // the sweep landed in `analyze_with_diagnostics` only.
-        let src = "skill foo(report = \"x\") -> Report\n    description: \"Foo.\"\n    flow:\n        \"do\"\n";
-        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
-        let mut bag = DiagBag::new();
-        let mut registry = crate::domain_registry::Registry::new();
-        let mut used: HashSet<String> = HashSet::new();
-        let _ = analyze_with_imports(
-            &file,
-            0,
-            "test.glyph",
-            &line_index,
-            &mut bag,
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-            &mut used,
-            &HashMap::new(),
-            &mut registry,
-            &HashMap::new(),
-            &HashMap::new(),
-            &std::collections::BTreeMap::new(),
-            &std::collections::BTreeMap::new(),
-        );
-
-        let diags = collision_diags(&bag);
-        assert_eq!(
-            diags.len(),
-            1,
-            "imports-path must also emit chunk-3 collision diagnostic, got: {:?}",
-            bag.iter()
-                .map(|d| (d.id.as_str(), d.message.as_str()))
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn t3_private_block_return_type_collides_with_block_param() {
-        // Private-block visit site (D7: in scope for header `-> DomainType`):
-        // `block helper(report = "x") -> Report` — param `report` collides
-        // with return type `Report` after canonicalization. Pinpoints the
-        // `Decl::Block` branch of the param-enumeration match.
-        let src = "skill main()\n    description: \"Main.\"\n    flow:\n        helper()\n\nblock helper(report = \"x\") -> Report\n    description: \"Helper.\"\n    flow:\n        \"work\"\n";
-        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
-        let mut bag = DiagBag::new();
-        let mut registry = crate::domain_registry::Registry::new();
-        let _ =
-            analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
-
-        let diags = collision_diags(&bag);
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly one domain-type collision diagnostic from private block, got: {:?}",
-            bag.iter()
-                .map(|d| (d.id.as_str(), d.message.as_str()))
-                .collect::<Vec<_>>()
-        );
-        assert!(diags[0].message.contains("parameter"));
-    }
+    // Task 8 — `t10_imports_path_parity_emits_collision` and
+    // `t3_private_block_return_type_collides_with_block_param` were deleted:
+    // both asserted cross-kind type-vs-param collisions which are now legal
+    // under the two-namespace split.
 
     // --- Issue #84 Chunk 4: cross-file nominal matching at return-position ---
     //
@@ -6407,6 +6944,8 @@ const accuracy = "Be accurate."
             &HashMap::new(),
             &std::collections::BTreeMap::new(),
             &std::collections::BTreeMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -6498,6 +7037,8 @@ const accuracy = "Be accurate."
             &HashMap::new(),
             &std::collections::BTreeMap::new(),
             &std::collections::BTreeMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -6577,6 +7118,8 @@ const accuracy = "Be accurate."
             &HashMap::new(),
             &std::collections::BTreeMap::new(),
             &std::collections::BTreeMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -6754,6 +7297,8 @@ const accuracy = "Be accurate."
             &HashMap::new(),
             &std::collections::BTreeMap::new(),
             &std::collections::BTreeMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -6987,6 +7532,8 @@ const accuracy = "Be accurate."
             &HashMap::new(),
             &std::collections::BTreeMap::new(),
             &std::collections::BTreeMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -7164,6 +7711,8 @@ const accuracy = "Be accurate."
             &HashMap::new(),
             &std::collections::BTreeMap::new(),
             &std::collections::BTreeMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
         );
 
         assert!(
@@ -7253,6 +7802,8 @@ const accuracy = "Be accurate."
             &HashMap::new(),
             &std::collections::BTreeMap::new(),
             &std::collections::BTreeMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
         );
 
         let diags = undefined_call_diags(&bag);
@@ -7704,116 +8255,22 @@ export type Foo = <"second">
     }
 
     /// Codex finding #3: the §D6 case+underscore-insensitive identifier rule
-    /// applies to type names too. Two type decls that differ only in casing
-    /// or underscore placement (`RepoContext` vs `repo_context`) should
-    /// trigger `G::analyze::duplicate-type-decl`, since downstream lookups
-    /// (TypeRegistry::get) treat them as the same key.
+    /// applies to type names too. Two type decls whose names canonicalize to
+    /// the same key (`RepoContext` vs `Repocontext`) should trigger
+    /// `G::analyze::duplicate-type-decl`, since downstream lookups
+    /// (TypeRegistry::get) treat them as the same key. Both spellings must
+    /// be PascalCase under the type-namespace case rule; cross-case mixing
+    /// is now caught earlier by `type-case-violation`.
     #[test]
     fn duplicate_type_decl_canonical_form_collision() {
         let src = r#"type RepoContext = <"first">
-type repo_context = <"second">
+type Repocontext = <"second">
 "#;
         let ids = check_ids(src);
         assert!(
             ids.iter().any(|id| id == "G::analyze::duplicate-type-decl"),
-            "case+underscore-insensitive duplicate type decls should collide; got: {:?}",
+            "canonical-equal duplicate type decls should collide; got: {:?}",
             ids
-        );
-    }
-
-    /// Universal-namespace check: `type Foo` collides with `const Foo` even
-    /// when no `-> Foo` annotation registers `Foo` into the domain registry.
-    #[test]
-    fn type_decl_collides_with_const() {
-        let src = r#"type Foo = <"a domain type">
-const Foo = "value"
-"#;
-        let bag = crate::check_source(src, 0, "test.glyph");
-        let collisions: Vec<&str> = bag
-            .iter()
-            .filter(|d| d.id == "G::analyze::name-collision")
-            .map(|d| d.message.as_str())
-            .collect();
-        assert!(
-            collisions
-                .iter()
-                .any(|m| m.contains("type `Foo`") && m.contains("const")),
-            "expected type-vs-const collision, got messages: {:?}",
-            collisions
-        );
-    }
-
-    /// `type Foo` collides with a private `block Foo`. The registry sweep does
-    /// not cover block decl names, so this path is exclusive to the new sweep.
-    #[test]
-    fn type_decl_collides_with_block() {
-        let src = r#"type Foo = <"a domain type">
-block Foo()
-    description: "private helper"
-    flow:
-        "do work"
-"#;
-        let bag = crate::check_source(src, 0, "test.glyph");
-        let collisions: Vec<&str> = bag
-            .iter()
-            .filter(|d| d.id == "G::analyze::name-collision")
-            .map(|d| d.message.as_str())
-            .collect();
-        assert!(
-            collisions
-                .iter()
-                .any(|m| m.contains("type `Foo`") && m.contains("block")),
-            "expected type-vs-block collision, got messages: {:?}",
-            collisions
-        );
-    }
-
-    /// `type Foo` collides with `export block Foo`.
-    #[test]
-    fn type_decl_collides_with_export_block() {
-        let src = r#"type Foo = <"a domain type">
-export block Foo()
-    description: "exported helper"
-    flow:
-        "do work"
-"#;
-        let bag = crate::check_source(src, 0, "test.glyph");
-        let collisions: Vec<&str> = bag
-            .iter()
-            .filter(|d| d.id == "G::analyze::name-collision")
-            .map(|d| d.message.as_str())
-            .collect();
-        assert!(
-            collisions
-                .iter()
-                .any(|m| m.contains("type `Foo`") && m.contains("export block")),
-            "expected type-vs-export-block collision, got messages: {:?}",
-            collisions
-        );
-    }
-
-    /// `type Foo` collides with parameter `Foo` even when no `-> Foo`
-    /// annotation registers `Foo` into the registry.
-    #[test]
-    fn type_decl_collides_with_parameter_without_registry_use() {
-        let src = r#"type Foo = <"a domain type">
-skill use_it(Foo = "x")
-    description: "test"
-    flow:
-        "do work"
-"#;
-        let bag = crate::check_source(src, 0, "test.glyph");
-        let collisions: Vec<&str> = bag
-            .iter()
-            .filter(|d| d.id == "G::analyze::name-collision")
-            .map(|d| d.message.as_str())
-            .collect();
-        assert!(
-            collisions
-                .iter()
-                .any(|m| m.contains("type `Foo`") && m.contains("parameter")),
-            "expected type-vs-parameter collision, got messages: {:?}",
-            collisions
         );
     }
 
@@ -7840,33 +8297,10 @@ skill returns_foo() -> Foo
         );
     }
 
-    /// Dedupe: when `-> Foo` registers `Foo` AND a parameter named `Foo`
-    /// exists, the registry-direction sweep already fires. The type-decl
-    /// sweep skips param/const checks for in-registry names so the user sees
-    /// exactly one diagnostic per logical issue.
-    #[test]
-    fn type_decl_param_collision_dedupes_with_registry_sweep() {
-        let src = r#"type Foo = <"a domain type">
-skill use_it(Foo = "x") -> Foo
-    description: "test"
-    flow:
-        return "value"
-"#;
-        let bag = crate::check_source(src, 0, "test.glyph");
-        let param_collisions: Vec<&str> = bag
-            .iter()
-            .filter(|d| d.id == "G::analyze::name-collision" && d.message.contains("parameter"))
-            .map(|d| d.message.as_str())
-            .collect();
-        assert_eq!(
-            param_collisions.len(),
-            1,
-            "expected exactly one param-collision message, got: {:?}",
-            param_collisions
-        );
-    }
-
-    /// `type Foo` collides with a selectively-imported `Foo` (no `as` alias).
+    /// `type Foo` collides with a selectively-imported type `Foo` (no `as`
+    /// alias). Under Task 8 the slimmed `sweep_type_decl_name_collisions`
+    /// fires only against type-kinded selective imports (proxied by
+    /// PascalCase aliases until Task 9 plumbs `ResolvedImportKind`).
     #[test]
     fn type_decl_collides_with_selective_import() {
         let src = r#"import "./other.glyph" { Foo }
@@ -7881,13 +8315,14 @@ type Foo = <"a domain type">
         assert!(
             collisions
                 .iter()
-                .any(|m| m.contains("type `Foo`") && m.contains("import alias")),
-            "expected type-vs-import-alias collision, got messages: {:?}",
+                .any(|m| m.contains("type `Foo`") && m.contains("type import")),
+            "expected type-vs-type-import collision, got messages: {:?}",
             collisions
         );
     }
 
     /// `type Foo` collides with `import { bar as Foo }` (selective + alias).
+    /// The PascalCase alias `Foo` is treated as a type-kinded import.
     #[test]
     fn type_decl_collides_with_aliased_selective_import() {
         let src = r#"import "./other.glyph" { bar as Foo }
@@ -7902,32 +8337,17 @@ type Foo = <"a domain type">
         assert!(
             collisions
                 .iter()
-                .any(|m| m.contains("type `Foo`") && m.contains("import alias")),
-            "expected type-vs-aliased-import collision, got messages: {:?}",
+                .any(|m| m.contains("type `Foo`") && m.contains("type import")),
+            "expected type-vs-type-import collision, got messages: {:?}",
             collisions
         );
     }
 
-    /// `type Foo` collides with whole-module `import "..." as Foo`.
-    #[test]
-    fn type_decl_collides_with_whole_module_import() {
-        let src = r#"import "./other.glyph" as Foo
-type Foo = <"a domain type">
-"#;
-        let bag = crate::check_source(src, 0, "test.glyph");
-        let collisions: Vec<&str> = bag
-            .iter()
-            .filter(|d| d.id == "G::analyze::name-collision")
-            .map(|d| d.message.as_str())
-            .collect();
-        assert!(
-            collisions
-                .iter()
-                .any(|m| m.contains("type `Foo`") && m.contains("import alias")),
-            "expected type-vs-whole-module-import collision, got messages: {:?}",
-            collisions
-        );
-    }
+    // Task 8 — `type_decl_collides_with_whole_module_import` was deleted: a
+    // whole-module `import "..." as Foo` binds the module to the value
+    // namespace, so it no longer collides with a `type Foo` decl under the
+    // two-namespace split. (The alias would also fail the value-namespace
+    // case rule, but that is a separate `value-case-violation` path.)
 }
 
 #[cfg(test)]
@@ -8728,6 +9148,189 @@ skill demo() -> Plan
             !ids.iter()
                 .any(|id| id == "G::analyze::call-arg-type-mismatch"),
             "did not expect G::analyze::call-arg-type-mismatch, got {ids:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod register_type_use_tests {
+    use super::*;
+    use crate::span::Span;
+
+    #[test]
+    fn first_explicit_decl_registers() {
+        let mut reg = crate::domain_registry::Registry::new();
+        let mut bag = DiagBag::new();
+        let li = LineIndex::new("type LinkMode = <\"x\">\n");
+        register_type_use(
+            "LinkMode",
+            Span::new(0, 5, 13),
+            TypeUseKind::ExplicitDecl,
+            "test.glyph",
+            &li,
+            &mut bag,
+            &mut reg,
+            &mut HashSet::new(),
+        );
+        assert!(reg.lookup("LinkMode").is_some());
+        assert_eq!(bag.iter().count(), 0);
+    }
+
+    #[test]
+    fn duplicate_explicit_decl_emits_duplicate_type_decl() {
+        let mut reg = crate::domain_registry::Registry::new();
+        let mut bag = DiagBag::new();
+        let mut explicit_decl_seen: HashSet<String> = HashSet::new();
+        let li = LineIndex::new("type LinkMode = <\"x\">\ntype Linkmode = <\"y\">\n");
+        register_type_use(
+            "LinkMode",
+            Span::new(0, 5, 13),
+            TypeUseKind::ExplicitDecl,
+            "test.glyph",
+            &li,
+            &mut bag,
+            &mut reg,
+            &mut explicit_decl_seen,
+        );
+        register_type_use(
+            "Linkmode",
+            Span::new(0, 27, 35),
+            TypeUseKind::ExplicitDecl,
+            "test.glyph",
+            &li,
+            &mut bag,
+            &mut reg,
+            &mut explicit_decl_seen,
+        );
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::duplicate-type-decl"),
+            "expected duplicate-type-decl, got {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn return_annotation_then_drift_warns() {
+        let mut reg = crate::domain_registry::Registry::new();
+        let mut bag = DiagBag::new();
+        let li = LineIndex::new("block a() -> LinkMode\nblock b() -> Linkmode\n");
+        register_type_use(
+            "LinkMode",
+            Span::new(0, 13, 21),
+            TypeUseKind::ReturnAnnotation,
+            "test.glyph",
+            &li,
+            &mut bag,
+            &mut reg,
+            &mut HashSet::new(),
+        );
+        register_type_use(
+            "Linkmode",
+            Span::new(0, 35, 43),
+            TypeUseKind::ReturnAnnotation,
+            "test.glyph",
+            &li,
+            &mut bag,
+            &mut reg,
+            &mut HashSet::new(),
+        );
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::inconsistent-type-spelling"),
+            "expected inconsistent-type-spelling, got {:?}",
+            ids
+        );
+        assert!(
+            !ids.contains(&"G::analyze::duplicate-type-decl"),
+            "implicit drift must not fire duplicate-type-decl"
+        );
+    }
+
+    #[test]
+    fn param_annotation_first_use_registers() {
+        let mut reg = crate::domain_registry::Registry::new();
+        let mut bag = DiagBag::new();
+        let li = LineIndex::new("block a(x: LinkMode)\n");
+        register_type_use(
+            "LinkMode",
+            Span::new(0, 11, 19),
+            TypeUseKind::ParamAnnotation,
+            "test.glyph",
+            &li,
+            &mut bag,
+            &mut reg,
+            &mut HashSet::new(),
+        );
+        assert!(reg.lookup("LinkMode").is_some());
+    }
+
+    #[test]
+    fn idempotent_same_raw_does_not_warn() {
+        let mut reg = crate::domain_registry::Registry::new();
+        let mut bag = DiagBag::new();
+        let mut explicit_decl_seen: HashSet<String> = HashSet::new();
+        let li = LineIndex::new("type LinkMode = <\"x\">\nblock a() -> LinkMode\n");
+        register_type_use(
+            "LinkMode",
+            Span::new(0, 5, 13),
+            TypeUseKind::ExplicitDecl,
+            "test.glyph",
+            &li,
+            &mut bag,
+            &mut reg,
+            &mut explicit_decl_seen,
+        );
+        register_type_use(
+            "LinkMode",
+            Span::new(0, 35, 43),
+            TypeUseKind::ReturnAnnotation,
+            "test.glyph",
+            &li,
+            &mut bag,
+            &mut reg,
+            &mut explicit_decl_seen,
+        );
+        assert_eq!(bag.iter().count(), 0);
+    }
+
+    /// Regression: a selective type-import populates the registry first;
+    /// a subsequent in-file `ExplicitDecl` with the same raw spelling must
+    /// NOT emit `G::analyze::duplicate-type-decl`. The previous registry
+    /// entry came from an import alias, not an in-file `type` declaration.
+    /// The collision against the import alias is owned by
+    /// `sweep_type_decl_name_collisions`, not this helper.
+    #[test]
+    fn explicit_decl_after_selective_import_does_not_duplicate() {
+        let mut reg = crate::domain_registry::Registry::new();
+        let mut bag = DiagBag::new();
+        let mut explicit_decl_seen: HashSet<String> = HashSet::new();
+        let li = LineIndex::new("import \"x\" { LinkMode }\ntype LinkMode = <\"y\">\n");
+        register_type_use(
+            "LinkMode",
+            Span::new(0, 13, 21),
+            TypeUseKind::SelectiveImport,
+            "test.glyph",
+            &li,
+            &mut bag,
+            &mut reg,
+            &mut explicit_decl_seen,
+        );
+        register_type_use(
+            "LinkMode",
+            Span::new(0, 29, 37),
+            TypeUseKind::ExplicitDecl,
+            "test.glyph",
+            &li,
+            &mut bag,
+            &mut reg,
+            &mut explicit_decl_seen,
+        );
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::duplicate-type-decl"),
+            "ExplicitDecl after SelectiveImport must NOT emit duplicate-type-decl, got: {:?}",
+            ids
         );
     }
 }

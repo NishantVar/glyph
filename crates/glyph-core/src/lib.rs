@@ -16,6 +16,7 @@ pub mod fmt;
 pub mod ir;
 pub mod kind_infer;
 pub mod lower;
+pub mod name_kind;
 pub mod output_target;
 pub mod parse;
 pub mod semantic_tokens;
@@ -432,7 +433,8 @@ fn collect_cross_file_targets(
         for imp_name in names {
             let local = imp_name
                 .alias
-                .clone()
+                .as_ref()
+                .map(|a| a.node.clone())
                 .unwrap_or_else(|| imp_name.name.node.clone());
             // Find the declaration in the dependency file by exported name.
             for dep_decl in &dep_file.decls {
@@ -912,6 +914,14 @@ fn check_one_file(
     // `analyze_with_imports` — the analyzer doesn't yet validate type
     // annotations; that comes in a later phase.
     let mut imported_types: HashSet<String> = HashSet::new();
+    // B.5 / spec §"Unified implicit-type-registration helper": consumer-local
+    // type-import alias spans for every successful selective type-import.
+    // Threaded into `analyze_with_imports` so the importing-side spelling
+    // anchors the per-file domain-type registry — same-file param /
+    // return / explicit-decl uses that drift from this spelling fire
+    // `G::analyze::inconsistent-type-spelling`. Whole-module imports do
+    // NOT contribute (qualified `alias.Type` refs unsupported in MVP).
+    let mut imported_type_spans: HashMap<String, Span> = HashMap::new();
     let mut seen_import_paths: HashMap<PathBuf, Span> = HashMap::new();
     let mut used_import_names: HashSet<String> = HashSet::new();
     let mut all_import_names: Vec<(String, Span)> = Vec::new();
@@ -924,6 +934,12 @@ fn check_one_file(
     // used for return types above; consumed by `analyze_with_imports` to
     // validate cross-file call-arg counts.
     let mut imported_block_params: HashMap<String, Vec<ast::Param>> = HashMap::new();
+    // Task 9: per-import-alias resolved namespace kind, keyed by the
+    // consumer-local name. Drives both the alias-case rule (PascalCase iff
+    // Type, snake_case iff Value) and the kind-aware lookups in
+    // `sweep_value_name_collisions` / `sweep_type_decl_name_collisions`.
+    let mut import_alias_kinds: HashMap<String, (crate::name_kind::ResolvedImportKind, Span)> =
+        HashMap::new();
 
     for decl in &file.decls {
         if let Decl::Import(import_spanned) = decl {
@@ -940,12 +956,25 @@ fn check_one_file(
                             for imp_name in names {
                                 let local = imp_name
                                     .alias
-                                    .as_deref()
+                                    .as_ref()
+                                    .map(|a| a.node.as_str())
                                     .unwrap_or(imp_name.name.node.as_str());
+                                let alias_span = imp_name
+                                    .alias
+                                    .as_ref()
+                                    .map(|a| a.span)
+                                    .unwrap_or(imp_name.name.span);
                                 all_import_names.push((local.to_string(), import_span));
                                 if imp_name.name.node == "subagent" || imp_name.name.node == "send"
                                 {
                                     imported_blocks.insert(local.to_string());
+                                    // Task 9: stdlib selective imports are
+                                    // always Value-kinded (stdlib has no
+                                    // exported types in MVP).
+                                    import_alias_kinds.insert(
+                                        local.to_string(),
+                                        (crate::name_kind::ResolvedImportKind::Value, alias_span),
+                                    );
                                 } else {
                                     bags.entry(key.clone()).or_default().push(
                                         Diagnostic::error(
@@ -966,9 +995,16 @@ fn check_one_file(
                             }
                         }
                         ImportKind::WholeModule { alias } => {
-                            all_import_names.push((alias.clone(), import_span));
-                            imported_blocks.insert(format!("{}.subagent", alias));
-                            imported_blocks.insert(format!("{}.send", alias));
+                            all_import_names.push((alias.node.clone(), import_span));
+                            imported_blocks.insert(format!("{}.subagent", alias.node));
+                            imported_blocks.insert(format!("{}.send", alias.node));
+                            // Task 9: whole-module aliases bind to the value
+                            // namespace (qualified `alias.Type` refs are
+                            // MVP-unsupported, see B.7).
+                            import_alias_kinds.insert(
+                                alias.node.clone(),
+                                (crate::name_kind::ResolvedImportKind::Value, alias.span),
+                            );
                         }
                     }
                 } else {
@@ -1035,7 +1071,8 @@ fn check_one_file(
                     for imp_name in names {
                         let local = imp_name
                             .alias
-                            .as_deref()
+                            .as_ref()
+                            .map(|a| a.node.as_str())
                             .unwrap_or(imp_name.name.node.as_str());
                         all_import_names.push((local.to_string(), import_span));
 
@@ -1081,6 +1118,16 @@ fn check_one_file(
                             if let Some(t) = dep_exports.text_value_types.get(&imp_name.name.node) {
                                 imported_const_types.insert(local.to_string(), t.clone());
                             }
+                            // Task 9: const re-export → Value alias.
+                            let alias_span = imp_name
+                                .alias
+                                .as_ref()
+                                .map(|a| a.span)
+                                .unwrap_or(imp_name.name.span);
+                            import_alias_kinds.insert(
+                                local.to_string(),
+                                (crate::name_kind::ResolvedImportKind::Value, alias_span),
+                            );
                         } else if dep_exports.blocks.contains(&imp_name.name.node) {
                             imported_blocks.insert(local.to_string());
                             // Issue #84 Chunk 4: re-key the producer-side
@@ -1096,12 +1143,38 @@ fn check_one_file(
                             {
                                 imported_block_params.insert(local.to_string(), params.clone());
                             }
+                            // Task 9: block re-export → Value alias.
+                            let alias_span = imp_name
+                                .alias
+                                .as_ref()
+                                .map(|a| a.span)
+                                .unwrap_or(imp_name.name.span);
+                            import_alias_kinds.insert(
+                                local.to_string(),
+                                (crate::name_kind::ResolvedImportKind::Value, alias_span),
+                            );
                         } else if dep_exports.types.contains_key(&imp_name.name.node) {
                             // Phase B.7: a selectively imported `export type`
                             // name. Recorded so the `unused-import` post-pass
                             // can recognise param `type_annotation` references
                             // as a use.
                             imported_types.insert(local.to_string());
+                            // B.5 / spec §"Unified implicit-type-registration
+                            // helper": anchor the consumer-local type spelling
+                            // in the per-file registry. Use the alias span
+                            // when `as Foo` is present, otherwise the
+                            // imported name's span.
+                            let alias_span = imp_name
+                                .alias
+                                .as_ref()
+                                .map(|a| a.span)
+                                .unwrap_or(imp_name.name.span);
+                            imported_type_spans.insert(local.to_string(), alias_span);
+                            // Task 9: type re-export → Type alias.
+                            import_alias_kinds.insert(
+                                local.to_string(),
+                                (crate::name_kind::ResolvedImportKind::Type, alias_span),
+                            );
                         } else {
                             bags.entry(key.clone()).or_default().push(
                                 Diagnostic::error(
@@ -1125,10 +1198,17 @@ fn check_one_file(
                     // Whole-module import: all exported names available as `alias.name`.
                     // For now, just record that the alias is used. Whole-module imports
                     // don't selectively import names so they skip per-name validation.
-                    all_import_names.push((alias.clone(), import_span));
+                    all_import_names.push((alias.node.clone(), import_span));
+                    // Task 9: whole-module aliases bind to the value namespace
+                    // (qualified `alias.Type` refs are MVP-unsupported, see
+                    // B.7), so the alias-case rule treats them as Value.
+                    import_alias_kinds.insert(
+                        alias.node.clone(),
+                        (crate::name_kind::ResolvedImportKind::Value, alias.span),
+                    );
                     // Make all exported names available prefixed.
                     for t in &dep_exports.texts {
-                        let qualified = format!("{}.{}", alias, t);
+                        let qualified = format!("{}.{}", alias.node, t);
                         imported_texts.insert(qualified.clone());
                         // Mirror selective import: prefix the alias on
                         // const value/type so the classifier can resolve
@@ -1141,7 +1221,7 @@ fn check_one_file(
                         }
                     }
                     for b in &dep_exports.blocks {
-                        let qualified = format!("{}.{}", alias, b);
+                        let qualified = format!("{}.{}", alias.node, b);
                         imported_blocks.insert(qualified.clone());
                         // Issue #84 Chunk 4: prefix imported block return
                         // types under `alias.name` to match the consumer's
@@ -1159,7 +1239,7 @@ fn check_one_file(
                     // `alias.name` so the unused-import post-pass recognises
                     // whole-module-style param `type_annotation` references.
                     for t in dep_exports.types.keys() {
-                        imported_types.insert(format!("{}.{}", alias, t));
+                        imported_types.insert(format!("{}.{}", alias.node, t));
                     }
                 }
             }
@@ -1233,6 +1313,8 @@ fn check_one_file(
         &imported_block_params,
         &imported_text_values,
         &imported_const_types,
+        &imported_type_spans,
+        &import_alias_kinds,
     );
 
     // Unused import detection.
@@ -1726,7 +1808,11 @@ fn emit_library_procedures(path: &Path, enable_effects: bool) -> Vec<(String, St
                 ImportKind::Selective(names) => {
                     for imp_name in names {
                         let producer = imp_name.name.node.as_str();
-                        let local = imp_name.alias.as_deref().unwrap_or(producer);
+                        let local = imp_name
+                            .alias
+                            .as_ref()
+                            .map(|a| a.node.as_str())
+                            .unwrap_or(producer);
                         if let Some(desc) = dep_exports.types.get(producer) {
                             // Honour `as` aliasing — the consumer's type
                             // annotation will spell the type with the local name.
@@ -1743,11 +1829,11 @@ fn emit_library_procedures(path: &Path, enable_effects: bool) -> Vec<(String, St
                 ImportKind::WholeModule { alias } => {
                     for (type_name, desc) in &dep_exports.types {
                         local_type_registry
-                            .insert(&format!("{}.{}", alias, type_name), desc.clone());
+                            .insert(&format!("{}.{}", alias.node, type_name), desc.clone());
                     }
                     for text_name in &dep_exports.texts {
                         if let Some((rendered, tag)) = dep_consts.get(text_name) {
-                            let qualified = format!("{}.{}", alias, text_name);
+                            let qualified = format!("{}.{}", alias.node, text_name);
                             imported_texts.insert(qualified.clone(), rendered.clone());
                             imported_const_types.insert(qualified, tag.clone());
                         }
@@ -1871,7 +1957,8 @@ fn build_imported_procedure_paths(
                     for imp_name in names {
                         let local = imp_name
                             .alias
-                            .as_deref()
+                            .as_ref()
+                            .map(|a| a.node.as_str())
                             .unwrap_or(imp_name.name.node.as_str());
                         let key = (resolved.clone(), imp_name.name.node.clone());
                         if let Some(proc_path) = procedure_paths.get(&key) {
@@ -1882,7 +1969,7 @@ fn build_imported_procedure_paths(
                 ImportKind::WholeModule { alias } => {
                     for ((lib_path, block_name), proc_path) in procedure_paths {
                         if *lib_path == resolved {
-                            let qualified = format!("{}.{}", alias, block_name);
+                            let qualified = format!("{}.{}", alias.node, block_name);
                             result.insert(qualified, proc_path.clone());
                         }
                     }
@@ -1924,6 +2011,18 @@ struct ResolvedImports {
     /// local (post-alias / post-prefix) name. Folded into the consumer's
     /// `TypeRegistry` during lowering.
     type_descriptions: std::collections::BTreeMap<String, String>,
+    /// B.5 / spec §"Unified implicit-type-registration helper": consumer-side
+    /// type-import alias spans for every selective type-import. Keyed by the
+    /// consumer-local spelling (alias if present, else exported name).
+    /// Whole-module imports do NOT contribute — qualified `alias.Type` refs
+    /// are MVP-unsupported. Threaded into `analyze_with_imports`.
+    type_spans: HashMap<String, crate::span::Span>,
+    /// Task 9: resolved namespace kind for every import alias (consumer-local
+    /// name → (Type|Value, alias span)). Drives the alias-case rule and the
+    /// kind-aware lookups in `sweep_value_name_collisions` /
+    /// `sweep_type_decl_name_collisions`. Mirrors the same map the
+    /// check-only pipeline builds inside `check_file_recursive`.
+    import_alias_kinds: HashMap<String, (crate::name_kind::ResolvedImportKind, crate::span::Span)>,
 }
 
 /// Build the full resolved import data for a consumer file.
@@ -1946,6 +2045,8 @@ fn build_resolved_imports(
         block_params: HashMap::new(),
         block_output_contracts: HashMap::new(),
         type_descriptions: std::collections::BTreeMap::new(),
+        type_spans: HashMap::new(),
+        import_alias_kinds: HashMap::new(),
     };
 
     let source = match std::fs::read_to_string(consumer) {
@@ -1986,10 +2087,21 @@ fn build_resolved_imports(
                     for imp_name in names {
                         let local = imp_name
                             .alias
-                            .as_deref()
+                            .as_ref()
+                            .map(|a| a.node.as_str())
                             .unwrap_or(imp_name.name.node.as_str());
+                        let alias_span = imp_name
+                            .alias
+                            .as_ref()
+                            .map(|a| a.span)
+                            .unwrap_or(imp_name.name.span);
                         if exports.texts.contains(&imp_name.name.node) {
                             result.text_names.insert(local.to_string());
+                            // Task 9: const re-export → Value alias.
+                            result.import_alias_kinds.insert(
+                                local.to_string(),
+                                (crate::name_kind::ResolvedImportKind::Value, alias_span),
+                            );
                             if let Some(val) = file_text_values
                                 .get(&(resolved.clone(), imp_name.name.node.clone()))
                             {
@@ -2011,9 +2123,25 @@ fn build_resolved_imports(
                             result
                                 .type_descriptions
                                 .insert(local.to_string(), desc.clone());
+                            // B.5 / spec §"Unified implicit-type-registration
+                            // helper": anchor the consumer-local type spelling
+                            // span — alias span when `as Foo` present, else
+                            // the imported name's span. Threaded into
+                            // `analyze_with_imports`.
+                            result.type_spans.insert(local.to_string(), alias_span);
+                            // Task 9: type re-export → Type alias.
+                            result.import_alias_kinds.insert(
+                                local.to_string(),
+                                (crate::name_kind::ResolvedImportKind::Type, alias_span),
+                            );
                         }
                         if exports.blocks.contains(&imp_name.name.node) {
                             result.block_names.insert(local.to_string());
+                            // Task 9: block re-export → Value alias.
+                            result.import_alias_kinds.insert(
+                                local.to_string(),
+                                (crate::name_kind::ResolvedImportKind::Value, alias_span),
+                            );
                             if let Some(body) = file_block_bodies
                                 .get(&(resolved.clone(), imp_name.name.node.clone()))
                             {
@@ -2061,8 +2189,14 @@ fn build_resolved_imports(
                     }
                 }
                 ImportKind::WholeModule { alias } => {
+                    // Task 9: whole-module aliases bind to the value namespace
+                    // (qualified `alias.Type` refs are MVP-unsupported per B.7).
+                    result.import_alias_kinds.insert(
+                        alias.node.clone(),
+                        (crate::name_kind::ResolvedImportKind::Value, alias.span),
+                    );
                     for name in &exports.texts {
-                        let qualified = format!("{}.{}", alias, name);
+                        let qualified = format!("{}.{}", alias.node, name);
                         result.text_names.insert(qualified.clone());
                         if let Some(val) = file_text_values.get(&(resolved.clone(), name.clone())) {
                             result.text_values.insert(qualified.clone(), val.clone());
@@ -2074,7 +2208,7 @@ fn build_resolved_imports(
                         }
                     }
                     for name in &exports.blocks {
-                        let qualified = format!("{}.{}", alias, name);
+                        let qualified = format!("{}.{}", alias.node, name);
                         result.block_names.insert(qualified.clone());
                         if let Some(body) = file_block_bodies.get(&(resolved.clone(), name.clone()))
                         {
@@ -2115,7 +2249,7 @@ fn build_resolved_imports(
                     // under `alias.name` so the consumer's `TypeRegistry`
                     // resolves whole-module-style call-site spellings.
                     for (name, desc) in &exports.types {
-                        let qualified = format!("{}.{}", alias, name);
+                        let qualified = format!("{}.{}", alias.node, name);
                         result.type_descriptions.insert(qualified, desc.clone());
                     }
                 }
@@ -2312,6 +2446,8 @@ fn compile_source_with_resolved_imports(
         // in the correct ConditionTokenKind variant per its TypeTag.
         &resolved_imports.text_values,
         &resolved_imports.text_value_types,
+        &resolved_imports.type_spans,
+        &resolved_imports.import_alias_kinds,
     );
     if bag.has_error() || bag.has_repairable() {
         return Ok(CompileOutcome::Diagnostics(bag));
@@ -4417,7 +4553,7 @@ skill fix_bug()
         assert_eq!(import.path, "./prefs.glyph");
         match &import.kind {
             ast::ImportKind::WholeModule { alias } => {
-                assert_eq!(alias, "prefs");
+                assert_eq!(alias.node, "prefs");
             }
             _ => panic!("expected whole-module import"),
         }

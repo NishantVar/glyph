@@ -1,0 +1,6 @@
+import "@glyph/std" as Std
+
+skill main()
+    description: "Stdlib whole-module alias forced to PascalCase — illegal."
+    flow:
+        return <"x">

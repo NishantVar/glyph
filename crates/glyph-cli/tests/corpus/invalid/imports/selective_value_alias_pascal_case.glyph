@@ -1,0 +1,6 @@
+import "./aliased_value_lib.glyph" { mode_name as ModeName }
+
+skill main()
+    description: "Value alias forced to PascalCase — illegal."
+    flow:
+        ModeName()

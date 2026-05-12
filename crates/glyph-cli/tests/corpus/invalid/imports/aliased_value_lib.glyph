@@ -1,0 +1,6 @@
+export type Summary = <"a short summary">
+
+export block mode_name() -> Summary
+    description: "Returns a name."
+    flow:
+        return <"x">

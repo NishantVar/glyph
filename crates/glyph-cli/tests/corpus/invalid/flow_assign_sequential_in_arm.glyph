@@ -1,0 +1,14 @@
+block fast_path(scope = ".") -> Report
+    description: "Quick inspection."
+    flow:
+        "Examine {scope}."
+        return context
+
+skill diagnose(scope = ".", mode = "fast") -> Report
+    description: "Sequential bindings within a single branch arm — must still collide."
+    flow:
+        if mode == "fast"
+            result = fast_path(scope)
+            result = fast_path(scope)
+            "Use {result}."
+        return context

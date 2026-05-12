@@ -1,0 +1,9 @@
+block FooBar() -> Summary
+    description: "Pascal-case block name is illegal."
+    flow:
+        return <"x">
+
+skill demo()
+    description: "Carrier."
+    flow:
+        return FooBar()

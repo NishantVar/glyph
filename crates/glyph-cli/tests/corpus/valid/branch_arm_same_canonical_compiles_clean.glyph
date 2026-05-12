@@ -1,0 +1,22 @@
+block fast_path(scope = ".") -> Report
+    description: "Quick inspection."
+    flow:
+        "Quickly examine {scope} and emit a report."
+        return context
+
+block slow_path(scope = ".") -> Report
+    description: "Thorough inspection."
+    flow:
+        "Carefully examine {scope} and emit a detailed report."
+        return context
+
+skill diagnose(scope = ".", mode = "fast") -> Report
+    description: "Same flow-binding name in disjoint branch arms — legal under per-arm scope isolation."
+    flow:
+        if mode == "fast"
+            result = fast_path(scope)
+            "Use {result} for the fast path."
+        else
+            result = slow_path(scope)
+            "Use {result} for the careful path."
+        return context

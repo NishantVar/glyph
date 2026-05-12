@@ -1,0 +1,9 @@
+block foo() -> link_mode
+    description: "snake-case in return position is illegal."
+    flow:
+        return <"x">
+
+skill demo()
+    description: "Carrier."
+    flow:
+        return foo()

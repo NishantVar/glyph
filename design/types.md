@@ -42,9 +42,9 @@ This routing means that a `const` declared with a string value (e.g., `const com
 
 ### Casing
 
-PascalCase is the recommended convention for all type names. This matches every existing example in the design docs (`RepoContext`, `Plan`, `FileSet`, `ReviewResult`, `ValidationResult`, `FailureReport`, `Summary`).
+Type identifiers MUST be PascalCase: leading uppercase letter, no underscores. This is enforced by `G::analyze::type-case-violation` (`diagnostics.md`, `values-and-names.md` §Case Normalization). Examples in the design docs already follow this rule: `RepoContext`, `Plan`, `FileSet`, `ReviewResult`, `ValidationResult`, `FailureReport`, `Summary`.
 
-PascalCase is convention, not enforcement. Since identifiers are case-normalized per `values-and-names.md`, Case Normalization section, `RepoContext` and `repo_context` resolve to the same name. The compiler accepts either; PascalCase is recommended because it visually distinguishes type names from value names and parameters.
+The strict casing rule is what keeps the type/value namespace split unambiguous: an author reading `Mode` versus `mode_name` knows immediately that the first is a type and the second is a value, even though they canonicalize equally.
 
 ## Named Domain Types
 
@@ -63,6 +63,16 @@ Named domain types such as `RepoContext`, `Plan`, `FileSet`, and `ValidationResu
 ### Implicit Declaration
 
 Domain types are implicitly declared by first use in a `-> Type` position. No explicit `type Foo` declaration is needed in MVP. When the compiler encounters `-> Diagnosis` for the first time, it registers `Diagnosis` as a known domain type.
+
+#### Implicit Type Registration Sites
+
+Three syntactic positions register a name into the type namespace. All three route through the unified `register_type_use` helper in Analyze, which (a) validates the PascalCase rule (`values-and-names.md`, Case Normalization section), (b) records the canonical type name in the file's type-symbol table, and (c) tracks the raw spelling for the `inconsistent-type-spelling` check:
+
+1. **Return type annotation** — `-> Foo` on a `skill`, `block`, or `export block` header.
+2. **Parameter type annotation** — `param: Foo` in a declaration's parameter list.
+3. **Selective type import** — `import "./x.glyph" { Foo }` when `Foo` resolves to an `export type` decl in the imported file (see `imports.md`, §`ResolvedImportKind`).
+
+A single canonical type name may be registered by multiple sites in the same file with no error: the type-namespace registration is idempotent. However, when two raw spellings of the same canonical type appear (e.g., `RepoContext` and `Repocontext`) the compiler emits `G::analyze::inconsistent-type-spelling` (warning) so the author can settle on one spelling. Note that under the strict PascalCase rule, most "inconsistent spelling" cases are already caught earlier by `G::analyze::type-case-violation` — this warning catches the residual class where both spellings are PascalCase but differ in capitalization of letters past the first.
 
 The meaning of a domain type is contextually reinforced by return-site output targets and surrounding prose. Authors choose between two output-target forms depending on whether a short identifier or richer guidance better names what the agent must synthesize:
 
@@ -96,7 +106,7 @@ Field access such as `result.findings` is not validated against the type in MVP.
 
 ### Naming Convention
 
-Domain type names follow the same identifier rules as all other names: `[a-zA-Z_][a-zA-Z0-9_]*` per `values-and-names.md`, Allowed Characters section. PascalCase is recommended for types. The no-shadowing rule from `values-and-names.md`, No Shadowing section, applies: if a type name collides with a parameter or binding after case normalization, the compiler rejects the program.
+Domain type names follow the lexical rules in `values-and-names.md`, Allowed Characters section (`[a-zA-Z_][a-zA-Z0-9_]*`), with the additional MVP-strict requirement that type identifiers be PascalCase (no underscores; enforced by `G::analyze::type-case-violation`). The no-shadowing rule from `values-and-names.md`, No Shadowing section, applies **within the type namespace**: two type decls with canonically-equal names collide. A type and a value with canonically-equal names (e.g., `type Mode` and parameter `mode_name`) do not collide — they live in disjoint namespaces.
 
 ### Explicit `type` Declarations
 
@@ -137,7 +147,7 @@ The type decl itself emits no Markdown — `type` decls are compile-time only an
 
 Per-site descriptions therefore override the type-level default; absence of either leaves the slot or return prose without a description.
 
-**Same-file duplicates.** A second `type Foo` decl in the same file is a hard error (`G::analyze::duplicate-type-decl`). A `type` name also participates in the universal value namespace defined in `values-and-names.md`, No Shadowing section: `type Foo` collides with any other in-scope `Foo` (`const Foo`, `block Foo`, `export block Foo`, an `import` alias, or a parameter named `Foo`). The canonical pairing of `type Foo` with `-> Foo` annotations is **not** a collision — both refer to the same nominal type.
+**Same-file duplicates.** A second `type Foo` decl in the same file is a hard error (`G::analyze::duplicate-type-decl`). Type decls live in the **type namespace** (`values-and-names.md`, No Shadowing section), which is disjoint from the value namespace: `type Mode` and `block mode_name()` coexist cleanly even though they canonicalize equally. Collisions are scoped per namespace — two type decls collide (`duplicate-type-decl`), and two value-namespace declarations collide (`name-collision`), but a type and a value never collide with each other. The canonical pairing of `type Foo` with `-> Foo` annotations is **not** a collision — both register the same nominal type into the type namespace.
 
 **Cross-file usage.** `export type` decls are importable selectively: `import "./types.glyph" { Foo }` brings the type and its description into scope. A library file that contains only `export type` decls (no `skill`, no `export block`, no `export const`) satisfies the library-export rule and compiles cleanly with no body — see `imports.md`.
 
