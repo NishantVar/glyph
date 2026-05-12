@@ -382,9 +382,9 @@ skill fix_bug(scope = ".", ctx: RepoContext)
 
 A library file that contains only `export type` decls is a valid library — it satisfies the library-export rule and compiles cleanly with no body. Type imports are **selective only** in MVP; whole-module qualified type refs (e.g., `types.RepoContext` after `import "./types.glyph" as types`) are not supported.
 
-**Naming and collisions.** `type` participates in the same flat namespace as everything else (§10.3 No shadowing): `type Foo` collides with `const Foo`, `block Foo`, an `import` alias `Foo`, or a parameter `Foo` — and is a hard error. The pairing of `type Foo` with `-> Foo` annotations is fine: both refer to the same nominal type.
+**Naming and collisions.** Glyph has two disjoint namespaces — a **type namespace** (PascalCase) and a **value namespace** (snake_case). `type` decls live in the type namespace; `const`, `block`, `export block`, parameters, and import aliases live in the value namespace. Cross-namespace canonical-equal pairs like `type Mode` and `block mode_name()` are **legal and coexist cleanly** — they live in disjoint namespaces. Collisions are scoped per namespace (see §10.3 No shadowing): two `type` decls with canonically-equal names collide (`G::analyze::duplicate-type-decl`), and two value-namespace names collide (`G::analyze::name-collision`). The pairing of `type Foo` with `-> Foo` annotations is fine: both register the same nominal type into the type namespace.
 
-PascalCase is the recommended convention for type names (§10.5 Types).
+PascalCase is **required** for type names; snake_case is required for value names (§10.5 Types).
 
 ---
 
@@ -870,8 +870,8 @@ MVP expressions support only: literals, bindings, calls, dot access. No `+`, `-`
 ### 10.1 Identifiers
 
 - Pattern: `[a-zA-Z_][a-zA-Z0-9_]*`. No hyphens.
-- Convention: `snake_case` for values and callables; `PascalCase` for types.
-- **Case-normalized.** `makePlan`, `make_plan`, `MakePlan`, `MAKE_PLAN` resolve to the same name.
+- **Required casing per namespace** (enforced, not convention): `snake_case` for values and callables; `PascalCase` for types. Violations are hard errors (`G::analyze::value-case-violation`, `G::analyze::type-case-violation`).
+- **Case-normalized for collision detection within a namespace.** `make_plan` and `MakePlan` canonicalize equally — whether that's a collision depends on which namespace each lives in (see §10.3).
 - Dots are reserved for module-qualified access and single-level dot-property access on bound values (e.g., `ctx.has_tests`).
 
 ### 10.2 Reserved keywords
@@ -882,11 +882,19 @@ Cannot be used as identifiers.
 
 ### 10.3 No shadowing
 
-If the same normalized name is visible from multiple sources in overlapping scopes, **it's a hard error** — not a warning, not a silent fallback. Fix by renaming one of them. This applies across:
+Glyph has **two disjoint namespaces**:
 
-- parameter vs same-file `const`,
-- local binding vs parameter,
-- import vs same-file declaration.
+- **Type namespace** (PascalCase): `type` decls, `-> Foo` returns, `param: Foo` annotations, selectively-imported types.
+- **Value namespace** (snake_case): `const`, `block`, `export block`, parameters, local bindings, import aliases, stdlib value entries.
+
+If two names in the **same namespace** canonicalize to the same form in overlapping scopes, **it's a hard error** — not a warning, not a silent fallback. Fix by renaming one of them. This applies across:
+
+- parameter vs same-file `const` (both value namespace),
+- local binding vs parameter (both value namespace),
+- import vs same-file declaration (compared within whichever namespace each enters),
+- two `type` decls with canonically-equal names (both type namespace).
+
+Cross-namespace canonical-equal pairs are **legal**: `type Mode` and `block mode_name()` coexist cleanly because they live in disjoint namespaces.
 
 ### 10.4 Bare-name resolution order
 
@@ -931,7 +939,7 @@ Type position is determined by syntax:
 
 Field access (`result.findings`) is recorded but not validated against the type. Trust your call graph in MVP.
 
-**A note on PascalCase.** PascalCase is convention only — identifiers are case-normalized, so `RepoContext` and `repo_context` resolve to the same name. PascalCase visually distinguishes types from values; pick a domain name that tells an agent the role the value plays (`BranchName`, not `String`).
+**A note on PascalCase.** PascalCase is **required** for type names (and snake_case is required for value names) — these are hard rules, not conventions. The strict casing is what keeps the type/value namespace split unambiguous: an author reading `Mode` versus `mode_name` knows immediately which namespace each lives in. Pick a domain name that tells an agent the role the value plays (`BranchName`, not `String`).
 
 ---
 

@@ -169,7 +169,10 @@ fn collapse_duplicate_imports(source: &str, file: &crate::ast::SourceFile) -> St
             match &imp.node.kind {
                 ImportKind::Selective(names) => {
                     for n in names {
-                        let key = (n.name.node.clone(), n.alias.clone());
+                        let key = (
+                            n.name.node.clone(),
+                            n.alias.as_ref().map(|a| a.node.clone()),
+                        );
                         if !entry.selective_names.iter().any(|e| e == &key) {
                             entry.selective_names.push(key);
                         }
@@ -177,7 +180,7 @@ fn collapse_duplicate_imports(source: &str, file: &crate::ast::SourceFile) -> St
                 }
                 ImportKind::WholeModule { alias } => {
                     entry.is_whole_module = true;
-                    entry.whole_module_alias = Some(alias.clone());
+                    entry.whole_module_alias = Some(alias.node.clone());
                 }
             }
         }
@@ -276,7 +279,11 @@ fn remove_unused_imports(
                 let kept: Vec<_> = names
                     .iter()
                     .filter(|n| {
-                        let local = n.alias.as_deref().unwrap_or(&n.name.node);
+                        let local = n
+                            .alias
+                            .as_ref()
+                            .map(|a| a.node.as_str())
+                            .unwrap_or(&n.name.node);
                         signals.referenced_names.contains(local)
                     })
                     .collect();
@@ -286,7 +293,7 @@ fn remove_unused_imports(
                     let names_str = kept
                         .iter()
                         .map(|n| match &n.alias {
-                            Some(a) => format!("{} as {}", n.name.node, a),
+                            Some(a) => format!("{} as {}", n.name.node, a.node),
                             None => n.name.node.clone(),
                         })
                         .collect::<Vec<_>>()
@@ -298,7 +305,7 @@ fn remove_unused_imports(
                 }
             }
             ImportKind::WholeModule { alias } => {
-                if !signals.referenced_names.contains(alias) {
+                if !signals.referenced_names.contains(&alias.node) {
                     to_drop.insert(line_idx);
                 }
             }
@@ -367,7 +374,7 @@ fn auto_import_stdlib(
                     existing_idx = Some(line_idx);
                     for n in names {
                         existing_names.push(match &n.alias {
-                            Some(a) => format!("{} as {}", n.name.node, a),
+                            Some(a) => format!("{} as {}", n.name.node, a.node),
                             None => n.name.node.clone(),
                         });
                     }

@@ -1,0 +1,12 @@
+type LinkMode = <"how the user wants files linked: symlink or copy">
+
+block ask_skills_link_mode() -> LinkMode
+    description: "Ask the user how to install."
+    flow:
+        return <"symlink">
+
+skill install()
+    description: "Install."
+    flow:
+        link_mode = ask_skills_link_mode()
+        return link_mode

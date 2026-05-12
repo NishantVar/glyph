@@ -130,7 +130,7 @@ fn type_decl_imported_selectively_drives_param_description() {
     let out = consumer_path.with_file_name("consumer.md");
     let md = std::fs::read_to_string(&out).expect("compiled .md");
     assert!(
-        md.contains("- **severity** (Severity): one of: low, medium, high. Default: \"medium\"."),
+        md.contains("- **level** (Severity): one of: low, medium, high. Default: \"medium\"."),
         "imported type-level description should apply; got md=\n{}",
         md
     );

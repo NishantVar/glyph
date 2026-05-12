@@ -1,6 +1,6 @@
 import "./types.glyph" { Severity }
 
-skill triage(severity: Severity = "medium")
+skill triage(level: Severity = "medium")
     description: "Triage an incoming issue."
     flow:
         "Read the issue."

@@ -977,8 +977,8 @@ impl<'a> Parser<'a> {
                         let alias = if let TokenKind::Ident(kw) = &self.peek().kind {
                             if kw == "as" {
                                 self.pos += 1;
-                                let (alias_name, _) = self.expect_ident(None)?;
-                                Some(alias_name)
+                                let (alias_name, alias_span) = self.expect_ident(None)?;
+                                Some(Spanned::new(alias_name, alias_span))
                             } else {
                                 None
                             }
@@ -1019,8 +1019,10 @@ impl<'a> Parser<'a> {
             TokenKind::Ident(kw) if kw == "as" => {
                 // Whole-module import: `as <alias>`
                 self.pos += 1;
-                let (alias, _) = self.expect_ident(None)?;
-                ImportKind::WholeModule { alias }
+                let (alias, alias_span) = self.expect_ident(None)?;
+                ImportKind::WholeModule {
+                    alias: Spanned::new(alias, alias_span),
+                }
             }
             _ => {
                 return Err(ParseError::Unexpected {
@@ -5778,7 +5780,10 @@ mod import_decl_tests {
     /// `ImportName`.
     fn extract(d: ImportDecl) -> (String, Vec<(String, Option<String>)>) {
         let names = match d.kind {
-            ImportKind::Selective(ns) => ns.into_iter().map(|n| (n.name.node, n.alias)).collect(),
+            ImportKind::Selective(ns) => ns
+                .into_iter()
+                .map(|n| (n.name.node, n.alias.map(|a| a.node)))
+                .collect(),
             other => panic!("expected ImportKind::Selective, got {:?}", other),
         };
         (d.path, names)

@@ -1,0 +1,6 @@
+type link_mode = <"snake-case type name is illegal">
+
+skill demo()
+    description: "Carrier."
+    flow:
+        return <"x">

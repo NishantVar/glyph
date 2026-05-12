@@ -1,0 +1,9 @@
+block first() -> LinkMode
+    description: "Has a return."
+    flow:
+        return <"a link mode">
+
+block second(x: Linkmode)
+    description: "Re-uses the type with a drifted spelling."
+    flow:
+        return x

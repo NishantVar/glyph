@@ -1,0 +1,7 @@
+import "./lib.glyph" { Mode, mode_name }
+
+skill demo() -> Mode
+    description: "Uses both a type and a value with canonical-equal names."
+    flow:
+        x = mode_name()
+        return x

@@ -1,0 +1,13 @@
+import "./local_type_shadows_import_lib.glyph" { LinkMode }
+
+type LinkMode = <"local override of an imported type — name-collision only, not duplicate-type-decl">
+
+block ask() -> LinkMode
+    description: "Ask."
+    flow:
+        return <"symlink">
+
+skill install()
+    description: "Install."
+    flow:
+        return ask()

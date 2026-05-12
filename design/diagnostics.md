@@ -109,7 +109,10 @@ Representative diagnostics implied by the current design.
 |---|---|---|
 | `G::analyze::undefined-name` | repairable | Bare name doesn't resolve to any declaration; repair generates a definition (`repair.md` §5) |
 | `G::analyze::undefined-call` | repairable | Parens-call doesn't resolve; repair generates a `generated block` (`repair.md` §5) |
-| `G::analyze::name-collision` | error | Two names collide after case normalization (`values-and-names.md`) |
+| `G::analyze::name-collision` | error | Two value-namespace names collide after case normalization (`values-and-names.md`). Cross-namespace canonical-equal pairs (e.g., `type Mode` + `block mode_name`) do not fire this — they live in disjoint namespaces. |
+| `G::analyze::type-case-violation` | error | A type identifier is not strict PascalCase (no underscores, leading uppercase). Fires for `type` decls, `-> Foo` return annotations, `param: Foo` parameter type annotations, and selective type imports. Examples that fail: `type repo_context`, `-> plan`, `param: Repo_Context` (`values-and-names.md` §Case Normalization, `types.md` §Casing). |
+| `G::analyze::value-case-violation` | error | A value identifier is not strict snake_case (lowercase letters, digits, underscores; no uppercase). Fires for `const`, `block`, `export block`, parameters, local bindings, and import aliases. Examples that fail: `const RepoContext`, `block MakePlan`, parameter `paramName` (`values-and-names.md` §Case Normalization). |
+| `G::analyze::inconsistent-type-spelling` | warning | Two raw spellings of the same canonical type name appear in a single compilation unit (e.g., `RepoContext` and `Repocontext` after case-insensitive canonicalization). Non-blocking; the author should settle on one spelling. Note that most inconsistent-spelling cases under the strict PascalCase rule are already caught earlier by `G::analyze::type-case-violation` — this warning catches the residual class where both spellings are PascalCase but differ in capitalization past the first letter (`types.md` §Implicit Type Registration Sites). |
 | `G::analyze::import-private` | error | Tried to import a non-exported declaration (`imports.md` §2) |
 | `G::analyze::import-skill` | error | Tried to selectively import a skill (`imports.md` §2) |
 | `G::analyze::circular-import` | error | Import cycle detected (`imports.md` §5) |

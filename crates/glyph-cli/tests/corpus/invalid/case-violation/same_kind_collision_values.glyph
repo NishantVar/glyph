@@ -1,0 +1,7 @@
+const make_plan = "v1"
+const makeplan = "v2"
+
+skill demo()
+    description: "Carrier."
+    flow:
+        return <"x">

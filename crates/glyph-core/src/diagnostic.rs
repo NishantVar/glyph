@@ -27,6 +27,24 @@ use crate::span::{LineIndex, Span};
 /// `design/diagnostics.md` §Classification.
 pub const GENERIC_TYPE_NAME_DIAG_ID: &str = "G::analyze::generic-type-name";
 
+/// Type identifiers must be strict PascalCase. Emitted by
+/// `analyze::validate_identifier_case` for type-position identifiers that
+/// don't satisfy `name_kind::is_pascal_case`.
+pub const TYPE_CASE_VIOLATION_DIAG_ID: &str = "G::analyze::type-case-violation";
+
+/// Value identifiers must be strict snake_case. Emitted by
+/// `analyze::validate_identifier_case` for value-position identifiers that
+/// don't satisfy `name_kind::is_snake_case`.
+pub const VALUE_CASE_VIOLATION_DIAG_ID: &str = "G::analyze::value-case-violation";
+
+/// Two raw spellings of the same canonical type (`-> LinkMode` then
+/// `-> Linkmode`) registered against one another. Warning-tier.
+pub const INCONSISTENT_TYPE_SPELLING_DIAG_ID: &str = "G::analyze::inconsistent-type-spelling";
+
+/// Two `type` declarations with the same D6 canonical key. Emitted by
+/// `analyze::register_type_use` when called twice with `TypeUseKind::ExplicitDecl`.
+pub const DUPLICATE_TYPE_DECL_DIAG_ID: &str = "G::analyze::duplicate-type-decl";
+
 /// The three trust tiers from `pipeline.md` Phase 2.
 ///
 /// Stable serialization: lowercase string for JSON output.
