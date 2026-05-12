@@ -78,50 +78,28 @@ the symptom, the impact, and the proposed fix.
   asserting the field is non-null in the IR JSON for an imported Tier-1
   callee with `-> <identifier>`.
 
-- **`emit/constraint.rs::normalize` lowercases acronyms at the leading
-  character.** `crates/glyph-core/src/emit/constraint.rs:25-36` lowercases the
-  first uppercase character of every hard constraint and every soft `avoid`
-  body before rendering. This corrupts intentionally-capitalized leading
-  tokens (acronyms, product names): `avoid: HTTP requests without retries`
-  renders as `Avoid hTTP requests without retries.` instead of
-  `Avoid HTTP requests without retries.` Same applies to `must` and
-  `must avoid`. **Fix:** only lowercase the leading character when the
-  token is a single uppercase letter followed by lowercase (i.e. a normal
-  capitalized English word), or simpler: strip the leading-character
-  transformation entirely and trust author casing. Add a corpus test with
-  an acronym-leading constraint body. Pre-existing — separate from the
-  scaffold-with-spans branch but worth fixing as part of the locked-template
-  hardening pass.
-
-- **Mixed avoid-polarity const text shapes in the authored corpus.** The
-  authored corpus uses three different conventions for `avoid`-polarity
-  constraint bodies: gerund-form
-  (`"Letting an output-target token..."`,
-  `"Adding, merging, splitting..."` — used in `expand.glyph` and the
-  cli test corpus), already-`Avoid`-prefixed
-  (`"Avoid leaving references to removed or renamed symbols."` in
-  `GLYPH_LANGUAGE_GUIDE.md:1015` and
-  `skills/teach_glyph/teach_glyph_context.glyph:559`), and
-  already-`Do not`-prefixed
-  (`"Do not make changes unrelated to the task."` in
-  `crates/glyph-cli/tests/corpus/valid/imports/prefs.glyph:2`;
-  `"Do not make changes outside the requested scope."` prescribed for the
-  Repair pass in `design/repair.md:156`). Wrapping the prefixed bodies in
-  the locked `Avoid {text}.` / `You must never {text}.` templates
-  produces double-prohibition outputs like `Avoid avoid leaving...` or
-  `Avoid do not make changes...`. As a temporary tolerance,
-  `crates/glyph-core/src/emit/constraint.rs::render` pass-through-emits a
-  `(Strength::Soft, Polarity::Avoid)` body that already starts with
-  `"Avoid "` or `"Do not "` (case-insensitive). The pass-through is
-  deliberately limited to soft avoid — hard avoid (`must avoid`) falls
-  through to the locked `You must never {text}.` template so the hard
-  strength wording isn't silently downgraded, even if that means
-  cosmetically doubled output (e.g. `You must never do not make
-  changes...`) on the (currently empty) intersection of `must avoid` and
-  prefixed const text. **Fix:** add a Phase 5
-  (semantic-validation) lint that fires on non-canonical avoid const
-  bodies (gerund-only is the natural canonical shape since it composes
-  uniformly through the locked templates), migrate the four
-  corpus/doc files above to that shape, then drop the
-  `is_already_prohibition` branch in `render` along with its tests.
-  Tracked in issue #141.
+- **Constraint emitter — verb grafting and acronym corruption (resolved).**
+  Earlier `crates/glyph-core/src/emit/constraint.rs::render` used a locked
+  four-form template that grafted a polarity verb onto each const body
+  (`You must …`, `You must never …`, `Avoid …`, capitalised soft-require).
+  That coupling produced two distinct defects:
+  (a) The `normalize()` helper lowercased the first character of every hard
+      body and every soft-avoid body, corrupting intentional acronyms or
+      product names (`HTTP requests without retries` → `hTTP requests…`).
+  (b) Const bodies authored as declaratives or already-prohibitive
+      sentences (`Routing is by …`, `Avoid leaving references …`,
+      `Do not make changes …`) collided with the verb prefix and produced
+      ungrammatical or doubled bullets (`Avoid routing is by …`,
+      `Avoid avoid leaving …`).
+  Both defects are gone with the bold colon-marker emitter (see
+  `design/compiled-output.md` §Constraint Rendering). The label sits in a
+  bold span and is separated from the body by a colon, so the body is its
+  own clause: capitalization, phrasing, and punctuation are now the
+  author's choice and the emitter never rewrites them. The
+  `is_already_prohibition` / `normalize` / `capitalize_first` helpers and
+  their unit tests have been removed; issue #141's Phase 5 lint is no
+  longer needed for this purpose. One residual author-side concern: a soft
+  or hard `avoid` const body that starts with a negation word (`do not`,
+  `never`, `no`) still produces a double-negative bullet
+  (`**Avoid:** do not touch …`) and is now caught by the
+  `negation_in_avoid_const_text` constraint in the teach/decompile skills.

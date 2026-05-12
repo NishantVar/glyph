@@ -14,6 +14,13 @@ export block sort_declarations()
         "Reorder top-level declarations in the file so that the single `skill` declaration appears first, every `block` and `export block` follows it, and every `const` and `export const` constant comes last. Preserve `import` statements at the very top of the file, above the `skill` declaration."
         return none
 
+export block fresh_eyes_review()
+    flow:
+        "Re-read the entire authored `.glyph` file from top to bottom as if you had not written it. Editing in pieces hides drift between intent and output — this pass forces a single global read of the final file."
+        "On that fresh read, confirm: every `skill`, `block`, and `export block` that declares `-> Type` ends with an explicit `return` (single-string shorthand without a `flow:` is wrong for any typed declaration); every `export block` parameter has a default; no primitive type names (`String`/`Int`/`Float`/`Bool`/`None`) appear in author-facing source; no `{name}` slots leak into `description:` bodies or parameter defaults; the top-level `return` in any `flow:` is the last statement and never lives inside an `if`/`elif`/`else` arm; declarations are ordered imports → skill → blocks → constants."
+        "If any item fails, fix it now — before handing the file off to compilation."
+        return none
+
 export block compile_via_subagent(target = ".") -> CompileOutcome
     flow:
         "Spawn a sub-agent and instruct it to run the `/glyph:compile` slash command on the Glyph source file at {target}, drive the full Glyph pipeline (deterministic compile, repair loop, expand, validate, review), and report a structured compilation outcome — on success, list the emitted `.md` paths; on failure, list every diagnostic verbatim. The deterministic compiler alone is not sufficient for verification: only the full pipeline catches expand/validate/review failures."

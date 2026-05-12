@@ -7,8 +7,7 @@ target/
 __pycache__
 .worktrees
 .claude/worktrees
-docs/supwerpowers
-*.ir.json
+dist
 
 # Compiler output emitted next to .glyph sources during tests
 crates/glyph-cli/tests/corpus/**/*.md
@@ -16,3 +15,4 @@ crates/glyph-cli/tests/corpus/**/*.md
 index.scip
 .flow-assign-spec.md
 .flow-assign-plan.md
+*.ir.json

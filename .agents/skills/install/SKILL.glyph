@@ -1,0 +1,167 @@
+skill install(repo_root = ".")
+    description: "Install Glyph by downloading prebuilt artifacts from the latest GitHub release (Core CLI/LSP, Editor Extensions, and Agent Skills/Commands), falling back to source builds when downloads are unavailable."
+
+    context:
+        installation_phases
+        release_first_strategy
+        optional_node_deps
+
+    constraints:
+        must avoid_silent_installs
+        must do_not_block_on_node
+        require prefer_release_artifacts
+
+    flow:
+        // Phase 1: Core CLI binary
+        install_cli_binary(repo_root)
+
+        // Phase 2: Editor Extension
+        install_editor_extension(repo_root)
+        check_glyph_lsp_on_path()
+
+        // Phase 3 & 4: Agent Detection & Skills Install
+        agent_dirs = detect_agent_configs()
+        chosen_agents = confirm_agent_targets(agent_dirs)
+        commands_choice = ask_commands_preference()
+        skills_source = resolve_skills_source(repo_root)
+        install_agent_skills(skills_source, chosen_agents, commands_choice)
+
+        show_post_install_guidance(commands_choice)
+
+block install_cli_binary(repo_root)
+    """
+    Default path — download the prebuilt binary from the latest GitHub release:
+    1. Detect the host platform with `uname -s` and `uname -m`, and map to one of the published target triples:
+       - Darwin / arm64  -> aarch64-apple-darwin
+       - Darwin / x86_64 -> x86_64-apple-darwin
+       - Linux  / x86_64 -> x86_64-unknown-linux-gnu
+       - Windows / x86_64 (MSYS/Git Bash) -> x86_64-pc-windows-gnu
+       If the platform doesn't match any of the above, skip the download and go straight to the fallback.
+    2. Resolve the latest release tag. Prefer `gh release view --repo NishantVar/glyph --json tagName -q .tagName` if `gh` is available; otherwise `curl -fsSL https://api.github.com/repos/NishantVar/glyph/releases/latest | grep '"tag_name"'` and parse the value.
+    3. Download the matching archive `glyph-<tag>-<target>.tar.gz` (or `.zip` on Windows) to a temp directory. Prefer `gh release download <tag> --repo NishantVar/glyph --pattern '<archive>' --dir <tmp>`; otherwise `curl -fsSL -o <tmp>/<archive> https://github.com/NishantVar/glyph/releases/download/<tag>/<archive>`.
+    4. Extract the archive and move the `glyph` binary (`glyph.exe` on Windows) into `~/.local/bin/`. Create the directory with `mkdir -p ~/.local/bin` if needed. Ensure it is executable (`chmod +x ~/.local/bin/glyph`).
+    5. Verify with `~/.local/bin/glyph --version` (or just `glyph --version` if it's already on PATH). If `~/.local/bin` is not on the user's PATH, instruct them to add it to their shell rc file (`export PATH="$HOME/.local/bin:$PATH"`).
+
+    Fallback — build from source. Use this only if the download path failed (no matching asset, network failure, unsupported platform) or the user explicitly opts to build:
+    1. Verify the source repo is present at {repo_root} by checking for `{repo_root}/Cargo.toml` and `{repo_root}/crates/glyph-cli`. If missing, ask the user to clone https://github.com/NishantVar/glyph and rerun, or supply the correct `repo_root`.
+    2. Run `command -v cargo` to verify Cargo. If missing, ask the user for explicit permission to install Rust/Cargo via rustup. If they decline, halt with a clear message that the CLI cannot be installed without either a working release download or Cargo.
+    3. Run `cargo install --path crates/glyph-cli` from {repo_root}.
+    """
+
+block install_editor_extension(repo_root)
+    """
+    Default path — download the prebuilt `.vsix` from the latest GitHub release:
+    1. List the assets attached to the latest release. Prefer `gh release view --repo NishantVar/glyph --json assets -q '.assets[].name'`; otherwise parse `curl -fsSL https://api.github.com/repos/NishantVar/glyph/releases/latest`.
+    2. If a `.vsix` asset is published, download it to a temp directory (using `gh release download` or `curl` as in `install_cli_binary`).
+    3. Probe for VS Code-compatible editors: VS Code (`code`), Cursor (`cursor`), Windsurf (`windsurf`), Antigravity (`antigravity`), VSCodium (`codium`). Include OS-specific fallback paths (e.g. `/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code` on macOS).
+    4. If any editors are found, ask the user which ones to install the extension into.
+    5. For each chosen editor: first run `<cli> --uninstall-extension glyph.glyph-language` to remove any older version (ignore errors if not installed), then run `<cli> --install-extension <vsix_path>`.
+
+    Fallback — build the `.vsix` from source. Use this when the latest release does not include a `.vsix` asset, the download failed, or the user explicitly opts to build:
+    1. Verify the source repo is present at `{repo_root}/editors/vscode/package.json`. If missing, instruct the user to clone https://github.com/NishantVar/glyph and rerun with the correct `repo_root`, then skip this phase and continue with the rest of the installation.
+    2. Run `command -v node` and `command -v npm`. If either is missing, ask the user for explicit permission to install Node.js (brew on macOS, apt on Linux). If they decline or installation fails, explicitly state that the editor extension build is being skipped and exit this block early so the rest of the workflow continues.
+    3. With node and npm available: probe for editors as in the default path, ask the user which to install into, then `cd "{repo_root}/editors/vscode"`, run `npm install` and `npm run package` to produce the `.vsix`, then install into each chosen editor (uninstall the previous version first, as in the default path).
+    """
+
+block check_glyph_lsp_on_path()
+    """
+    Run `command -v glyph` to locate the installed binary (which doubles as the LSP server).
+    If it resolves, print the absolute path so the user can confirm.
+    If it does not resolve, the binary is installed somewhere not on PATH (e.g. `~/.local/bin/glyph` when `~/.local/bin` is not exported, or `~/.cargo/bin/glyph` from a fallback source build). Instruct the user to either add that directory to their shell PATH, or set `glyph.serverPath` in each editor's `settings.json` to the absolute path of the binary.
+    """
+
+block detect_agent_configs() -> AgentList
+    flow:
+        """
+        Check the user's home directory for existing configuration directories of popular coding agents:
+        - Gemini CLI: `~/.gemini/`
+        - Claude Code: `~/.claude/`
+        - Codex: `~/.codex/`
+        - Goose: `~/.config/goose/` or similar standard path.
+        - OpenCode / OpenHands
+        """
+        return <"the list of detected agent configuration directories">
+
+
+block confirm_agent_targets(agent_dirs) -> ChosenAgentList
+    flow:
+        """
+        Print the detected agent configuration directories from {agent_dirs}.
+        Ask the user which of these agents they want to install the Glyph skills and commands into.
+        Accept comma-separated names, "all", or an empty response (defaulting to all).
+        """
+        return <"the agent directories the user chose to install into">
+
+
+block ask_commands_preference() -> CommandsOptResult
+    flow:
+        """
+        Ask the user how they want to install the optional Glyph commands:
+        1. Install all commands with descriptions (automatic routing).
+        2. Install all commands without descriptions (manual routing only, saves context).
+        3. Do not install optional commands.
+        Map their choice to one of the following string values: "with_desc", "no_desc", or "none".
+        """
+        return <"the chosen commands preference, one of with_desc, no_desc, or none">
+
+
+block resolve_skills_source(repo_root) -> SkillsSourcePath
+    flow:
+        """
+        Resolve the absolute path to a Glyph source tree to install skills from. The install mode is inferred from whether the user already has a local Glyph clone — no separate prompt is asked.
+
+        If {repo_root} already points at a Glyph clone (verify by checking for `{repo_root}/.agents/skills/glyph/SKILL.md` and `{repo_root}/scripts/install_agent_skills.sh`), use that absolute path. The caller will symlink agent configs into it; the user is expected to keep the clone on disk and `git pull` it to upgrade.
+
+        Otherwise, create a temporary working directory (`tmp=$(mktemp -d)`) and run `git clone --depth 1 https://github.com/NishantVar/glyph.git "$tmp/glyph"`. The resolved path is `$tmp/glyph`. The caller will copy from it; the temp directory may be removed afterward.
+
+        Never create a persistent clone in a hidden path like `~/.local/share/glyph` — that would leave state the user did not ask for.
+        """
+        return <"the absolute path to the resolved Glyph source tree to install skills from">
+
+
+block install_agent_skills(skills_source, chosen_agents, commands_choice)
+    """
+    Iterate over each agent directory in {chosen_agents}. Infer the install mode from {skills_source}: if its path begins with `/tmp/` or `/var/folders/`, use copy mode; otherwise, use symlink mode (the user brought their own Glyph clone and we will link into it).
+
+    When the inferred mode is symlink: run `"{skills_source}/scripts/install_agent_skills.sh" "<agent_dir>" "{commands_choice}"`. The script creates the `skills` and `commands` subdirectories if missing and creates symlinks pointing back into {skills_source}. Capture and display the script's output.
+
+    When the inferred mode is copy: for each agent directory:
+    1. Ensure `<agent_dir>/skills/` and `<agent_dir>/commands/` exist (`mkdir -p`).
+    2. Replace any existing destination first: `rm -rf "<agent_dir>/skills/glyph"` and (when applicable) `rm -rf "<agent_dir>/commands/glyph"`.
+    3. Copy the core skill: `cp -R "{skills_source}/.agents/skills/glyph" "<agent_dir>/skills/glyph"`.
+    4. Branch on {commands_choice}:
+       - "with_desc": `cp -R "{skills_source}/.agents/commands/glyph" "<agent_dir>/commands/glyph"`
+       - "no_desc":   `cp -R "{skills_source}/.agents/commands_no_desc/glyph" "<agent_dir>/commands/glyph"`
+       - "none":      skip the commands copy entirely.
+    5. Print which paths were written for that agent.
+
+    After processing all agents, if the inferred mode was copy, tell the user it is safe to remove the temp directory at {skills_source}.
+
+    Then provide a concise summary of the installation results across all phases, noting whether each phase used a downloaded release artifact or fell back to a source build.
+    """
+
+block show_post_install_guidance(commands_choice)
+    """
+    After the summary, list the Glyph entry points the user can now start using, in priority order. The exact phrasing depends on {commands_choice}.
+
+    When {commands_choice} is "with_desc" or "no_desc" (slash commands were installed), present these four in this order:
+    1. `/glyph:decompile` — convert any existing compiled `.md` skill into a `.glyph` source. Most useful for reading skills: `.glyph` is dramatically more readable than the prose form, so browsing skills feels more like reading code.
+    2. `/glyph:teach` — author or edit a `.glyph` skill from scratch (or from a task description). The primary entry point for writing new skills.
+    3. `/glyph:compile` — compile a `.glyph` source into the agent-consumable `.md` form.
+    4. `/glyph:icompile` — make a targeted edit to a `.glyph` and its paired compiled `.md` in lockstep, without re-running the full compile pipeline.
+    Close with a note that the user can also just invoke the `glyph` skill (or `/glyph`) with whatever they want to do and it will route to the right sub-skill.
+
+    When {commands_choice} is "none" (no slash commands installed), present the same four in the same order but as skill names, with phrasing that tells the user to ask their agent to invoke the skill by name:
+    1. `glyph:decompile` — same purpose as above; invoke by asking the agent to use the `glyph:decompile` skill on a target `.md`.
+    2. `glyph:teach` — invoke by asking the agent to use the `glyph:teach` skill when writing or editing a `.glyph` source.
+    3. `glyph:compile` — invoke by asking the agent to use the `glyph:compile` skill on a `.glyph` source.
+    4. `glyph:icompile` — invoke by asking the agent to use the `glyph:icompile` skill for paired source-and-compiled edits.
+    Close with a note that the user can also just invoke the top-level `glyph` skill with whatever they want to do and it will route to the right sub-skill.
+    """
+
+const installation_phases = "The installation has three phases: Core CLI/LSP binary, Editor extension (.vsix), and Agent integration (skills + commands). Each phase tries the prebuilt release artifact first and falls back to a source build only if the download cannot be used."
+const release_first_strategy = "Default to downloading prebuilt artifacts from the latest GitHub release (https://github.com/NishantVar/glyph/releases). Build from source only when a release asset is missing for the user's platform, the download fails, or the user explicitly opts to build."
+const optional_node_deps = "Node and npm are only needed for the source-build fallback of the editor extension. They are not required when the latest release ships a prebuilt .vsix. The core CLI install must proceed regardless of whether node/npm are present."
+const avoid_silent_installs = "Never install missing prerequisites silently. Always ask the user for explicit permission to auto-install missing tools (e.g., via rustup, brew, or apt) before running any installer."
+const do_not_block_on_node = "Do not block the core CLI install or the agent-skills install if node/npm are missing and the user declines to install them. Skip only the editor extension phase in that case."
+const prefer_release_artifacts = "Prefer prebuilt release artifacts over source builds whenever a matching asset exists for the user's platform. Source builds are a documented fallback, not the default."

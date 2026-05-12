@@ -1,3 +1,6 @@
+// AUTO-GENERATED FILE -- DO NOT EDIT
+// Source: .agents/commands/glyph/teach.glyph
+// Regenerate: scripts/sync_commands_no_desc.sh
 // teach.glyph
 //
 // Skill that teaches a coding agent how to author Glyph source files.
@@ -41,7 +44,6 @@ import "../../skills/glyph/constraints.glyph" {
     bare_text_in_flow_without_marker,
     overusing_must,
     deeply_nested_calls,
-    negation_in_avoid_const_text,
 }
 
 import "../../skills/glyph/passes.glyph" {
@@ -54,7 +56,6 @@ import "../../skills/glyph/passes.glyph" {
 }
 
 skill teach(target)
-    description: "Author or edit a Glyph source file (.glyph) at `target` for a task described by the user."
 
     context:
         glyph_overview
@@ -91,7 +92,6 @@ skill teach(target)
         avoid bare_text_in_flow_without_marker
         avoid overusing_must
         avoid deeply_nested_calls
-        avoid negation_in_avoid_const_text
 
     flow:
         gather_intent(target)

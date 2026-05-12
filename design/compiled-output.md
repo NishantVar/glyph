@@ -325,16 +325,16 @@ effects: [reads_files]
 
 ### Constraint Rendering
 
-Constraint text is rendered through a **locked four-form template** by the deterministic emitter. The (strength, polarity) tuple selects exactly one of the four forms; the LLM never produces constraint prose. The canonical authoring form for the body text is specified in `GLYPH_LANGUAGE_GUIDE.md` §7.2 (lowercase first word, no trailing period; the compiler applies defensive normalization for capitalization and trailing periods).
+Constraint text is rendered through a **bold colon-marker template** by the deterministic emitter. The (strength, polarity) tuple selects the label; the LLM never produces constraint prose. The label is grammatically isolated from the const body by the `:` boundary, so the body can be any natural-language shape — declarative, gerund, noun phrase — without the emitter trying to graft a verb onto it. The author owns capitalization; the emitter preserves the body verbatim and appends a terminal `.` only when the body does not already end in sentence punctuation.
 
 | Strength × Polarity | Template |
 |---|---|
-| `must` (hard require) | `You must <text>.` |
-| `must avoid` (hard avoid) | `You must never <text>.` |
-| `require` (soft require) | `<Text>.` |
-| `avoid` (soft avoid) | `Avoid <text>.` |
+| `must` (hard require) | `**Must:** <text>` |
+| `must avoid` (hard avoid) | `**Must avoid:** <text>` |
+| `require` (soft require) | `**Require:** <text>` |
+| `avoid` (soft avoid) | `**Avoid:** <text>` |
 
-The template lookup is implemented in the deterministic emitter (`glyph-core::emit::constraint`); there is no fallback rendering and no advisory framing — non-canonical body text produces grammatical mismatches that the author is responsible for fixing. A future Repair pass may auto-canonicalize non-conforming text; today, that is the author's responsibility.
+The template lookup is implemented in the deterministic emitter (`glyph-core::emit::constraint`); there is no fallback rendering. Because the polarity label sits in a bold span and is separated from the body by a colon, ungrammatical compositions like `Avoid routing is by …` (declarative body grafted to a verb prefix) are no longer possible — the body simply reads as its own clause after the label.
 
 Strength is advisory prose framing — the wording surfaces non-negotiability for `hard` forms and standard obligation for `soft` forms — but compliance by the consuming agent is not enforced by the compiler.
 - **Conditional logic** (`if` in source) projects to a **single numbered Step** with **lettered sub-steps per arm**. Each arm is introduced by a condition header (`If <condition>:`, or `Otherwise:` for `else`), and each Step-projecting node inside the arm becomes a lettered sub-step (`a.`, `b.`, `c.`). Letters **reset per arm**. This preserves the structure of conditional instructions without using code-like syntax. Example:

@@ -5,6 +5,17 @@ Glyph is a human-readable, visualizable DSL for authoring reusable agent skills 
 ## Design
 - [design/](design/) — **main design docs** (flat, this is the top-level design for Glyph): principles, boundaries, language core, semantics, types & effects, constraints, IR, compiler pipeline, output format, validation strategy, and a gap checklist
 
+## Research
+
+This project uses the **Athena** tiered research wiki for exploratory work. Research flows through `unconfirmed/` -> `confirmed/` -> `consolidated/` with increasing trust.
+
+**If you're about to write, move, or promote any research or design content, load the `athena` skill first.**
+
+- [agent-skill-dsl](research/agent-skill-dsl/) — language-design research that led to Glyph's current compiler and DSL model
+- [core-differences](research/core-differences/) — design notes on how agent-consumed languages differ from traditional programming languages
+- [ssl-skill-representation](research/ssl-skill-representation/) — research on structured skill representations and retrieval metadata
+- [object_oriented](research/object_oriented/) — research on object-oriented, trait-like, and compositional models for hierarchical agent teams
+
 ## Build
 - Requires **Rust / Cargo** (`cargo build`, `cargo test`). Workspace crates: `glyph-core`, `glyph-cli`, `glyph-lsp`.
 

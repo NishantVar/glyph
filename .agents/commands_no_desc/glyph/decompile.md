@@ -1,6 +1,8 @@
 ---
+# AUTO-GENERATED FILE -- DO NOT EDIT
+# Source: .agents/commands/glyph/decompile.md
+# Regenerate: scripts/sync_commands_no_desc.sh
 name: decompile
-description: Convert an existing compiled-form skill at `source_md` into a Glyph source file at `target`.
 ---
 
 ## Parameters
@@ -488,7 +490,6 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
 
       ---
       name: <skill-name>
-      description: <one line>
       effects: [<keyword>, <keyword>]   # only when --enable-effects AND set is non-empty
       ---
 
@@ -578,7 +579,6 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
   Minimal skill (novice kernel):
 
       skill update_docs(scope = ".")
-          description: "Update repository documentation to match current code."
           require accuracy
           avoid stale_references
 
@@ -594,7 +594,6 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
   With branching, blocks, and `.applies()`:
 
       skill fix_bug(scope = ".")
-          description: "Debug and fix a bug with minimal, targeted changes."
           require preserve_existing_patterns
           avoid unrelated_edits
           context:
@@ -619,7 +618,6 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
               return summarize_changes()
 
       block deep_investigation()
-          description: "The bug spans multiple subsystems or layers."
           flow:
               "Map the full dependency chain of the affected code."
               "Identify every subsystem involved in the bug."
@@ -633,14 +631,12 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
 
       // repo_tools.glyph
       export block inspect_repo(scope = ".") -> RepoContext
-          description: "Inspect the repository structure and identify key files."
           flow:
               "List directories and files under {scope}."
               "Identify source modules and their relationships."
               return <"summary of the repo layout">
 
       export block has_test_suite(scope = ".")
-          description: "The project has an established test suite with meaningful coverage."
           flow:
               "Inspect {scope} for test configuration and existing tests."
               return none
@@ -650,7 +646,6 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
       import "./repo_tools.glyph" { inspect_repo, has_test_suite }
 
       skill fix_bug(scope = ".")
-          description: "Debug and fix a bug with minimal, targeted changes."
           require preserve_existing_patterns
           must safety_first
 
@@ -668,7 +663,6 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
       import "@glyph/std" { subagent, send }
 
       skill investigate(scope = ".")
-          description: "Delegate investigation of a code area to a subagent."
           flow:
               researcher = subagent(scope) with "trace the failure end-to-end"
               researcher.send("Begin with the entrypoint and trace data flow downstream.")
@@ -702,7 +696,6 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
       name = <"description">                     # plus per-param description (any of the four base forms)
 
   Sub-section headers (inside skill / block / export block body):
-      description:   one-line string or const-name reference
       effects:       list / inline list (gated by --enable-effects)
       context:       bare names, inline strings, or `context "..."` markers
       constraints:   require / avoid / must / must avoid markers
@@ -781,7 +774,6 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
 - Avoid writing a bare string-valued constant name in `flow:` without a marker. Wrap it with `context`/`require`/`avoid`/`must`, or convert it into a `block` if it really represents an instruction sequence.
 - Avoid reaching for `must` / `must avoid` for everyday rules. Reserve hard markers for genuinely non-negotiable constraints; default to soft `require` / `avoid`.
 - Avoid stacking nested calls (`apply(merge(base, overlay(ctx)))`). Nested calls are legal but read and visualize better as named intermediate bindings.
-- Avoid starting an `avoid` or `must avoid` constraint's const body with a negation word (`do not`, `never`, `no`) — the polarity marker already supplies the negative, so a negation-leading body produces a double-negative bullet (`Avoid do not touch …`). Phrase the body as a noun or gerund phrase that completes `Avoid X` cleanly.
 
 ### Procedure: map-frontmatter-to-skill-header
 

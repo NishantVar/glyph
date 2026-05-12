@@ -73,5 +73,14 @@ else
     echo "==> Skipping Linux and Windows builds (--mac-only specified)."
 fi
 
+# VS Code extension
+echo "==> Building VS Code extension (.vsix)..."
+if ! command -v node &> /dev/null || ! command -v npm &> /dev/null; then
+    echo "WARNING: node/npm not found, skipping .vsix build."
+else
+    (cd editors/vscode && npm install && npm run package)
+    cp editors/vscode/*.vsix dist/
+fi
+
 echo "Done! Release artifacts are in the ./dist folder."
 echo "You can now go to GitHub -> Releases -> Draft a new release, and upload these files."

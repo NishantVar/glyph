@@ -16,6 +16,7 @@ This folder is the working source of truth for Glyph system design. The reposito
 - [data-flow.md](data-flow.md) — parameters, bindings, calls, arguments, control flow (`if`/`elif`/`else`), return semantics, closure and scope
 - [types.md](types.md) — semantic domain types (no author-facing primitives), implicit type declaration, nominal matching
 - [preferences.md](preferences.md) — preferences as ordinary exported constants (`export const`), no `pref(...)` call, no special effect, compile-time resolution
+- [capabilities.md](capabilities.md) — post-MVP design for capability-based composition: skills own main flow; capabilities provide named operations, contracts, and policy without implicit top-level execution
 
 ### IR and Semantics
 - [ir-and-semantics.md](ir-and-semantics.md) — IR roles (`InputContract`, `Step`, `Constraint`, `Context`, `OutputContract`), constraint keywords (`require`/`avoid`/`must`, 4-form model with `soft`/`hard` strength), `context` marker, effects (9 keywords, propagation, validation), section vocabulary
@@ -43,6 +44,7 @@ This folder is the working source of truth for Glyph system design. The reposito
 
 ### Meta
 - [todo.md](todo.md) — deferred design items, open questions, and post-MVP feature tracking
+- [todo_evolution.md](todo_evolution.md) — priority list for evolving Glyph into a contract-centered agent language
 - [user-facing-todo.md](user-facing-todo.md) — post-MVP author-facing language ideas, including `goal:` and richer `output:` contracts
 
 ### MVP
