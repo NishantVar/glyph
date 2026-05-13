@@ -491,6 +491,14 @@ pub fn compile_file_with_effects(
     path: &Path,
     enable_effects: bool,
 ) -> Result<CompileOutcome, CompileError> {
+    compile_file_with_layout(path, enable_effects, &CompileOutputLayout::SameDir)
+}
+
+pub fn compile_file_with_layout(
+    path: &Path,
+    enable_effects: bool,
+    layout: &CompileOutputLayout,
+) -> Result<CompileOutcome, CompileError> {
     let source = std::fs::read_to_string(path).map_err(|e| CompileError::Read {
         path: path.display().to_string(),
         source: e,
@@ -503,8 +511,14 @@ pub fn compile_file_with_effects(
         ..
     } = outcome
     {
-        let out_path = compiled_output_path(path);
+        let out_path = resolve_output_path(path, OutputKind::Compiled, layout);
         let _ = arena; // arena available for --emit-ir; unused in compile_file
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| CompileError::Write {
+                path: out_path.display().to_string(),
+                source: e,
+            })?;
+        }
         atomic_write(&out_path, markdown).map_err(|e| CompileError::Write {
             path: out_path.display().to_string(),
             source: e,
@@ -1437,6 +1451,20 @@ pub fn compile_directory_with_options(
     emit_ir: bool,
     enable_effects: bool,
 ) -> BuildResult {
+    compile_directory_with_layout(
+        sources,
+        emit_ir,
+        enable_effects,
+        &CompileOutputLayout::SameDir,
+    )
+}
+
+pub fn compile_directory_with_layout(
+    sources: &[PathBuf],
+    emit_ir: bool,
+    enable_effects: bool,
+    layout: &CompileOutputLayout,
+) -> BuildResult {
     if sources.is_empty() {
         return BuildResult {
             outcomes: Vec::new(),
@@ -1548,7 +1576,7 @@ pub fn compile_directory_with_options(
     // Compile each file in topological order with partial failure.
     // Track procedure file paths emitted by library files for Tier 3 references.
     // Key: (library canonical path, block name) → relative procedure path.
-    let mut procedure_paths: HashMap<(PathBuf, String), String> = HashMap::new();
+    let mut procedure_paths: HashMap<(PathBuf, String), PathBuf> = HashMap::new();
     // Track exported names, text values, and block bodies per file for cross-file resolution.
     let mut file_exports: HashMap<PathBuf, ExportedNames> = HashMap::new();
     let mut file_text_values: HashMap<(PathBuf, String), String> = HashMap::new();
@@ -1558,6 +1586,7 @@ pub fn compile_directory_with_options(
     let mut failed_files: HashSet<PathBuf> = HashSet::new();
     let mut outcomes: Vec<(PathBuf, FileOutcome)> = Vec::new();
     let mut any_failure = false;
+    let mut warned_outside_root: HashSet<PathBuf> = HashSet::new();
 
     for file in &topo_order {
         // Check if any dependency failed.
@@ -1577,6 +1606,36 @@ pub fn compile_directory_with_options(
                 },
             ));
             continue;
+        }
+
+        // Emit G::build::import-outside-out-dir warning if this file falls
+        // outside the --out-dir input root. The file still compiles in-place.
+        let mut outside_root_warn: Option<DiagBag> = None;
+        if let CompileOutputLayout::OutDir { input_root, .. } = layout {
+            if file.strip_prefix(input_root).is_err()
+                && warned_outside_root.insert(file.to_path_buf())
+            {
+                // Synthetic span at file start — no source read needed.
+                let li = LineIndex::new("");
+                let label = file.display().to_string();
+                let span = Span::new(0, 0, 0);
+                let mut warn_bag = DiagBag::new();
+                warn_bag.push(
+                    Diagnostic {
+                        id: diagnostic::IMPORT_OUTSIDE_OUT_DIR_DIAG_ID.into(),
+                        classification: Classification::Warning,
+                        message: format!(
+                            "`{}` is imported from outside the `--out-dir` input root; writing in-place",
+                            file.display()
+                        ),
+                        span: SourceSpan::from_byte_span(&label, span, &li),
+                        related: Vec::new(),
+                        hints: Vec::new(),
+                    },
+                    span,
+                );
+                outside_root_warn = Some(warn_bag);
+            }
         }
 
         // Compile the file.
@@ -1599,9 +1658,12 @@ pub fn compile_directory_with_options(
             &imported_procedure_paths,
             &resolved_imports,
             enable_effects,
+            layout,
         ) {
             Ok(CompileOutcome::Compiled {
-                diagnostics, arena, ..
+                mut diagnostics,
+                arena,
+                ..
             }) => {
                 extract_and_store_exports(
                     file,
@@ -1616,13 +1678,22 @@ pub fn compile_directory_with_options(
                     if let Some(ir_json) =
                         emit_ir::serialize_ir_json(&arena, source_file, enable_effects)
                     {
-                        let ir_path = ir_json_output_path(file);
+                        let ir_path = resolve_output_path(file, OutputKind::IrJson, layout);
+                        if let Some(parent) = ir_path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
                         atomic_write(&ir_path, &ir_json).ok();
                     }
                 }
+                if let Some(warn) = outside_root_warn {
+                    diagnostics.merge(warn);
+                }
                 outcomes.push((file.clone(), FileOutcome::Compiled { diagnostics }));
             }
-            Ok(CompileOutcome::Diagnostics(bag)) => {
+            Ok(CompileOutcome::Diagnostics(mut bag)) => {
+                if let Some(w) = outside_root_warn.take() {
+                    bag.merge(w);
+                }
                 failed_files.insert(file.clone());
                 if bag.has_error() {
                     any_failure = true;
@@ -1640,14 +1711,15 @@ pub fn compile_directory_with_options(
                     &mut file_block_descriptions,
                 );
                 // Emit procedure files for qualifying export blocks (Tier 3).
-                let emitted = emit_library_procedures(file, enable_effects);
+                let emitted = emit_library_procedures(file, enable_effects, layout);
                 for (block_name, rel_path) in emitted {
                     procedure_paths.insert((file.clone(), block_name), rel_path);
                 }
+                let lib_diags = outside_root_warn.unwrap_or_else(DiagBag::new);
                 outcomes.push((
                     file.clone(),
                     FileOutcome::Compiled {
-                        diagnostics: DiagBag::new(),
+                        diagnostics: lib_diags,
                     },
                 ));
             }
@@ -1658,15 +1730,17 @@ pub fn compile_directory_with_options(
                 // instead of a silent exit-1 for Read/Write/Parse/Lower/Validate
                 // errors that aren't already wired to structured IDs.
                 let mut bag = DiagBag::new();
-                let source = std::fs::read_to_string(file).unwrap_or_default();
-                let line_index = LineIndex::new(&source);
+                if let Some(w) = outside_root_warn.take() {
+                    bag.merge(w);
+                }
+                let li = LineIndex::new("");
                 let label = file.display().to_string();
                 let span = Span::new(0, 0, 0);
                 bag.push(
                     Diagnostic::error(
                         "G::build::compile-error",
                         format!("compile pipeline failed: {:?}", e),
-                        SourceSpan::from_byte_span(&label, span, &line_index),
+                        SourceSpan::from_byte_span(&label, span, &li),
                     ),
                     span,
                 );
@@ -1726,6 +1800,166 @@ fn ir_json_output_path(input: &Path) -> PathBuf {
     parent.join(format!("{}.ir.json", stem))
 }
 
+#[derive(Debug, Clone)]
+pub enum CompileOutputLayout {
+    SameDir,
+    EntryFile { entry: PathBuf, output: PathBuf },
+    OutDir { root: PathBuf, input_root: PathBuf },
+}
+
+#[derive(Debug, Clone)]
+pub enum OutputKind {
+    Compiled,
+    IrJson,
+    Procedure {
+        lib_stem: String,
+        block_kebab: String,
+    },
+}
+
+pub fn resolve_output_path(
+    source: &Path,
+    kind: OutputKind,
+    layout: &CompileOutputLayout,
+) -> PathBuf {
+    let same_dir = || match &kind {
+        OutputKind::Compiled => compiled_output_path(source),
+        OutputKind::IrJson => ir_json_output_path(source),
+        OutputKind::Procedure {
+            lib_stem,
+            block_kebab,
+        } => source
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(lib_stem)
+            .join(format!("{}.md", block_kebab)),
+    };
+
+    match layout {
+        CompileOutputLayout::SameDir => same_dir(),
+        CompileOutputLayout::EntryFile { entry, output } => {
+            if source == entry.as_path() {
+                match &kind {
+                    OutputKind::Compiled => output.clone(),
+                    OutputKind::IrJson => {
+                        let parent = output.parent().unwrap_or_else(|| Path::new("."));
+                        let stem = output
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .and_then(|s| s.strip_suffix(".md").map(|x| x.to_string()))
+                            .unwrap_or_else(|| {
+                                output
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("out")
+                                    .to_string()
+                            });
+                        parent.join(format!("{}.ir.json", stem))
+                    }
+                    OutputKind::Procedure {
+                        lib_stem: _,
+                        block_kebab,
+                    } => {
+                        let parent = output.parent().unwrap_or_else(|| Path::new("."));
+                        let stem = output
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .and_then(|s| s.strip_suffix(".md"))
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| {
+                                output
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("out")
+                                    .to_string()
+                            });
+                        parent.join(stem).join(format!("{}.md", block_kebab))
+                    }
+                }
+            } else {
+                same_dir()
+            }
+        }
+        CompileOutputLayout::OutDir { root, input_root } => match source.strip_prefix(input_root) {
+            Ok(rel) => {
+                let parent_rel = rel.parent().unwrap_or_else(|| Path::new(""));
+                let stem = rel
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .and_then(|s| s.strip_suffix(".glyph").or_else(|| s.strip_suffix(".md")))
+                    .unwrap_or("out");
+                match &kind {
+                    OutputKind::Compiled => root.join(parent_rel).join(format!("{}.md", stem)),
+                    OutputKind::IrJson => root.join(parent_rel).join(format!("{}.ir.json", stem)),
+                    OutputKind::Procedure {
+                        lib_stem,
+                        block_kebab,
+                    } => root
+                        .join(parent_rel)
+                        .join(lib_stem)
+                        .join(format!("{}.md", block_kebab)),
+                }
+            }
+            Err(_) => same_dir(),
+        },
+    }
+}
+
+/// Compute the string baked into the consumer's compiled output and IR JSON
+/// as `procedure_path`. Returns a forward-slash relative path when both
+/// arguments share a common ancestor; otherwise returns the procedure's
+/// absolute path with forward-slash separators.
+pub fn resolve_procedure_reference(consumer_output: &Path, procedure_output: &Path) -> String {
+    use std::path::Component;
+
+    let consumer_dir = consumer_output.parent().unwrap_or_else(|| Path::new(""));
+
+    let mut up = 0usize;
+    let mut cursor = consumer_dir;
+    loop {
+        // Only accept strip_prefix if cursor is not empty or if it's a rooted path.
+        // Skip empty cursors to avoid false common-ancestor matches.
+        if !cursor.as_os_str().is_empty() {
+            if let Ok(rel) = procedure_output.strip_prefix(cursor) {
+                let mut parts: Vec<String> = (0..up).map(|_| "..".to_string()).collect();
+                for c in rel.components() {
+                    // Skip RootDir components.
+                    if !matches!(c, Component::RootDir) {
+                        parts.push(c.as_os_str().to_string_lossy().into_owned());
+                    }
+                }
+                return parts.join("/");
+            }
+        }
+        match cursor.parent() {
+            Some(p) if p != cursor => {
+                cursor = p;
+                up += 1;
+            }
+            _ => break,
+        }
+    }
+
+    // No common ancestor: return absolute path with forward-slash separators.
+    let mut parts = Vec::new();
+    for c in procedure_output.components() {
+        match c {
+            Component::RootDir => {
+                // Will be handled by prepending "/" if absolute.
+            }
+            _ => {
+                parts.push(c.as_os_str().to_string_lossy().into_owned());
+            }
+        }
+    }
+    let joined = parts.join("/");
+    if procedure_output.is_absolute() {
+        format!("/{}", joined)
+    } else {
+        joined
+    }
+}
+
 /// Map `foo.glyph` → `foo.md` next to the source file.
 fn compiled_output_path(input: &Path) -> std::path::PathBuf {
     let parent = input.parent().unwrap_or_else(|| Path::new("."));
@@ -1749,8 +1983,12 @@ fn library_stem(input: &Path) -> String {
 /// library file. An export block qualifies when its body_word_count >= 150.
 ///
 /// Output path: `<parent>/<lib_stem>/<block-name-kebab>.md`
-/// Returns: Vec of (block_name, relative_procedure_path) for Tier 3 tracking.
-fn emit_library_procedures(path: &Path, enable_effects: bool) -> Vec<(String, String)> {
+/// Returns: Vec of (block_name, absolute_procedure_path) for Tier 3 tracking.
+fn emit_library_procedures(
+    path: &Path,
+    enable_effects: bool,
+    layout: &CompileOutputLayout,
+) -> Vec<(String, PathBuf)> {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -1760,7 +1998,6 @@ fn emit_library_procedures(path: &Path, enable_effects: bool) -> Vec<(String, St
         Err(_) => return Vec::new(),
     };
 
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let stem = library_stem(path);
     let mut emitted = Vec::new();
 
@@ -1860,8 +2097,6 @@ fn emit_library_procedures(path: &Path, enable_effects: bool) -> Vec<(String, St
                 continue;
             }
             let kebab_name = eb.node.name.replace('_', "-");
-            let subdir = parent.join(&stem);
-            std::fs::create_dir_all(&subdir).ok();
 
             // Resolve name_ref defaults parallel to `eb.node.params` (Codex
             // finding #2). Stored separately so each ProcedureParam can
@@ -1942,11 +2177,20 @@ fn emit_library_procedures(path: &Path, enable_effects: bool) -> Vec<(String, St
                 &freeform_sections,
             );
 
-            let out_path = subdir.join(format!("{}.md", kebab_name));
+            let out_path = resolve_output_path(
+                path,
+                OutputKind::Procedure {
+                    lib_stem: stem.to_string(),
+                    block_kebab: kebab_name.clone(),
+                },
+                layout,
+            );
+            if let Some(parent) = out_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
             atomic_write(&out_path, &markdown).ok();
 
-            let rel_path = format!("{}/{}.md", stem, kebab_name);
-            emitted.push((eb.node.name.clone(), rel_path));
+            emitted.push((eb.node.name.clone(), out_path));
         }
     }
     emitted
@@ -2020,8 +2264,8 @@ fn resolve_freeform_item(
 fn build_imported_procedure_paths(
     consumer: &Path,
     _file_imports: &HashMap<PathBuf, Vec<PathBuf>>,
-    procedure_paths: &HashMap<(PathBuf, String), String>,
-) -> HashMap<String, String> {
+    procedure_paths: &HashMap<(PathBuf, String), PathBuf>,
+) -> HashMap<String, PathBuf> {
     let mut result = HashMap::new();
 
     // Read the consumer file to find which names are imported from each dependency.
@@ -2421,9 +2665,10 @@ fn extract_and_store_exports(
 /// Compile a file with resolved import data (names, values, procedure paths).
 fn compile_file_with_resolved_imports(
     path: &Path,
-    imported_procedure_paths: &HashMap<String, String>,
+    imported_procedure_paths: &HashMap<String, PathBuf>,
     resolved_imports: &ResolvedImports,
     enable_effects: bool,
+    layout: &CompileOutputLayout,
 ) -> Result<CompileOutcome, CompileError> {
     // Fast-path single-file compile when there are no imports at all.
     // Phase B.7: also check `type_descriptions` so a types-only consumer
@@ -2442,7 +2687,7 @@ fn compile_file_with_resolved_imports(
         && resolved_imports.block_names.is_empty()
         && resolved_imports.type_descriptions.is_empty()
     {
-        return compile_file_with_effects(path, enable_effects);
+        return compile_file_with_layout(path, enable_effects, layout);
     }
 
     let source = std::fs::read_to_string(path).map_err(|e| CompileError::Read {
@@ -2458,6 +2703,8 @@ fn compile_file_with_resolved_imports(
         imported_procedure_paths,
         resolved_imports,
         enable_effects,
+        path,
+        layout,
     )?;
     if let CompileOutcome::Compiled {
         ref markdown,
@@ -2465,8 +2712,14 @@ fn compile_file_with_resolved_imports(
         ..
     } = outcome
     {
-        let out_path = compiled_output_path(path);
+        let out_path = resolve_output_path(path, OutputKind::Compiled, layout);
         let _ = arena;
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| CompileError::Write {
+                path: out_path.display().to_string(),
+                source: e,
+            })?;
+        }
         atomic_write(&out_path, markdown).map_err(|e| CompileError::Write {
             path: out_path.display().to_string(),
             source: e,
@@ -2480,9 +2733,11 @@ fn compile_source_with_resolved_imports(
     source: &str,
     file_id: u32,
     file_label: &str,
-    imported_procedure_paths: &HashMap<String, String>,
+    imported_procedure_paths: &HashMap<String, PathBuf>,
     resolved_imports: &ResolvedImports,
     enable_effects: bool,
+    consumer_source: &Path,
+    layout: &CompileOutputLayout,
 ) -> Result<CompileOutcome, CompileError> {
     let mut bag = DiagBag::new();
     let line_index = LineIndex::new(source);
@@ -2566,7 +2821,9 @@ fn compile_source_with_resolved_imports(
             if c.resolved_body.is_none() {
                 if let Some(proc_path) = imported_procedure_paths.get(&c.target) {
                     c.projection_tier = Some(3);
-                    c.procedure_path = Some(proc_path.clone());
+                    let consumer_out =
+                        resolve_output_path(consumer_source, OutputKind::Compiled, layout);
+                    c.procedure_path = Some(resolve_procedure_reference(&consumer_out, proc_path));
                 } else if let Some(body) = resolved_imports.block_bodies.get(&c.target) {
                     c.resolved_body = Some(body.clone());
                 } else if resolved_imports
@@ -6795,5 +7052,153 @@ skill main()
             lower::resolve_freeform_heading(&catalogue, "acceptance"),
             "Acceptance Criteria"
         );
+    }
+
+    #[test]
+    fn resolve_same_dir_compiled() {
+        let layout = CompileOutputLayout::SameDir;
+        let p = resolve_output_path(
+            Path::new("/abs/proj/foo.glyph"),
+            OutputKind::Compiled,
+            &layout,
+        );
+        assert_eq!(p, Path::new("/abs/proj/foo.md"));
+    }
+
+    #[test]
+    fn resolve_same_dir_ir_json() {
+        let layout = CompileOutputLayout::SameDir;
+        let p = resolve_output_path(
+            Path::new("/abs/proj/foo.glyph"),
+            OutputKind::IrJson,
+            &layout,
+        );
+        assert_eq!(p, Path::new("/abs/proj/foo.ir.json"));
+    }
+
+    #[test]
+    fn resolve_same_dir_procedure() {
+        let layout = CompileOutputLayout::SameDir;
+        let p = resolve_output_path(
+            Path::new("/abs/proj/lib.glyph"),
+            OutputKind::Procedure {
+                lib_stem: "lib".into(),
+                block_kebab: "do-thing".into(),
+            },
+            &layout,
+        );
+        assert_eq!(p, Path::new("/abs/proj/lib/do-thing.md"));
+    }
+
+    #[test]
+    fn resolve_entry_file_redirects_entry_only() {
+        let entry = PathBuf::from("/abs/proj/foo.glyph");
+        let output = PathBuf::from("/abs/build/bar.md");
+        let layout = CompileOutputLayout::EntryFile {
+            entry: entry.clone(),
+            output: output.clone(),
+        };
+        assert_eq!(
+            resolve_output_path(&entry, OutputKind::Compiled, &layout),
+            Path::new("/abs/build/bar.md")
+        );
+        assert_eq!(
+            resolve_output_path(&entry, OutputKind::IrJson, &layout),
+            Path::new("/abs/build/bar.ir.json")
+        );
+        assert_eq!(
+            resolve_output_path(
+                Path::new("/abs/proj/lib.glyph"),
+                OutputKind::Compiled,
+                &layout,
+            ),
+            Path::new("/abs/proj/lib.md")
+        );
+    }
+
+    #[test]
+    fn resolve_out_dir_mirrors_layout() {
+        let layout = CompileOutputLayout::OutDir {
+            root: PathBuf::from("/abs/build"),
+            input_root: PathBuf::from("/abs/src"),
+        };
+        assert_eq!(
+            resolve_output_path(Path::new("/abs/src/a.glyph"), OutputKind::Compiled, &layout,),
+            Path::new("/abs/build/a.md")
+        );
+        assert_eq!(
+            resolve_output_path(
+                Path::new("/abs/src/sub/b.glyph"),
+                OutputKind::Compiled,
+                &layout,
+            ),
+            Path::new("/abs/build/sub/b.md")
+        );
+        assert_eq!(
+            resolve_output_path(
+                Path::new("/abs/src/sub/lib.glyph"),
+                OutputKind::Procedure {
+                    lib_stem: "lib".into(),
+                    block_kebab: "do-thing".into(),
+                },
+                &layout,
+            ),
+            Path::new("/abs/build/sub/lib/do-thing.md")
+        );
+    }
+
+    #[test]
+    fn resolve_out_dir_falls_back_for_outside_root() {
+        let layout = CompileOutputLayout::OutDir {
+            root: PathBuf::from("/abs/build"),
+            input_root: PathBuf::from("/abs/src"),
+        };
+        assert_eq!(
+            resolve_output_path(
+                Path::new("/abs/elsewhere/x.glyph"),
+                OutputKind::Compiled,
+                &layout,
+            ),
+            Path::new("/abs/elsewhere/x.md")
+        );
+    }
+
+    #[test]
+    fn proc_ref_same_dir() {
+        let consumer = Path::new("/abs/proj/main.md");
+        let proc = Path::new("/abs/proj/lib/do-thing.md");
+        assert_eq!(
+            resolve_procedure_reference(consumer, proc),
+            "lib/do-thing.md"
+        );
+    }
+
+    #[test]
+    fn proc_ref_nested_under_out_dir() {
+        let consumer = Path::new("/abs/build/skills/main.md");
+        let proc = Path::new("/abs/build/libs/lib/do-thing.md");
+        assert_eq!(
+            resolve_procedure_reference(consumer, proc),
+            "../libs/lib/do-thing.md"
+        );
+    }
+
+    #[test]
+    fn proc_ref_with_renamed_entry() {
+        let consumer = Path::new("/abs/build/bar.md");
+        let proc = Path::new("/abs/proj/libs/lib/do-thing.md");
+        assert_eq!(
+            resolve_procedure_reference(consumer, proc),
+            "../proj/libs/lib/do-thing.md"
+        );
+    }
+
+    #[test]
+    fn proc_ref_absolute_fallback_when_no_relative() {
+        let consumer = Path::new("bar.md"); // parent is ""
+        let proc = Path::new("/abs/libs/lib/do-thing.md");
+        let s = resolve_procedure_reference(consumer, proc);
+        // No common ancestor → returns absolute (forward-slash) path.
+        assert_eq!(s, "/abs/libs/lib/do-thing.md");
     }
 }
