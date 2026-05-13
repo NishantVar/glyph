@@ -82,7 +82,11 @@ fn fmt_rewrites_tabs_to_four_spaces() {
 }
 
 #[test]
-fn fmt_hoists_body_constraints_into_constraints_section() {
+fn fmt_preserves_body_constraint_markers_at_body_level() {
+    // Per D9 / D10: fmt does not hoist body-level constraint markers into a
+    // `constraints:` section. The emit-side handles synthetic-slot placement
+    // (so the compiled `## Constraints` heading still lands in canonical
+    // position), but fmt preserves the source verbatim.
     let src = fmt_corpus_path("body_constraints.glyph");
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let tmp_path = tmp.path().to_path_buf();
@@ -96,36 +100,30 @@ fn fmt_hoists_body_constraints_into_constraints_section() {
     );
 
     let result = std::fs::read_to_string(&tmp_path).unwrap();
-    // Body-level markers should be gone.
-    // They should now be inside a constraints: section.
+    // fmt must NOT have synthesized a `constraints:` host section.
     assert!(
-        result.contains("    constraints:\n"),
-        "should have a constraints: section"
+        !result.contains("    constraints:\n"),
+        "fmt should not synthesize a constraints: section; got:\n{}",
+        result
+    );
+    // Markers should remain at body level (indent 1, four spaces).
+    assert!(
+        result.contains("    require accuracy\n"),
+        "body-level `require` should be preserved at indent 1; got:\n{}",
+        result
     );
     assert!(
-        result.contains("        require accuracy"),
-        "require should be inside constraints:"
+        result.contains("    avoid stale_references\n"),
+        "body-level `avoid` should be preserved at indent 1; got:\n{}",
+        result
     );
-    assert!(
-        result.contains("        avoid stale_references"),
-        "avoid should be inside constraints:"
-    );
-    // The markers should NOT appear at body level (indent 1).
-    let lines: Vec<&str> = result.lines().collect();
-    for line in &lines {
-        let trimmed = line.trim();
-        if trimmed == "require accuracy" || trimmed == "avoid stale_references" {
-            let indent = line.len() - line.trim_start().len();
-            assert_eq!(
-                indent, 8,
-                "constraint markers should be at indent 2 (8 spaces), inside constraints:"
-            );
-        }
-    }
 }
 
 #[test]
-fn fmt_hoists_body_and_flow_context_into_context_section() {
+fn fmt_preserves_body_and_flow_context_markers() {
+    // Per D9 / D10: fmt does not hoist body-level or flow-top-level context
+    // markers. The compile-time emit path handles synthetic-section slot
+    // placement; fmt leaves the source markers in place.
     let src = fmt_corpus_path("body_context.glyph");
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let tmp_path = tmp.path().to_path_buf();
@@ -139,29 +137,28 @@ fn fmt_hoists_body_and_flow_context_into_context_section() {
     );
 
     let result = std::fs::read_to_string(&tmp_path).unwrap();
-    // Should have a context: section with all three entries.
+    // fmt must NOT have synthesized a `context:` host section.
     assert!(
-        result.contains("    context:\n"),
-        "should have a context: section"
+        !result.contains("    context:\n"),
+        "fmt should not synthesize a context: section; got:\n{}",
+        result
+    );
+    // Body-level markers preserved at indent 1.
+    assert!(
+        result.contains("    context project_conventions\n"),
+        "body-level context ref should remain at body level; got:\n{}",
+        result
     );
     assert!(
-        result.contains("        project_conventions"),
-        "body-level context ref should be hoisted"
+        result.contains("    context \"Always check for security vulnerabilities.\"\n"),
+        "body-level inline context should remain at body level; got:\n{}",
+        result
     );
+    // Flow-top-level marker remains inside flow (indent 2).
     assert!(
-        result.contains("        \"Always check for security vulnerabilities.\""),
-        "body-level inline context should be hoisted"
-    );
-    assert!(
-        result.contains("        repo_layout"),
-        "flow-top-level context should be hoisted"
-    );
-    // Flow should NOT contain `context repo_layout` anymore.
-    let flow_start = result.find("    flow:\n").expect("should have flow:");
-    let flow_section = &result[flow_start..];
-    assert!(
-        !flow_section.contains("context repo_layout"),
-        "flow-top-level context should be removed from flow"
+        result.contains("        context repo_layout\n"),
+        "flow-top-level context should remain inside flow; got:\n{}",
+        result
     );
 }
 
@@ -203,7 +200,10 @@ fn fmt_preserves_branch_scoped_markers() {
 }
 
 #[test]
-fn fmt_reorders_sections_to_canonical_layout() {
+fn fmt_preserves_section_source_order() {
+    // Per D9/D10: `glyph fmt` preserves the author's section order. The
+    // canonical default order is a presentation-layer concern handled by
+    // the emitter; the formatter does not reorder.
     let src = fmt_corpus_path("noncanonical_order.glyph");
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let tmp_path = tmp.path().to_path_buf();
@@ -217,37 +217,44 @@ fn fmt_reorders_sections_to_canonical_layout() {
     );
 
     let result = std::fs::read_to_string(&tmp_path).unwrap();
-    // Canonical order: description, effects, context, constraints, flow.
-    let desc_pos = result
-        .find("    description:")
-        .expect("should have description:");
-    let effects_pos = result.find("    effects:").expect("should have effects:");
-    let context_pos = result.find("    context:").expect("should have context:");
+    // Source order in the fixture is flow, constraints, effects, context,
+    // description. fmt must preserve that order.
+    let flow_pos = result.find("    flow:").expect("should have flow:");
     let constraints_pos = result
         .find("    constraints:")
         .expect("should have constraints:");
-    let flow_pos = result.find("    flow:").expect("should have flow:");
+    let effects_pos = result.find("    effects:").expect("should have effects:");
+    let context_pos = result.find("    context:").expect("should have context:");
+    let desc_pos = result
+        .find("    description:")
+        .expect("should have description:");
     assert!(
-        desc_pos < effects_pos,
-        "description should come before effects"
+        flow_pos < constraints_pos,
+        "source order: flow should come before constraints; got:\n{}",
+        result
+    );
+    assert!(
+        constraints_pos < effects_pos,
+        "source order: constraints should come before effects; got:\n{}",
+        result
     );
     assert!(
         effects_pos < context_pos,
-        "effects should come before context"
+        "source order: effects should come before context; got:\n{}",
+        result
     );
     assert!(
-        context_pos < constraints_pos,
-        "context should come before constraints"
-    );
-    assert!(
-        constraints_pos < flow_pos,
-        "constraints should come before flow"
+        context_pos < desc_pos,
+        "source order: context should come before description; got:\n{}",
+        result
     );
 }
 
 #[test]
 fn fmt_check_exits_1_when_changes_needed() {
-    let src = fmt_corpus_path("body_constraints.glyph");
+    // `tabs.glyph` uses tab indentation; fmt rewrites tabs to four spaces, so
+    // `--check` must report a needed change.
+    let src = fmt_corpus_path("tabs.glyph");
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let tmp_path = tmp.path().to_path_buf();
     std::fs::copy(&src, &tmp_path).unwrap();
@@ -267,7 +274,7 @@ fn fmt_check_exits_1_when_changes_needed() {
 #[test]
 fn fmt_check_exits_0_when_already_formatted() {
     // First format the file, then run --check on the result.
-    let src = fmt_corpus_path("body_constraints.glyph");
+    let src = fmt_corpus_path("tabs.glyph");
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let tmp_path = tmp.path().to_path_buf();
     std::fs::copy(&src, &tmp_path).unwrap();
@@ -289,11 +296,11 @@ fn fmt_check_exits_0_when_already_formatted() {
 fn fmt_preserves_generated_const_and_skill_when_mixed() {
     // Regression: chunk 4's `decl_starts` recognizer didn't include the
     // `generated ` prefix, so a `generated const` line at top level was
-    // absorbed into the previous decl's range. With the bug, fmt's section
-    // reorder (which moves `flow:` after `description:`) inserts the
-    // generated-const line BETWEEN description and flow, corrupting both
-    // the skill body layout and the generated-const placement. The pin:
-    // the generated const must end up AFTER the skill's flow body.
+    // absorbed into the previous decl's range. With the bug, the
+    // generated-const line was inserted between sections of the skill body,
+    // corrupting both the skill body layout and the generated-const
+    // placement. The pin: the generated const must end up AFTER the skill's
+    // entire body, never embedded inside it.
     let src = fmt_corpus_path("generated_const_after_skill.glyph");
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let tmp_path = tmp.path().to_path_buf();
@@ -307,12 +314,12 @@ fn fmt_preserves_generated_const_and_skill_when_mixed() {
     );
 
     let result = std::fs::read_to_string(&tmp_path).unwrap();
-    // Skill body must remain intact and reorder flow after description.
+    // Skill body must remain intact.
     assert!(result.contains("skill demo()"), "skill header preserved");
-    let desc_pos = result
+    let _desc_pos = result
         .find("    description: \"Demo skill.\"")
         .expect("skill description preserved");
-    let flow_pos = result
+    let _flow_pos = result
         .find("    flow:")
         .expect("skill flow section preserved");
     let step_pos = result
@@ -321,12 +328,7 @@ fn fmt_preserves_generated_const_and_skill_when_mixed() {
     let generated_pos = result
         .find("generated const helper_text = \"Generated helper string.\"")
         .expect("generated const declaration should pass through unchanged");
-    // Canonical order inside skill: description before flow.
-    assert!(
-        desc_pos < flow_pos,
-        "description should come before flow in skill body"
-    );
-    // The bug: generated const lands between description and flow.
+    // The bug: generated const lands inside the skill body.
     // Fix asserts: generated const must be AFTER the skill body's last line.
     assert!(
         generated_pos > step_pos,
@@ -490,15 +492,13 @@ fn fmt_strips_legacy_none_return_type() {
 /// `fmt_source`, which in turn called `parse::parse_with_diagnostics` (the
 /// legacy entry that hardcodes `enable_effects=false`). The parser rejected
 /// `effects:`, returned `None`, and fmt silently fell back to the pre-parse
-/// stratum — causing canonical reorder to skip and leaving the effects
-/// section intact only because no AST rewrite happened. Worse, on a tabs
-/// fixture or any fixture needing AST rewrite, the effects section would be
-/// dropped on the next round-trip through fmt.
+/// stratum — leaving the effects section intact only because no AST rewrite
+/// happened. Worse, on a tabs fixture or any fixture needing AST rewrite,
+/// the effects section would be dropped on the next round-trip through fmt.
 ///
 /// This test exercises the full path: fmt with `--enable-effects` over a
-/// noncanonical-order source containing `effects:`. It must (a) succeed,
-/// (b) preserve the `effects:` section, and (c) place it in the canonical
-/// position between `description:` and `context:`.
+/// source containing `effects:`. It must (a) succeed and (b) preserve the
+/// `effects:` section in its source position.
 #[test]
 fn fmt_with_enable_effects_preserves_effects_section() {
     let src = fmt_corpus_path("noncanonical_order.glyph");
@@ -528,15 +528,17 @@ fn fmt_with_enable_effects_preserves_effects_section() {
         after,
     );
 
-    // Effects must be in canonical position (between description: and context:).
-    let desc_pos = after
-        .find("    description:")
-        .expect("should have description:");
+    // Per D9/D10 fmt preserves the source order. In the fixture, the source
+    // order is flow, constraints, effects, context, description; verify that
+    // the effects section sits between constraints and context.
+    let constraints_pos = after
+        .find("    constraints:")
+        .expect("should have constraints:");
     let effects_pos = after.find("    effects:").expect("should have effects:");
     let context_pos = after.find("    context:").expect("should have context:");
     assert!(
-        desc_pos < effects_pos && effects_pos < context_pos,
-        "effects: must be between description: and context: after canonical reorder; got:\n{}",
+        constraints_pos < effects_pos && effects_pos < context_pos,
+        "effects: must be preserved in source order between constraints: and context:; got:\n{}",
         after,
     );
 }
@@ -568,5 +570,87 @@ fn multi_autofix_converges() {
         repairable.is_empty(),
         "expected no repairable diagnostics on post-fmt source, got: {:?}",
         repairable
+    );
+}
+
+/// Regression for the four-case hoisting rule (see
+/// `design/language-surface.md` §4.2a and `GLYPH_LANGUAGE_GUIDE.md` §7.2):
+/// a marker placed inside another named section (case 4) must stay scoped to
+/// that section. `glyph fmt` must not move markers across section boundaries.
+#[test]
+fn fmt_does_not_hoist_markers_out_of_context_section() {
+    let src = "skill demo()\n    description: \"Demo.\"\n    context:\n        context project_conventions\n        require accuracy\n    flow:\n        \"Do.\"\n";
+    // enable_effects=false: the four-case hoisting rule is independent of
+    // effects expansion; no need to gate this test on `--enable-effects`.
+    let result = glyph_core::fmt::fmt_source(src, false);
+    // A `require` marker placed inside `context:` is case 4 of the four-case
+    // hoisting rule (stays scoped to the section). `glyph fmt` must not move
+    // it to body-level (which would change its compiled output destination
+    // from `context:` to `constraints:`). Byte-for-byte preservation is the
+    // strongest assertion: if the input is already canonical w.r.t. the
+    // four-case rule, fmt is a no-op.
+    assert_eq!(
+        result.output, src,
+        "fmt must not rewrite a marker-in-context source"
+    );
+    assert!(
+        !result.changed,
+        "fmt should report no change for marker-in-context source"
+    );
+}
+
+/// Finding 1 regression: fmt must not synthesize a `constraints:` host
+/// section when the only constraint marker is at body level. The compile
+/// pipeline already routes body-level markers into the synthetic `##
+/// Constraints` slot (D9 canonical slot 3), which lands BEFORE `## Steps`
+/// (slot 5). Synthesizing an explicit `constraints:` section at end-of-body
+/// would anchor it AFTER `flow:` in source order, flipping the compiled
+/// output so `## Constraints` lands AFTER `## Steps`.
+#[test]
+fn fmt_does_not_synthesize_constraints_section_for_body_marker() {
+    let src = "skill demo()\n    description: \"Demo.\"\n    must avoid foo\n    flow:\n        \"Do.\"\n\nconst foo = \"a foot-gun.\"\n";
+    let result = glyph_core::fmt::fmt_source(src, false);
+    assert!(
+        !result.output.contains("    constraints:\n"),
+        "fmt must not synthesize a constraints: section; got:\n{}",
+        result.output
+    );
+    assert!(
+        result.output.contains("    must avoid foo\n"),
+        "body-level `must avoid` marker should be preserved at body level; got:\n{}",
+        result.output
+    );
+
+    // End-to-end: compile and verify `## Constraints` lands BEFORE `## Steps`
+    // (D9 slot 3 vs. slot 5).
+    let dir = tempfile::tempdir().unwrap();
+    let src_path = dir.path().join("demo.glyph");
+    std::fs::write(&src_path, &result.output).unwrap();
+
+    let output = Command::new(glyph_bin())
+        .arg("compile")
+        .arg(&src_path)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("failed to spawn glyph binary");
+    assert!(
+        output.status.success(),
+        "compile should succeed; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let md = std::fs::read_to_string(dir.path().join("demo.md"))
+        .expect("compiled .md file should exist");
+    let constraints_pos = md
+        .find("## Constraints")
+        .expect("expected ## Constraints heading in compiled output");
+    let steps_pos = md
+        .find("## Steps")
+        .expect("expected ## Steps heading in compiled output");
+    assert!(
+        constraints_pos < steps_pos,
+        "D9 slot 3 (## Constraints) must precede slot 5 (## Steps); got:\n{}",
+        md
     );
 }

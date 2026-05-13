@@ -185,13 +185,13 @@ By-construction-satisfied for scaffolded portions:
 
 | ID | Classification | Trigger |
 |---|---|---|
-| `G::expand::extra-h2` | error | Step 2 emitted an H2 other than `## Instructions` |
-| `G::expand::missing-instructions` | error | Step 2 did not emit `## Instructions` |
-| `G::expand::extra-h3` | error | Step 2 emitted an H3 not matching `### Context`, `### Steps`, `### Constraints`, or `### Procedure: <name>` |
-| `G::expand::step-count-mismatch` | error | Number of top-level `### Steps` items does not match expected count |
+| `G::expand::extra-h2` | error | Step 2 emitted an H2 outside the Phase 1 catalogue (`## Parameters`, `## Context`, `## Steps`, `## Constraints`). Phase 3 extends the catalogue with freeform headings. |
+| `G::expand::missing-instructions` | error | RETIRED post-Phase-1. Reserved for forward-compat; no longer emitted because the `## Instructions` wrapper is gone — its role is now covered by `extra-h2` and the body H2 count checks. |
+| `G::expand::extra-h3` | error | RETIRED post-Phase-1. Reserved for forward-compat; with body sections now at H2, the only legal H3 is `### Procedure: <name>` (which has its own dedicated diagnostics). |
+| `G::expand::step-count-mismatch` | error | Number of top-level `## Steps` items does not match expected count |
 | `G::expand::substep-count-mismatch` | error | Number of lettered sub-steps in a Branch arm does not match Step-projecting node count |
-| `G::expand::constraint-count-mismatch` | error | Number of `### Constraints` items does not match top-level `Constraint` node count |
-| `G::expand::context-count-mismatch` | error | Number of `### Context` items does not match top-level `Context` node count (the IR's `context` array length on the skill/block) |
+| `G::expand::constraint-count-mismatch` | error | Number of `## Constraints` items does not match top-level `Constraint` node count |
+| `G::expand::context-count-mismatch` | error | Number of `## Context` items does not match top-level `Context` node count (the IR's `context` array length on the skill/block) |
 | `G::expand::step-order-mismatch` | error | Step order diverges from `flow:` order |
 | `G::expand::invented-param-ref` | error | `{...}` reference does not match any declared parameter |
 | `G::expand::dropped-param-ref` | error | A parameter reference from Step 1 output was silently removed by Step 2 |
@@ -209,7 +209,7 @@ By-construction-satisfied for scaffolded portions:
 | `G::expand::procedure-ref-missing` | error | A `same_file_procedure` Call produced no procedure reference in its Step prose |
 | `G::expand::procedure-ref-dangling` | error | Step references a procedure name with no matching `### Procedure:` section |
 | `G::expand::procedure-duplicate` | error | Same procedure name appears in two or more `### Procedure:` sections |
-| `G::expand::procedure-order` | error | `### Procedure:` sections not ordered by first reference from `### Steps` |
+| `G::expand::procedure-order` | error | `### Procedure:` sections not ordered by first reference from `## Steps` |
 | `G::expand::description-shape-missing` | error | A raw `<name>.applies()` condition string survived literally in the output; a description-driven branch must render using the resolved description prose, not the raw trigger expression |
 | `G::expand::predicate-prose-missing` | error | A predicate's resolved prose was not found in the output; covers all three forms — `.applies()` (from block `description:`), const (from `const` declaration), and literal (the quoted text itself). |
 

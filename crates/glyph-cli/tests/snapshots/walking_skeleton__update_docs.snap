@@ -7,16 +7,14 @@ name: update_docs
 description: 'Update repository documentation to match current code.'
 ---
 
-## Instructions
+## Constraints
 
-### Steps
+- **Require:** ensure all documentation accurately reflects the current code.
+- **Avoid:** leaving references to removed or renamed symbols.
+
+## Steps
 
 1. Scan the repository for files with documentation.
 2. Compare each document against the current code for accuracy.
 3. Update any sections that are outdated or incorrect.
 4. Verify all cross-references and links are still valid.
-
-### Constraints
-
-- **Require:** ensure all documentation accurately reflects the current code.
-- **Avoid:** leaving references to removed or renamed symbols.

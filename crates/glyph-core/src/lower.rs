@@ -6,13 +6,14 @@
 
 use crate::ast::{
     BlockDecl, ConstValue, ConstraintMarkerKind, ContextEntry, Decl, ExportBlockDecl, FlowStmt,
-    Param, ReturnExpr, Skill, SourceFile,
+    FreeformItem, FreeformSection, Param, ReservedMarker, ReturnExpr, Skill, SourceFile,
 };
 use crate::domain_registry::canonicalize_identifier;
 use crate::ir::{
     BranchPredicateShape, IrArena, IrBlock, IrBranch, IrCall, IrConstraint, IrContext,
-    IrElifBranch, IrInlineInstruction, IrNode, IrOutputContract, IrParam, IrSkill, NodeId,
-    OutputSource, OutputTargetForm, Polarity, Role, Strength,
+    IrElifBranch, IrFreeformContent, IrFreeformSection, IrInlineInstruction, IrNode,
+    IrOutputContract, IrParam, IrSkill, NodeId, OutputSource, OutputTargetForm, Polarity, Role,
+    Strength,
 };
 use crate::kind_infer::{infer_primitive, Literal as KindLiteral, TypeTag};
 use crate::output_target::OutputTargetExpr;
@@ -155,6 +156,175 @@ fn resolve_context_entry(
             .cloned()
             .ok_or_else(|| LowerError::UndefinedContextRef(name.node.clone())),
     }
+}
+
+/// Map a reserved-marker AST variant to the `(Strength, Polarity, marker_word)`
+/// triple stored on `IrFreeformContent`. `context` carries no strength /
+/// polarity (returns `(_, _, "context")` shape — caller drops the
+/// strength/polarity slots).
+///
+/// Shared by the IR-driven Tier 1 / Tier 2 path (via `lower_freeform_item`) and
+/// the AST-driven Tier 3 path (via `lib::resolve_freeform_item`) so both arrive
+/// at the same `(strength, polarity, word)` mapping.
+pub(crate) fn marker_metadata(
+    marker: ReservedMarker,
+) -> (Option<Strength>, Option<Polarity>, &'static str) {
+    match marker {
+        ReservedMarker::Require => (Some(Strength::Soft), Some(Polarity::Require), "require"),
+        ReservedMarker::Avoid => (Some(Strength::Soft), Some(Polarity::Avoid), "avoid"),
+        ReservedMarker::Must => (Some(Strength::Hard), Some(Polarity::Require), "must"),
+        ReservedMarker::MustAvoid => (Some(Strength::Hard), Some(Polarity::Avoid), "must avoid"),
+        ReservedMarker::Context => (None, None, "context"),
+    }
+}
+
+/// Convert a section name (`acceptance_criteria`, `quality`) into the Title
+/// Case heading used in compiled output (`Acceptance Criteria`, `Quality`).
+/// Splits on `_` and capitalises each word's first ASCII letter; unicode
+/// segments pass through unchanged.
+///
+/// Exposed at `pub(crate)` so the Tier 3 caller (`lib.rs`) can use the same
+/// canonical mapping as the IR-driven Tier 1 / Tier 2 path; the two callers
+/// must not drift on how a `<name>:` colon-keyword becomes an `## <heading>`.
+pub(crate) fn derive_heading(name: &str) -> String {
+    name.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(c) => {
+                    let mut out = String::new();
+                    for uc in c.to_uppercase() {
+                        out.push(uc);
+                    }
+                    out.push_str(chars.as_str());
+                    out
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Lower one `FreeformItem` to an `IrNode::FreeformContent` arena entry and
+/// return its `NodeId`. Marker clauses are rendered into prose via the locked
+/// constraint template (`emit::constraint::render`) for `require`/`avoid`/
+/// `must`/`must avoid`; `context` clauses keep the raw text. Name refs
+/// resolve through `texts`; unresolved refs surface as
+/// `LowerError::UndefinedContextRef` (the same shape used by the canonical
+/// context-section lower path).
+fn lower_freeform_item(
+    item: &FreeformItem,
+    texts: &BTreeMap<String, String>,
+    arena: &mut IrArena,
+) -> Result<NodeId, LowerError> {
+    let (text, marker_word, strength, polarity, name) = match item {
+        FreeformItem::StringLiteral(s) => (s.node.clone(), None, None, None, None),
+        FreeformItem::NameRef(name) => {
+            let resolved = texts
+                .get(&name.node)
+                .cloned()
+                .ok_or_else(|| LowerError::UndefinedContextRef(name.node.clone()))?;
+            (resolved, None, None, None, Some(name.node.clone()))
+        }
+        FreeformItem::MarkerClause { marker, text } => {
+            let (strength, polarity, word) = marker_metadata(*marker);
+            // Resolve operand: bare-name operands look up via `texts`;
+            // string-literal operands pass through. The AST shape stores
+            // both under `text: Spanned<String>`, so we treat the operand as
+            // a name iff `texts` has an entry for it. This mirrors the
+            // canonical constraint-marker lower path (lines 304, 845) which
+            // requires the operand to resolve via `texts`.
+            let raw = text.node.clone();
+            let resolved = match (strength, polarity) {
+                (Some(s), Some(p)) => {
+                    // `require`/`avoid`/`must`/`must avoid` — render via the
+                    // locked four-form constraint template. Operand text is
+                    // resolved through `texts` when it names a const; else
+                    // treated as inline. Routed through the catalogue's
+                    // `[constraints].expand_hook` (Phase 5) so a future
+                    // re-skin is a one-line catalogue edit.
+                    let body = texts.get(&raw).cloned().unwrap_or_else(|| raw.clone());
+                    crate::sections::hooks::dispatch_constraints_expand(s, p, &body)
+                }
+                _ => {
+                    // `context` — keep raw text, resolving name refs via
+                    // `texts` (mirrors `resolve_context_entry`).
+                    texts.get(&raw).cloned().unwrap_or_else(|| raw.clone())
+                }
+            };
+            (resolved, Some(word.to_string()), strength, polarity, None)
+        }
+    };
+    let next = arena.next_id();
+    let id = arena.push(IrNode::FreeformContent(IrFreeformContent {
+        node_id: next,
+        text,
+        marker_word,
+        strength,
+        polarity,
+        name,
+    }));
+    Ok(id)
+}
+
+/// Resolve the heading for a freeform-lowered section. The catalogue's
+/// explicit `heading` override wins; otherwise we fall back to
+/// `derive_heading(name)` (Title Case of the snake_case identifier).
+pub(crate) fn resolve_freeform_heading(
+    catalogue: &crate::sections::SectionCatalogue,
+    name: &str,
+) -> String {
+    catalogue
+        .get(name)
+        .and_then(|entry| entry.heading.clone())
+        .unwrap_or_else(|| derive_heading(name))
+}
+
+/// Lower a single AST `FreeformSection` to an `IrFreeformSection` plus its
+/// child `IrFreeformContent` entries. Returns the `NodeId` of the container.
+/// Each child is pushed first so it owns a stable id; the container is then
+/// pushed with the child id list.
+///
+/// The IR heading is taken from the catalogue when the section name is
+/// catalogued and the entry declares an explicit `heading`; otherwise it
+/// falls back to `derive_heading(name)` (Title Case of the snake_case
+/// identifier).
+fn lower_freeform_section(
+    section: &FreeformSection,
+    texts: &BTreeMap<String, String>,
+    arena: &mut IrArena,
+) -> Result<NodeId, LowerError> {
+    let mut item_ids: Vec<NodeId> = Vec::with_capacity(section.items.len());
+    for item in &section.items {
+        item_ids.push(lower_freeform_item(item, texts, arena)?);
+    }
+    let catalogue = crate::sections::SectionCatalogue::load();
+    let heading = resolve_freeform_heading(&catalogue, &section.name);
+    let next = arena.next_id();
+    let id = arena.push(IrNode::FreeformSection(IrFreeformSection {
+        node_id: next,
+        name: section.name.clone(),
+        heading,
+        source_line: section.span.line,
+        items: item_ids,
+    }));
+    Ok(id)
+}
+
+/// Lower every freeform section in a slice and return the container ids in
+/// source order. Convenience wrapper used by the skill and private-block
+/// lower paths. Empty input produces an empty `Vec` (no arena allocations).
+fn lower_freeform_sections(
+    sections: &[FreeformSection],
+    texts: &BTreeMap<String, String>,
+    arena: &mut IrArena,
+) -> Result<Vec<NodeId>, LowerError> {
+    let mut ids = Vec::with_capacity(sections.len());
+    for section in sections {
+        ids.push(lower_freeform_section(section, texts, arena)?);
+    }
+    Ok(ids)
 }
 
 /// Extract the source name from a context entry if it was a NameRef.
@@ -636,6 +806,11 @@ pub fn lower_with_imports(
         output_contract: None,
         return_type_text: skill_return_type_text,
         return_local_ref: None,
+        freeform_sections: Vec::new(),
+        description_source_line: skill.description_span.map(|s| s.line),
+        context_source_line: skill.context_section_span.map(|s| s.line),
+        constraints_source_line: skill.constraints_section_span.map(|s| s.line),
+        flow_source_line: skill.flow_span.map(|s| s.line),
     }));
 
     // Lower block declarations to IrBlock nodes.
@@ -791,6 +966,13 @@ pub fn lower_with_imports(
                     }
                 }
             }
+            // Phase 3.B (Task 3.7): lower freeform sections owned by this
+            // block before pushing the container so the `freeform_sections`
+            // child ids are populated at construction. Empty for blocks
+            // without any freeform sections (the common case) — no arena
+            // allocations occur.
+            let block_freeform_ids =
+                lower_freeform_sections(&block.freeform_sections, &texts, &mut arena)?;
             let next = NodeId(arena.len() as u32);
             arena.push(IrNode::Block(IrBlock {
                 node_id: next,
@@ -805,6 +987,11 @@ pub fn lower_with_imports(
                 return_type_text: block_return_type_text,
                 branch_steps,
                 string_default_params: block_string_default_params,
+                freeform_sections: block_freeform_ids,
+                description_source_line: block.description_span.map(|s| s.line),
+                context_source_line: block.context_section_span.map(|s| s.line),
+                constraints_source_line: block.constraints_section_span.map(|s| s.line),
+                flow_source_line: block.flow_span.map(|s| s.line),
             }));
         }
     }
@@ -1134,6 +1321,12 @@ pub fn lower_with_imports(
         }
     }
 
+    // Phase 3.B (Task 3.7): lower the skill's freeform sections. Done here
+    // (after all flow-driven lowering) so the freeform-content arena ids
+    // sit after the canonical step / context / constraint ids without
+    // changing the pre-existing pre-order traversal of the skill body.
+    let skill_freeform_ids = lower_freeform_sections(&skill.freeform_sections, &texts, &mut arena)?;
+
     // Patch the skill node now that step/context/constraint IDs are known.
     {
         let nodes = arena.nodes_mut();
@@ -1144,6 +1337,7 @@ pub fn lower_with_imports(
             s.return_text = return_text;
             s.output_contract = skill_output_contract;
             s.return_local_ref = skill_return_local_ref;
+            s.freeform_sections = skill_freeform_ids;
         }
     }
     arena.set_root_skill(skill_id);
@@ -1166,6 +1360,50 @@ pub fn lower_with_imports(
     arena.type_registry = type_registry;
 
     Ok(arena)
+}
+
+#[cfg(test)]
+mod freeform_heading_resolution_tests {
+    //! Verify `lower_freeform_section` honors a catalogue entry's explicit
+    //! `heading` override (D9/§4.2 of `design/glyph-freeform-sections-design`)
+    //! rather than mechanically deriving from the section name.
+
+    use super::*;
+    use crate::sections::{CatalogueEntry, SectionCatalogue};
+
+    #[test]
+    fn resolve_uses_catalogue_heading_when_set() {
+        let entry = CatalogueEntry {
+            heading: Some("Steps".to_string()),
+            ..Default::default()
+        };
+        let catalogue = SectionCatalogue::from_entries(vec![("flow".to_string(), entry)]);
+        // derive_heading("flow") would return "Flow" — the catalogue override
+        // wins.
+        assert_eq!(resolve_freeform_heading(&catalogue, "flow"), "Steps");
+    }
+
+    #[test]
+    fn resolve_falls_back_to_derive_when_catalogue_missing() {
+        let catalogue = SectionCatalogue::from_entries(vec![]);
+        assert_eq!(resolve_freeform_heading(&catalogue, "quality"), "Quality");
+        assert_eq!(
+            resolve_freeform_heading(&catalogue, "acceptance_criteria"),
+            "Acceptance Criteria"
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_derive_when_catalogue_entry_has_no_heading() {
+        // Entry exists but without an explicit heading — fall back to
+        // derive_heading.
+        let entry = CatalogueEntry {
+            heading: None,
+            ..Default::default()
+        };
+        let catalogue = SectionCatalogue::from_entries(vec![("quality".to_string(), entry)]);
+        assert_eq!(resolve_freeform_heading(&catalogue, "quality"), "Quality");
+    }
 }
 
 #[cfg(test)]
@@ -2189,6 +2427,12 @@ mod unmerged_extras_invariant_tests {
                 constraints_section: Vec::new(),
                 return_type: None,
                 extra_subsections: vec![DuplicateSubsection::Description("unmerged".to_string())],
+                description_span: None,
+                context_section_span: None,
+                constraints_section_span: None,
+                effects_span: None,
+                flow_span: None,
+                freeform_sections: Vec::new(),
             },
             span: Span::new(0, 0, 10),
         };

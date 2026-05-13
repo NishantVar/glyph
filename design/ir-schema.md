@@ -19,6 +19,7 @@ Skill {
   constraints:       [Constraint]          // top-level declared constraints only
   flow:              [FlowNode]            // ordered
   output_contract:   OutputContract?       // present when flow ends with `return <name>` or `return <"description">`
+  freeform_sections: [FreeformSection]     // Phase 3 colon-keyword sections (see §Freeform sections); empty pre-Phase-3.B
 }
 
 Block {
@@ -31,6 +32,7 @@ Block {
   constraints:       [Constraint]
   flow:              [FlowNode]
   output_contract:   OutputContract?       // present when flow ends with `return <name>` or `return <"description">`
+  freeform_sections: [FreeformSection]     // Phase 3; empty pre-Phase-3.B
 }
 
 ExportBlock {
@@ -43,6 +45,7 @@ ExportBlock {
   constraints:       [Constraint]
   flow:              [FlowNode]
   output_contract:   OutputContract?       // present when flow ends with `return <name>` or `return <"description">`
+  freeform_sections: [FreeformSection]     // Phase 3; empty pre-Phase-3.B
 }
 ```
 
@@ -200,6 +203,48 @@ absent. Kebab-case is an Emit-time rendering transform applied to this identifie
 when producing the per-entry `- **kebab-name**` lead-in in `### Context` — it is
 not stored in the IR. Downstream tooling that wants a stable handle should consume
 this field as the source identifier.
+
+## Freeform sections (Phase 3)
+
+Phase 3 introduces colon-keyword sub-sections (e.g. `quality:`, `risks:`,
+`acceptance_criteria:`) whose name is not in the closed built-in vocabulary
+defined in §`Section Vocabulary` of `ir-and-semantics.md`. The IR represents
+each such section with a container node plus per-item content nodes; the
+container/content split mirrors the existing `Constraint` / `ContextNode`
+separation and gives every item its own `node_id` for diagnostics and
+downstream references.
+
+```
+FreeformSection {
+  name:              String                // canonical author-written name (e.g. "quality", "acceptance_criteria")
+  heading:           String                // pre-rendered Title Case heading used in compiled output ("Quality", "Acceptance Criteria")
+  source_line:       u32                   // 0-based source line of the `<name>:` header (D9 author-positioned vs synthetic merge)
+  items:             [FreeformContent]     // ordered, one IR node per source item
+}
+
+FreeformContent {
+  text:              String                // rendered item text
+  marker_word:       Option<String>        // verbatim source spelling: "require" | "avoid" | "must" | "must avoid" | "context"; None for plain string-literal / name-ref items
+  strength:          Option<Strength>      // derived from marker_word; None when no marker or marker == "context"
+  polarity:          Option<Polarity>      // derived from marker_word; None when no marker or marker == "context"
+  name:              Option<String>        // source identifier when the source entry was a NameRef; None for inline strings / marker clauses
+}
+```
+
+**Marker distinction.** Authors may use the same `require` / `avoid` / `must` /
+`must avoid` / `context` marker keywords inside a freeform section as in
+`constraints:` / `context:`. The distinction is that markers inside a freeform
+section do not hoist into the enclosing decl's `constraints` / `context` lists
+— they stay scoped to their section so the emitter renders the section as
+authored. The `marker_word` + `strength` + `polarity` fields preserve marker
+semantics within the section so emit can still produce strength / polarity
+badges or context lead-ins per the freeform-section design.
+
+**Phase 3.A scope.** Phase 3.A wires the AST/IR node types only — the parser
+does not yet emit `FreeformSection` nodes (Phase 3.B), and lower / emit do not
+yet consume them (Phases 3.C / 3.D). Until then, every `Skill` / `Block` /
+`ExportBlock` ships with an empty `freeform_sections` list and the IR contains
+no `FreeformSection` / `FreeformContent` arena entries.
 
 ## Expressions
 

@@ -66,7 +66,9 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
   "context": [ ... ],
   "constraints": [ ... ],
   "flow": [ ... ],
-  "output_contract": null
+  "output_contract": null,
+  "freeform_sections": ["n15", "n22"],
+  "freeform_section_headings": ["Quality", "Acceptance Criteria"]
 }
 ```
 
@@ -83,6 +85,8 @@ The canonical spec for node ID format, allocation, scope, stability, and collisi
 | `constraints` | array of Constraint | yes | Top-level declared constraints only. May be empty. |
 | `flow` | array of FlowNode | yes | Ordered flow nodes. |
 | `output_contract` | OutputContract or null | yes | Output target contract for `return <name>` or `return <"description">`, or `null` when the skill has no output-target return. This field is a sibling of `flow`, not a flow entry, so it does not affect step counts. |
+| `freeform_sections` | array of string | yes | Per-section `node_id` strings, in source order. Each entry references a `FreeformSection` node in the arena. Empty array when the source skill declared no freeform colon-keyword sections. Phase 6 (Emit) consumes these for the §4.1 D9 author-positioned vs synthetic merge — see `ir-schema.md` §Freeform sections. |
+| `freeform_section_headings` | array of string | yes | Parallel array of pre-rendered Title Case headings (same length and order as `freeform_sections`). Computed by Lower from each `FreeformSection.heading` so consumers — notably `validate-output` Phase 6b — can recognize the freeform `##` H2s in compiled Markdown without re-walking the arena. Empty array when there are no freeform sections. |
 
 ### Param
 
@@ -427,6 +431,54 @@ Constraints in `scoped_constraints` on a Call node use the same shape.
 | `kind` | string | yes | Always `"context"`. |
 | `text` | string | yes | Resolved context text. |
 | `name` | string | no | Source identifier of the referenced `const` / `export const`, serialized verbatim (e.g. `monorepo_layout` as written in the source — not kebab-cased). Omitted for inline-string entries. Emit applies a kebab-case rendering transform when producing the `- **kebab-name**` lead-in label in `### Context`; the transform is emit-time only and not reflected in this field. |
+
+### FreeformSection (Phase 3)
+
+```json
+{
+  "node_id": "n15",
+  "kind": "freeform_section",
+  "name": "quality",
+  "heading": "Quality",
+  "source_line": 12,
+  "items": ["n16", "n17"]
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `node_id` | string | yes | |
+| `kind` | string | yes | Always `"freeform_section"`. |
+| `name` | string | yes | Canonical author-written section name (e.g. `"quality"`, `"acceptance_criteria"`). |
+| `heading` | string | yes | Pre-rendered Title Case heading used in compiled output (e.g. `"Quality"`). Lower computes this so the emitter does not need to know naming conventions. |
+| `source_line` | integer | yes | 0-based source line of the `<name>:` header. Consumed by Phase 6 (Emit) for the D9 author-positioned vs synthetic merge. |
+| `items` | array | yes | Per-item `node_id` strings, in source order. Each entry references a `FreeformContent` node in the arena. |
+
+Pre-Phase-3.B no compilation emits this kind; the field is defined here so downstream consumers (validator, agent harness) can opt in to the shape as Phase 3.B/3.C/3.D land. See `ir-schema.md` §Freeform sections for the marker semantics.
+
+### FreeformContent (Phase 3)
+
+```json
+{
+  "node_id": "n16",
+  "kind": "freeform_content",
+  "text": "Prefer surgical edits over wide refactors.",
+  "marker_word": "must",
+  "strength": "hard",
+  "polarity": "require",
+  "name": null
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `node_id` | string | yes | |
+| `kind` | string | yes | Always `"freeform_content"`. |
+| `text` | string | yes | Rendered item text. |
+| `marker_word` | string \| null | yes | Verbatim source spelling of the reserved marker word when one is present: `"require"`, `"avoid"`, `"must"`, `"must avoid"`, or `"context"`. `null` for plain string-literal / name-ref items. |
+| `strength` | string \| null | yes | `"soft"` or `"hard"` derived from `marker_word`. `null` when no marker is present or `marker_word == "context"`. |
+| `polarity` | string \| null | yes | `"require"` or `"avoid"` derived from `marker_word`. `null` when no marker is present or `marker_word == "context"`. |
+| `name` | string \| null | yes | Source identifier when the source entry was a NameRef (parallel to `ContextNode.name`). `null` for inline strings and marker clauses. |
 
 ## Expression Union
 

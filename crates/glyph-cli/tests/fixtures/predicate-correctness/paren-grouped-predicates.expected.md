@@ -7,9 +7,7 @@ description: 'Branch on grouped predicates.'
 
 - **reviewable** (Bool). Default: "true".
 
-## Instructions
-
-### Steps
+## Steps
 
 1. If ( the change is big or the change is small ) and reviewable:
    a. Review carefully.

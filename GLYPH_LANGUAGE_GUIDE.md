@@ -9,7 +9,7 @@ This is the single document an author needs to write a skill in Glyph. It teache
 Glyph is a small DSL for **authoring agent skills**. You write a structured `.glyph` source file. The Glyph compiler turns it into a flat, explicit Markdown skill (`.md`) that a coding agent can follow at runtime.
 
 - The source form is for humans: structured, readable, like a tiny program.
-- The compiled form is for agents: explicit prose with sections like `## Parameters`, `### Context`, `### Steps`, `### Constraints`.
+- The compiled form is for agents: explicit prose with peer-level H2 sections like `## Parameters`, `## Context`, `## Steps`, `## Constraints`.
 - You never write the agent-facing prose by hand. You describe **structure and intent** and the compiler produces the prose.
 - Glyph is a language with a compiler, not a runtime. There is no agent execution at compile time — the compiler emits instructions for an agent to follow later.
 
@@ -70,8 +70,8 @@ That compiles to a complete agent-runnable skill. The compiler will:
 
 - materialize stable `generated const` definitions for `accuracy` and `stale_references` (or repair them from same-file `const` if you add them),
 - generate a description from the body if you omit one,
-- expand each instruction into agent-followable prose under `### Steps`,
-- emit constraints under `### Constraints`,
+- expand each instruction into agent-followable prose under `## Steps`,
+- emit constraints under `## Constraints`,
 - preserve `{scope}` as a runtime parameter slot.
 
 ---
@@ -396,19 +396,25 @@ A `skill`, `block`, or `export block` body may contain these colon-terminated su
 |---|---|---|
 | `description:` | singular | one-line summary; goes to compiled YAML frontmatter |
 | `effects:` | plural | declared effect keywords (gated — see §11) |
+| `goal:` | singular | one-line statement of the skill's success condition |
 | `context:` | singular (set-like) | background framing the agent should understand |
 | `constraints:` | plural | constraint markers |
 | `flow:` | singular | ordered workflow steps |
 
 Each named sub-section may appear **at most once** per body.
 
-**Order is permissive** — write them in any order. `glyph fmt` rewrites them into a canonical sequence on disk:
+Beyond these built-ins, **any other `<name>:` colon-keyword** is accepted as a *freeform section* with the same body grammar as `context:`. See §7.7.
+
+**Order is permissive** — write them in any order. The recommended source order is:
 
 1. `description:`
 2. `effects:`
-3. `context:`
+3. `goal:`
 4. `constraints:`
-5. `flow:`
+5. `context:`
+6. `flow:`
+
+(`glyph fmt` does **not** reorder sections; the compiler places each section at the canonical body position via the D9 merge algorithm. Authors who follow the recommended order get compiled output that matches the default placement.)
 
 **Long form vs short form** — both accepted, identical IR:
 
@@ -488,7 +494,16 @@ skill fix_bug(scope = ".")
         ...
 ```
 
-Body-level and flow-top-level markers are **hoisted** into the declaration's `constraints:` section by the compiler (and by `glyph fmt` in source). Markers inside a branch arm stay inline and render as part of the conditional Step prose ("If X, do not do Y.").
+Body-level and flow-top-level markers are **hoisted** into a synthetic `## Constraints` section at the canonical slot by the compiler (Lower pass). `glyph fmt` does **not** modify markers in source — it preserves source order and marker position; the hoisting happens only during compilation, not during source-text formatting. Markers inside a branch arm stay inline and render as part of the conditional Step prose ("If X, do not do Y.").
+
+**Four positional cases (full rule).** A marker's destination depends on where you wrote it:
+
+1. **Body-level** → hoisted into `constraints:`.
+2. **`flow:`-top** (not inside a branch) → hoisted into `constraints:`.
+3. **Branch arm** (inside `if`/`elif`/`else`) → stays inline as conditional-step prose.
+4. **Inside any other named section** (e.g. nested inside `constraints:` itself, or inside a section heading like `context:`) → stays scoped to that section. **No hoisting.** If you put a `require` inside a section heading, it stays inside that heading.
+
+See `design/language-surface.md` §4.2a for the canonical statement.
 
 `must` should be reserved for genuinely hard constraints. Strong wording (`must`, `never`) inferred from name prefixes also signals hard strength.
 
@@ -565,6 +580,66 @@ A statement call without a binding discards its return value.
 ### 7.5 `effects:` (gated — see §11)
 
 Declared effect keywords. Today disabled by default behind `--enable-effects`.
+
+### 7.6 `goal:`
+
+A one-line statement of the skill's success condition — what "done" looks like. Compiles to a `## Goal` H2 in the compiled output at the canonical first slot (before `## Parameters`, `## Context`, `## Steps`).
+
+Body must be **exactly one** quoted string literal *or* a bare-name reference to a same-file `const` / `export const`:
+
+```glyph
+skill fix_bug(scope = ".")
+    description: "Debug and fix a bug in the codebase with minimal, targeted changes."
+    goal: "The bug is fixed and a regression test prevents it from returning."
+    flow:
+        ...
+```
+
+```glyph
+const success_criterion = "The bug is fixed and a regression test prevents it from returning."
+
+skill fix_bug(scope = ".")
+    description: "Debug and fix a bug in the codebase with minimal, targeted changes."
+    goal: success_criterion
+    flow:
+        ...
+```
+
+- Writing two items inside `goal:` is a `G::analyze::cardinality-violation` error — pick a single string or single const.
+- `{param}` slots are allowed inside `goal:` (per D11) and resolve to the skill's parameters at runtime.
+- `goal:` is optional. If omitted, no `## Goal` heading is emitted.
+- No Repair pass generates a `goal:` for you — if you want one, write it.
+
+### 7.7 Freeform sub-sections
+
+Beyond the built-in section names, you may author any `<name>:` colon-keyword section. Body grammar matches `context:` — inline strings, block strings, bare-name refs to string-valued `const` / `export const`, and the five reserved marker clauses (`require`, `avoid`, `must`, `must avoid`, `context`).
+
+A freeform section compiles to a peer-level `## Heading` block where `Heading` is your section name with underscores replaced by spaces and each word title-cased: `acceptance_criteria:` → `## Acceptance Criteria`, `risks:` → `## Risks`.
+
+```glyph
+skill ship_release(version)
+    description: "Cut and publish a release."
+    flow:
+        verify_tests_pass()
+        publish_artifact(version)
+    acceptance_criteria:
+        "All tests pass on the release branch."
+        "The artifact is published with a SemVer tag."
+    risks:
+        avoid "Publishing without a changelog entry."
+        must  "Tag the commit before pushing."
+```
+
+**Rendering shape (per item count):**
+
+- One item → renders as a single paragraph under the heading.
+- Multiple items → renders as a bulleted list under the heading.
+
+**Marker clauses** inside a freeform section render through the same four-form constraint template as the built-in `constraints:` section (`must <text>.` → `You must <text>.`, etc.). The `context` marker renders the bare body.
+
+**Position in compiled output.** A freeform section anchors to its source line: it appears in the compiled output at the same relative position you wrote it in the source, between the surrounding built-in sections. This is the source-position override (D9 rule a).
+
+**Names that conflict with built-ins** are not freeform — `description:`, `effects:`, `constraints:`, `context:`, and `flow:` always parse as the built-in form. Pick a different name (e.g. `notes:`, `risks:`, `acceptance_criteria:`).
 
 ---
 
@@ -1100,13 +1175,11 @@ effects: [<keyword>, <keyword>]   # only when --enable-effects AND set is non-em
 - **scope**: description (default: ".")
 - **target**: description (required)
 
-## Instructions
-
-### Context
+## Context
 - Background point 1.
 - Background point 2.
 
-### Steps
+## Steps
 1. First step prose.
 2. Second step prose. {scope} survives as a runtime slot.
 3. If the risk is high and tests exist:
@@ -1115,7 +1188,7 @@ effects: [<keyword>, <keyword>]   # only when --enable-effects AND set is non-em
    Otherwise:
    a. No action needed.
 
-### Constraints
+## Constraints
 - Strong: must avoid breaking the public API.
 - Soft: prefer existing patterns.
 ```
@@ -1123,12 +1196,13 @@ effects: [<keyword>, <keyword>]   # only when --enable-effects AND set is non-em
 Notes:
 
 - Frontmatter always has `name` (taken from the `skill` declaration) and `description`. There is no `# <Skill Name>` heading — the frontmatter `name` is the authoritative title.
+- Body sections (`## Context`, `## Steps`, `## Constraints`) sit at peer H2, alongside `## Parameters`. No `## Instructions` wrapper.
 - `## Parameters` is only present if the skill declares parameters.
-- `### Context` only if there's a `context:` section or context markers.
-- `### Constraints` only if any unconditional constraints exist.
-- `### Steps` is omitted only for pure constraint-only skills (no `flow:` at all). At least one of `### Steps` or `### Constraints` is always present.
+- `## Context` only if there's a `context:` section or context markers.
+- `## Constraints` only if any unconditional constraints exist.
+- `## Steps` is omitted only for pure constraint-only skills (no `flow:` at all). At least one of `## Steps` or `## Constraints` is always present.
 - Branches project to a single numbered Step with lettered sub-steps per arm. Letters reset per arm.
-- The `return` expression folds into the final Step's closing sentence; there is no `### Returns` section.
+- The `return` expression folds into the final Step's closing sentence; there is no `## Returns` section.
 - Imports compile away — no import paths or module names appear in the output.
 
 You don't need to know the exact projection to write a skill — but knowing the shape helps you anticipate what the agent will read.
@@ -1141,7 +1215,7 @@ When you run the compiler on your `.glyph`:
 
 1. **Parse** — checks indentation, syntax, declarations.
 2. **Analyze** — resolves names, checks closure, infers effects, validates types.
-3. **Repair** (LLM-assisted, bounded) — fixes repairable issues: materializes `generated const` / `generated block` for undefined names, adds missing markers, generates a missing `description:`, hoists body-level constraints into `constraints:`, etc. **Repair edits your source file**, leaves comments where it acted, and is idempotent.
+3. **Repair** (LLM-assisted, bounded) — fixes repairable issues: materializes `generated const` / `generated block` for undefined names, adds missing markers, generates a missing `description:`, etc. **Repair edits your source file**, leaves comments where it acted, and is idempotent.
 4. **Lower** — compiles the repaired source into typed IR.
 5. **Validate** — strict invariants on IR.
 6. **Expand** (LLM-assisted, per-invocation) — turns IR steps and constraints into agent-facing prose.

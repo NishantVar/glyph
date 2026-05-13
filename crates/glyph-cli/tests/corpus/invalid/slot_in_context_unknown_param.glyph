@@ -1,0 +1,6 @@
+skill summarize(scope = ".")
+    description: "Context body references an undeclared parameter."
+    context: "Inspect {undeclared} first."
+
+    flow:
+        "Run the work."

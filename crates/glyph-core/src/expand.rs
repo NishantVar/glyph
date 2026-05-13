@@ -86,10 +86,17 @@ pub fn expand_step1_with_imported_descriptions(
     //   reachable through the procedure emit path.
     let mut block_flow_counts: HashMap<String, usize> = HashMap::new();
     let mut block_has_branches: HashMap<String, bool> = HashMap::new();
+    // Phase 3.C / Task 3.10: blocks that declare freeform colon-keyword
+    // sections (`quality:`, `risks:`, …) cannot be inlined as Tier 1 —
+    // inlining drops sub-heading scaffolding entirely, so the freeform
+    // section would silently vanish. Force Tier 2 promotion when the callee
+    // carries any freeform sections (design D12 / §4.1.5).
+    let mut block_has_freeform: HashMap<String, bool> = HashMap::new();
     for n in arena.nodes() {
         if let IrNode::Block(b) = n {
             block_flow_counts.insert(b.name.clone(), b.flow_statements.len());
             block_has_branches.insert(b.name.clone(), !b.branch_steps.is_empty());
+            block_has_freeform.insert(b.name.clone(), !b.freeform_sections.is_empty());
         }
     }
 
@@ -115,11 +122,15 @@ pub fn expand_step1_with_imported_descriptions(
             let stmt_count = block_flow_counts.get(target).copied().unwrap_or(0);
             let freq = call_frequency.get(target).copied().unwrap_or(1);
             let has_branches = block_has_branches.get(target).copied().unwrap_or(false);
+            let has_freeform = block_has_freeform.get(target).copied().unwrap_or(false);
 
             // Tier 2 conditions: >= 4 flow statements, called 2+ times,
             // OR the block's flow contains a branch (forced Tier 2 — Tier 1
-            // inline drops branch structure, see `block_has_branches` above).
-            let is_tier2 = stmt_count >= 4 || freq >= 2 || has_branches;
+            // inline drops branch structure, see `block_has_branches` above),
+            // OR the block declares any freeform colon-keyword sections
+            // (Phase 3.C / D12 — Tier 1 inline has no sub-heading mechanism
+            // and would silently drop them).
+            let is_tier2 = stmt_count >= 4 || freq >= 2 || has_branches || has_freeform;
 
             if is_tier2 {
                 // Mark as Tier 2 — leave the Call node in place.

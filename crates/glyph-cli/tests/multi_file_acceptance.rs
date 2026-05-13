@@ -149,7 +149,7 @@ fn fix_bug_resolves_imported_constraint() {
     // The imported text `preserve_existing_patterns` from prefs.glyph
     // should appear in the Constraints section.
     assert!(
-        md.contains("### Constraints"),
+        md.contains("## Constraints"),
         "fix_bug.md should have a Constraints section"
     );
     assert!(
@@ -243,10 +243,10 @@ fn fix_bug_has_context_section() {
     let md = std::fs::read_to_string(path.join("fix_bug.md")).unwrap();
 
     // fix_bug.glyph has `context:` sub-section at skill level,
-    // which should render as `### Context` in the output.
+    // which should render as `## Context` in the output.
     assert!(
-        md.contains("### Context"),
-        "fix_bug.md should have a ### Context section"
+        md.contains("## Context"),
+        "fix_bug.md should have a ## Context section"
     );
     assert!(
         md.contains("standard project conventions"),
@@ -270,10 +270,10 @@ fn review_pr_has_branch_scoped_context() {
 
     // review_pr.glyph has `context security_note` inside the
     // `if risk == "high"` arm. This should render inline as a Note,
-    // not as a top-level ### Context section.
+    // not as a top-level ## Context section.
     assert!(
-        !md.contains("### Context"),
-        "review_pr.md should NOT have a top-level ### Context section"
+        !md.contains("## Context"),
+        "review_pr.md should NOT have a top-level ## Context section"
     );
     assert!(
         md.contains("high-risk change"),
@@ -516,7 +516,7 @@ fn fix_bug_constraints() {
 
     let md = std::fs::read_to_string(path.join("fix_bug.md")).unwrap();
     assert!(
-        md.contains("### Constraints"),
+        md.contains("## Constraints"),
         "fix_bug.md should have Constraints"
     );
     // `require preserve_existing_patterns` (imported from prefs)
@@ -539,7 +539,7 @@ fn review_pr_constraints() {
 
     let md = std::fs::read_to_string(path.join("review_pr.md")).unwrap();
     assert!(
-        md.contains("### Constraints"),
+        md.contains("## Constraints"),
         "review_pr.md should have Constraints"
     );
     assert!(

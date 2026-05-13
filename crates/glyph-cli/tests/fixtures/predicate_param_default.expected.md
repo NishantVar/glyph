@@ -8,9 +8,7 @@ description: 'Resolve a string-defaulted param in condition position.'
 
 - **needs_review**. Default: "the change needs review".
 
-## Instructions
-
-### Steps
+## Steps
 
 1. Decide whether the change needs review applies and, if so:
    a. Stop and request explicit user confirmation.

@@ -1,0 +1,10 @@
+skill demo()
+    description: "Demo skill with two freeform sections."
+    quality:
+        require accuracy
+        "Prefer minimal diffs."
+    risks:
+        "Long-running operations may time out."
+        avoid silent_failures
+    flow:
+        "Investigate."

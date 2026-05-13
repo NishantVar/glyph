@@ -34,7 +34,7 @@ This folder is the working source of truth for Glyph system design. The reposito
 - [diagnostics.md](diagnostics.md) — structured diagnostic shape, classification tiers (`error`/`repairable`/`warning`), ID scheme, representative catalog
 - [repair.md](repair.md) — LLM repair pass, generated definitions (const and block), comment syntax, intent potency, idempotence
 - [expand.md](expand.md) — Expand pass Step 2 (LLM reshaping) and Phase 6b validation gate: input schema, output contract, role-preservation check, retry / deterministic-fallback / hard-fail policy, non-idempotence
-- [compiled-output.md](compiled-output.md) — compiled Markdown shape: YAML frontmatter, `## Parameters` (conditional), `## Instructions` (`### Context` + `### Steps` + `### Constraints`), parameterless compilation model
+- [compiled-output.md](compiled-output.md) — compiled Markdown shape: YAML frontmatter, `## Parameters` (conditional), peer-level body H2s (`## Context` + `## Steps` + `## Constraints`), parameterless compilation model
 
 ### CLI
 - [cli.md](cli.md) — **v0 CLI surface**: subcommands (`compile`, `check`, `fmt`, `validate-output`), flags (`--emit-ir`, `--out-dir`, `--format`), exit codes (0/1/2/3 agent-oriented), diagnostic channel discipline, multi-file behavior, deferred features

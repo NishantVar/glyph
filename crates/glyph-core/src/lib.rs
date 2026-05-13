@@ -19,6 +19,7 @@ pub mod lower;
 pub mod name_kind;
 pub mod output_target;
 pub mod parse;
+pub mod sections;
 pub mod semantic_tokens;
 pub mod slot;
 pub mod span;
@@ -143,6 +144,10 @@ pub fn compile_source(
 }
 
 /// Compile with explicit effects gate.
+///
+/// The CLI derives `enable_effects` from
+/// [`sections::SectionCatalogue::effects_enabled`] at the boundary and
+/// threads the bare bool through this entry point.
 pub fn compile_source_with_effects(
     source: &str,
     file_id: u32,
@@ -1898,6 +1903,32 @@ fn emit_library_procedures(path: &Path, enable_effects: bool) -> Vec<(String, St
                 _ => None,
             };
             let return_type_text = eb.node.return_type.as_ref().map(|s| s.node.clone());
+            // Resolve the export block's freeform sections per design
+            // §4.1.5 / D12 — heading-depth threading for Tier 3 sits at H2.
+            // NameRef items dereference through `same_file_consts`; marker
+            // metadata maps the source-spelling reserved word to its
+            // canonical (strength, polarity) pair (mirrors `lower::marker_metadata`).
+            // Heading resolution mirrors the Tier 1 / Tier 2 path via
+            // `lower::resolve_freeform_heading` so a catalogue entry's
+            // `heading` override is honored (e.g. `acceptance:` → `Acceptance
+            // Criteria` rather than the derived `Acceptance`).
+            let catalogue = crate::sections::SectionCatalogue::load();
+            let freeform_sections: Vec<emit::ProcedureFreeformSection> = eb
+                .node
+                .freeform_sections
+                .iter()
+                .map(|fs| {
+                    let items: Vec<emit::ProcedureFreeformItem> = fs
+                        .items
+                        .iter()
+                        .filter_map(|item| resolve_freeform_item(item, &same_file_consts))
+                        .collect();
+                    emit::ProcedureFreeformSection {
+                        heading: lower::resolve_freeform_heading(&catalogue, &fs.name),
+                        items,
+                    }
+                })
+                .collect();
             let markdown = emit::emit_procedure(
                 &eb.node.name,
                 desc,
@@ -1908,6 +1939,7 @@ fn emit_library_procedures(path: &Path, enable_effects: bool) -> Vec<(String, St
                 return_type_text.as_deref(),
                 &local_type_registry,
                 enable_effects,
+                &freeform_sections,
             );
 
             let out_path = subdir.join(format!("{}.md", kebab_name));
@@ -1918,6 +1950,69 @@ fn emit_library_procedures(path: &Path, enable_effects: bool) -> Vec<(String, St
         }
     }
     emitted
+}
+
+/// Resolve one AST `FreeformItem` into a pre-rendered `ProcedureFreeformItem`
+/// for Tier 3 emission. Mirrors `lower::lower_freeform_item` (which builds the
+/// equivalent IR node for Tier 1 / Tier 2): `NameRef` dereferences through
+/// `consts`; `MarkerClause` renders into prose via the locked four-form
+/// constraint template (`require`/`avoid`/`must`/`must avoid`) or keeps the
+/// raw operand text for `context`.
+///
+/// # CROSS-PHASE INVARIANT — READ BEFORE TOUCHING
+///
+/// Lower-time analysis (see `lower::lower_freeform_item` returning
+/// `LowerError::UndefinedContextRef` and the analyze passes that fire
+/// `G::analyze::undefined-name` for bare-name refs) **MUST** surface every
+/// unresolved `NameRef` BEFORE this function runs. The `NameRef` arm below
+/// returns `None` and the `Option` is dropped silently downstream — if
+/// validation order ever regresses such that an unresolved `NameRef` reaches
+/// this point, the item will vanish from Tier 3 output with **no diagnostic,
+/// no warning, and no log**: the author's authored line just disappears.
+///
+/// If you change validation order, reorganize the lower pipeline, add a new
+/// caller that bypasses lower-time analysis, or for any reason cannot
+/// guarantee that the `NameRef` arm is unreachable here, you MUST either:
+///   (a) add a `debug_assert!(false, "unresolved NameRef in Tier 3 …")` in
+///       the `NameRef` arm below so debug builds panic instead of silently
+///       eliding the item, OR
+///   (b) change the return type to `Result<Option<…>, …>` and propagate the
+///       error so callers can surface a diagnostic.
+///
+/// Do not "fix" the silent drop by inserting placeholder text — that hides
+/// the regression instead of catching it.
+fn resolve_freeform_item(
+    item: &ast::FreeformItem,
+    consts: &std::collections::BTreeMap<String, (String, kind_infer::TypeTag)>,
+) -> Option<emit::ProcedureFreeformItem> {
+    use ast::FreeformItem;
+    match item {
+        FreeformItem::StringLiteral(s) => Some(emit::ProcedureFreeformItem {
+            text: s.node.clone(),
+        }),
+        FreeformItem::NameRef(name) => consts
+            .get(&name.node)
+            .map(|(text, _)| text.clone())
+            .map(|text| emit::ProcedureFreeformItem { text }),
+        FreeformItem::MarkerClause { marker, text } => {
+            // Marker → (strength, polarity, _word) from the canonical mapper.
+            let (strength, polarity, _word) = lower::marker_metadata(*marker);
+            // Resolve operand: bare-name lookups via `consts`; string-literal
+            // operands pass through. Mirrors `lower::lower_freeform_item`.
+            let raw = text.node.clone();
+            let resolved_operand = consts
+                .get(&raw)
+                .map(|(t, _)| t.clone())
+                .unwrap_or_else(|| raw.clone());
+            let rendered = match (strength, polarity) {
+                (Some(s), Some(p)) => {
+                    crate::sections::hooks::dispatch_constraints_expand(s, p, &resolved_operand)
+                }
+                _ => resolved_operand,
+            };
+            Some(emit::ProcedureFreeformItem { text: rendered })
+        }
+    }
 }
 
 /// Build a mapping from imported block names to their procedure file paths
@@ -3081,7 +3176,9 @@ skill main()
     #[test]
     fn effects_disabled_produces_diagnostic() {
         // When enable_effects is false (default), `effects:` in source
-        // produces a `G::parse::effects-disabled` error diagnostic.
+        // produces a `G::parse::gated-section` error diagnostic (the
+        // unified catalogue-disabled-section id; Phase 5 renamed the
+        // legacy `effects-disabled` to match other gated sections).
         let src = "\
 skill main()
     description: \"Main skill.\"
@@ -3092,20 +3189,16 @@ skill main()
         let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
-            ids.contains(&"G::parse::effects-disabled"),
-            "expected G::parse::effects-disabled when effects are off, got: {:?}",
+            ids.contains(&"G::parse::gated-section"),
+            "expected G::parse::gated-section when effects are off, got: {:?}",
             ids
         );
-        assert_eq!(
-            bag.exit_code(),
-            1,
-            "effects-disabled should be a hard error"
-        );
+        assert_eq!(bag.exit_code(), 1, "gated-section should be a hard error");
     }
 
     #[test]
     fn effects_disabled_on_block_produces_diagnostic() {
-        // `effects:` on a block declaration should also fire effects-disabled.
+        // `effects:` on a block declaration should also fire gated-section.
         let src = "\
 block helper()
     effects: writes_files
@@ -3114,8 +3207,8 @@ block helper()
         let bag = check_source(src, 0, "test.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
-            ids.contains(&"G::parse::effects-disabled"),
-            "expected G::parse::effects-disabled on block, got: {:?}",
+            ids.contains(&"G::parse::gated-section"),
+            "expected G::parse::gated-section on block, got: {:?}",
             ids
         );
     }
@@ -4091,11 +4184,11 @@ skill main()
         let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
-                // context should NOT appear as a top-level ### Context section.
+                // context should NOT appear as a top-level ## Context section.
                 // The branch-scoped context inlines into the sub-step prose.
                 assert!(
-                    !markdown.contains("### Context"),
-                    "branch-scoped context should not surface in ### Context:\n{}",
+                    !markdown.contains("## Context"),
+                    "branch-scoped context should not surface in ## Context:\n{}",
                     markdown
                 );
                 // The context text should appear inline in the branch sub-steps.
@@ -4130,10 +4223,10 @@ skill main()
         let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
-                // Constraint should NOT appear in ### Constraints.
+                // Constraint should NOT appear in ## Constraints.
                 assert!(
-                    !markdown.contains("### Constraints"),
-                    "branch-scoped constraint should not surface in ### Constraints:\n{}",
+                    !markdown.contains("## Constraints"),
+                    "branch-scoped constraint should not surface in ## Constraints:\n{}",
                     markdown
                 );
                 // The constraint text should appear inline in the branch sub-steps.
@@ -6676,6 +6769,31 @@ skill main()
                 .map(|d| d.id.clone())
                 .collect::<Vec<_>>(),
             "check_file_partition + merge should equal check_file_with_effects"
+        );
+    }
+
+    /// Finding 3 regression: the Tier 3 export-block path resolves section
+    /// headings through `lower::resolve_freeform_heading`, so a catalogue
+    /// entry's `heading` override beats the derived Title Case heading. The
+    /// embedded catalogue has no entry whose `heading` differs from
+    /// `derive_heading(name)` for any freeform-eligible name (the `flow`
+    /// entry overrides "Flow" → "Steps" but flow is parsed as a built-in,
+    /// not freeform). We construct a synthetic catalogue with a distinct
+    /// override and call the helper that Tier 3 now delegates to, proving
+    /// the wire-up honors the override.
+    #[test]
+    fn tier3_catalogue_heading_override_beats_derive() {
+        use crate::sections::{CatalogueEntry, SectionCatalogue};
+        let entry = CatalogueEntry {
+            heading: Some("Acceptance Criteria".to_string()),
+            ..Default::default()
+        };
+        let catalogue = SectionCatalogue::from_entries(vec![("acceptance".to_string(), entry)]);
+        // `derive_heading("acceptance")` would produce "Acceptance"; the
+        // catalogue override wins for the Tier 3 emit path.
+        assert_eq!(
+            lower::resolve_freeform_heading(&catalogue, "acceptance"),
+            "Acceptance Criteria"
         );
     }
 }

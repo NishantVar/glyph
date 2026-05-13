@@ -109,6 +109,12 @@ Acceptable: `unrelated_edits` may become `avoid unrelated_edits` because the con
 
 When potency is ambiguous, repair should either choose the weakest compiling form that preserves the author's wording or return a diagnostic for author input.
 
+### 4.4a Respect the Four-Case Hoisting Rule
+
+Repair-generated markers must respect the four-case hoisting rule (`language-surface.md` §4.2a). Generated markers materialize at body-level (case 1) or `flow:`-top (case 2) only — never inside an existing named section (`context:`, `constraints:`, `flow:`, **or any freeform colon-keyword section such as `quality:` / `risks:`**), because that would silently move them into a different output destination.
+
+This rule extends uniformly to freeform sections (`language-surface.md` §2.5b): each freeform section body has its own H2 projection, and a marker injected inside that section's body would surface under the freeform heading rather than the canonical `## Constraints` / `## Context` destinations. Repair must therefore place every generated marker at body-level or at `flow:`-top, never indented into a named section's body — freeform or otherwise.
+
 ### 4.5 Be Idempotent
 
 Running repair twice on the same source, diagnostics, imports, standard library, and compiler schema produces no further source changes after the first accepted repair.
@@ -217,7 +223,7 @@ The author resolves manually: rename one of the conflicting declarations, or exp
 
 Phase 3 has three sub-steps:
 
-- **3a — deterministic auto-fixes.** Tab→spaces, mixed-indent normalization, legacy `-> None` strip, constraint/context hoisting, canonical sub-section reorder, duplicate sub-section merge (#109), duplicate import collapse (#107), unused import removal (#108), stdlib auto-import (#110), const-in-flow parens-add (#111), effects auto-insert (#112, gated on `--enable-effects`), placeholder return rewrite (#113). No LLM. 3a operates in two strata mirroring `glyph fmt` (`cli.md` §`glyph fmt`): pre-Parse text-level rewrites (tab → 4 spaces, mixed-indent normalization, legacy `-> None` strip on declaration headers — see §7) run first on raw source and may turn a previously-rejecting source into one Phase 1 can accept; post-Parse AST-level rewrites (unconditional constraint hoisting, duplicate import merging, unused import removal, source section reordering) require a successful Phase 1. If Phase 1 fails after the pre-Parse pass, only the pre-Parse fixes are written and the parse diagnostic is surfaced to subsequent phases; AST-level rewrites are skipped.
+- **3a — deterministic auto-fixes.** Tab→spaces, mixed-indent normalization, legacy `-> None` strip, duplicate sub-section merge (#109), duplicate import collapse (#107), unused import removal (#108), stdlib auto-import (#110), const-in-flow parens-add (#111), effects auto-insert (#112, gated on `--enable-effects`), placeholder return rewrite (#113). No LLM. 3a operates in two strata mirroring `glyph fmt` (`cli.md` §`glyph fmt`): pre-Parse text-level rewrites (tab → 4 spaces, mixed-indent normalization, legacy `-> None` strip on declaration headers — see §7) run first on raw source and may turn a previously-rejecting source into one Phase 1 can accept; post-Parse AST-level rewrites (duplicate import merging, unused import removal) require a successful Phase 1. If Phase 1 fails after the pre-Parse pass, only the pre-Parse fixes are written and the parse diagnostic is surfaced to subsequent phases; AST-level rewrites are skipped.
 - **3b — LLM-assisted repairs.** Driven by `repairable` diagnostics from Phase 2 (undefined names, ambiguous roles, missing returns, etc.).
 - **3c — constraint conflict scan.** Always runs (when triggered by constraint count). Independent of Phase 2 diagnostics.
 

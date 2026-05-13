@@ -7,9 +7,7 @@ description: 'Branch on risk and complexity.'
 
 - **risk** (String). Default: "low".
 
-## Instructions
-
-### Steps
+## Steps
 
 1. If risk == "high" and the requested change spans multiple files:
    a. Escalate to the architect.

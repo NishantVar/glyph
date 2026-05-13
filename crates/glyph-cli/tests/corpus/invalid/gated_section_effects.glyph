@@ -1,0 +1,6 @@
+skill demo()
+    description: "Demo."
+    effects:
+        reads_files
+    flow:
+        "Do."

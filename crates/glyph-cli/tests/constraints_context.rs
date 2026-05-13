@@ -1,5 +1,5 @@
 //! Slice 5 integration tests — constraints, context, text declarations, and
-//! `### Constraints` + `### Context` sections.
+//! `## Constraints` + `## Context` sections.
 //!
 //! Covers the acceptance criteria from `mvp-issues.md` slice 5.
 
@@ -57,7 +57,7 @@ fn assert_has_diagnostic_id(stdout: &str, id: &str) {
 }
 
 // --- Acceptance criterion 1: constraint_only.glyph compiles, emits
-// ### Constraints only (no ### Steps) ---
+// ## Constraints only (no ## Steps) ---
 
 #[test]
 fn constraint_only_compiles_with_constraints_no_steps() {
@@ -76,13 +76,13 @@ fn constraint_only_compiles_with_constraints_no_steps() {
 
     let md = std::fs::read_to_string(&out).expect("compiled .md file is missing");
     assert!(
-        md.contains("### Constraints"),
-        "expected ### Constraints section; got:\n{}",
+        md.contains("## Constraints"),
+        "expected ## Constraints section; got:\n{}",
         md
     );
     assert!(
-        !md.contains("### Steps"),
-        "expected no ### Steps section for constraint-only skill; got:\n{}",
+        !md.contains("## Steps"),
+        "expected no ## Steps section for constraint-only skill; got:\n{}",
         md
     );
 }
@@ -105,7 +105,7 @@ fn require_text_resolves_and_renders_constraint() {
     let md = std::fs::read_to_string(&out).expect("compiled .md file is missing");
     assert!(
         md.contains("**Require:** ensure all documentation accurately reflects the current code."),
-        "expected resolved text content in ### Constraints; got:\n{}",
+        "expected resolved text content in ## Constraints; got:\n{}",
         md
     );
 }
@@ -128,8 +128,8 @@ fn body_level_avoid_hoists_to_constraints_section() {
     let md = std::fs::read_to_string(&out).expect("compiled .md file is missing");
     // Avoid polarity should render as "**Avoid:** ..." phrasing (Soft/Avoid form).
     assert!(
-        md.contains("### Constraints"),
-        "expected ### Constraints section; got:\n{}",
+        md.contains("## Constraints"),
+        "expected ## Constraints section; got:\n{}",
         md
     );
     assert!(
@@ -139,7 +139,7 @@ fn body_level_avoid_hoists_to_constraints_section() {
     );
 }
 
-// --- Acceptance criterion 4: context: sub-section emits ### Context before ### Steps ---
+// --- Acceptance criterion 4: context: sub-section emits ## Context before ## Steps ---
 
 #[test]
 fn context_section_emits_before_steps() {
@@ -160,13 +160,11 @@ fn context_section_emits_before_steps() {
     );
 
     let md = std::fs::read_to_string(&out).expect("compiled .md file is missing");
-    let context_idx = md
-        .find("### Context")
-        .expect("expected ### Context section");
-    let steps_idx = md.find("### Steps").expect("expected ### Steps section");
+    let context_idx = md.find("## Context").expect("expected ## Context section");
+    let steps_idx = md.find("## Steps").expect("expected ## Steps section");
     assert!(
         context_idx < steps_idx,
-        "### Context must appear before ### Steps; got:\n{}",
+        "## Context must appear before ## Steps; got:\n{}",
         md
     );
 }
@@ -188,12 +186,12 @@ fn text_in_context_resolves_to_string() {
     let md = std::fs::read_to_string(&out).expect("compiled .md file is missing");
     assert!(
         md.contains("This codebase uses a monorepo layout with per-crate Cargo.toml files."),
-        "expected resolved text in ### Context; got:\n{}",
+        "expected resolved text in ## Context; got:\n{}",
         md
     );
     assert!(
         md.contains("The bug is assumed to be reproducible locally."),
-        "expected inline string in ### Context; got:\n{}",
+        "expected inline string in ## Context; got:\n{}",
         md
     );
 }
@@ -217,8 +215,8 @@ fn body_level_context_hoists_to_context_section() {
 
     let md = std::fs::read_to_string(&out).expect("compiled .md file is missing");
     assert!(
-        md.contains("### Context"),
-        "expected ### Context section; got:\n{}",
+        md.contains("## Context"),
+        "expected ## Context section; got:\n{}",
         md
     );
     // Body-level `context project_conventions` should resolve and appear.
@@ -254,8 +252,8 @@ fn flow_top_level_context_hoists_to_context_section() {
 
     let md = std::fs::read_to_string(&out).expect("compiled .md file is missing");
     assert!(
-        md.contains("### Context"),
-        "expected ### Context section; got:\n{}",
+        md.contains("## Context"),
+        "expected ## Context section; got:\n{}",
         md
     );
     // Flow-top-level `context deployment_rules` should be hoisted and resolved.
@@ -270,29 +268,76 @@ fn flow_top_level_context_hoists_to_context_section() {
         md
     );
     // The context markers should NOT appear as Steps.
-    let steps_section = md.split("### Steps").nth(1).expect("### Steps section");
+    let steps_section = md.split("## Steps").nth(1).expect("## Steps section");
     assert!(
         !steps_section.contains("Follow the deployment checklist"),
-        "hoisted context should not appear in ### Steps; got:\n{}",
+        "hoisted context should not appear in ## Steps; got:\n{}",
         md
     );
 }
 
-// --- Acceptance criterion 8: {param} in context: fires param-slot-in-non-instruction-string ---
+// --- Acceptance criterion 8: {param} in context: is now allowed (Phase 3, Task 3.12) ---
 
 #[test]
-fn param_slot_in_context_fires_diagnostic() {
-    let src = fixture("repairable", "slot_in_context.glyph");
+fn param_slot_in_context_is_allowed() {
+    // Phase 3, Task 3.12: `{name}` slots in `context:` bodies are no longer
+    // a parse-time error. The fixture declares `scope` as a parameter and
+    // references it as `{scope}` inside `context:`. The compiler must
+    // accept it (exit 0) and surface no slot diagnostic.
+    let src = fixture("valid", "slot_in_context.glyph");
     let result = run_check(src, "json");
     assert_eq!(
         result.status.code(),
-        Some(2),
-        "expected exit 2 (repairable); stdout={:?} stderr={:?}",
+        Some(0),
+        "expected exit 0 (clean); stdout={:?} stderr={:?}",
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr),
     );
     let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
-    assert_has_diagnostic_id(&stdout, "G::parse::param-slot-in-non-instruction-string");
+    assert!(
+        !stdout.contains("G::parse::param-slot-in-non-instruction-string"),
+        "context body should no longer emit a slot diagnostic; got:\n{}",
+        stdout
+    );
+}
+
+// --- Phase 3 / Task 3.12 — `{param}` slot in context: must resolve to a
+// declared header parameter; an unknown name fires the existing
+// `G::analyze::unknown-param-slot` (the compile-time existence check still
+// applies even though the parse-time rejection was lifted). ---
+
+#[test]
+fn unknown_param_slot_in_context_body_fires_analyze_diagnostic() {
+    let src = fixture("invalid", "slot_in_context_unknown_param.glyph");
+    let result = run_compile(src, "json");
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "expected exit 1; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_has_diagnostic_id(&stdout, "G::analyze::unknown-param-slot");
+}
+
+// --- Phase 3 / Task 3.7 — `{param}` slot in a freeform colon-keyword section
+// (e.g. `quality:`, `risks:`) must resolve to a declared header parameter.
+// Mirrors the context-body rule above. ---
+
+#[test]
+fn unknown_param_slot_in_freeform_section_fires_analyze_diagnostic() {
+    let src = fixture("invalid", "slot_in_freeform_section.glyph");
+    let result = run_compile(src, "json");
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "expected exit 1; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_has_diagnostic_id(&stdout, "G::analyze::unknown-param-slot");
 }
 
 // --- Acceptance criterion 9: bare name in flow fires G::analyze::text-in-flow ---
@@ -348,7 +393,7 @@ fn missing_description_fires_repairable_diagnostic() {
 // NOTE: Branches (`if`/`elif`/`else`) are not yet in the AST. This test is
 // deferred until branch support lands. When branches are implemented, add a
 // test that verifies a `context` marker inside an `if` branch does NOT appear
-// in `### Context` but instead renders inline within the branch's step prose.
+// in `## Context` but instead renders inline within the branch's step prose.
 
 // --- Reviewer feedback item 1: G::analyze::ambiguous-role diagnostic ---
 

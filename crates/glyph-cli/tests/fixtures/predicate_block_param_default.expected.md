@@ -4,9 +4,7 @@ name: main
 description: 'Test block param string default resolves as predicate.'
 ---
 
-## Instructions
-
-### Steps
+## Steps
 
 1. Follow the helper procedure below.
 2. Done.

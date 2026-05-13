@@ -4,9 +4,7 @@ name: main
 description: 'Test branch survives small block.'
 ---
 
-## Instructions
-
-### Steps
+## Steps
 
 1. Follow the plan-big-change procedure below.
 2. Move on.

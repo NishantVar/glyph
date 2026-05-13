@@ -1,0 +1,9 @@
+skill demo()
+    description: "Demo skill for freeform sections."
+    quality:
+        require accuracy
+        avoid stale_references
+        context "We run on monorepos."
+        "Prefer minimal diffs."
+    flow:
+        "Investigate."

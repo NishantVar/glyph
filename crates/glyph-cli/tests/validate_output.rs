@@ -55,7 +55,7 @@ fn minimal_ir() -> String {
 }
 
 fn minimal_md() -> &'static str {
-    "## Instructions\n\n### Steps\n\n1. Do something.\n"
+    "## Steps\n\n1. Do something.\n"
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn clean_pass_exits_zero() {
 
 #[test]
 fn violations_exit_one_pretty() {
-    let md = "## Instructions\n\n### Steps\n\n1. Do something.\n2. Extra step.\n";
+    let md = "## Steps\n\n1. Do something.\n2. Extra step.\n";
     let result = run_validate_output(&minimal_ir(), md, "pretty");
     assert_eq!(result.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&result.stderr);
@@ -84,7 +84,7 @@ fn violations_exit_one_pretty() {
 
 #[test]
 fn violations_exit_one_json() {
-    let md = "## Instructions\n\n### Steps\n\n1. Do something.\n2. Extra step.\n";
+    let md = "## Steps\n\n1. Do something.\n2. Extra step.\n";
     let result = run_validate_output(&minimal_ir(), md, "json");
     assert_eq!(result.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&result.stdout);

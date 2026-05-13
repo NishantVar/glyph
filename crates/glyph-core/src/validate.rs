@@ -144,6 +144,8 @@ fn node_id(n: &IrNode) -> u32 {
         IrNode::Call(c) => c.node_id.0,
         IrNode::Branch(br) => br.node_id.0,
         IrNode::OutputContract(oc) => oc.node_id.0,
+        IrNode::FreeformSection(s) => s.node_id.0,
+        IrNode::FreeformContent(c) => c.node_id.0,
     }
 }
 
@@ -168,6 +170,11 @@ mod tests {
             output_contract: None,
             return_type_text: None,
             return_local_ref: None,
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
         }));
         arena.push(IrNode::InlineInstruction(IrInlineInstruction {
             node_id: NodeId(1),
@@ -196,6 +203,11 @@ mod tests {
             output_contract: None,
             return_type_text: None,
             return_local_ref: None,
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
         }));
         arena.set_root_skill(NodeId(0));
         // Manually push a node with the same ID.
@@ -245,6 +257,11 @@ mod tests {
             output_contract: None,
             return_type_text: None,
             return_local_ref: None,
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
         }));
         arena.push(IrNode::Call(IrCall {
             node_id: NodeId(1),
@@ -284,6 +301,11 @@ mod tests {
             output_contract: None,
             return_type_text: None,
             return_local_ref: None,
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
         }));
         arena.push(IrNode::Call(IrCall {
             node_id: NodeId(1),
@@ -314,6 +336,11 @@ mod tests {
             return_type_text: None,
             branch_steps: std::collections::HashMap::new(),
             string_default_params: std::collections::BTreeMap::new(),
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
         }));
         arena.set_root_skill(NodeId(0));
 
@@ -339,6 +366,11 @@ mod tests {
             output_contract: None,
             return_type_text: None,
             return_local_ref: None,
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
         }));
         arena.push(IrNode::Branch(crate::ir::IrBranch {
             node_id: NodeId(1),
@@ -374,6 +406,11 @@ mod tests {
             output_contract: None,
             return_type_text: None,
             return_local_ref: None,
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
         }));
         arena.push(IrNode::Call(IrCall {
             node_id: NodeId(1),
@@ -404,6 +441,11 @@ mod tests {
             return_type_text: None,
             branch_steps: std::collections::HashMap::new(),
             string_default_params: std::collections::BTreeMap::new(),
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
         }));
         // Block "bar" calls "foo" — completing the cycle.
         arena.push(IrNode::Block(IrBlock {
@@ -419,6 +461,11 @@ mod tests {
             return_type_text: None,
             branch_steps: std::collections::HashMap::new(),
             string_default_params: std::collections::BTreeMap::new(),
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
         }));
         arena.set_root_skill(NodeId(0));
 

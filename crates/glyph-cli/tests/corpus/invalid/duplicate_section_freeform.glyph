@@ -1,0 +1,8 @@
+skill demo()
+    description: "Demo."
+    quality:
+        "first"
+    quality:
+        "second"
+    flow:
+        "Do."

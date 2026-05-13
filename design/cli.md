@@ -47,22 +47,12 @@ Run Phase 3a (deterministic source rewrites) only. No LLM, no IR construction, n
    - Tab → 4-space conversion
    - Mixed indentation fix
 2. **Post-Parse AST-level rewrites.** Require a successful Phase 1.
-   - Unconditional constraint hoisting (body-level and flow-top-level)
    - Duplicate import merging
    - Unused import removal
-   - Source section reordering to convention
 
 If Phase 1 succeeds (after the pre-Parse pass), both strata run and the file is rewritten. If Phase 1 fails after the pre-Parse pass, `fmt` emits the parse diagnostic and writes only the pre-Parse text fixes (if any); it does not perform the AST-level rewrites. This partial-success behaviour is intentional — pre-Parse fixes are often the prerequisite for the next `glyph compile` to even produce structured diagnostics.
 
-**Canonical sub-section order.** Inside every `skill`, `block`, and `export block` body, `fmt` rewrites the sub-sections (and any body-level constraint markers it picks up) to a fixed order:
-
-1. `description:`
-2. Body-level constraint markers (`require` / `avoid` / `must`) — present only briefly; the unconditional-constraint hoisting step in stratum 2 moves them into the `constraints:` section in the same `fmt` invocation.
-3. `effects:` *(only when `--enable-effects` is passed; otherwise `effects:` is rejected at parse time)*
-4. `constraints:` (post-hoist form, after marker hoisting has folded body-level and flow-top-level markers in)
-5. `flow:` (always last)
-
-This canonical layout is what reviewers and downstream tooling can rely on. The parser itself remains permissive (see `language-surface.md` §2.5): unformatted source with sub-sections in any order still parses, so authors are never blocked by ordering. `fmt` is the single source of truth for on-disk layout.
+**`fmt` does not reorder sections.** Sub-section order on disk is the author's source order; the compiler places each section at the canonical body position via the D9 merge algorithm (sections written explicitly in source anchor to their source position; synthetic sections — `Parameters`, hoisted `Constraints` / `Context` — slot into their default canonical position). The recommended source order is `description → effects → goal → constraints → context → flow`; authors who follow it get compiled body order matching the default. The parser itself remains permissive (see `language-surface.md` §2.5): unformatted source with sub-sections in any order still parses.
 
 Analogous to `rustfmt` / `gofmt`. Fast, offline, idempotent.
 
@@ -77,7 +67,7 @@ Analogous to `rustfmt` / `gofmt`. Fast, offline, idempotent.
 | `-v` | | Set log level to info (phase boundaries, file processing) |
 | `-vv` | | Set log level to debug (IR diffs, detailed phase output) |
 | `--color <when>` | | Terminal color mode: `always`, `never`, `auto` (default: `auto`). Also respects `NO_COLOR` and `CLICOLOR` environment variables. |
-| `--enable-effects` | | Enable the effects subsystem (parsing, inference, validation, output emission). Default: **off**. When off, `effects:` sub-sections are rejected at parse time (`G::parse::effects-disabled`), all effect-related diagnostics are suppressed, and the `effects` frontmatter field is omitted from compiled output. See `ir-and-semantics.md` §3. |
+| `--enable-effects` | | Enable the effects subsystem (parsing, inference, validation, output emission). Default: **off**. When off, `effects:` sub-sections are rejected at parse time (`G::parse::gated-section`), all effect-related diagnostics are suppressed, and the `effects` frontmatter field is omitted from compiled output. See `ir-and-semantics.md` §3. |
 
 Logging uses verbosity-gated `eprintln!` to stderr. Default level is warn (errors and warnings only). `-v` adds info (phase start/end, files processed). `-vv` adds debug (IR snapshots, diagnostic details). No `RUST_LOG` or `tracing` dependency in v0; structured logging may be added post-MVP when incremental builds or watch mode warrant it.
 

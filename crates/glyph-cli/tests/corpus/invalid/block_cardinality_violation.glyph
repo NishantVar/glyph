@@ -1,0 +1,11 @@
+skill demo()
+    description: "Demo."
+    flow:
+        helper()
+
+block helper()
+    goal:
+        "First."
+        "Second."
+    flow:
+        "Do."

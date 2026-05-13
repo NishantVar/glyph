@@ -81,7 +81,11 @@ mod tests {
     #[test]
     fn preserves_question_mark() {
         assert_eq!(
-            render(Strength::Soft, Polarity::Require, "Did you check the tests?"),
+            render(
+                Strength::Soft,
+                Polarity::Require,
+                "Did you check the tests?"
+            ),
             "**Require:** Did you check the tests?"
         );
     }

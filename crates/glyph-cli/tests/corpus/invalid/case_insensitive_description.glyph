@@ -1,0 +1,4 @@
+skill demo()
+    Description: "Has a {slot}."
+    flow:
+        "Do."

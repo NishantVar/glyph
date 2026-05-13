@@ -83,11 +83,30 @@ Sub-sections within a declaration body use a colon-terminated keyword. MVP sub-s
 
 `inputs:`, `outputs:`, and `when_to_use:` are deferred from MVP (see [todo.md](todo.md)). Header parameters cover input definition; `return` in `flow:` covers output; `description:` covers routing.
 
-**Sub-section ordering is permissive.** Inside a `skill`, `block`, or `export block` body, the parser accepts `context:`, `constraints:`, `description:`, `effects:`, `flow:`, and body-level constraint markers (`require`/`avoid`/`must`) in **any order**. Order is not semantically significant: a `flow:` written above `description:` produces the same IR as the conventional ordering. The only structural rule still enforced is the duplicate-subsection check (`G::parse::duplicate-subsection`, repairable) — each named sub-section may appear at most once per body.
+**Sub-section ordering is permissive.** Inside a `skill`, `block`, or `export block` body, the parser accepts `context:`, `constraints:`, `description:`, `effects:`, `flow:`, and body-level constraint markers (`require`/`avoid`/`must`) in **any order** — but source order is semantically significant for compiled output position (see §2.5a). The only structural rule still enforced is the duplicate-subsection check (`G::parse::duplicate-subsection`, repairable) — each named sub-section may appear at most once per body.
 
 **Recovery shape.** The duplicate-subsection check is *recoverable*, not fatal: the parser does not stop at the second occurrence. Each declaration AST node (`Skill`, `Block`, `ExportBlock`) carries the canonical singleton fields (`description`, `context`, `constraints`, `effects`, `flow`) populated from the **first** occurrence of each kind, plus an additive recovery slot `extra_subsections: Vec<DuplicateSubsection>` that retains every **subsequent** occurrence in source order with its full body span. Phase 3a's deterministic merge consumes `extra_subsections` (see [repair.md](repair.md) §4.11). After a successful Phase 3a merge, `extra_subsections` is empty; if it is still non-empty when Analyze runs (e.g., `--no-repair`, `glyph fmt --check`), Analyze emits the hard error `G::analyze::unmerged-duplicate-subsection` so Lower never sees an inconsistent declaration shape.
 
-Authors do not need to memorise a canonical layout to write valid source. `glyph fmt` rewrites every body to a canonical order so reviewable source on disk stays consistent across a codebase; see [cli.md](cli.md) §`glyph fmt` for the canonical sequence.
+Authors do not need to memorise a canonical layout to write valid source. `glyph fmt` does not reorder sections: it preserves the author's chosen sequence (per §2.5a) and only normalizes whitespace / merges duplicate sub-section occurrences; see [cli.md](cli.md) §`glyph fmt` for the recommended source order.
+
+#### 2.5a Section Order in Source is Semantically Significant for Compiled Output
+
+While the *parser* accepts sub-sections in any order (§2.5 above), section order in source determines the **placement of any author-declared sub-section in the compiled `.md`**. This applies uniformly to the built-in sub-sections (`description:`, `context:`, `constraints:`, `flow:`, `effects:`) and to freeform colon-keyword sections (§2.5b). The compiler's D9 merge algorithm (see [compiled-output.md](compiled-output.md) §Output Order) walks the source declarations in order and emits each section's H2 heading at the source-relative slot, while sections not declared in source fall back to the canonical default position. Two consequences:
+
+- An author who writes `context:` after `flow:` in source will see `## Context` rendered after `## Steps` in the compiled `.md` — not the reverse.
+- `glyph fmt` no longer reorders sections into a canonical layout. The Phase 3 contract (Task 3.14) is "no section reordering, no marker hoisting across section boundaries." Hoisting of body-level constraint/context markers still happens (per §4.2a), but markers never cross a named section boundary.
+
+This rule is what allows freeform sections (§2.5b) to land predictably in the compiled output: the author chooses where each freeform `## Heading` block appears by writing the freeform colon-keyword at the desired position in source.
+
+#### 2.5b Freeform Colon-Keyword Sections
+
+Beyond the built-in sub-section keywords, authors may declare *freeform* colon-keyword sections such as `quality:`, `risks:`, or `acceptance_criteria:`. A freeform section header is any line at body-level indent (4 spaces) of the form `<identifier>:` whose identifier is not a built-in section keyword and not a reserved declaration keyword.
+
+**Body grammar.** A freeform section body uses the same grammar as `context:` (`ir-and-semantics.md` §`context:` Section): inline strings, block strings, bare-name refs to string-valued `const`s, and the 5 reserved marker clauses (`require`, `avoid`, `must`, `must avoid`, `context`). Flow statements (`if`, `elif`, `else`, plain calls) are **not** permitted; they surface `G::parse::flow-statement-in-freeform` (parse error). Any other identifier used as a marker word surfaces `G::parse::unknown-marker-word`. A bare reserved marker with no operand surfaces `G::parse::marker-missing-operand`.
+
+**Projection.** Each freeform section compiles to a peer-level `## Heading` block in the compiled `.md`, where `Heading` is the colon-keyword name with underscores replaced by spaces and each word title-cased. When a freeform section appears inside a Tier-2 procedure body (i.e. a `block` whose call site renders as a `### Procedure: <name>`), the freeform heading nests at `####` depth instead. See [compiled-output.md](compiled-output.md) §Freeform Sections for the full projection contract, including the shape-detection rule that determines `-` bullet list vs. paragraph form, and depth-by-tier.
+
+**Tier-1 incompatibility.** A `block` that declares any freeform section cannot be Tier-1 inlined at its call site — inlining would silently drop the freeform sub-heading scaffolding. The compiler forces such blocks to Tier-2 promotion (see [pipeline.md](pipeline.md) §Phase 6 Step 1 and [expand.md](expand.md)).
 
 Two forms are allowed:
 
@@ -432,6 +451,19 @@ The closed MVP role set ([ir-and-semantics.md](ir-and-semantics.md)): `InputCont
 **Constraint marker placement.** Constraint markers are legal in three positions: (1) inside a `constraints:` sub-section, (2) at declaration body level, and (3) as a flow statement inside `flow:`, including inside `if`/`elif`/`else` branch bodies. Unconditional markers (positions 1, 2, and flow-top-level in position 3) are normalized into the `constraints:` section via two complementary mechanisms: `glyph fmt` (Phase 3a) performs a source-to-source rewrite for source clarity; Phase 4 (Lower) hoists them at IR level regardless of whether fmt ran (`ir-and-semantics.md` §Body-Level Constraint Normalization, §Flow-Level Constraint Markers). Branch-scoped markers remain inline and render as part of the conditional Step prose (`compiled-output.md` §Constraint Rendering).
 
 **Context marker placement.** `context` markers follow the same placement rules as constraint markers: (1) inside a `context:` sub-section, (2) at declaration body level, and (3) as a flow statement inside `flow:`, including inside branch bodies. Unconditional `context` markers are hoisted into the `context:` section by the same normalization mechanisms. Branch-scoped `context` markers remain inline and render as part of the conditional Step prose.
+
+### 4.2a Hoisting (four positional cases)
+
+A reserved marker (`require`, `avoid`, `must`, `must avoid`, `context`) placed at:
+
+1. **Body-level** (column-4 inside a declaration body, no enclosing colon-section)
+   → **Hoisted** into the declaration's canonical built-in section.
+2. **`flow:`-top** (a flow statement, not inside a branch arm)
+   → **Hoisted** into the canonical built-in.
+3. **Branch arm** (inside an `if`/`elif`/`else` body)
+   → **Stays inline**, renders as conditional-step prose.
+4. **Inside any other named section** (e.g. nested inside `constraints:` itself, inside `context:`, or inside a freeform section like `quality:`)
+   → **Stays scoped** to that section's heading. No hoisting.
 
 Inference uses: position in the skill, metadata from bindings/imports/standard-library, natural meaning of expanded text, and explicit keywords. If inference succeeds, repair adds the smallest explicit marker back into source. Compound names like `avoid_unrelated_edits` are valid identifiers — they are not forcibly split into marker-plus-concept form. The compiler uses the name prefix as evidence for role/polarity inference alongside the resolved text content. `must` is inferred only from hard-strength wording. When inference fails, the compiler emits a diagnostic.
 

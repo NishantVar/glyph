@@ -1,0 +1,47 @@
+# Compile-time-embedded section catalogue. See
+# design/glyph-freeform-sections-design-2026-05-12.md §4.2.
+#
+# Entries here are *exceptions* to freeform defaults: any colon-keyword the
+# catalogue doesn't claim falls through to the freeform path (`## TitleCase`
+# heading, content-item body grammar, all 5 reserved markers allowed,
+# source-position anchored).
+#
+[goal]
+heading          = "Goal"
+canonical_slot   = 1
+cardinality      = "one"
+
+[description]
+cardinality      = "one"
+markers_allowed  = []
+output_target    = "yaml_frontmatter"
+repair_hook      = "generate_description_if_missing"
+
+[effects]
+enabled          = false
+output_target    = "yaml_frontmatter"
+body_grammar     = "effect_keywords"
+
+[parameters]
+heading          = "Parameters"
+canonical_slot   = 2
+synthetic_from   = "skill_signature"
+
+[constraints]
+heading          = "Constraints"
+canonical_slot   = 3
+markers_allowed  = ["require", "avoid", "must", "must avoid"]
+markers_required = true
+synthetic_from   = "body_markers"
+expand_hook      = "render_constraint_four_form"
+
+[context]
+heading          = "Context"
+canonical_slot   = 4
+markers_allowed  = ["context"]
+synthetic_from   = "body_markers"
+
+[flow]
+heading          = "Steps"
+canonical_slot   = 5
+body_grammar     = "statements"

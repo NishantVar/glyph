@@ -1,0 +1,7 @@
+skill demo()
+    description: "Demo."
+    quality:
+        if x()
+            "x is true"
+    flow:
+        "Do."

@@ -27,7 +27,7 @@ use std::process::ExitCode;
 struct Cli {
     /// Enable the `effects:` sub-section in `skill`, `block`, and `export block`
     /// declarations. When omitted (default), any `effects:` usage produces a
-    /// `G::parse::effects-disabled` error.
+    /// `G::parse::gated-section` error.
     #[arg(long, global = true)]
     enable_effects: bool,
     #[command(subcommand)]
@@ -118,7 +118,22 @@ enum OutputFormat {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let enable_effects = cli.enable_effects;
+
+    // Build the section catalogue once at the CLI top and flip the
+    // `[effects]` entry if the user passed `--enable-effects`. Phase 5
+    // populated the catalogue with `effects.enabled = false` as the default;
+    // `set_enabled("effects", true)` flips that bit when the CLI flag is
+    // present. The derived `enable_effects: bool` continues to flow through
+    // the bare-bool wrappers (`check_file_with_effects`,
+    // `compile_directory_with_options`, etc.) so the catalogue is the single
+    // source of truth at the CLI boundary while internal call sites stay on
+    // their pre-catalogue signatures.
+    let mut catalogue = glyph_core::sections::SectionCatalogue::load();
+    if cli.enable_effects {
+        catalogue.set_enabled("effects", true);
+    }
+    let enable_effects = catalogue.effects_enabled();
+
     match cli.command {
         Command::Compile {
             path,

@@ -11,9 +11,12 @@ description: 'Debug and fix a bug in the codebase with minimal, targeted changes
 
 - **scope**. Default: ".".
 
-## Instructions
+## Constraints
 
-### Context
+- **Require:** prefer the repository's existing patterns, helper APIs, naming, and file organization before introducing a new abstraction or style.
+- **Avoid:** making changes outside the requested scope or fixing unrelated issues.
+
+## Context
 
 - **codebase-assumptions**
 
@@ -21,7 +24,7 @@ description: 'Debug and fix a bug in the codebase with minimal, targeted changes
 
 - The bug is assumed to be reproducible locally.
 
-### Steps
+## Steps
 
 1. Load and follow the procedure in `repo_tools/inspect-repo.md`.
 2. Decide which of the following applies and follow only that path:
@@ -38,8 +41,3 @@ description: 'Debug and fix a bug in the codebase with minimal, targeted changes
    a. Manually verify the fix by inspecting the changed code paths.
 5. Apply the smallest change that fixes the root cause. Preserve existing patterns and avoid unnecessary refactoring.
 6. Verify the fix resolves the original issue. Run related tests to check for regressions Return the result of summarize_changes().
-
-### Constraints
-
-- **Require:** prefer the repository's existing patterns, helper APIs, naming, and file organization before introducing a new abstraction or style.
-- **Avoid:** making changes outside the requested scope or fixing unrelated issues.
