@@ -56,6 +56,13 @@ enum Command {
         /// 2. No `.md` output is written when repairable diagnostics are present.
         #[arg(long)]
         strict: bool,
+        /// Mirror input layout under <dir>. Auto-created if missing.
+        #[arg(long = "out-dir", short = 'o', conflicts_with = "output")]
+        out_dir: Option<PathBuf>,
+        /// Write the entry file's compiled `.md` to exactly this path.
+        /// Single-file input only. Parent directory must exist.
+        #[arg(long = "output", conflicts_with = "out_dir")]
+        output: Option<PathBuf>,
     },
     /// Run Phases 1 (Parse) and 2 (Analyze) only — fast lint mode.
     ///
@@ -140,7 +147,17 @@ fn main() -> ExitCode {
             format,
             emit_ir,
             strict,
-        } => run_compile(path, format, emit_ir, strict, enable_effects),
+            output,
+            out_dir,
+        } => run_compile(
+            path,
+            format,
+            emit_ir,
+            strict,
+            enable_effects,
+            output,
+            out_dir,
+        ),
         Command::Check {
             path,
             format,
@@ -377,6 +394,8 @@ fn run_compile(
     emit_ir: bool,
     strict: bool,
     enable_effects: bool,
+    output: Option<PathBuf>,
+    out_dir: Option<PathBuf>,
 ) -> ExitCode {
     let metadata = match std::fs::metadata(&path) {
         Ok(m) => m,
@@ -386,14 +405,138 @@ fn run_compile(
         }
     };
 
+    // --output validation
+    if let Some(ref out) = output {
+        if metadata.is_dir() {
+            eprintln!(
+                "glyph: --output requires a single-file input; `{}` is a directory. Use --out-dir for directory input.",
+                path.display()
+            );
+            return ExitCode::from(3);
+        }
+        if out.file_name().is_none() {
+            eprintln!(
+                "glyph: --output `{}` has no file name component",
+                out.display()
+            );
+            return ExitCode::from(3);
+        }
+        let parent_raw = out.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let parent = if parent_raw.as_os_str().is_empty() {
+            std::path::Path::new(".")
+        } else {
+            parent_raw
+        };
+        match std::fs::metadata(parent) {
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => {
+                eprintln!(
+                    "glyph: --output parent `{}` is not a directory",
+                    parent.display()
+                );
+                return ExitCode::from(3);
+            }
+            Err(_) => {
+                eprintln!(
+                    "glyph: --output parent directory `{}` does not exist",
+                    parent.display()
+                );
+                return ExitCode::from(3);
+            }
+        }
+        if let Ok(m) = std::fs::metadata(out) {
+            if m.is_dir() {
+                eprintln!(
+                    "glyph: --output target `{}` exists and is a directory",
+                    out.display()
+                );
+                return ExitCode::from(3);
+            }
+        }
+    }
+
+    // --out-dir validation + auto-create
+    if let Some(ref dir) = out_dir {
+        match std::fs::metadata(dir) {
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => {
+                eprintln!(
+                    "glyph: --out-dir `{}` exists and is not a directory",
+                    dir.display()
+                );
+                return ExitCode::from(3);
+            }
+            Err(_) => {
+                if let Err(e) = std::fs::create_dir_all(dir) {
+                    eprintln!("glyph: cannot create --out-dir `{}`: {}", dir.display(), e);
+                    return ExitCode::from(3);
+                }
+            }
+        }
+    }
+
+    let layout = build_layout(
+        &path,
+        metadata.is_dir(),
+        output.as_deref(),
+        out_dir.as_deref(),
+    );
+
     if metadata.is_dir() {
-        return run_compile_directory(path, format, emit_ir, strict, enable_effects);
+        return run_compile_directory(path, format, emit_ir, strict, enable_effects, layout);
     }
 
     // Single-file compile: walk the import closure, then dispatch through the
     // shared pipeline runner so the analyzer sees imported names.
     let files = glyph_core::compute_import_closure(&path, enable_effects);
-    run_pipeline_on_files(&files, format, emit_ir, strict, enable_effects)
+    run_pipeline_on_files(&files, format, emit_ir, strict, enable_effects, layout)
+}
+
+fn build_layout(
+    input: &std::path::Path,
+    input_is_dir: bool,
+    output: Option<&std::path::Path>,
+    out_dir: Option<&std::path::Path>,
+) -> glyph_core::CompileOutputLayout {
+    if let Some(out) = output {
+        let parent_raw = out.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let parent = if parent_raw.as_os_str().is_empty() {
+            std::path::Path::new(".")
+        } else {
+            parent_raw
+        };
+        let canon_parent = parent
+            .canonicalize()
+            .unwrap_or_else(|_| parent.to_path_buf());
+        let file_name = out
+            .file_name()
+            .expect("invariant: --output file_name validated in run_compile");
+        let canon_output = canon_parent.join(file_name);
+        let canon_entry = input.canonicalize().unwrap_or_else(|_| input.to_path_buf());
+        glyph_core::CompileOutputLayout::EntryFile {
+            entry: canon_entry,
+            output: canon_output,
+        }
+    } else if let Some(dir) = out_dir {
+        let canon_root = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        let input_root = if input_is_dir {
+            input.to_path_buf()
+        } else {
+            input
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .to_path_buf()
+        };
+        let canon_input_root = input_root
+            .canonicalize()
+            .unwrap_or_else(|_| input_root.clone());
+        glyph_core::CompileOutputLayout::OutDir {
+            root: canon_root,
+            input_root: canon_input_root,
+        }
+    } else {
+        glyph_core::CompileOutputLayout::SameDir
+    }
 }
 
 /// Directory-mode compile: collect all `.glyph` files, build DAG, compile
@@ -404,13 +547,29 @@ fn run_compile_directory(
     emit_ir: bool,
     strict: bool,
     enable_effects: bool,
+    layout: glyph_core::CompileOutputLayout,
 ) -> ExitCode {
-    let files = match collect_glyph_sources(&path) {
+    let direct_files = match collect_glyph_sources(&path) {
         Ok(v) => v,
         Err(code) => return code,
     };
 
-    run_pipeline_on_files(&files, format, emit_ir, strict, enable_effects)
+    // Expand each collected file's import closure so that transitive
+    // dependencies outside the directory (e.g. shared libraries) are included
+    // in the pipeline. Without this, cross-file symbol resolution fails for
+    // imports that point outside the input root.
+    let mut seen = std::collections::HashSet::new();
+    let mut files: Vec<PathBuf> = Vec::new();
+    for f in &direct_files {
+        for dep in glyph_core::compute_import_closure(f, enable_effects) {
+            if seen.insert(dep.clone()) {
+                files.push(dep);
+            }
+        }
+    }
+    files.sort();
+
+    run_pipeline_on_files(&files, format, emit_ir, strict, enable_effects, layout)
 }
 
 /// Compile a pre-collected list of `.glyph` files through the directory
@@ -422,12 +581,13 @@ fn run_pipeline_on_files(
     emit_ir: bool,
     strict: bool,
     enable_effects: bool,
+    layout: glyph_core::CompileOutputLayout,
 ) -> ExitCode {
     if files.is_empty() {
         return ExitCode::from(0);
     }
 
-    let result = glyph_core::compile_directory_with_options(files, emit_ir, enable_effects);
+    let result = glyph_core::compile_directory_with_layout(files, emit_ir, enable_effects, &layout);
 
     for (file_path, outcome) in &result.outcomes {
         match outcome {
@@ -448,23 +608,20 @@ fn run_pipeline_on_files(
                     .file_name()
                     .and_then(|s| s.to_str())
                     .unwrap_or("unknown");
-                let out_name = file_name
-                    .strip_suffix(".glyph")
-                    .map(|s| format!("{}.md", s))
-                    .unwrap_or_else(|| file_name.to_string());
                 eprintln!(
                     "warning[G::build::skipped-due-to-failed-import]: `{}` skipped because `{}` failed",
                     file_path.display(),
                     failed_dep.display(),
                 );
-                let stale_path = file_path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."))
-                    .join(&out_name);
+                let stale_path = glyph_core::resolve_output_path(
+                    file_path,
+                    glyph_core::OutputKind::Compiled,
+                    &layout,
+                );
                 if stale_path.exists() {
                     eprintln!(
                         "note: `{}` was not regenerated; the on-disk version reflects the previous successful build of `{}` and may be out of sync.",
-                        out_name,
+                        stale_path.display(),
                         file_name,
                     );
                 }
@@ -572,24 +729,4 @@ fn locate_byte(source: &str, line: u32, col: u32) -> usize {
         return line_start + (col.saturating_sub(1) as usize);
     }
     source.len().saturating_sub(1)
-}
-
-/// Map `foo.glyph` → `foo.ir.json` next to the source file.
-fn ir_json_output_path(input: &std::path::Path) -> PathBuf {
-    let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let file_name = input.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    let stem = file_name
-        .strip_suffix(".glyph")
-        .unwrap_or_else(|| file_name.strip_suffix(".md").unwrap_or(file_name));
-    parent.join(format!("{}.ir.json", stem))
-}
-
-/// Map `foo.glyph` → `foo.md` next to the source file.
-fn compiled_output_path(input: &std::path::Path) -> PathBuf {
-    let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let file_name = input.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    let stem = file_name
-        .strip_suffix(".glyph")
-        .unwrap_or_else(|| file_name.strip_suffix(".md").unwrap_or(file_name));
-    parent.join(format!("{}.md", stem))
 }
