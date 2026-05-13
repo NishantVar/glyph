@@ -71,7 +71,8 @@ Default log level is warn (errors and warnings only). `-v` adds info (phase star
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--out-dir <path>` | `-o` | Override output directory. Default: compiled `.md` lands next to its `.glyph` source. Procedure subdirectories are created relative to this location. |
+| `--out-dir <path>` | `-o` | Override output directory. Mirrors the input layout under `<path>`: `some/dir/sub/b.glyph` → `<path>/sub/b.md`. Auto-creates `<path>` and intermediate mirrored directories. Imports that resolve outside the input root are written in-place and emit `G::build::import-outside-out-dir`. Procedure subdirectories are created relative to each consumer's mirrored location. Mutually exclusive with `--output`. |
+| `--output <path>` | | Write the entry file's compiled `.md` to exactly `<path>`. Single-file input only. Parent directory must already exist. Errors (exit 3) if the parent is missing, the target is an existing directory, or the input is a directory. With `--emit-ir`, the sidecar is `<path>` with `.md` replaced by `.ir.json`. Mutually exclusive with `--out-dir`. |
 | `--emit-ir` | | Emit the post-Step-1 resolved IR as a sidecar JSON file next to the compiled `.md` (e.g., `fix_bug.ir.json`). See §IR JSON Output. |
 | `--format <fmt>` | `-f` | Diagnostic output format: `pretty` (default) or `json`. See §Diagnostic Output. |
 | `--strict` | | Treat `repairable` diagnostics as hard errors: exit code 1 instead of 2. No `.md` output is written. Useful for CI gates and lint-clean enforcement. |
@@ -116,6 +117,18 @@ project/
 ```
 
 Procedure subdirectories (for Tier 3 external-file projections) are always created relative to the output location, preserving the same relative structure.
+
+With `--output build/renamed.md` on a single-file input:
+
+```
+project/
+  skills/
+    fix_bug.glyph
+  build/
+    renamed.md
+```
+
+Only the entry file is redirected. Imports compile in-place at their default location.
 
 ## Exit Codes
 
