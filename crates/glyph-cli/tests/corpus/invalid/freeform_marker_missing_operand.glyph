@@ -1,0 +1,6 @@
+skill demo()
+    description: "Demo."
+    quality:
+        require
+    flow:
+        "Do."

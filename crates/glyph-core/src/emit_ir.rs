@@ -5,8 +5,9 @@
 //! Each node carries its `node_id` as `"n<integer>"`.
 
 use crate::ir::{
-    IrArena, IrBranch, IrCall, IrConstraint, IrContext, IrElifBranch, IrInlineInstruction, IrNode,
-    IrOutputContract, IrParam, NodeId, OutputSource, OutputTargetForm, Polarity, Role, Strength,
+    IrArena, IrBranch, IrCall, IrConstraint, IrContext, IrElifBranch, IrFreeformContent,
+    IrFreeformSection, IrInlineInstruction, IrNode, IrOutputContract, IrParam, NodeId,
+    OutputSource, OutputTargetForm, Polarity, Role, Strength,
 };
 use crate::kind_infer::TypeTag;
 use serde_json::{json, Map, Value};
@@ -185,6 +186,68 @@ fn serialize_context(c: &IrContext) -> Value {
     if let Some(name) = &c.name {
         m.insert("name".into(), Value::String(name.clone()));
     }
+    Value::Object(m)
+}
+
+/// Phase 3 freeform section container — emits `{kind, node_id, name,
+/// heading, source_line, items: [node_id, ...]}`. The item refs are
+/// emitted as `"n<integer>"` strings (matching the rest of the IR JSON,
+/// where IDs are stringified for the JSON tree).
+fn serialize_freeform_section(s: &IrFreeformSection) -> Value {
+    let mut m = Map::new();
+    m.insert("node_id".into(), Value::String(node_id_str(s.node_id)));
+    m.insert("kind".into(), Value::String("freeform_section".into()));
+    m.insert("name".into(), Value::String(s.name.clone()));
+    m.insert("heading".into(), Value::String(s.heading.clone()));
+    m.insert("source_line".into(), Value::Number(s.source_line.into()));
+    let items: Vec<Value> = s
+        .items
+        .iter()
+        .map(|id| Value::String(node_id_str(*id)))
+        .collect();
+    m.insert("items".into(), Value::Array(items));
+    Value::Object(m)
+}
+
+/// Phase 3 freeform section item. Emits `text` plus optional marker
+/// metadata: `marker_word` (verbatim source spelling), `strength`,
+/// `polarity`, and the optional `name` for NameRef-shaped items. Each
+/// optional field renders as JSON `null` when absent to keep the schema
+/// shape stable for downstream consumers (matches the pattern used by
+/// `serialize_call`'s nullable slots).
+fn serialize_freeform_content(c: &IrFreeformContent) -> Value {
+    let mut m = Map::new();
+    m.insert("node_id".into(), Value::String(node_id_str(c.node_id)));
+    m.insert("kind".into(), Value::String("freeform_content".into()));
+    m.insert("text".into(), Value::String(c.text.clone()));
+    m.insert(
+        "marker_word".into(),
+        match &c.marker_word {
+            Some(w) => Value::String(w.clone()),
+            None => Value::Null,
+        },
+    );
+    m.insert(
+        "strength".into(),
+        match c.strength {
+            Some(s) => Value::String(strength_str(s).into()),
+            None => Value::Null,
+        },
+    );
+    m.insert(
+        "polarity".into(),
+        match c.polarity {
+            Some(p) => Value::String(polarity_str(p).into()),
+            None => Value::Null,
+        },
+    );
+    m.insert(
+        "name".into(),
+        match &c.name {
+            Some(n) => Value::String(n.clone()),
+            None => Value::Null,
+        },
+    );
     Value::Object(m)
 }
 
@@ -461,6 +524,8 @@ fn serialize_flow_node(arena: &IrArena, id: NodeId) -> Value {
         IrNode::Branch(br) => serialize_branch(br, arena),
         IrNode::Constraint(c) => serialize_constraint(c),
         IrNode::Context(c) => serialize_context(c),
+        IrNode::FreeformSection(s) => serialize_freeform_section(s),
+        IrNode::FreeformContent(c) => serialize_freeform_content(c),
         _ => json!({"node_id": node_id_str(id), "kind": "unknown"}),
     }
 }
@@ -608,6 +673,41 @@ pub fn serialize_ir_json(
         None => Value::Null,
     };
     skill_obj.insert("return_local_ref".into(), return_local_ref);
+
+    // Phase 3.B (Task 3.7): freeform sections owned by the skill, as an
+    // array of container node ids. Each id points at an
+    // `IrNode::FreeformSection` arena entry (serialized as a peer in the
+    // arena array). Always emitted as an array — empty `[]` when the
+    // source skill declared no freeform colon-keyword sections — so the
+    // schema shape stays stable for downstream consumers.
+    let freeform_section_ids: Vec<Value> = skill
+        .freeform_sections
+        .iter()
+        .map(|id| Value::String(node_id_str(*id)))
+        .collect();
+    skill_obj.insert(
+        "freeform_sections".into(),
+        Value::Array(freeform_section_ids),
+    );
+
+    // Phase 3 (Task 3.11): parallel array of pre-rendered Title Case
+    // headings for the freeform sections above. Same length and order as
+    // `freeform_sections`. Validate-output reads these to allow the
+    // corresponding `## <Heading>` H2s in the compiled markdown without
+    // re-walking the arena. Always emitted (empty array when there are no
+    // freeform sections).
+    let freeform_section_headings: Vec<Value> = skill
+        .freeform_sections
+        .iter()
+        .filter_map(|id| match arena.get(*id) {
+            IrNode::FreeformSection(s) => Some(Value::String(s.heading.clone())),
+            _ => None,
+        })
+        .collect();
+    skill_obj.insert(
+        "freeform_section_headings".into(),
+        Value::Array(freeform_section_headings),
+    );
 
     envelope.insert("skill".into(), Value::Object(skill_obj));
 
@@ -944,9 +1044,7 @@ skill make_report() -> Report
 
 (intentionally empty for this synthetic test)
 
-## Instructions
-
-### Steps
+## Steps
 
 1. Do the thing
 ";

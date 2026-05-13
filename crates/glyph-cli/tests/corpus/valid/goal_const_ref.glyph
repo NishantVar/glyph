@@ -1,0 +1,7 @@
+skill demo()
+    description: "Demo."
+    goal: success_criterion
+    flow:
+        "Do."
+
+const success_criterion = "Find the root cause and ship the smallest safe change."

@@ -1,0 +1,7 @@
+skill summarize(scope = ".")
+    description: "Freeform body references an undeclared parameter."
+    quality:
+        "Maintain {undeclared} consistency"
+
+    flow:
+        "Run the work."

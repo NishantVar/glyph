@@ -115,16 +115,16 @@ skill fix_bug(scope = ".")
         ...
 ```
 
-The compiler normalizes body-level markers into a `constraints:` section via two complementary mechanisms: (1) `glyph fmt` (Phase 3a) performs a source-to-source rewrite, moving them into a `constraints:` sub-section for source clarity; (2) Phase 4 (Lower) hoists any remaining body-level constraint AST nodes into the declaration's `constraints` list at IR level, ensuring correct compilation regardless of whether `glyph fmt` was run. Both forms produce identical IR. The canonical source form always uses the `constraints:` section.
+Body-level markers stay where the author wrote them in source; the compiler's Lower pass (Phase 4) synthesizes a `## Constraints` section at canonical slot 3 by hoisting body-level constraint AST nodes into the declaration's `constraints` list at IR level. `glyph fmt` preserves source order and marker position — it does not rewrite markers into a `constraints:` sub-section. Authors may still choose to write a `constraints:` section explicitly; both forms produce identical IR.
 
 #### Flow-Level Constraint Markers
 
 Constraint markers (`require`/`avoid`/`must`/`must avoid`) are also legal as flow statements inside `flow:`, including inside `if`/`elif`/`else` branch bodies. The IR represents them as `Constraint` nodes admissible in the `FlowNode` union (`ir-schema.md` §Flow Nodes). `Context` markers (via the `context` keyword) are similarly admissible as flow nodes, following the same hoisting/branch-scoping rules (see §Body-Level and Flow-Level Context Markers). Lower (Phase 4) splits them by location:
 
-- **Flow top-level** — a constraint marker at the top level of `flow:` (not inside a branch) is **hoisted** out of the flow and appended to the enclosing declaration's `constraints` list, deduplicated against existing entries by canonical text + polarity + strength. Two complementary mechanisms handle this: `glyph fmt` (Phase 3a) performs a source-to-source rewrite, moving flow-top-level constraints into the `constraints:` section for source clarity; Phase 4 (Lower) hoists any remaining flow-top-level `Constraint` nodes at IR level. After hoisting it renders in `### Constraints` like any other top-level constraint.
+- **Flow top-level** — a constraint marker at the top level of `flow:` (not inside a branch) is **hoisted** out of the flow and appended to the enclosing declaration's `constraints` list, deduplicated against existing entries by canonical text + polarity + strength. Phase 4 (Lower) performs this hoisting at IR level; `glyph fmt` does not rewrite markers in source. After hoisting it renders in `### Constraints` like any other top-level constraint.
 - **Branch-scoped** — a constraint marker inside an `if`/`elif`/`else` branch body **stays inline** in that branch. Expand renders it as part of the conditional Step prose so the consuming LLM sees that the constraint applies only when that branch is taken (e.g., "If the change touches public APIs, do not break backwards compatibility."). It does not appear in `### Constraints`. See `compiled-output.md` §Constraint Rendering.
 
-By the time Lower completes, all unconditional constraints — whether originally in a `constraints:` section, at body level, or at flow top-level — reside in the declaration's `constraints` list. If `glyph fmt` ran first, the source already reflects this; if not, Lower's IR-level hoisting produces the same result. Branch-scoped markers are the only constraints that remain inside the flow.
+By the time Lower completes, all unconditional constraints — whether originally in a `constraints:` section, at body level, or at flow top-level — reside in the declaration's `constraints` list. Lower's IR-level hoisting is the single mechanism that produces this result; `glyph fmt` preserves source as written. Branch-scoped markers are the only constraints that remain inside the flow.
 
 ### Body-Level and Flow-Level Context Markers
 
@@ -138,16 +138,16 @@ skill fix_bug(scope = ".")
         ...
 ```
 
-The compiler normalizes body-level `context` markers into the `context:` section via two complementary mechanisms: (1) `glyph fmt` (Phase 3a) performs a source-to-source rewrite, moving them into a `context:` sub-section for source clarity; (2) Phase 4 (Lower) hoists any remaining body-level `context` AST nodes into the declaration's `context` list at IR level, ensuring correct compilation regardless of whether `glyph fmt` was run. Both forms produce identical IR. The canonical source form always uses the `context:` section.
+Body-level `context` markers stay where the author wrote them in source; the compiler's Lower pass (Phase 4) synthesizes a `## Context` section at canonical slot 4 by hoisting body-level `context` AST nodes into the declaration's `context` list at IR level. `glyph fmt` preserves source order and marker position — it does not rewrite markers into a `context:` sub-section. Authors may still choose to write a `context:` section explicitly; both forms produce identical IR.
 
 #### Flow-Level Context Markers
 
 `context` markers are also legal as flow statements inside `flow:`, including inside `if`/`elif`/`else` branch bodies. The IR represents them as `Context` nodes admissible in the `FlowNode` union (alongside `Constraint` nodes — see `ir-schema.md` §Flow Nodes). Lower (Phase 4) splits them by location:
 
-- **Flow top-level** — a `context` marker at the top level of `flow:` (not inside a branch) is **hoisted** out of the flow and appended to the enclosing declaration's `context` list, deduplicated against existing entries by canonical text. Two complementary mechanisms handle this: `glyph fmt` (Phase 3a) performs a source-to-source rewrite, moving flow-top-level context markers into the `context:` section for source clarity; Phase 4 (Lower) hoists any remaining flow-top-level `Context` nodes at IR level. After hoisting it renders in `### Context` like any other top-level context entry.
+- **Flow top-level** — a `context` marker at the top level of `flow:` (not inside a branch) is **hoisted** out of the flow and appended to the enclosing declaration's `context` list, deduplicated against existing entries by canonical text. Phase 4 (Lower) performs this hoisting at IR level; `glyph fmt` does not rewrite markers in source. After hoisting it renders in `### Context` like any other top-level context entry.
 - **Branch-scoped** — a `context` marker inside an `if`/`elif`/`else` branch body **stays inline** in that branch. Expand renders it as part of the conditional Step prose so the consuming LLM sees that the context applies only when that branch is taken. It does not appear in `### Context`.
 
-By the time Lower completes, all unconditional context — whether originally in a `context:` section, at body level, or at flow top-level — resides in the declaration's `context` list. If `glyph fmt` ran first, the source already reflects this; if not, Lower's IR-level hoisting produces the same result. Branch-scoped markers are the only context entries that remain inside the flow.
+By the time Lower completes, all unconditional context — whether originally in a `context:` section, at body level, or at flow top-level — resides in the declaration's `context` list. Lower's IR-level hoisting is the single mechanism that produces this result; `glyph fmt` preserves source as written. Branch-scoped markers are the only context entries that remain inside the flow.
 
 ### Inference And Repair
 
@@ -311,7 +311,7 @@ On a `block` / `export block`, `description:` is **optional**. It is required on
 
 **Body grammar.** The body contains **bare-name references** to same-file `const` / `export const` declarations, **inline quoted strings** (`"..."` or `"""..."""`), or **`context`-prefixed markers** that resolve to declarations. Multiple entries are permitted (unlike `description:`, which is singular). Both the short form (content on the same line) and the long form (keyword alone, indented body below) are accepted, per the generic sub-section rule in `language-surface.md` §2.5.
 
-**Parameter slots.** `{name}` parameter references inside `context:` body content are **illegal** and emit `G::parse::param-slot-in-non-instruction-string` (same restriction as `description:`). Context is informational framing, not parameterized instruction prose.
+**Parameter slots.** `{name}` parameter references inside `context:` body content are **allowed** (Phase 3, Task 3.12). Expand substitutes parameter values into context prose during compilation, matching the treatment of `flow:` strings — context bodies remain informational framing but may carry parameter-aware copy. The earlier `G::parse::param-slot-in-non-instruction-string` diagnostic on context bodies has been removed; `description:` still rejects slots because the compiled frontmatter `description` is a literal string with no substitution.
 
 **Availability.** `context:` is available on `skill`, `block`, and `export block` declarations. It remains N/A for value-binding declarations (`const` and its `export`/`generated` variants).
 
@@ -429,6 +429,23 @@ Source order is free — the compiler reorders to the fixed compiled-output orde
 5. `flow:`
 
 The compiler's source normalization pass enforces this order when rewriting.
+
+### Freeform sections (Phase 3)
+
+Phase 3 extends the section vocabulary beyond the five built-in sub-section headers above by allowing **freeform colon-keyword sections** — authors write `quality:`, `risks:`, `acceptance_criteria:`, etc. and the section name flows into compiled output as a peer-level `## Heading` block (`compiled-output.md` §Freeform Sections). The closed-role-set rule in §1 is unchanged: freeform sections are an orthogonal authoring channel and do not introduce new IR roles. Their items lower to dedicated IR kinds (`IrFreeformSection` container, `IrFreeformContent` per-item) defined in `ir-schema.md` §Freeform sections; see also the design specification §4.1.4a for the canonical content-item shape.
+
+**Node-kind summary.** Two IR node kinds carry freeform content:
+
+| Node | Role | Shape |
+|------|------|-------|
+| `IrFreeformSection` | Container for a single colon-keyword section declared on a `Skill`, `Block`, or `ExportBlock`. Carries the section `name`, the source `span` (header line), and the ordered `items` list. Hosts are referenced via the host decl's `freeform_sections: Vec<NodeId>` list. | Per-section header + content list. |
+| `IrFreeformContent` | A single body item inside a freeform section. Variants: `StringLiteral` (inline string), `NameRef` (bare-name reference to a string-valued `const` / `export const`), `MarkerClause` (one of the 5 reserved markers — `require`, `avoid`, `must`, `must avoid`, `context` — plus its operand text). | Per-item content classification. |
+
+Both kinds follow the role/projection rules in spec §4.1.4a: `MarkerClause` variants project through the same four-form constraint template as `## Constraints` for `require`/`avoid`/`must`/`must avoid` and through the bullet-with-bold-label form for `context`; `StringLiteral` and `NameRef` project as plain body items.
+
+**Marker semantics.** Inside a freeform section, the reserved marker words (`require`, `avoid`, `must`, `must avoid`, `context`) keep their lexical identity — `IrFreeformContent::MarkerClause.marker` records the marker variant and `strength` / `polarity` derive from it the same way they do in `constraints:`. But unlike `constraints:` markers, freeform-section markers do **not** hoist into the enclosing decl's `constraints` / `context` lists; they stay scoped to their section so the emitter renders the section as authored under its own `## Heading`. The hoisting rule defined in §Body-Level Constraint Normalization / §Body-Level and Flow-Level Context Markers therefore applies only to constraints/context entries written outside a freeform section.
+
+**Phase 3 scope (cluster 3.D — current).** Cluster 3.D wires the full pass through Repair scoping (`design/repair.md` §4.4a) and fmt source-position preservation (`crates/glyph-core/src/fmt.rs`). The IR types from cluster 3.A and lower / emit from clusters 3.B / 3.C are unchanged.
 
 ## Open Questions
 

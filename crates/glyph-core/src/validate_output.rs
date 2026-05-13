@@ -448,8 +448,16 @@ fn escape_for_source_token(s: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Check: section shape (extra-h2, missing-instructions, extra-h3)
+// Check: section shape (extra-h2, params-section-missing, params-section-spurious)
 // ---------------------------------------------------------------------------
+//
+// Flat shape: H2 sections recognized by name. `### Procedure: <name>` is the
+// only H3 case that may appear (still rendered as H3 nested inside a body
+// section in Phase 1 — its parent is no longer `## Instructions` but the
+// per-section emit; see scaffold.rs).
+//
+// The diagnostic IDs `G::expand::missing-instructions` and `G::expand::extra-h3`
+// are reserved (no longer emitted) for forward-compatibility.
 
 fn check_section_shape(md_struct: &MdStructure, skill: &Value, violations: &mut Vec<Violation>) {
     let has_params = skill
@@ -457,31 +465,27 @@ fn check_section_shape(md_struct: &MdStructure, skill: &Value, violations: &mut 
         .and_then(|p| p.as_array())
         .map_or(false, |a| !a.is_empty());
 
-    let mut found_instructions = false;
+    // Phase 3 (Task 3.11): freeform colon-keyword sections compile to `##`
+    // H2s peer to `## Steps` / `## Constraints`. Their headings come from
+    // `skill.freeform_section_headings` (a parallel array emitted by
+    // `emit_ir`), so this check loads them and treats them as allowed.
+    let allowed_builtin = ["Parameters", "Context", "Steps", "Constraints"];
+    let freeform_headings: Vec<String> = skill
+        .get("freeform_section_headings")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|h| h.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
     let mut found_parameters = false;
-
     for h2 in &md_struct.h2_sections {
-        if h2.name == "Instructions" {
-            found_instructions = true;
-            // Check H3 sections
-            for h3 in &h2.h3_sections {
-                let valid = h3.name == "Context"
-                    || h3.name == "Steps"
-                    || h3.name == "Constraints"
-                    || h3.name.starts_with("Procedure: ");
-                if !valid {
-                    violations.push(Violation::new(
-                        "G::expand::extra-h3",
-                        format!(
-                            "unexpected H3 section `### {}` under `## Instructions`",
-                            h3.name
-                        ),
-                    ));
-                }
-            }
-        } else if h2.name == "Parameters" {
+        if h2.name == "Parameters" {
             found_parameters = true;
-        } else {
+        } else if !allowed_builtin.contains(&h2.name.as_str())
+            && !freeform_headings.iter().any(|h| h == &h2.name)
+        {
             violations.push(Violation::new(
                 "G::expand::extra-h2",
                 format!("unexpected H2 section `## {}`", h2.name),
@@ -489,14 +493,6 @@ fn check_section_shape(md_struct: &MdStructure, skill: &Value, violations: &mut 
         }
     }
 
-    if !found_instructions {
-        violations.push(Violation::new(
-            "G::expand::missing-instructions",
-            "`## Instructions` section not found",
-        ));
-    }
-
-    // params-section-missing / params-section-spurious
     if has_params && !found_parameters {
         violations.push(Violation::new(
             "G::expand::params-section-missing",
@@ -527,14 +523,14 @@ fn check_context_count(md: &str, skill: &Value, violations: &mut Vec<Violation>)
         violations.push(Violation::new(
             "G::expand::context-count-mismatch",
             format!(
-                "IR has {} context entries but `### Context` has {} items",
+                "IR has {} context entries but `## Context` has {} items",
                 ir_context_count, md_context_count
             ),
         ));
     }
 }
 
-/// Count column-0 `- ` bullets inside the `### Context` H3 block.
+/// Count column-0 `- ` bullets inside the `## Context` H2 block.
 ///
 /// Path B from `glyph-context-projection-design-2026-05-07.md`: raw
 /// line-scan over the original Markdown, preserving indentation. The
@@ -542,17 +538,18 @@ fn check_context_count(md: &str, skill: &Value, violations: &mut Vec<Violation>)
 /// `parse_md_structure` line 194), so nested `  - …` bullets cannot
 /// be distinguished from top-level ones via that path. Each context
 /// entry's body is allowed to contain its own indented bullets, so we
-/// must count only literal `- ` at column 0 between `### Context` and
-/// the next `###` / `##` heading.
+/// must count only literal `- ` at column 0 between `## Context` and
+/// the next `##` / `###` heading. Phase 1 flat shape: `Context` is now a
+/// peer H2 alongside `Steps` and `Constraints`.
 fn count_top_level_context_bullets(md: &str) -> usize {
     let mut in_context = false;
     let mut count = 0usize;
     for line in md.lines() {
-        if let Some(rest) = line.strip_prefix("### ") {
+        if let Some(rest) = line.strip_prefix("## ") {
             in_context = rest.trim() == "Context";
             continue;
         }
-        if line.starts_with("## ") || line.starts_with("### ") {
+        if line.starts_with("### ") {
             in_context = false;
             continue;
         }
@@ -580,7 +577,7 @@ fn check_step_count(md_struct: &MdStructure, skill: &Value, violations: &mut Vec
         violations.push(Violation::new(
             "G::expand::step-count-mismatch",
             format!(
-                "expected {} top-level steps but `### Steps` has {} items",
+                "expected {} top-level steps but `## Steps` has {} items",
                 expected, md_step_count
             ),
         ));
@@ -694,11 +691,13 @@ fn check_step_order(md_struct: &MdStructure, flow: &[Value], violations: &mut Ve
         }
     }
 
-    let steps_section = find_instructions_h3(md_struct, "Steps");
-    if let Some(section) = steps_section {
-        if section.items.len() == ir_step_keys.len() {
+    let steps_items = find_body_h2(md_struct, "Steps")
+        .map(body_h2_items)
+        .unwrap_or_default();
+    if !steps_items.is_empty() {
+        if steps_items.len() == ir_step_keys.len() {
             for (i, ((ir_key, key_kind), md_item)) in
-                ir_step_keys.iter().zip(section.items.iter()).enumerate()
+                ir_step_keys.iter().zip(steps_items.iter()).enumerate()
             {
                 if matches!(key_kind, StepKeyKind::Identifier) && ir_key.starts_with("branch:") {
                     continue;
@@ -752,8 +751,8 @@ fn check_substep_count(md_struct: &MdStructure, skill: &Value, violations: &mut 
         None => return,
     };
 
-    let steps_section = match find_instructions_h3(md_struct, "Steps") {
-        Some(s) => s,
+    let steps_items = match find_body_h2(md_struct, "Steps") {
+        Some(h2) => body_h2_items(h2),
         None => return,
     };
 
@@ -769,8 +768,8 @@ fn check_substep_count(md_struct: &MdStructure, skill: &Value, violations: &mut 
                 }
             }
             "branch" => {
-                if step_idx < steps_section.items.len() {
-                    let md_item = &steps_section.items[step_idx];
+                if step_idx < steps_items.len() {
+                    let md_item = &steps_items[step_idx];
                     // Count sub-items per arm
                     check_branch_substeps(node, md_item, violations);
                 }
@@ -848,7 +847,7 @@ fn check_constraint_count(md_struct: &MdStructure, skill: &Value, violations: &m
         violations.push(Violation::new(
             "G::expand::constraint-count-mismatch",
             format!(
-                "IR has {} constraints but `### Constraints` has {} items",
+                "IR has {} constraints but `## Constraints` has {} items",
                 ir_constraint_count, md_constraint_count
             ),
         ));
@@ -1256,20 +1255,10 @@ fn check_procedures(md_struct: &MdStructure, skill: &Value, violations: &mut Vec
         }
     }
 
-    // Find actual procedure sections in md
-    let instructions = md_struct
-        .h2_sections
-        .iter()
-        .find(|h2| h2.name == "Instructions");
-
-    let actual_procedures: Vec<&H3Section> = instructions
-        .map(|h2| {
-            h2.h3_sections
-                .iter()
-                .filter(|h3| h3.name.starts_with("Procedure: "))
-                .collect()
-        })
-        .unwrap_or_default();
+    // Find actual procedure sections in md. Phase 1 flat shape: procedures
+    // emit at H3 after the last body H2, so they nest under whichever H2 came
+    // last. Collect across all H2 sections.
+    let actual_procedures: Vec<&H3Section> = all_procedure_h3s(md_struct);
 
     let actual_names: Vec<String> = actual_procedures
         .iter()
@@ -1342,10 +1331,13 @@ fn check_procedures(md_struct: &MdStructure, skill: &Value, violations: &mut Vec
 
     // procedure-ref-missing: check that Steps referencing same_file_procedure
     // calls mention the procedure name
-    if let Some(steps) = find_instructions_h3(md_struct, "Steps") {
+    let steps_items: Vec<ListItem> = find_body_h2(md_struct, "Steps")
+        .map(body_h2_items)
+        .unwrap_or_default();
+    if !steps_items.is_empty() {
         for proc_name in &unique_procedures {
             let kebab = kebab_case(proc_name);
-            let referenced = steps.items.iter().any(|item| step_mentions(item, &kebab));
+            let referenced = steps_items.iter().any(|item| step_mentions(item, &kebab));
             if !referenced {
                 violations.push(Violation::new(
                     "G::expand::procedure-ref-missing",
@@ -1357,8 +1349,8 @@ fn check_procedures(md_struct: &MdStructure, skill: &Value, violations: &mut Vec
 
     // procedure-ref-dangling: check that step prose referencing a procedure
     // has a matching section
-    if let Some(steps) = find_instructions_h3(md_struct, "Steps") {
-        for item in &steps.items {
+    if !steps_items.is_empty() {
+        for item in &steps_items {
             // Look for "procedure" references in step text
             // (actual_names are checked below for dangling refs)
             // Check if step references a procedure name that doesn't have a section
@@ -1378,33 +1370,31 @@ fn check_procedures(md_struct: &MdStructure, skill: &Value, violations: &mut Vec
     }
 
     // procedure-order: check that procedure sections are ordered by first reference
-    if actual_names.len() >= 2 {
-        if let Some(steps) = find_instructions_h3(md_struct, "Steps") {
-            let mut first_ref_order: Vec<String> = Vec::new();
-            for item in &steps.items {
-                for name in &actual_names {
-                    if step_mentions(item, name) && !first_ref_order.contains(name) {
-                        first_ref_order.push(name.clone());
-                    }
+    if actual_names.len() >= 2 && !steps_items.is_empty() {
+        let mut first_ref_order: Vec<String> = Vec::new();
+        for item in &steps_items {
+            for name in &actual_names {
+                if step_mentions(item, name) && !first_ref_order.contains(name) {
+                    first_ref_order.push(name.clone());
                 }
             }
-            // Check that actual_names follows first_ref_order
-            let mut ordered = true;
-            let mut ref_idx = 0;
-            for actual in &actual_names {
-                if ref_idx < first_ref_order.len() && &first_ref_order[ref_idx] == actual {
-                    ref_idx += 1;
-                } else {
-                    ordered = false;
-                    break;
-                }
+        }
+        // Check that actual_names follows first_ref_order
+        let mut ordered = true;
+        let mut ref_idx = 0;
+        for actual in &actual_names {
+            if ref_idx < first_ref_order.len() && &first_ref_order[ref_idx] == actual {
+                ref_idx += 1;
+            } else {
+                ordered = false;
+                break;
             }
-            if !ordered {
-                violations.push(Violation::new(
-                    "G::expand::procedure-order",
-                    "procedure sections are not ordered by first reference from `### Steps`",
-                ));
-            }
+        }
+        if !ordered {
+            violations.push(Violation::new(
+                "G::expand::procedure-order",
+                "procedure sections are not ordered by first reference from `## Steps`",
+            ));
         }
     }
 }
@@ -1604,17 +1594,92 @@ fn check_resolved_predicates_in_flow(flow: &[Value], md: &str, violations: &mut 
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn find_h3_items(md_struct: &MdStructure, h3_name: &str) -> usize {
-    let section = find_instructions_h3(md_struct, h3_name);
-    section.map_or(0, |s| s.items.len())
+/// Count list items inside a top-level H2 body section by name.
+///
+/// Phase 1 flat shape: `Steps`, `Constraints`, `Context` are peer H2 sections
+/// rather than nested H3s under `## Instructions`. Items live in the H2's own
+/// `content_lines` (parsed as numbered/bulleted markers), so we re-scan those
+/// lines to count list items.
+fn find_h3_items(md_struct: &MdStructure, h2_name: &str) -> usize {
+    find_body_h2(md_struct, h2_name).map_or(0, count_body_items)
 }
 
-fn find_instructions_h3<'a>(md_struct: &'a MdStructure, h3_name: &str) -> Option<&'a H3Section> {
+/// Find a body-section H2 by its name (e.g. "Steps", "Constraints", "Context").
+fn find_body_h2<'a>(md_struct: &'a MdStructure, h2_name: &str) -> Option<&'a H2Section> {
+    md_struct.h2_sections.iter().find(|h2| h2.name == h2_name)
+}
+
+/// Count numbered or bulleted top-level list items in an H2's content_lines.
+fn count_body_items(h2: &H2Section) -> usize {
+    h2.content_lines
+        .iter()
+        .filter(|l| {
+            let t = l.trim_start();
+            is_numbered_item(t) || is_bulleted_item(t)
+        })
+        .count()
+}
+
+/// Iterate every `### Procedure: <name>` H3 anywhere in the document.
+///
+/// Phase 1: procedures emit at H3 after the last body H2 (`## Constraints` if
+/// present, else `## Steps`, else `## Context`), so they nest under whichever
+/// H2 came last. Collect them across all H2 sections to be tolerant of that.
+fn all_procedure_h3s(md_struct: &MdStructure) -> Vec<&H3Section> {
     md_struct
         .h2_sections
         .iter()
-        .find(|h2| h2.name == "Instructions")
-        .and_then(|h2| h2.h3_sections.iter().find(|h3| h3.name == h3_name))
+        .flat_map(|h2| h2.h3_sections.iter())
+        .filter(|h3| h3.name.starts_with("Procedure: "))
+        .collect()
+}
+
+/// Re-parse the items of a body H2 (e.g. `## Steps`) into `ListItem`s so callers
+/// that previously relied on the H3-attached items vector keep working.
+//
+// TODO(phase-3): Consolidate with parse_md_structure's H3-attached item parser
+// (validate_output.rs:197-229). Phase 3's SectionCatalogue introduces a unified
+// content-item grammar that should replace both. Kept duplicated here as a
+// transitional measure for Phase 1's flat-shape support.
+fn body_h2_items(h2: &H2Section) -> Vec<ListItem> {
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut current: Option<ListItem> = None;
+    for line in &h2.content_lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if is_numbered_item(trimmed) {
+            if let Some(it) = current.take() {
+                items.push(it);
+            }
+            current = Some(ListItem {
+                text: strip_number_prefix(trimmed),
+                sub_items: Vec::new(),
+            });
+        } else if is_bulleted_item(trimmed) {
+            if let Some(it) = current.take() {
+                items.push(it);
+            }
+            current = Some(ListItem {
+                text: strip_bullet_prefix(trimmed),
+                sub_items: Vec::new(),
+            });
+        } else if is_lettered_subitem(trimmed) {
+            if let Some(ref mut it) = current {
+                it.sub_items.push(SubItem {
+                    text: strip_letter_prefix(trimmed),
+                });
+            }
+        } else if let Some(ref mut it) = current {
+            it.text.push(' ');
+            it.text.push_str(trimmed);
+        }
+    }
+    if let Some(it) = current {
+        items.push(it);
+    }
+    items
 }
 
 /// Serialize violations to JSON (for --format json output).
@@ -1683,7 +1748,7 @@ mod tests {
 
     /// Helper: minimal valid MD
     fn minimal_md() -> String {
-        "## Instructions\n\n### Steps\n\n1. Do something.\n".to_string()
+        "## Steps\n\n1. Do something.\n".to_string()
     }
 
     #[test]
@@ -1730,7 +1795,7 @@ mod tests {
             }
         })
         .to_string();
-        let md = "## Instructions\n\n### Steps\n\n1. Return <current_branch>.\n";
+        let md = "## Steps\n\n1. Return <current_branch>.\n";
         let violations = validate_output(&ir, md);
         assert!(
             violations
@@ -1774,7 +1839,7 @@ mod tests {
             }
         })
         .to_string();
-        let md = "## Instructions\n\n### Steps\n\n1. Produce `current_branch` (`BranchName`).\n";
+        let md = "## Steps\n\n1. Produce `current_branch` (`BranchName`).\n";
         let violations = validate_output(&ir, md);
         assert!(
             !violations
@@ -1788,7 +1853,7 @@ mod tests {
     #[test]
     fn frontmatter_returned() {
         // Step 2 injected a second frontmatter block in the body
-        let md = "---\nname: test\n---\n---\nextra: junk\n---\n## Instructions\n\n### Steps\n\n1. Do something.\n";
+        let md = "---\nname: test\n---\n---\nextra: junk\n---\n## Steps\n\n1. Do something.\n";
         let violations = validate_output(&minimal_ir(), md);
         assert!(violations
             .iter()
@@ -1798,7 +1863,7 @@ mod tests {
     #[test]
     fn legitimate_frontmatter_stripped() {
         // Legitimate Emit-produced frontmatter should be stripped and not flagged
-        let md = "---\nname: test_skill\ndescription: A test skill.\n---\n## Instructions\n\n### Steps\n\n1. Do something.\n";
+        let md = "---\nname: test_skill\ndescription: A test skill.\n---\n## Steps\n\n1. Do something.\n";
         let violations = validate_output(&minimal_ir(), md);
         assert!(
             !violations
@@ -1822,29 +1887,30 @@ mod tests {
     // --- extra-h2 ---
     #[test]
     fn extra_h2() {
-        let md = "## Instructions\n\n### Steps\n\n1. Do something.\n\n## Extra Section\n\nSome content.\n";
+        let md = "## Steps\n\n1. Do something.\n\n## Extra Section\n\nSome content.\n";
         let violations = validate_output(&minimal_ir(), md);
         assert!(violations.iter().any(|v| v.id == "G::expand::extra-h2"));
     }
 
-    // --- missing-instructions ---
+    // --- missing-instructions (retired diagnostic) ---
+    //
+    // The flat shape has no `## Instructions` heading, so the diagnostic
+    // `G::expand::missing-instructions` is reserved but never emitted. This
+    // regression test asserts it does not fire on a flat valid skill.
     #[test]
-    fn missing_instructions() {
-        let md = "## Something Else\n\n### Steps\n\n1. Do something.\n";
+    fn missing_instructions_not_emitted_on_flat_shape() {
+        let md = "## Steps\n\n1. Do something.\n";
         let violations = validate_output(&minimal_ir(), md);
-        assert!(violations
+        assert!(!violations
             .iter()
             .any(|v| v.id == "G::expand::missing-instructions"));
     }
 
-    // --- extra-h3 ---
-    #[test]
-    fn extra_h3() {
-        let md = "## Instructions\n\n### Steps\n\n1. Do something.\n\n### Notes\n\nSome notes.\n";
-        let violations = validate_output(&minimal_ir(), md);
-        assert!(violations.iter().any(|v| v.id == "G::expand::extra-h3"));
-    }
-
+    // --- extra-h3 (retired diagnostic) ---
+    //
+    // The flat shape allows H3s under any body section (e.g. `### Procedure: <name>`
+    // nested under `## Steps`). The diagnostic `G::expand::extra-h3` is reserved
+    // but never emitted.
     #[test]
     fn extra_h3_accepts_valid_h3s() {
         // All valid H3s: Context, Steps, Constraints, Procedure: <name>
@@ -1893,17 +1959,15 @@ mod tests {
         }).to_string();
 
         let md = "\
-## Instructions
-
-### Context
+## Context
 
 - Some context.
 
-### Steps
+## Steps
 
 1. Review the code (follow the review-code procedure below).
 
-### Constraints
+## Constraints
 
 - A constraint.
 
@@ -1927,7 +1991,7 @@ mod tests {
     // --- step-count-mismatch ---
     #[test]
     fn step_count_mismatch() {
-        let md = "## Instructions\n\n### Steps\n\n1. Do something.\n2. Extra step.\n";
+        let md = "## Steps\n\n1. Do something.\n2. Extra step.\n";
         let violations = validate_output(&minimal_ir(), md);
         assert!(violations
             .iter()
@@ -1975,7 +2039,7 @@ mod tests {
         }).to_string();
 
         // Only 1 sub-item instead of 3 (2 then + 1 else)
-        let md = "## Instructions\n\n### Steps\n\n1. If has tests:\n   a. Run tests.\n";
+        let md = "## Steps\n\n1. If has tests:\n   a. Run tests.\n";
         let violations = validate_output(&ir, md);
         assert!(violations
             .iter()
@@ -2008,7 +2072,7 @@ mod tests {
         }).to_string();
 
         // Only 1 constraint instead of 2
-        let md = "## Instructions\n\n### Steps\n\n1. Do something.\n\n### Constraints\n\n- First constraint.\n";
+        let md = "## Steps\n\n1. Do something.\n\n## Constraints\n\n- First constraint.\n";
         let violations = validate_output(&ir, md);
         assert!(violations
             .iter()
@@ -2041,8 +2105,7 @@ mod tests {
         }).to_string();
 
         // Only 1 context instead of 2
-        let md =
-            "## Instructions\n\n### Context\n\n- Context A.\n\n### Steps\n\n1. Do something.\n";
+        let md = "## Context\n\n- Context A.\n\n## Steps\n\n1. Do something.\n";
         let violations = validate_output(&ir, md);
         assert!(violations
             .iter()
@@ -2074,9 +2137,9 @@ mod tests {
             }
         }).to_string();
 
-        // 2 top-level bullets in `### Context`, but the first body has 3 indented
+        // 2 top-level bullets in `## Context`, but the first body has 3 indented
         // bullets inside it. Counting must not include the indented ones.
-        let md = "## Instructions\n\n### Context\n\n- **alpha**\n\n  A body paragraph.\n\n  - body bullet one\n  - body bullet two\n  - body bullet three\n\n- B.\n\n### Steps\n\n1. Do something.\n";
+        let md = "## Context\n\n- **alpha**\n\n  A body paragraph.\n\n  - body bullet one\n  - body bullet two\n  - body bullet three\n\n- B.\n\n## Steps\n\n1. Do something.\n";
         let violations = validate_output(&ir, md);
         assert!(
             !violations
@@ -2111,7 +2174,7 @@ mod tests {
         }).to_string();
 
         // Reversed order
-        let md = "## Instructions\n\n### Steps\n\n1. Fix the issue.\n2. Analyze the code.\n";
+        let md = "## Steps\n\n1. Fix the issue.\n2. Analyze the code.\n";
         let violations = validate_output(&ir, md);
         assert!(
             violations
@@ -2144,7 +2207,7 @@ mod tests {
             }
         }).to_string();
 
-        let md_correct = "## Instructions\n\n### Steps\n\n1. Read the source and resolve the sibling compiled output.\n2. Re-read both files and confirm they remain in sync.\n";
+        let md_correct = "## Steps\n\n1. Read the source and resolve the sibling compiled output.\n2. Re-read both files and confirm they remain in sync.\n";
         let violations = validate_output(&ir, md_correct);
         assert!(
             !violations
@@ -2154,7 +2217,7 @@ mod tests {
             violations
         );
 
-        let md_reversed = "## Instructions\n\n### Steps\n\n1. Re-read both files and confirm they remain in sync.\n2. Read the source and resolve the sibling compiled output.\n";
+        let md_reversed = "## Steps\n\n1. Re-read both files and confirm they remain in sync.\n2. Read the source and resolve the sibling compiled output.\n";
         let violations = validate_output(&ir, md_reversed);
         assert!(
             violations
@@ -2191,7 +2254,7 @@ mod tests {
             }
         }).to_string();
 
-        let md_correct = "## Instructions\n\n### Steps\n\n1. Follow the compile-with-repair procedure below.\n2. Follow the expand-and-validate procedure below.\n";
+        let md_correct = "## Steps\n\n1. Follow the compile-with-repair procedure below.\n2. Follow the expand-and-validate procedure below.\n";
         let violations = validate_output(&ir, md_correct);
         assert!(
             !violations
@@ -2201,7 +2264,7 @@ mod tests {
             violations
         );
 
-        let md_reversed = "## Instructions\n\n### Steps\n\n1. Follow the expand-and-validate procedure below.\n2. Follow the compile-with-repair procedure below.\n";
+        let md_reversed = "## Steps\n\n1. Follow the expand-and-validate procedure below.\n2. Follow the compile-with-repair procedure below.\n";
         let violations = validate_output(&ir, md_reversed);
         assert!(
             violations
@@ -2234,7 +2297,7 @@ mod tests {
             }
         }).to_string();
 
-        let md_correct = "## Instructions\n\n### Steps\n\n1. Read the source and the compiled output.\n2. Verify the paired files are consistent.\n";
+        let md_correct = "## Steps\n\n1. Read the source and the compiled output.\n2. Verify the paired files are consistent.\n";
         let violations = validate_output(&ir, md_correct);
         assert!(
             !violations
@@ -2244,7 +2307,7 @@ mod tests {
             violations
         );
 
-        let md_reversed = "## Instructions\n\n### Steps\n\n1. Verify the paired files are consistent.\n2. Read the source and the compiled output.\n";
+        let md_reversed = "## Steps\n\n1. Verify the paired files are consistent.\n2. Read the source and the compiled output.\n";
         let violations = validate_output(&ir, md_reversed);
         assert!(
             violations
@@ -2258,7 +2321,7 @@ mod tests {
     // --- invented-param-ref ---
     #[test]
     fn invented_param_ref() {
-        let md = "## Instructions\n\n### Steps\n\n1. Do something in {unknown_param}.\n";
+        let md = "## Steps\n\n1. Do something in {unknown_param}.\n";
         let violations = validate_output(&minimal_ir(), md);
         assert!(violations
             .iter()
@@ -2270,7 +2333,7 @@ mod tests {
         // {ident} tokens inside inline backticks, fenced code blocks, and
         // 4-space-indented blocks are example text, not runtime slots — the
         // validator must not flag them as invented-param-ref.
-        let md = "## Instructions\n\n### Steps\n\n\
+        let md = "## Steps\n\n\
             1. Inline example like `{ctx}` and ``{name}`` are documentation only.\n\
             2. A fenced block follows.\n\n\
             ```\n\
@@ -2334,7 +2397,7 @@ mod tests {
         }).to_string();
 
         // MD doesn't use {scope}
-        let md = "## Parameters\n- **scope**: Area to focus on (default: \".\")\n\n## Instructions\n\n### Steps\n\n1. Inspect the area for issues.\n";
+        let md = "## Parameters\n- **scope**: Area to focus on (default: \".\")\n\n## Steps\n\n1. Inspect the area for issues.\n";
         let violations = validate_output(&ir, md);
         assert!(
             violations
@@ -2408,8 +2471,7 @@ mod tests {
         .to_string();
 
         // MD still has {diagnosis} as a literal token
-        let md =
-            "## Instructions\n\n### Steps\n\n1. Analyze the code.\n2. Fix based on {diagnosis}.\n";
+        let md = "## Steps\n\n1. Analyze the code.\n2. Fix based on {diagnosis}.\n";
         let violations = validate_output(&ir, md);
         assert!(
             violations
@@ -2462,7 +2524,7 @@ mod tests {
         .to_string();
 
         // MD contains the modifier verbatim
-        let md = "## Instructions\n\n### Steps\n\n1. Inspect the code. focus on auth boundaries.\n";
+        let md = "## Steps\n\n1. Inspect the code. focus on auth boundaries.\n";
         let violations = validate_output(&ir, md);
         assert!(
             violations
@@ -2499,7 +2561,7 @@ mod tests {
         }).to_string();
 
         // Only 1 param listed instead of 2
-        let md = "## Parameters\n- **scope**: The scope\n\n## Instructions\n\n### Steps\n\n1. Do something.\n";
+        let md = "## Parameters\n- **scope**: The scope\n\n## Steps\n\n1. Do something.\n";
         let violations = validate_output(&ir, md);
         assert!(
             violations
@@ -2535,7 +2597,7 @@ mod tests {
         }).to_string();
 
         // No ## Parameters section
-        let md = "## Instructions\n\n### Steps\n\n1. Do something.\n";
+        let md = "## Steps\n\n1. Do something.\n";
         let violations = validate_output(&ir, md);
         assert!(violations
             .iter()
@@ -2545,7 +2607,7 @@ mod tests {
     // --- params-section-spurious ---
     #[test]
     fn params_section_spurious() {
-        let md = "## Parameters\n- **scope**: something\n\n## Instructions\n\n### Steps\n\n1. Do something.\n";
+        let md = "## Parameters\n- **scope**: something\n\n## Steps\n\n1. Do something.\n";
         let violations = validate_output(&minimal_ir(), md);
         assert!(violations
             .iter()
@@ -2595,7 +2657,7 @@ mod tests {
         }).to_string();
 
         // No procedure section
-        let md = "## Instructions\n\n### Steps\n\n1. Review the code (follow the review-code procedure below).\n";
+        let md = "## Steps\n\n1. Review the code (follow the review-code procedure below).\n";
         let violations = validate_output(&ir, md);
         assert!(
             violations
@@ -2648,7 +2710,7 @@ mod tests {
             }
         }).to_string();
 
-        let md = "## Instructions\n\n### Steps\n\n1. Review the code (follow the wrong-name procedure below).\n\n### Procedure: wrong-name\n\n1. Scan.\n";
+        let md = "## Steps\n\n1. Review the code (follow the wrong-name procedure below).\n\n### Procedure: wrong-name\n\n1. Scan.\n";
         let violations = validate_output(&ir, md);
         assert!(
             violations
@@ -2703,7 +2765,7 @@ mod tests {
         }).to_string();
 
         // Procedure section has 1 item instead of 2
-        let md = "## Instructions\n\n### Steps\n\n1. Review the code (follow the review-code procedure below).\n\n### Procedure: review-code\n\n1. Scan.\n";
+        let md = "## Steps\n\n1. Review the code (follow the review-code procedure below).\n\n### Procedure: review-code\n\n1. Scan.\n";
         let violations = validate_output(&ir, md);
         assert!(
             violations
@@ -2757,7 +2819,7 @@ mod tests {
         }).to_string();
 
         // Step doesn't mention the procedure name
-        let md = "## Instructions\n\n### Steps\n\n1. Review the code.\n\n### Procedure: review-code\n\n1. Scan.\n";
+        let md = "## Steps\n\n1. Review the code.\n\n### Procedure: review-code\n\n1. Scan.\n";
         let violations = validate_output(&ir, md);
         assert!(
             violations
@@ -2811,7 +2873,7 @@ mod tests {
         }).to_string();
 
         // Step references review-code but no procedure section exists
-        let md = "## Instructions\n\n### Steps\n\n1. Review the code (follow the review-code procedure below).\n";
+        let md = "## Steps\n\n1. Review the code (follow the review-code procedure below).\n";
         let violations = validate_output(&ir, md);
         assert!(
             violations
@@ -2844,7 +2906,7 @@ mod tests {
             }
         }).to_string();
 
-        let md = "## Instructions\n\n### Steps\n\n1. Do something.\n\n### Procedure: review-code\n\n1. Scan.\n\n### Procedure: review-code\n\n1. Report.\n";
+        let md = "## Steps\n\n1. Do something.\n\n### Procedure: review-code\n\n1. Scan.\n\n### Procedure: review-code\n\n1. Report.\n";
         let violations = validate_output(&ir, md);
         assert!(
             violations
@@ -2919,7 +2981,7 @@ mod tests {
         }).to_string();
 
         // Wrong order: step-b before step-a
-        let md = "## Instructions\n\n### Steps\n\n1. Do step-a procedure.\n2. Do step-b procedure.\n\n### Procedure: step-b\n\n1. B1.\n\n### Procedure: step-a\n\n1. A1.\n";
+        let md = "## Steps\n\n1. Do step-a procedure.\n2. Do step-b procedure.\n\n### Procedure: step-b\n\n1. B1.\n\n### Procedure: step-a\n\n1. A1.\n";
         let violations = validate_output(&ir, md);
         assert!(
             violations
@@ -2932,16 +2994,14 @@ mod tests {
 
     #[test]
     fn parse_md_structure_captures_lettered_substep_text() {
-        let md = "## Instructions\n\n### Steps\n\n1. Top-level step.\n   a. First sub-step.\n   b. Second sub-step.\n";
+        // Phase 1 flat shape: `## Steps` is now a top-level H2. Its list items
+        // are re-derived from `content_lines` via `body_h2_items`.
+        let md = "## Steps\n\n1. Top-level step.\n   a. First sub-step.\n   b. Second sub-step.\n";
         let s = parse_md_structure(md);
-        let h2 = s
-            .h2_sections
-            .iter()
-            .find(|h| h.name == "Instructions")
-            .unwrap();
-        let h3 = h2.h3_sections.iter().find(|h| h.name == "Steps").unwrap();
-        assert_eq!(h3.items.len(), 1);
-        let item = &h3.items[0];
+        let h2 = find_body_h2(&s, "Steps").unwrap();
+        let items = body_h2_items(h2);
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
         assert_eq!(item.sub_items.len(), 2);
         assert_eq!(item.sub_items[0].text, "First sub-step.");
         assert_eq!(item.sub_items[1].text, "Second sub-step.");
@@ -3021,7 +3081,7 @@ mod tests {
         }).to_string();
 
         // Valid rendering with sub-steps
-        let md = "## Instructions\n\n### Steps\n\n1. Decide which approach applies:\n   a. Fork with plan.\n   b. Fork with summary.\n";
+        let md = "## Steps\n\n1. Decide which approach applies:\n   a. Fork with plan.\n   b. Fork with summary.\n";
         let violations = validate_output(&ir, md);
         // Should pass without branch-specific errors
         let branch_errors: Vec<_> = violations
@@ -3092,7 +3152,7 @@ mod tests {
         }).to_string();
 
         // BAD rendering: uses raw condition expressions instead of descriptions
-        let md = "## Instructions\n\n### Steps\n\n1. If fork_with_plan.applies():\n   a. Fork with plan.\n   b. Fork with summary.\n";
+        let md = "## Steps\n\n1. If fork_with_plan.applies():\n   a. Fork with plan.\n   b. Fork with summary.\n";
         let violations = validate_output(&ir, md);
         assert!(
             violations
@@ -3157,7 +3217,7 @@ mod tests {
 
         // End-to-end check: a markdown file containing the source-shape
         // literal must trigger the leak diagnostic.
-        let md = "## Instructions\n\n### Steps\n\n1. Return <\"contains \\\"quotes\\\" and \\\\backslash\">.\n";
+        let md = "## Steps\n\n1. Return <\"contains \\\"quotes\\\" and \\\\backslash\">.\n";
         let violations = validate_output(&ir.to_string(), md);
         assert!(
             violations
@@ -3171,7 +3231,7 @@ mod tests {
     #[test]
     fn check_resolved_predicates_accepts_renamed_key() {
         let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"x.applies()","resolved_predicates":{"x.applies()":"the change is large"},"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
-        let md = "## Instructions\n\n### Steps\n\n1. If the change is large:\n   a. Stop.\n";
+        let md = "## Steps\n\n1. If the change is large:\n   a. Stop.\n";
         let violations = validate_output(ir, md);
         assert!(violations.is_empty(), "got: {:?}", violations);
     }
@@ -3179,7 +3239,7 @@ mod tests {
     #[test]
     fn check_resolved_predicates_accepts_const_form() {
         let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"big","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":{"big":"the change is big"},"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
-        let md = "## Instructions\n\n### Steps\n\n1. If the change is big:\n   a. Stop.\n";
+        let md = "## Steps\n\n1. If the change is big:\n   a. Stop.\n";
         let violations = validate_output(ir, md);
         assert!(violations.is_empty(), "got: {:?}", violations);
     }
@@ -3187,7 +3247,7 @@ mod tests {
     #[test]
     fn check_resolved_predicates_accepts_literal_form() {
         let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"\"the user opted in\"","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":null,"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
-        let md = "## Instructions\n\n### Steps\n\n1. If the user opted in:\n   a. Skip.\n";
+        let md = "## Steps\n\n1. If the user opted in:\n   a. Skip.\n";
         let violations = validate_output(ir, md);
         assert!(violations.is_empty(), "got: {:?}", violations);
     }
@@ -3198,7 +3258,7 @@ mod tests {
         // bare-const predicate `big`, but the rendered markdown does NOT contain
         // that prose. The new positive check must fire.
         let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"big","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":{"big":"the change is big"},"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
-        let md = "## Instructions\n\n### Steps\n\n1. If something else:\n   a. Stop.\n";
+        let md = "## Steps\n\n1. If something else:\n   a. Stop.\n";
         let violations = validate_output(ir, md);
         assert!(
             violations
@@ -3219,7 +3279,7 @@ mod tests {
         // §ElifBranch), covering all arms. The elif_branch carries no such map of
         // its own. Both `big` and `small` entries are on the parent.
         let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"big","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":{"big":"the change is big","small":"the change is small"},"then_body":[],"elif_branches":[{"kind":"elif_branch","condition":"small","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"body":[]}],"else_body":null}]}}"#;
-        let md = "## Instructions\n\n### Steps\n\n1. If the change is big:\n   a. Stop.\n2. If something else:\n   a. Continue.\n";
+        let md = "## Steps\n\n1. If the change is big:\n   a. Stop.\n2. If something else:\n   a. Continue.\n";
         let violations = validate_output(ir, md);
         assert!(
             violations
@@ -3236,7 +3296,7 @@ mod tests {
         // rendered markdown does not contain that text. The new positive check
         // must fire on the literal arm too.
         let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"\"the user opted in\"","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":null,"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
-        let md = "## Instructions\n\n### Steps\n\n1. If they declined:\n   a. Skip.\n";
+        let md = "## Steps\n\n1. If they declined:\n   a. Skip.\n";
         let violations = validate_output(ir, md);
         assert!(
             violations
@@ -3267,9 +3327,7 @@ mod tests {
             }
         });
         let md = "\
-## Instructions
-
-### Steps
+## Steps
 
 1. Decide which path applies.
    a. Follow the do-thing procedure.
@@ -3308,9 +3366,7 @@ mod tests {
             }
         });
         let md = "\
-## Instructions
-
-### Steps
+## Steps
 
 1. Decide.
    a. Follow the do-thing procedure.
@@ -3348,9 +3404,7 @@ mod tests {
             }
         });
         let md = "\
-## Instructions
-
-### Steps
+## Steps
 
 1. Decide.
    a. Follow the alpha procedure.

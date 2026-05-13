@@ -12,6 +12,15 @@ pub struct SourceFile {
     pub decls: Vec<Decl>,
 }
 
+/// Source position of a sub-section header (the `<name>:` line). Used by
+/// Phase 6 (Emit) to merge author-positioned sections with synthetic ones
+/// (see `design/ir-schema.md` §Freeform sections for the D9 merge algorithm).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SectionSpan {
+    /// 0-based source line of the `<name>:` header token.
+    pub line: u32,
+}
+
 #[derive(Clone, Debug)]
 pub enum Decl {
     Skill(Spanned<Skill>),
@@ -105,6 +114,21 @@ pub struct Skill {
     /// `design/language-surface.md` §2.5 line 88 and
     /// `design/tree-sitter-grammar.md` §2.1 line 147.
     pub extra_subsections: Vec<DuplicateSubsection>,
+    /// Source line of the `description:` sub-section header. `None` when the
+    /// sub-section is absent. Populated by the parser in Phase 3.B; consumed
+    /// by Phase 6 (Emit) for the D9 author-positioned vs synthetic merge.
+    pub description_span: Option<SectionSpan>,
+    /// Source line of the `context:` sub-section header. `None` when absent.
+    pub context_section_span: Option<SectionSpan>,
+    /// Source line of the `constraints:` sub-section header. `None` when absent.
+    pub constraints_section_span: Option<SectionSpan>,
+    /// Source line of the `effects:` sub-section header. `None` when absent.
+    pub effects_span: Option<SectionSpan>,
+    /// Source line of the `flow:` sub-section header. `None` when absent.
+    pub flow_span: Option<SectionSpan>,
+    /// Colon-keyword sections whose name is not in the catalogue. Empty by
+    /// default in Phase 3.A; the parser will populate this in Phase 3.B.
+    pub freeform_sections: Vec<FreeformSection>,
 }
 
 /// A sub-section that appeared more than once in a `Skill`, `BlockDecl`, or
@@ -131,6 +155,42 @@ pub enum DuplicateSubsection {
     /// see decisions.md for the rationale). A future merge can splice these
     /// markers back into `body_constraints` without conversion.
     Constraints(Vec<ConstraintMarker>),
+}
+
+/// A colon-keyword section whose name is not in the catalogue (or whose
+/// catalogue entry uses `body_grammar = "content_items"` with the default
+/// freeform shape). Authored as `quality:`, `acceptance_criteria:`, etc.
+/// Built-in `context:` is NOT modeled this way today; in Phase 5 the
+/// catalogue migration may unify those paths.
+#[derive(Clone, Debug)]
+pub struct FreeformSection {
+    pub name: String,
+    pub span: SectionSpan,
+    /// Byte span of the `<name>` header token. Used by analyze-tier
+    /// diagnostics (e.g. `G::analyze::duplicate-section`) that need to anchor
+    /// on the header position; `span` carries only a line index for the
+    /// emit-side D9 merge.
+    pub header_span: crate::span::Span,
+    pub items: Vec<FreeformItem>,
+}
+
+#[derive(Clone, Debug)]
+pub enum FreeformItem {
+    StringLiteral(Spanned<String>),
+    NameRef(Spanned<String>),
+    MarkerClause {
+        marker: ReservedMarker,
+        text: Spanned<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReservedMarker {
+    Require,
+    Avoid,
+    Must,
+    MustAvoid,
+    Context,
 }
 
 /// Minimal `export block` declaration — slice 4 captures the header shape only.
@@ -190,6 +250,20 @@ pub struct ExportBlockDecl {
     /// Recovered duplicate sub-sections (issue #109). See
     /// [`Skill::extra_subsections`] for semantics.
     pub extra_subsections: Vec<DuplicateSubsection>,
+    /// Source line of the `description:` sub-section header. `None` when
+    /// absent. See [`Skill::description_span`].
+    pub description_span: Option<SectionSpan>,
+    /// Source line of the `context:` sub-section header. `None` when absent.
+    pub context_section_span: Option<SectionSpan>,
+    /// Source line of the `constraints:` sub-section header. `None` when absent.
+    pub constraints_section_span: Option<SectionSpan>,
+    /// Source line of the `effects:` sub-section header. `None` when absent.
+    pub effects_span: Option<SectionSpan>,
+    /// Source line of the `flow:` sub-section header. `None` when absent.
+    pub flow_span: Option<SectionSpan>,
+    /// Colon-keyword sections whose name is not in the catalogue. See
+    /// [`Skill::freeform_sections`].
+    pub freeform_sections: Vec<FreeformSection>,
 }
 
 /// Single parameter on a `skill`, `block`, or `export block` header.
@@ -375,6 +449,20 @@ pub struct BlockDecl {
     /// Recovered duplicate sub-sections (issue #109). See
     /// [`Skill::extra_subsections`] for semantics.
     pub extra_subsections: Vec<DuplicateSubsection>,
+    /// Source line of the `description:` sub-section header. `None` when
+    /// absent. See [`Skill::description_span`].
+    pub description_span: Option<SectionSpan>,
+    /// Source line of the `context:` sub-section header. `None` when absent.
+    pub context_section_span: Option<SectionSpan>,
+    /// Source line of the `constraints:` sub-section header. `None` when absent.
+    pub constraints_section_span: Option<SectionSpan>,
+    /// Source line of the `effects:` sub-section header. `None` when absent.
+    pub effects_span: Option<SectionSpan>,
+    /// Source line of the `flow:` sub-section header. `None` when absent.
+    pub flow_span: Option<SectionSpan>,
+    /// Colon-keyword sections whose name is not in the catalogue. See
+    /// [`Skill::freeform_sections`].
+    pub freeform_sections: Vec<FreeformSection>,
 }
 
 /// `const NAME = <literal>` declaration — unifies value bindings across the

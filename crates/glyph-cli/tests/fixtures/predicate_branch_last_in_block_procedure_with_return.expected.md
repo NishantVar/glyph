@@ -4,9 +4,7 @@ name: main
 description: 'Test branch as last procedure step with return sentence.'
 ---
 
-## Instructions
-
-### Steps
+## Steps
 
 1. Follow the plan-big-change procedure below.
 2. After the procedure.

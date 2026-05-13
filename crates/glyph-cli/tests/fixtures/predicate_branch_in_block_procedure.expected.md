@@ -4,9 +4,7 @@ name: main
 description: 'Test branch in block procedure.'
 ---
 
-## Instructions
-
-### Steps
+## Steps
 
 1. Follow the plan-big-change procedure below.
 2. After the procedure.

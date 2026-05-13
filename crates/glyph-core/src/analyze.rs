@@ -2506,6 +2506,23 @@ pub fn analyze_with_diagnostics(
         })
         .collect();
 
+    // Phase 3 / Task 3.12 — map from string-const name to its body, used by
+    // `check_skill_freeform_and_context_slots` to resolve `NameRef` items in
+    // freeform sections / `context:` `NameRef` entries to the const text. Only
+    // `ConstValue::String` participates here: other const kinds (Int / Float /
+    // Bool) never carry `{slot}` syntax and never lower to instruction prose.
+    let text_bodies: HashMap<&str, String> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Const(c) => match &c.node.value {
+                crate::ast::ConstValue::String(s) => Some((c.node.name.as_str(), s.clone())),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+
     // Collect block declaration names for call resolution.
     // Includes both private `block` and `export block` so same-file calls to
     // export blocks resolve (PRD #103 / Slice 2 (#105)).
@@ -2707,6 +2724,7 @@ pub fn analyze_with_diagnostics(
                 bag,
                 registry,
                 &text_names,
+                &text_bodies,
                 &block_names,
                 &block_decls,
                 &export_block_decls,
@@ -2730,6 +2748,38 @@ pub fn analyze_with_diagnostics(
                     &visible_binding_names,
                     &case_bad,
                     &mut explicit_decl_seen,
+                );
+                // Phase 3 / Task 3.12 — block-scope `{param}` slot validation
+                // for freeform colon-keyword sections (`quality:`, `risks:`,
+                // …). Uses the export block's own param scope, not the
+                // enclosing file's skills.
+                check_block_freeform_slots(
+                    &spanned.node.name,
+                    &spanned.node.params,
+                    &spanned.node.freeform_sections,
+                    spanned.span,
+                    &text_bodies,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+
+                // Phase 6 code-review fix — catalogue `cardinality = "one"`
+                // enforcement (today: `[goal]`). The check is structurally
+                // agnostic, so it applies to export blocks just as it does
+                // to skills.
+                check_section_cardinality(
+                    &spanned.node.freeform_sections,
+                    spanned.span,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+                check_duplicate_sections(
+                    &spanned.node.freeform_sections,
+                    file_label,
+                    line_index,
+                    bag,
                 );
             }
             Decl::Block(spanned) => {
@@ -2787,6 +2837,39 @@ pub fn analyze_with_diagnostics(
                 // `G::analyze::flow-assign-in-block-unsupported` for
                 // every flow-position assignment encountered.
                 check_block_flow_assign_rejected(&spanned.node.flow, file_label, line_index, bag);
+
+                // Phase 3 / Task 3.12 — block-scope `{param}` slot validation
+                // for freeform colon-keyword sections (`quality:`, `risks:`,
+                // …). Uses the block's own param scope so a slot named after
+                // the enclosing skill's parameter still fires here.
+                check_block_freeform_slots(
+                    &spanned.node.name,
+                    &spanned.node.params,
+                    &spanned.node.freeform_sections,
+                    spanned.span,
+                    &text_bodies,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+
+                // Phase 6 code-review fix — catalogue `cardinality = "one"`
+                // enforcement (today: `[goal]`). The check is structurally
+                // agnostic, so it applies to private blocks just as it does
+                // to skills.
+                check_section_cardinality(
+                    &spanned.node.freeform_sections,
+                    spanned.span,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+                check_duplicate_sections(
+                    &spanned.node.freeform_sections,
+                    file_label,
+                    line_index,
+                    bag,
+                );
             }
             Decl::Const(_) => {}
             Decl::Import(_) => {}
@@ -3626,6 +3709,23 @@ pub fn analyze_with_imports(
         })
         .collect();
 
+    // Phase 3 / Task 3.12 — same shape as the `analyze_with_diagnostics` map,
+    // imports path. Only local `ConstValue::String` participates; resolution
+    // of imported-text bodies for slot scanning is out of scope today
+    // (imported `NameRef` items still produce a `text_names`-only check via
+    // the existing `check_context_entry_name` path).
+    let text_bodies: HashMap<&str, String> = file
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Const(c) => match &c.node.value {
+                crate::ast::ConstValue::String(s) => Some((c.node.name.as_str(), s.clone())),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+
     // Collect local block declaration names.
     // Includes both private `block` and `export block` so same-file calls to
     // export blocks resolve (PRD #103 / Slice 2 (#105)).
@@ -3845,6 +3945,7 @@ pub fn analyze_with_imports(
                     bag,
                     registry,
                     &text_names,
+                    &text_bodies,
                     &block_names,
                     &block_decls,
                     &export_block_decls,
@@ -3874,6 +3975,18 @@ pub fn analyze_with_imports(
                     &visible_binding_names,
                     &case_bad,
                     &mut explicit_decl_seen,
+                );
+                // Phase 3 / Task 3.12 — block-scope `{param}` slot validation
+                // on the imports path. Mirrors the non-imports arm.
+                check_block_freeform_slots(
+                    &spanned.node.name,
+                    &spanned.node.params,
+                    &spanned.node.freeform_sections,
+                    spanned.span,
+                    &text_bodies,
+                    file_label,
+                    line_index,
+                    bag,
                 );
             }
             Decl::Block(spanned) => {
@@ -3941,6 +4054,19 @@ pub fn analyze_with_imports(
                     imported_texts,
                     imported_blocks,
                     used_import_names,
+                );
+
+                // Phase 3 / Task 3.12 — block-scope `{param}` slot validation
+                // on the imports path. Mirrors the non-imports arm.
+                check_block_freeform_slots(
+                    &spanned.node.name,
+                    &spanned.node.params,
+                    &spanned.node.freeform_sections,
+                    spanned.span,
+                    &text_bodies,
+                    file_label,
+                    line_index,
+                    bag,
                 );
             }
             Decl::Const(_) | Decl::Import(_) => {}
@@ -4048,6 +4174,7 @@ pub fn analyze_with_imports(
 }
 
 /// Like `analyze_skill` but also tracks which imported names are used.
+#[allow(clippy::too_many_arguments)]
 fn analyze_skill_with_usage_tracking(
     spanned: &Spanned<crate::ast::Skill>,
     file_id: u32,
@@ -4056,6 +4183,7 @@ fn analyze_skill_with_usage_tracking(
     bag: &mut DiagBag,
     registry: &mut crate::domain_registry::Registry,
     text_names: &HashSet<&str>,
+    text_bodies: &HashMap<&str, String>,
     block_names: &HashSet<&str>,
     block_decls: &HashMap<&str, &crate::ast::BlockDecl>,
     export_block_decls: &HashMap<&str, &crate::ast::ExportBlockDecl>,
@@ -4082,6 +4210,7 @@ fn analyze_skill_with_usage_tracking(
         bag,
         registry,
         text_names,
+        text_bodies,
         block_names,
         block_decls,
         export_block_decls,
@@ -4226,6 +4355,352 @@ fn track_flow_usage(
     }
 }
 
+/// Scan `text` for `{name}` slots and emit `G::analyze::unknown-param-slot` for
+/// any slot whose `name` is not a header parameter of the enclosing decl.
+///
+/// `owner_name` is the name of the decl whose parameter scope `param_names`
+/// represents (a `skill`, a private `block`, or an `export block`); it lands in
+/// the diagnostic message as ``" is not a declared parameter of `<owner>`"``.
+///
+/// The slot span isn't reachable from the AST today (string-literal bodies and
+/// freeform-content cooked text are stored without per-slot offsets), so the
+/// diagnostic is attributed to `decl_span` per `design/diagnostics.md` §Span
+/// Semantics synthetic-fallback option 3 — the same fallback the legacy flow
+/// inline-string scan uses in `walk_skill_flow_assign_checks`.
+fn scan_param_slots_in_text(
+    text: &str,
+    param_names: &HashSet<&str>,
+    owner_name: &str,
+    decl_span: Span,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    for slot in scan_slots(text) {
+        if !param_names.contains(slot.name.as_str()) {
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::unknown-param-slot",
+                    format!(
+                        "`{{{}}}` is not a declared parameter of `{}`",
+                        slot.name, owner_name
+                    ),
+                    SourceSpan::from_byte_span(file_label, decl_span, line_index),
+                ),
+                decl_span,
+            );
+        }
+    }
+}
+
+/// Phase 3 (Task 3.12) — fire `G::analyze::unknown-param-slot` for `{param}`
+/// slots in non-flow text positions on a `Skill`:
+///
+/// - `body_context` and `context_section`: each `ContextEntry::InlineString`
+///   is checked directly. `ContextEntry::NameRef` is checked against the
+///   resolved const body (file-local + imported) so a slot inside a
+///   `const note = "Use {undeclared}…"` body still surfaces here.
+/// - `freeform_sections` (e.g. `quality:`, `risks:`): each item's rendered
+///   text is checked. For `MarkerClause` the operand text is consulted as
+///   both a name (resolved through `text_bodies`) and as a literal; this
+///   mirrors `lower::lower_freeform_item`'s resolution.
+///
+/// `description:` slots are not scanned here — the parser still rejects
+/// those with `G::parse::param-slot-in-non-instruction-string`. `flow:`
+/// slots are validated by `walk_skill_flow_assign_checks`, which carries
+/// the richer `FlowScope` (params + bound flow-locals).
+fn check_skill_freeform_and_context_slots(
+    skill: &crate::ast::Skill,
+    decl_span: Span,
+    text_bodies: &HashMap<&str, String>,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    let param_names: HashSet<&str> = skill.params.iter().map(|p| p.name.as_str()).collect();
+
+    // `body_context` and `context_section` — both store `ContextEntry`.
+    for entry in skill
+        .body_context
+        .iter()
+        .chain(skill.context_section.iter())
+    {
+        match entry {
+            ContextEntry::InlineString(s) => {
+                scan_param_slots_in_text(
+                    s,
+                    &param_names,
+                    &skill.name,
+                    decl_span,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+            }
+            ContextEntry::NameRef(name) => {
+                if let Some(body) = text_bodies.get(name.node.as_str()) {
+                    scan_param_slots_in_text(
+                        body,
+                        &param_names,
+                        &skill.name,
+                        decl_span,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                }
+            }
+        }
+    }
+
+    // Freeform colon-keyword sections — every item carries author-written
+    // prose that lands in compiled output and is therefore instruction-bearing.
+    for section in &skill.freeform_sections {
+        for item in &section.items {
+            match item {
+                crate::ast::FreeformItem::StringLiteral(s) => {
+                    scan_param_slots_in_text(
+                        &s.node,
+                        &param_names,
+                        &skill.name,
+                        decl_span,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                }
+                crate::ast::FreeformItem::NameRef(name) => {
+                    if let Some(body) = text_bodies.get(name.node.as_str()) {
+                        scan_param_slots_in_text(
+                            body,
+                            &param_names,
+                            &skill.name,
+                            decl_span,
+                            file_label,
+                            line_index,
+                            bag,
+                        );
+                    }
+                }
+                crate::ast::FreeformItem::MarkerClause { text, .. } => {
+                    // Mirror `lower::lower_freeform_item`: the operand may be
+                    // a bare-name const reference OR an inline string; if it
+                    // resolves via `text_bodies` scan that body, else scan
+                    // the literal directly.
+                    if let Some(body) = text_bodies.get(text.node.as_str()) {
+                        scan_param_slots_in_text(
+                            body,
+                            &param_names,
+                            &skill.name,
+                            decl_span,
+                            file_label,
+                            line_index,
+                            bag,
+                        );
+                    } else {
+                        scan_param_slots_in_text(
+                            &text.node,
+                            &param_names,
+                            &skill.name,
+                            decl_span,
+                            file_label,
+                            line_index,
+                            bag,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Phase 3 / Task 3.12 — block-scope counterpart to
+/// `check_skill_freeform_and_context_slots`. Fires
+/// `G::analyze::unknown-param-slot` for `{param}` slots inside
+/// `freeform_sections` (`quality:`, `risks:`, `acceptance_criteria:`, …) on a
+/// `BlockDecl` or `ExportBlockDecl`.
+///
+/// The `param_names` set must be the **owning block's** parameter scope
+/// (`block_decl.params`), not the enclosing skill's — each block has its own
+/// header param list and freeform prose can reference only those names.
+/// `owner_name` is the block's name, which the diagnostic message reports as
+/// "not a declared parameter of `<block-name>`".
+///
+/// Note: `BlockDecl` and `ExportBlockDecl` do not carry `body_context` /
+/// `context_section` fields (those exist only on `Skill`), so this walker only
+/// scans `freeform_sections`. Block-level *flow strings* also still lack slot
+/// validation; that is a pre-existing gap orthogonal to Task 3.12 and not
+/// addressed here.
+fn check_block_freeform_slots(
+    block_name: &str,
+    params: &[crate::ast::Param],
+    freeform_sections: &[crate::ast::FreeformSection],
+    decl_span: Span,
+    text_bodies: &HashMap<&str, String>,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    let param_names: HashSet<&str> = params.iter().map(|p| p.name.as_str()).collect();
+    for section in freeform_sections {
+        for item in &section.items {
+            match item {
+                crate::ast::FreeformItem::StringLiteral(s) => {
+                    scan_param_slots_in_text(
+                        &s.node,
+                        &param_names,
+                        block_name,
+                        decl_span,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                }
+                crate::ast::FreeformItem::NameRef(name) => {
+                    if let Some(body) = text_bodies.get(name.node.as_str()) {
+                        scan_param_slots_in_text(
+                            body,
+                            &param_names,
+                            block_name,
+                            decl_span,
+                            file_label,
+                            line_index,
+                            bag,
+                        );
+                    }
+                }
+                crate::ast::FreeformItem::MarkerClause { text, .. } => {
+                    // Mirror `lower::lower_freeform_item`: operand may be a
+                    // bare-name const reference OR an inline string. Scan the
+                    // resolved-const body if known, else the literal.
+                    if let Some(body) = text_bodies.get(text.node.as_str()) {
+                        scan_param_slots_in_text(
+                            body,
+                            &param_names,
+                            block_name,
+                            decl_span,
+                            file_label,
+                            line_index,
+                            bag,
+                        );
+                    } else {
+                        scan_param_slots_in_text(
+                            &text.node,
+                            &param_names,
+                            block_name,
+                            decl_span,
+                            file_label,
+                            line_index,
+                            bag,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Phase 6 — emit `G::analyze::cardinality-violation` for every catalogue
+/// entry with `cardinality = "one"` whose declared section in this decl has
+/// more than one body item.
+///
+/// Today only `[goal]` carries `cardinality = "one"`, but the check is
+/// catalogue-driven so future single-item sections (e.g. a hypothetical
+/// `summary:`) participate automatically when added to `catalogue.toml`.
+/// The function is structurally agnostic — it only inspects the catalogue
+/// entry plus the section's item count, so it applies uniformly to skills,
+/// private blocks, and export blocks. Diagnostic anchors on the enclosing
+/// decl's span — the AST `FreeformSection` only stores a line index, not a
+/// byte span, so a pinpoint anchor isn't available here.
+///
+/// Renamed from `check_freeform_cardinality` (Phase 6 code-review fix):
+/// `[goal]` is a catalogue entry rather than a true freeform section, so
+/// the more general `section` name reflects the actual scope.
+fn check_section_cardinality(
+    freeform_sections: &[crate::ast::FreeformSection],
+    decl_span: Span,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    let catalogue = crate::sections::SectionCatalogue::load();
+    for section in freeform_sections {
+        let Some(entry) = catalogue.get(&section.name) else {
+            continue;
+        };
+        if entry.cardinality != Some(crate::sections::Cardinality::One) {
+            continue;
+        }
+        if section.items.is_empty() {
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::cardinality-violation",
+                    format!(
+                        "section `{}:` requires exactly one item but none were provided",
+                        section.name
+                    ),
+                    SourceSpan::from_byte_span(file_label, decl_span, line_index),
+                ),
+                decl_span,
+            );
+        } else if section.items.len() > 1 {
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::cardinality-violation",
+                    format!(
+                        "section `{}:` accepts only one item but {} were provided",
+                        section.name,
+                        section.items.len()
+                    ),
+                    SourceSpan::from_byte_span(file_label, decl_span, line_index),
+                ),
+                decl_span,
+            );
+        }
+    }
+}
+
+/// Analyze invariant: each named sub-section may appear at most once per
+/// body. The parser already emits `G::parse::duplicate-subsection` (Repairable)
+/// for catalogued built-ins (`description`, `effects`, `flow`, `context`,
+/// `constraints`) and `G::analyze::unmerged-duplicate-subsection` (Error)
+/// catches the analyze-side residue. This check covers the gap left by those
+/// passes: every section parsed through the freeform path (truly-freeform
+/// names like `quality:` and catalogue entries like `goal:`) is checked
+/// here. Anchors on the second-occurrence header span.
+fn check_duplicate_sections(
+    freeform_sections: &[crate::ast::FreeformSection],
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    // Duplicate detection is case-insensitive (catalogue lookup is too), so
+    // `goal:` and `Goal:` collide and produce one diagnostic. The diagnostic
+    // message still quotes the user's spelling of the second occurrence.
+    let mut seen: std::collections::HashMap<String, crate::span::Span> =
+        std::collections::HashMap::new();
+    for section in freeform_sections {
+        let name = section.name.as_str();
+        let key = name.to_ascii_lowercase();
+        if let Some(_first) = seen.get(&key) {
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::duplicate-section",
+                    format!(
+                        "duplicate `{}:` sub-section — each named sub-section may appear at most once per body",
+                        name
+                    ),
+                    SourceSpan::from_byte_span(file_label, section.header_span, line_index),
+                ),
+                section.header_span,
+            );
+        } else {
+            seen.insert(key, section.header_span);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn analyze_skill(
     spanned: &Spanned<crate::ast::Skill>,
     file_id: u32,
@@ -4234,6 +4709,7 @@ fn analyze_skill(
     bag: &mut DiagBag,
     registry: &mut crate::domain_registry::Registry,
     text_names: &HashSet<&str>,
+    text_bodies: &HashMap<&str, String>,
     block_names: &HashSet<&str>,
     block_decls: &HashMap<&str, &BlockDecl>,
     export_block_decls: &HashMap<&str, &crate::ast::ExportBlockDecl>,
@@ -4748,6 +5224,35 @@ fn analyze_skill(
         );
     }
 
+    // Phase 3 / Task 3.12 — `{param}` slot validation for non-flow text
+    // positions (context: bodies and freeform colon-keyword sections such
+    // as `quality:`, `risks:`). The parse-time rejection was removed for
+    // `context:` bodies; the spec keeps the compile-time check that the
+    // named parameter actually exists. `flow:` slots still flow through
+    // `walk_skill_flow_assign_checks` so the `use-before-bind` /
+    // `unknown-param-slot` discrimination survives there.
+    check_skill_freeform_and_context_slots(
+        skill,
+        spanned.span,
+        text_bodies,
+        file_label,
+        line_index,
+        bag,
+    );
+
+    // Phase 6 — `G::analyze::cardinality-violation` for catalogue entries
+    // with `cardinality = "one"` (today: `[goal]`) whose author-declared
+    // section has more than one body item. Catalogue-driven; adding another
+    // single-item section to `catalogue.toml` enrolls it automatically.
+    check_section_cardinality(
+        &skill.freeform_sections,
+        spanned.span,
+        file_label,
+        line_index,
+        bag,
+    );
+    check_duplicate_sections(&skill.freeform_sections, file_label, line_index, bag);
+
     // Check constraints: section skill refs.
     for entry in &skill.constraints_section {
         if let crate::ast::ContextEntry::NameRef(name) = entry {
@@ -4819,8 +5324,19 @@ fn analyze_skill(
         return; // No point checking further if the skill is empty.
     }
 
-    // Check missing description — repairable (Phase 3 Repair generates one).
+    // Check missing description — repairable. The "repair" today is the
+    // Repairable classification itself; auto-generation routes through the
+    // catalogue's `[description].repair_hook`
+    // (`crate::sections::hooks::dispatch_description_repair`). The default
+    // hook returns `None` (no synthesised text), so we currently still emit
+    // the diagnostic in every case. When a real generator is wired in
+    // (e.g. distilling text from the skill's flow), this branch will pivot
+    // on the hook's `Option<String>` — `Some(text)` would suppress the
+    // diagnostic and inject text downstream; `None` keeps the existing
+    // Repairable-only shape. Routing through the dispatcher now means that
+    // future change is one fn body away.
     if skill.description.is_none() {
+        let _generated = crate::sections::hooks::dispatch_description_repair(&skill.name);
         let span = spanned.span;
         bag.push(
             crate::diagnostic::Diagnostic {
@@ -6395,6 +6911,12 @@ skill current() -> BranchName
                 return_type: None,
                 generated: false,
                 extra_subsections: Vec::new(),
+                description_span: None,
+                context_section_span: None,
+                constraints_section_span: None,
+                effects_span: None,
+                flow_span: None,
+                freeform_sections: Vec::new(),
             },
             span: Span::new(0, 0, 10),
         };
@@ -6418,6 +6940,12 @@ skill current() -> BranchName
                 constraints_section: Vec::new(),
                 return_type: None,
                 extra_subsections: Vec::new(),
+                description_span: None,
+                context_section_span: None,
+                constraints_section_span: None,
+                effects_span: None,
+                flow_span: None,
+                freeform_sections: Vec::new(),
             },
             span: Span::new(0, 0, 10),
         };
@@ -8348,6 +8876,110 @@ type Foo = <"a domain type">
     // namespace, so it no longer collides with a `type Foo` decl under the
     // two-namespace split. (The alias would also fail the value-namespace
     // case rule, but that is a separate `value-case-violation` path.)
+
+    #[test]
+    fn empty_goal_section_fires_cardinality_violation() {
+        // A `goal:` (catalogue cardinality=one) with zero items must fail
+        // analyze with `G::analyze::cardinality-violation`.
+        let src = "\
+skill demo()
+    description: \"demo\"
+    goal:
+    flow:
+        \"go\"
+";
+        let ids = check_ids(src);
+        assert!(
+            ids.iter()
+                .any(|id| id == "G::analyze::cardinality-violation"),
+            "expected G::analyze::cardinality-violation for empty `goal:`, got {ids:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_freeform_section_fires_diag() {
+        // Two `quality:` sections in one body must emit
+        // `G::analyze::duplicate-section` (Error tier).
+        let src = "\
+skill demo()
+    description: \"demo\"
+    quality:
+        \"first\"
+    quality:
+        \"second\"
+    flow:
+        \"go\"
+";
+        let ids = check_ids(src);
+        assert!(
+            ids.iter().any(|id| id == "G::analyze::duplicate-section"),
+            "expected G::analyze::duplicate-section for duplicate freeform `quality:`, got {ids:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_catalogued_goal_section_fires_diag() {
+        // `goal:` is a catalogued section parsed through the freeform path;
+        // two occurrences must emit `G::analyze::duplicate-section` (Error).
+        let src = "\
+skill demo()
+    description: \"demo\"
+    goal: \"first\"
+    goal: \"second\"
+    flow:
+        \"go\"
+";
+        let ids = check_ids(src);
+        assert!(
+            ids.iter().any(|id| id == "G::analyze::duplicate-section"),
+            "expected G::analyze::duplicate-section for duplicate `goal:`, got {ids:?}"
+        );
+    }
+
+    // Finding 2 regressions: catalogue lookup and duplicate detection are
+    // case-insensitive — `Goal:` must still be recognized as the catalogue
+    // entry (so `cardinality = "one"` is enforced) and `goal:` + `Goal:` in
+    // the same body must collide.
+
+    #[test]
+    fn uppercase_goal_section_with_multiple_items_fires_cardinality_violation() {
+        // `Goal:` must match the catalogue entry case-insensitively; with two
+        // items it violates cardinality = "one".
+        let src = "\
+skill demo()
+    description: \"demo\"
+    Goal:
+        \"first\"
+        \"second\"
+    flow:
+        \"go\"
+";
+        let ids = check_ids(src);
+        assert!(
+            ids.iter()
+                .any(|id| id == "G::analyze::cardinality-violation"),
+            "expected G::analyze::cardinality-violation for `Goal:` with two items, got {ids:?}"
+        );
+    }
+
+    #[test]
+    fn mixed_case_goal_sections_collide_as_duplicate() {
+        // `goal:` and `Goal:` differ only in case and must collide as
+        // duplicates of the same catalogue section.
+        let src = "\
+skill demo()
+    description: \"demo\"
+    goal: \"first\"
+    Goal: \"second\"
+    flow:
+        \"go\"
+";
+        let ids = check_ids(src);
+        assert!(
+            ids.iter().any(|id| id == "G::analyze::duplicate-section"),
+            "expected G::analyze::duplicate-section for mixed-case duplicate `goal:`/`Goal:`, got {ids:?}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -8391,6 +9023,12 @@ mod unmerged_duplicate_subsection_tests {
                 constraints_section: Vec::new(),
                 return_type: None,
                 extra_subsections: extras,
+                description_span: None,
+                context_section_span: None,
+                constraints_section_span: None,
+                effects_span: None,
+                flow_span: None,
+                freeform_sections: Vec::new(),
             },
             span: Span::new(0, 0, 10),
         }
@@ -9331,6 +9969,121 @@ mod register_type_use_tests {
             !ids.contains(&"G::analyze::duplicate-type-decl"),
             "ExplicitDecl after SelectiveImport must NOT emit duplicate-type-decl, got: {:?}",
             ids
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 / Task 3.12 — block-scope `{param}` slot validation tests. The
+// `Skill`-scope counterpart (`check_skill_freeform_and_context_slots`) is
+// covered by the corpus fixtures `slot_in_freeform_section.glyph` /
+// `slot_in_context_unknown_param.glyph`; this module mirrors that coverage at
+// `block` scope where the walker is invoked via `check_block_freeform_slots`.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod block_freeform_slot_tests {
+    fn diag_ids(src: &str) -> Vec<String> {
+        crate::check_source(src, 0, "test.glyph")
+            .iter()
+            .map(|d| d.id.clone())
+            .collect()
+    }
+
+    fn diag_messages(src: &str, id: &str) -> Vec<String> {
+        crate::check_source(src, 0, "test.glyph")
+            .iter()
+            .filter(|d| d.id == id)
+            .map(|d| d.message.clone())
+            .collect()
+    }
+
+    /// A `block`'s freeform section (`quality:`) that references an
+    /// `{undeclared}` slot must fire `G::analyze::unknown-param-slot` against
+    /// the block's own param scope — not the enclosing skill's scope.
+    #[test]
+    fn block_freeform_unknown_param_slot_fires_diag() {
+        let src = "\
+skill demo(scope = \".\")
+    description: \"demo\"
+    flow:
+        worker()
+
+block worker(mode = \"default\")
+    description: \"worker block\"
+    quality:
+        \"Apply {undeclared} rigor\"
+    flow:
+        \"do work\"
+";
+        let ids = diag_ids(src);
+        assert!(
+            ids.iter().any(|id| id == "G::analyze::unknown-param-slot"),
+            "expected G::analyze::unknown-param-slot, got {ids:?}"
+        );
+        // Message must report the block's name, not the skill's, since each
+        // block has its own param scope.
+        let msgs = diag_messages(src, "G::analyze::unknown-param-slot");
+        assert!(
+            msgs.iter().any(|m| m.contains("worker")),
+            "expected message to name block `worker`, got {msgs:?}"
+        );
+        assert!(
+            !msgs.iter().any(|m| m.contains("`demo`")),
+            "did not expect message to name skill `demo`, got {msgs:?}"
+        );
+    }
+
+    /// Negative control: a `{slot}` that DOES name a block parameter must
+    /// not fire. The skill parameter `scope` is also in scope at the skill
+    /// level but NOT in the block's param scope — referencing `{scope}`
+    /// inside the block must fire instead. This proves the walker uses the
+    /// block's own param set, not a unioned scope.
+    #[test]
+    fn block_freeform_known_block_param_passes() {
+        let src = "\
+skill demo(scope = \".\")
+    description: \"demo\"
+    flow:
+        worker()
+
+block worker(mode = \"default\")
+    description: \"worker block\"
+    quality:
+        \"Apply {mode} rigor\"
+    flow:
+        \"do work\"
+";
+        let ids = diag_ids(src);
+        assert!(
+            !ids.iter().any(|id| id == "G::analyze::unknown-param-slot"),
+            "did not expect G::analyze::unknown-param-slot, got {ids:?}"
+        );
+    }
+
+    /// Negative scope-leak control: a `{scope}` slot inside the block must
+    /// fire because `scope` is the SKILL's parameter, not the block's. This
+    /// catches a regression where the walker uses the wrong (skill-level)
+    /// param scope for block freeform.
+    #[test]
+    fn block_freeform_skill_param_slot_fires_diag() {
+        let src = "\
+skill demo(scope = \".\")
+    description: \"demo\"
+    flow:
+        worker()
+
+block worker(mode = \"default\")
+    description: \"worker block\"
+    quality:
+        \"Apply {scope} rigor\"
+    flow:
+        \"do work\"
+";
+        let ids = diag_ids(src);
+        assert!(
+            ids.iter().any(|id| id == "G::analyze::unknown-param-slot"),
+            "expected G::analyze::unknown-param-slot for skill-param leak, got {ids:?}"
         );
     }
 }

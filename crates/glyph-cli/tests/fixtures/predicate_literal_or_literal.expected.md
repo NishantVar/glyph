@@ -4,9 +4,7 @@ name: predicate_literal_or_literal
 description: 'Demonstrate literal-or-literal predicate composition.'
 ---
 
-## Instructions
-
-### Steps
+## Steps
 
 1. Decide whether the user requested it or the change is risky applies and, if so:
    a. Stop and request explicit user confirmation.

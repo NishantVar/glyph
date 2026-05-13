@@ -12,9 +12,12 @@ description: 'Review a pull request for correctness, style, and safety.'
 - **scope**. Default: ".".
 - **risk**. Default: "medium".
 
-## Instructions
+## Constraints
 
-### Steps
+- **Require:** review every changed file, not just the ones that look interesting.
+- **Require:** verify that tests exist for changed behavior and that they pass.
+
+## Steps
 
 1. Load and follow the procedure in `repo_tools/inspect-repo.md`.
 2. If risk == "high":
@@ -24,8 +27,3 @@ description: 'Review a pull request for correctness, style, and safety.'
    Otherwise:
    a. Spot-check test coverage for changed code.
 3. Summarize findings with actionable feedback Return the result of Produce a structured review with approval status and comments..
-
-### Constraints
-
-- **Require:** review every changed file, not just the ones that look interesting.
-- **Require:** verify that tests exist for changed behavior and that they pass.

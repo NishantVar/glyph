@@ -4,7 +4,7 @@
 //! updated by PRD #103 / Slice 2 (#105):
 //!   1. Skill parameters with defaults parse and lower without diagnostics.
 //!   2. Compiled output emits a `## Parameters` section between frontmatter and
-//!      `## Instructions` whose entries match the design contract:
+//!      `## Steps` whose entries match the design contract:
 //!      `(default: <value>)` for defaulted parameters, `(required)` for skill
 //!      parameters without a default.
 //!   3. `export block` parameters without a default are now permitted
@@ -90,15 +90,14 @@ fn skill_with_params_compiles_and_emits_parameters_section() {
     );
     let md = std::fs::read_to_string(&out).expect("compiled .md file is missing");
 
-    // `## Parameters` appears between frontmatter and `## Instructions`.
+    // Phase 1 flat shape: `## Parameters` appears between frontmatter and
+    // the first body H2 (`## Steps`).
     let frontmatter_end = md.find("---\n\n").expect("frontmatter terminator");
     let params_idx = md.find("## Parameters").expect("`## Parameters` section");
-    let instructions_idx = md
-        .find("## Instructions")
-        .expect("`## Instructions` section");
+    let steps_idx = md.find("## Steps").expect("`## Steps` section");
     assert!(
-        frontmatter_end < params_idx && params_idx < instructions_idx,
-        "section ordering: frontmatter -> ## Parameters -> ## Instructions; got md=\n{}",
+        frontmatter_end < params_idx && params_idx < steps_idx,
+        "section ordering: frontmatter -> ## Parameters -> ## Steps; got md=\n{}",
         md
     );
 

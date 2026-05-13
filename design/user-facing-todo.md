@@ -8,6 +8,8 @@ Minimize user-facing complexity without losing semantic value. If a concept can 
 
 ## Proposed Surface Delta
 
+> **Status:** `goal:` shipped 2026-05-12 via `design/glyph-freeform-sections` Phase 6. See `GLYPH_LANGUAGE_GUIDE.md` §7.6. `output:` remains deferred.
+
 Add two optional sections:
 
 ```glyph
@@ -214,7 +216,7 @@ Until then, authors hitting silent compile failures in these sections should che
 
 - Should the source keyword be singular `output:` or plural `outputs:`? Prefer `output:` unless multi-output values become real.
 - Should `output:` allow only marker clauses, or also typed field declarations later?
-- Should `goal:` allow multiple entries, or exactly one string/bare const like `description:`?
+- ~~Should `goal:` allow multiple entries, or exactly one string/bare const like `description:`?~~ Resolved (Phase 6, 2026-05-12): exactly one (catalogue `cardinality = "one"`). Two items fire `G::analyze::cardinality-violation`.
 - Should blocks and export blocks support `goal:` and `output:`, or only skills at first?
 - Should output clauses support `optional`, or should optionality stay in prose until structural types exist?
 

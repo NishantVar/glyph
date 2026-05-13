@@ -411,3 +411,182 @@ fn stdlib_whole_module_alias_pascal_case_emits_value_case_violation() {
     let stdout = String::from_utf8(result.stdout).expect("utf-8");
     assert_contains_diagnostic_id(&stdout, "G::analyze::value-case-violation");
 }
+
+/// Phase 3 / Task 3.15: a flow statement inside a freeform section body
+/// surfaces `G::parse::flow-statement-in-freeform`.
+#[test]
+fn freeform_flow_statement_emits_flow_statement_in_freeform() {
+    let result = run_compile("freeform_flow_statement.glyph", "json");
+    assert_eq!(result.status.code(), Some(1));
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_contains_diagnostic_id(&stdout, "G::parse::flow-statement-in-freeform");
+}
+
+/// Phase 3 / Task 3.15: an unrecognized marker word in a freeform section body
+/// surfaces `G::parse::unknown-marker-word`.
+#[test]
+fn freeform_unknown_marker_emits_unknown_marker_word() {
+    let result = run_compile("freeform_unknown_marker.glyph", "json");
+    assert_eq!(result.status.code(), Some(1));
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_contains_diagnostic_id(&stdout, "G::parse::unknown-marker-word");
+}
+
+/// Phase 3 / Task 3.15: a lone marker word with no operand surfaces
+/// `G::parse::marker-missing-operand`.
+#[test]
+fn freeform_marker_missing_operand_emits_marker_missing_operand() {
+    let result = run_compile("freeform_marker_missing_operand.glyph", "json");
+    assert_eq!(result.status.code(), Some(1));
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_contains_diagnostic_id(&stdout, "G::parse::marker-missing-operand");
+}
+
+/// Phase 6 code-review fix: the inline shorthand form (`goal: <ident>`)
+/// must run reserved-word idents through the same classifier as the
+/// indented body so they cannot be silently consumed as a bare `NameRef`.
+/// A lone `require` inline must surface
+/// `G::parse::marker-missing-operand`, not `G::analyze::undefined-name`.
+#[test]
+fn freeform_inline_marker_emits_marker_missing_operand() {
+    let result = run_compile("freeform_inline_marker.glyph", "json");
+    assert_eq!(result.status.code(), Some(1));
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_contains_diagnostic_id(&stdout, "G::parse::marker-missing-operand");
+}
+
+/// Phase 5: writing `effects:` without `--enable-effects` surfaces the
+/// unified `G::parse::gated-section` diagnostic. This is the
+/// catalogue-driven id (Phase 5 renamed the legacy `effects-disabled`
+/// when the gating moved through the catalogue's `enabled` field).
+#[test]
+fn gated_section_effects_emits_gated_section() {
+    let result = run_compile("gated_section_effects.glyph", "json");
+    assert_eq!(result.status.code(), Some(1));
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_contains_diagnostic_id(&stdout, "G::parse::gated-section");
+}
+
+/// Phase 6: a `goal:` section with more than one body item violates the
+/// catalogue's `cardinality = "one"` rule and fires
+/// `G::analyze::cardinality-violation`.
+#[test]
+fn goal_with_two_items_emits_cardinality_violation() {
+    let result = run_compile("goal_cardinality_violation.glyph", "json");
+    assert_eq!(result.status.code(), Some(1));
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_contains_diagnostic_id(&stdout, "G::analyze::cardinality-violation");
+}
+
+/// Phase 6 code-review fix: cardinality enforcement was previously only
+/// wired into `analyze_skill`. Private blocks and export blocks also carry
+/// `freeform_sections`, so a `goal:` with two items inside a block must
+/// fire `G::analyze::cardinality-violation` as well.
+#[test]
+fn block_goal_with_two_items_emits_cardinality_violation() {
+    let result = run_compile("block_cardinality_violation.glyph", "json");
+    assert_eq!(result.status.code(), Some(1));
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_contains_diagnostic_id(&stdout, "G::analyze::cardinality-violation");
+}
+
+/// Duplicate freeform colon-keyword section (`quality:` twice in one body)
+/// must fire `G::analyze::duplicate-section` per
+/// `GLYPH_LANGUAGE_GUIDE.md` "each named sub-section may appear at most
+/// once per body".
+#[test]
+fn duplicate_freeform_section_emits_diag() {
+    let result = run_compile("duplicate_section_freeform.glyph", "json");
+    assert_eq!(result.status.code(), Some(1));
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_contains_diagnostic_id(&stdout, "G::analyze::duplicate-section");
+}
+
+fn assert_does_not_contain_diagnostic_id(stdout: &str, id: &str) {
+    for line in stdout.lines() {
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if v.get("id").and_then(|x| x.as_str()) == Some(id) {
+            panic!(
+                "expected diagnostic `{}` NOT in JSON output, got:\n{}",
+                id, stdout
+            );
+        }
+    }
+}
+
+/// Mixed-case section keywords (`Description:`, `Effects:`, `Constraints:`,
+/// `Context:`, `Flow:`) must dispatch to the same built-in handler as their
+/// canonical lowercase forms. The catalogue lookup and duplicate-check are
+/// already case-insensitive; the parser's dispatch must match.
+
+/// `Description:` (mixed case) routes through the description-section
+/// handler. A `{slot}` inside it must fire the description-specific
+/// non-instruction-string diagnostic, not the freeform/unknown-slot path.
+#[test]
+fn case_insensitive_description_emits_param_slot_in_non_instruction_string() {
+    let result = run_compile("case_insensitive_description.glyph", "json");
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_contains_diagnostic_id(&stdout, "G::parse::param-slot-in-non-instruction-string");
+}
+
+/// `Effects:` (mixed case) routes through the effects-section handler. With
+/// effects gating off by default the catalogue-driven `gated-section`
+/// diagnostic fires, proving the keyword reached the effects arm.
+#[test]
+fn case_insensitive_effects_emits_gated_section() {
+    let result = run_compile("case_insensitive_effects.glyph", "json");
+    assert_eq!(result.status.code(), Some(1));
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_contains_diagnostic_id(&stdout, "G::parse::gated-section");
+}
+
+/// `Constraints:` (mixed case) routes through the constraints-section
+/// handler. A bare string in the body (no `require`/`avoid`/`must`/`must
+/// avoid` prefix) fires the constraint-marker-required parser error.
+#[test]
+fn case_insensitive_constraints_emits_marker_required_error() {
+    let result = run_compile("case_insensitive_constraints.glyph", "json");
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_contains_diagnostic_id(&stdout, "G::parse::unexpected");
+}
+
+/// `Context: "x"` (mixed case) parses as the context sub-section, not as a
+/// freeform section. Compile succeeds (exit 0) and no parse errors fire.
+#[test]
+fn case_insensitive_context_parses_clean() {
+    let result = run_compile("case_insensitive_context.glyph", "json");
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "expected exit code 0; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+}
+
+/// `Flow:` (mixed case) routes through the statements body-grammar parser.
+/// An `if`/`else` block inside it is legal flow syntax; if `Flow:` were
+/// treated as a freeform section the same content would fire
+/// `G::parse::flow-statement-in-freeform`.
+#[test]
+fn case_insensitive_flow_does_not_emit_flow_statement_in_freeform() {
+    let result = run_compile("case_insensitive_flow_with_if.glyph", "json");
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_does_not_contain_diagnostic_id(&stdout, "G::parse::flow-statement-in-freeform");
+}
+
+/// End-to-end: `description: "x"` followed by `Description: "y"` in the
+/// same skill body collides on the case-insensitive dispatch and fires
+/// `G::parse::duplicate-subsection` (the built-in description-section
+/// duplicate diagnostic — freeform duplicates fire
+/// `G::analyze::duplicate-section`, which is the test above). Proves the
+/// parser-to-analyze pipeline honours case-insensitive section identity.
+#[test]
+fn case_insensitive_duplicate_description_emits_duplicate_subsection() {
+    let result = run_compile("case_insensitive_duplicate_description.glyph", "json");
+    let stdout = String::from_utf8(result.stdout).expect("stdout should be UTF-8");
+    assert_contains_diagnostic_id(&stdout, "G::parse::duplicate-subsection");
+}

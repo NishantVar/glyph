@@ -38,6 +38,69 @@ pub enum IrNode {
     /// `-> DomainType` annotation. Chunk 5 wires JSON; chunk 6 rewrites
     /// in expand; chunks 8/9 surface diagnostics.
     OutputContract(IrOutputContract),
+    /// Phase 3 freeform colon-keyword section (e.g. `quality:`, `risks:`).
+    /// Container node; the marker-aware items it owns are
+    /// [`IrNode::FreeformContent`] entries referenced by `items`.
+    FreeformSection(IrFreeformSection),
+    /// Phase 3 freeform section item. Carries the inline string content
+    /// plus the optional reserved-marker metadata (`require`, `avoid`,
+    /// `must`, `must avoid`, `context`) so emit can render strength /
+    /// polarity badges or context lead-ins per design §4.1.
+    FreeformContent(IrFreeformContent),
+}
+
+/// Container for a Phase 3 freeform colon-keyword section. Owned by the
+/// enclosing `Skill` / `Block` / `ExportBlock`; the marker-aware items live
+/// in `items` as `IrNode::FreeformContent` arena entries (one IR node per
+/// item) so each item gets its own `node_id` for diagnostics and downstream
+/// references. Emitted as `{"kind": "freeform_section", ...}` per
+/// `design/ir-json-schema.md`.
+#[derive(Clone, Debug, Serialize)]
+pub struct IrFreeformSection {
+    pub node_id: NodeId,
+    /// Canonical section name as written by the author (e.g. `"quality"`,
+    /// `"acceptance_criteria"`). Emit derives the `### Heading` from this.
+    pub name: String,
+    /// Pre-rendered Title Case heading used in compiled output (e.g.
+    /// `"Quality"`, `"Acceptance Criteria"`). Computed by Lower so the
+    /// emitter does not need to know naming conventions.
+    pub heading: String,
+    /// 0-based source line of the section's `<name>:` header. Mirrors the
+    /// AST `SectionSpan::line` so emit can run the D9 author-positioned vs
+    /// synthetic merge in IR space without re-walking the AST.
+    pub source_line: u32,
+    /// Per-item node ids, in source order. Each id points at a
+    /// `IrNode::FreeformContent` arena entry.
+    pub items: Vec<NodeId>,
+}
+
+/// One item inside an [`IrFreeformSection`]. Holds the rendered text plus
+/// optional reserved-marker metadata (`require`, `avoid`, `must`, etc.) so
+/// emit can preserve marker semantics within freeform sections without a
+/// separate IR kind per marker. `name` carries a source identifier when the
+/// AST entry was a bare-name reference (parallel to `IrContext::name`).
+#[derive(Clone, Debug, Serialize)]
+pub struct IrFreeformContent {
+    pub node_id: NodeId,
+    pub text: String,
+    /// Lowercase spelling of the reserved marker word (e.g. `"require"`,
+    /// `"must avoid"`, `"context"`) when the item was authored with one.
+    /// `None` for plain string-literal / name-ref items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker_word: Option<String>,
+    /// Strength derived from the marker (mirrors `IrConstraint::strength`).
+    /// `None` when no marker is present or the marker is `context` (which
+    /// carries no strength/polarity).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strength: Option<Strength>,
+    /// Polarity derived from the marker (mirrors `IrConstraint::polarity`).
+    /// `None` when no marker is present or the marker is `context`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polarity: Option<Polarity>,
+    /// Source identifier when the AST item was a `NameRef` (e.g.
+    /// `glyph_overview`). `None` for inline strings / marker clauses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -99,6 +162,29 @@ pub struct IrSkill {
     /// rejected at analyze time (`G::analyze::flow-assign-in-block-unsupported`).
     #[serde(skip)]
     pub return_local_ref: Option<LocalRef>,
+    /// Phase 3 freeform sections owned by this skill, in source order. Each
+    /// `NodeId` points at an `IrNode::FreeformSection` arena entry whose
+    /// `items` reference further `IrNode::FreeformContent` entries. Empty
+    /// when the source skill declared no freeform colon-keyword sections.
+    /// `#[serde(skip)]` because the IR-JSON emitter in `emit_ir.rs` builds
+    /// the per-node shape explicitly; no production caller serializes IR via
+    /// the serde derive.
+    #[serde(skip)]
+    pub freeform_sections: Vec<NodeId>,
+    /// Phase 3.C: per-section source-line carried through from the AST so the
+    /// D9 merge algorithm can anchor explicit (author-positioned) sections to
+    /// their source line during emit. `None` when the section is absent or
+    /// synthetically-emitted (e.g. body-level `require x` markers that yield
+    /// constraints without a `constraints:` header). Mirrors AST
+    /// `Skill::<section>_span.map(|s| s.line)`.
+    #[serde(skip)]
+    pub description_source_line: Option<u32>,
+    #[serde(skip)]
+    pub context_source_line: Option<u32>,
+    #[serde(skip)]
+    pub constraints_source_line: Option<u32>,
+    #[serde(skip)]
+    pub flow_source_line: Option<u32>,
 }
 
 /// Resolved parameter metadata threaded through Phase 6 Step 1 into the
@@ -199,6 +285,20 @@ pub struct IrBlock {
     /// re-walking the AST. Empty when the block has no string-default params.
     #[serde(skip)]
     pub string_default_params: std::collections::BTreeMap<String, String>,
+    /// Phase 3 freeform sections owned by this block. See
+    /// [`IrSkill::freeform_sections`] for semantics.
+    #[serde(skip)]
+    pub freeform_sections: Vec<NodeId>,
+    /// Phase 3.C: per-section source-line, mirrors `IrSkill`'s fields.
+    /// See [`IrSkill::description_source_line`] for semantics.
+    #[serde(skip)]
+    pub description_source_line: Option<u32>,
+    #[serde(skip)]
+    pub context_source_line: Option<u32>,
+    #[serde(skip)]
+    pub constraints_source_line: Option<u32>,
+    #[serde(skip)]
+    pub flow_source_line: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize)]

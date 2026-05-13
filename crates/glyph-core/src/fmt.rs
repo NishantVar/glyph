@@ -2,8 +2,10 @@
 //!
 //! Two strata:
 //! 1. Pre-Parse text-level: tab → 4-space, mixed-indentation fix.
-//! 2. Post-Parse AST-level: constraint hoisting, context hoisting,
-//!    section reorder to canonical layout.
+//! 2. Post-Parse AST-level: whitespace normalization and merge of duplicate
+//!    sections. `glyph fmt` preserves author-written section order; the
+//!    canonical emit slots are a presentation-layer concern handled by the
+//!    emitter (see design D9 / D10).
 
 use crate::diagnostic::DiagBag;
 use crate::parse;
@@ -22,10 +24,12 @@ pub struct FmtResult {
 /// Format a Glyph source string. Returns the formatted output and metadata.
 ///
 /// `enable_effects` gates the parser: when `false`, any `effects:` sub-section
-/// in the source produces a `G::parse::effects-disabled` parse error and the
+/// in the source produces a `G::parse::gated-section` parse error and the
 /// formatter falls back to the pre-parse stratum only (no AST rewrite). When
-/// `true`, the parser accepts `effects:` and the AST stratum reorders sections
-/// canonically (placing `effects:` between `description:` and `context:`).
+/// `true`, the parser accepts `effects:`. There is no canonical section
+/// reordering — `glyph fmt` preserves author-written source order; section
+/// slotting at canonical positions is a presentation-layer concern handled
+/// by emit (see design D9 / D10).
 pub fn fmt_source(source: &str, enable_effects: bool) -> FmtResult {
     let mut bag = DiagBag::new();
 
@@ -514,8 +518,9 @@ fn ast_rewrite(
 /// Stratum 2: AST-level rewrites (inner).
 ///
 /// Operates by identifying declaration boundaries in the source text, then
-/// reconstructing each declaration body in canonical sub-section order with
-/// hoisted constraints and context.
+/// reconstructing each declaration body, preserving source section order
+/// (per D9 / D10) while merging duplicate sections per the rules in
+/// `design/repair.md` §4.11.
 fn ast_rewrite_inner(
     source: &str,
     file: &crate::ast::SourceFile,
@@ -620,7 +625,13 @@ fn ast_rewrite_inner(
 }
 
 /// Identifies which "section" a body line belongs to.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// `Freeform(name)` covers colon-keyword sub-sections whose header is not in
+/// the canonical built-in set (e.g. `quality:`, `risks:`). Per Phase 3 / D9
+/// (`design/language-surface.md` §2.5b), fmt preserves freeform sections
+/// verbatim at their source-relative position — no reordering, no hoisting
+/// across the freeform section's boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum SectionKind {
     Description,
     Effects,
@@ -629,6 +640,7 @@ enum SectionKind {
     Flow,
     BodyConstraintMarker,
     BodyContextMarker,
+    Freeform(String),
     BlankOrOther,
 }
 
@@ -637,6 +649,33 @@ enum SectionKind {
 struct Section {
     kind: SectionKind,
     lines: Vec<String>,
+}
+
+/// Detect a freeform colon-keyword header line at indent 1 — i.e. a sub-section
+/// header whose name is a valid identifier but not in the built-in catalogue.
+/// Returns the section name (without the trailing `:`) if matched.
+///
+/// Built-in section names (`description`, `effects`, `context`, `constraints`,
+/// `flow`) are handled before this helper is consulted; this helper recognizes
+/// the remaining `<ident>:` headers (e.g. `quality:`, `risks:`).
+fn freeform_section_header_name(trimmed: &str) -> Option<String> {
+    let (head, _rest) = trimmed.split_once(':')?;
+    if head.is_empty() {
+        return None;
+    }
+    let first = head.chars().next()?;
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return None;
+    }
+    if !head.chars().all(|c| c == '_' || c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    // Built-ins are routed by earlier branches; if we get here for a built-in
+    // name, treat it as not-freeform so the caller falls through.
+    match head {
+        "description" | "effects" | "context" | "constraints" | "flow" => None,
+        _ => Some(head.to_string()),
+    }
 }
 
 /// Build a synthesized `effects:` sub-section line.
@@ -662,12 +701,6 @@ fn rewrite_decl_body(
     let mut sections: Vec<Section> = Vec::new();
     let mut current_kind: Option<SectionKind> = None;
     let mut current_lines: Vec<String> = Vec::new();
-    let mut in_flow_block = false;
-
-    // Constraint and context markers found at body level or flow top level that
-    // should be hoisted.
-    let mut hoisted_constraints: Vec<String> = Vec::new();
-    let mut hoisted_context: Vec<String> = Vec::new();
 
     for raw_line in body_lines {
         let line_owned = placeholder_target
@@ -705,6 +738,10 @@ fn rewrite_decl_body(
                 Some(SectionKind::BodyConstraintMarker)
             } else if is_context_marker(trimmed) {
                 Some(SectionKind::BodyContextMarker)
+            } else if let Some(name) = freeform_section_header_name(trimmed) {
+                // Phase 3 / D9: a colon-keyword section whose name is not in
+                // the built-in catalogue (e.g. `quality:`, `risks:`).
+                Some(SectionKind::Freeform(name))
             } else {
                 None
             };
@@ -718,36 +755,11 @@ fn rewrite_decl_body(
                     });
                 }
 
-                match kind {
-                    SectionKind::BodyConstraintMarker => {
-                        // Hoist: extract the marker text.
-                        hoisted_constraints.push(trimmed.to_string());
-                        continue;
-                    }
-                    SectionKind::BodyContextMarker => {
-                        // Hoist: extract the context entry.
-                        let entry = trimmed.strip_prefix("context ").unwrap_or(trimmed);
-                        hoisted_context.push(entry.to_string());
-                        continue;
-                    }
-                    _ => {
-                        current_kind = Some(kind);
-                        current_lines.push(line.to_string());
-                    }
-                }
-                continue;
-            }
-        }
-
-        // Lines inside flow: check for top-level constraint/context markers.
-        if in_flow_block && indent_level == 2 {
-            if is_constraint_marker(trimmed) {
-                hoisted_constraints.push(trimmed.to_string());
-                continue;
-            }
-            if is_context_marker(trimmed) {
-                let entry = trimmed.strip_prefix("context ").unwrap_or(trimmed);
-                hoisted_context.push(entry.to_string());
+                // Body-level markers and freeform / catalogued sections are
+                // all preserved at their source position. D9 (emit-side)
+                // handles synthetic-slot placement; fmt does not move them.
+                current_kind = Some(kind);
+                current_lines.push(line.to_string());
                 continue;
             }
         }
@@ -755,7 +767,6 @@ fn rewrite_decl_body(
         // Continue accumulating in current section.
         if current_kind.is_some() {
             if matches!(current_kind, Some(SectionKind::Flow)) {
-                in_flow_block = true;
                 // Rewrite bare unresolved names in flow to `name()`.
                 let rewritten_line = rewrite_bare_name_in_flow_line(line, signals)
                     .unwrap_or_else(|| line.to_string());
@@ -786,97 +797,71 @@ fn rewrite_decl_body(
         _ => None,
     });
 
-    // Now reconstruct in canonical order: description, effects, context, constraints, flow.
-    let canonical_order = [
-        SectionKind::Description,
-        SectionKind::Effects,
-        SectionKind::Context,
-        SectionKind::Constraints,
-        SectionKind::Flow,
-    ];
-
+    // Phase 3 / D9 + D10: `glyph fmt` preserves section source order. The
+    // canonical default order is a presentation-layer concern handled by the
+    // emitter; the formatter does not reorder author-written sections.
+    //
+    // Walk sections in source order. For each kind, the FIRST occurrence is
+    // the anchor: emit it (merged with any later duplicates of the same kind
+    // so the merge rules from `design/repair.md` §4.11 still apply). Later
+    // duplicates are skipped because their content was folded into the
+    // anchor. Synthesized effects (when `enable_effects` and no source-side
+    // `effects:`) are emitted at the end of the body.
     let mut out = String::new();
+    let mut emitted_kinds: std::collections::HashSet<SectionKind> =
+        std::collections::HashSet::new();
 
-    for target_kind in &canonical_order {
-        // Issue #109 chunk 4 — gather ALL sections of this kind so duplicate
-        // sub-sections under the same declaration get merged into a single
-        // canonical block (instead of being silently dropped, which was the
-        // pre-#109 behavior of `sections.iter().find(...)`).
-        let matching: Vec<&Section> = sections.iter().filter(|s| &s.kind == target_kind).collect();
-        let has_section = !matching.is_empty();
-
-        match target_kind {
-            SectionKind::Effects => {
-                if has_section {
-                    emit_merged_sections(&mut out, &matching);
-                } else if enable_effects {
-                    if let Some(name) = decl_name {
-                        if let Some(effects) = signals.inferred_effects.get(name) {
-                            if !effects.is_empty() {
-                                out.push_str(&synthesize_effects_section(effects, "    "));
-                            }
-                        }
-                    }
+    for (src_idx, sec) in sections.iter().enumerate() {
+        match &sec.kind {
+            SectionKind::BodyConstraintMarker | SectionKind::BodyContextMarker => {
+                // Body-level constraint/context markers: emit verbatim at
+                // their source position. The compile-time emit path handles
+                // synthetic-section slot placement (D9); fmt preserves the
+                // marker line as-is so it remains body-level (not lifted into
+                // a `constraints:` / `context:` host that would change its
+                // emit slot).
+                for line in &sec.lines {
+                    out.push_str(line);
+                    out.push('\n');
                 }
+                continue;
             }
-            SectionKind::Context => {
-                if !hoisted_context.is_empty() || has_section {
-                    if has_section {
-                        // Existing context: section(s) — emit merged form,
-                        // then append hoisted entries.
-                        emit_merged_sections(&mut out, &matching);
-                        for entry in &hoisted_context {
-                            out.push_str("        ");
-                            out.push_str(entry);
-                            out.push('\n');
-                        }
-                    } else {
-                        // Create new context: section.
-                        out.push_str("    context:\n");
-                        for entry in &hoisted_context {
-                            out.push_str("        ");
-                            out.push_str(entry);
-                            out.push('\n');
-                        }
-                    }
+            SectionKind::BlankOrOther => {
+                // Pass through unknown body content verbatim.
+                for line in &sec.lines {
+                    out.push_str(line);
+                    out.push('\n');
                 }
+                continue;
             }
-            SectionKind::Constraints => {
-                if !hoisted_constraints.is_empty() || has_section {
-                    if has_section {
-                        emit_merged_sections(&mut out, &matching);
-                        for marker in &hoisted_constraints {
-                            out.push_str("        ");
-                            out.push_str(marker);
-                            out.push('\n');
-                        }
-                    } else {
-                        out.push_str("    constraints:\n");
-                        for marker in &hoisted_constraints {
-                            out.push_str("        ");
-                            out.push_str(marker);
-                            out.push('\n');
-                        }
-                    }
-                }
-            }
-            _ => {
-                if has_section {
-                    emit_merged_sections(&mut out, &matching);
-                }
-            }
+            _ => {}
         }
+
+        if emitted_kinds.contains(&sec.kind) {
+            // Duplicate of a kind already anchored earlier; its lines were
+            // merged into the anchor via `emit_merged_sections`.
+            continue;
+        }
+
+        // Gather all sections of this kind at later positions so the merge
+        // path produces a single canonical block.
+        let matching: Vec<&Section> = sections[src_idx..]
+            .iter()
+            .filter(|s| s.kind == sec.kind)
+            .collect();
+        emit_merged_sections(&mut out, &matching);
+
+        emitted_kinds.insert(sec.kind.clone());
     }
 
-    // Emit any "other" sections (blank/unknown) that didn't match canonical kinds.
-    for sec in &sections {
-        if !canonical_order.contains(&sec.kind)
-            && sec.kind != SectionKind::BodyConstraintMarker
-            && sec.kind != SectionKind::BodyContextMarker
-        {
-            for line in &sec.lines {
-                out.push_str(line);
-                out.push('\n');
+    // Synthesize `effects:` (from inferred effects) only when the source had
+    // no `effects:` section and the caller enabled effects.
+    if enable_effects && !emitted_kinds.contains(&SectionKind::Effects) {
+        if let Some(name) = decl_name {
+            if let Some(effects) = signals.inferred_effects.get(name) {
+                if !effects.is_empty() {
+                    out.push_str(&synthesize_effects_section(effects, "    "));
+                }
             }
         }
     }
@@ -1934,13 +1919,15 @@ skill main()
         send("hi")
 "#;
         let result = fmt_source(src, true);
+        // Per D9/D10 fmt does not reorder; synthesized `effects:` for an
+        // author-omitted section lands at the end of the body.
         let expected = r#"import "@glyph/std" { send }
 
 skill main()
     description: "Main."
-    effects: spawns_agent
     flow:
         send("hi")
+    effects: spawns_agent
 "#;
         assert_eq!(result.output, expected);
         assert!(result.changed);
@@ -2084,14 +2071,16 @@ skill main()
 "#;
         let result = fmt_source(src, true);
         // Both names are used (no import change), but effects are auto-inserted.
+        // Per D9/D10 fmt does not reorder; synthesized `effects:` lands at the
+        // end of the body when the author omitted the section.
         let expected = r#"import "@glyph/std" { send, subagent }
 
 skill main()
     description: "Main."
-    effects: spawns_agent
     flow:
         send("x")
         subagent("y")
+    effects: spawns_agent
 "#;
         assert_eq!(result.output, expected);
         assert!(result.changed);
@@ -3448,6 +3437,71 @@ skill the_skill()
             first_idx < second_idx,
             "source order must be preserved; got:\n{}",
             result.output
+        );
+    }
+
+    /// Phase 3 / Task 3.14: fmt must preserve freeform colon-keyword sections
+    /// (e.g. `quality:`, `risks:`) verbatim, at their source-relative position,
+    /// without hoisting body markers out of the freeform section.
+    #[test]
+    fn fmt_preserves_freeform_section_content_and_position() {
+        let src = r#"skill demo()
+    description: "Demo."
+    quality:
+        require accuracy
+        "Prefer minimal diffs."
+    flow:
+        "Do."
+"#;
+        let out = crate::fmt::fmt_source(src, false).output;
+        assert!(out.contains("quality:\n"), "quality: header preserved");
+        let quality_idx = out.find("quality:").unwrap();
+        let flow_idx = out.find("flow:").unwrap();
+        assert!(quality_idx < flow_idx, "section order preserved");
+        assert!(
+            out.contains("require accuracy"),
+            "marker stays inside quality:"
+        );
+    }
+
+    /// Regression: when a freeform colon-keyword section (e.g. `risks:`)
+    /// appears AFTER `flow:` in source, fmt must not hoist markers out of it.
+    /// Prior to the fix, fmt incorrectly carried "in flow" state forward into
+    /// subsequent sections, hoisting `avoid silent_failures` into a synthesized
+    /// `constraints:` block placed before `flow:`.
+    #[test]
+    fn fmt_preserves_freeform_section_after_flow() {
+        let src = r#"skill demo()
+    description: "Demo."
+    flow:
+        "Do."
+    risks:
+        avoid silent_failures
+        "Long-running ops may time out."
+"#;
+        let out = crate::fmt::fmt_source(src, false).output;
+        let flow_idx = out.find("flow:").expect("flow: header preserved");
+        let risks_idx = out.find("risks:").expect("risks: header preserved");
+        assert!(
+            flow_idx < risks_idx,
+            "source order must be preserved (flow before risks); got:\n{}",
+            out
+        );
+        assert!(
+            !out.contains("constraints:"),
+            "fmt must not synthesize a constraints: section the input lacked; got:\n{}",
+            out
+        );
+        let after_risks = &out[risks_idx..];
+        assert!(
+            after_risks.contains("avoid silent_failures"),
+            "marker `avoid silent_failures` must stay inside risks:; got:\n{}",
+            out
+        );
+        assert!(
+            after_risks.contains("Long-running ops may time out."),
+            "inline string must stay inside risks:; got:\n{}",
+            out
         );
     }
 }

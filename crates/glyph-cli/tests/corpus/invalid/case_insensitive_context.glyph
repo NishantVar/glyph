@@ -1,0 +1,5 @@
+skill demo()
+    description: "Demo."
+    Context: "inline context"
+    flow:
+        "Do."

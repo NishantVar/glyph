@@ -3,9 +3,7 @@ name: predicate_const_multi_arm
 description: 'Demonstrate multi-arm pure-predicate const form.'
 ---
 
-## Instructions
-
-### Steps
+## Steps
 
 1. Decide which of the following applies and follow only that path:
    If the change is a localised wording or value swap:

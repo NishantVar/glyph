@@ -1,0 +1,12 @@
+skill demo()
+    description: "Demo."
+    Flow:
+        if check_thing()
+            "yes"
+        else
+            "no"
+
+block check_thing() -> Status
+    description: "Check."
+    flow:
+        return <"ok">

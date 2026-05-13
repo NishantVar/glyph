@@ -28,7 +28,7 @@ Step 2 must not:
 - repair invalid source or add missing definitions (that is Phase 3 Repair, `repair.md`);
 - introduce new IR nodes, new calls, new constraints, or new steps;
 - reinterpret or reorder the skill's workflow;
-- invent sections beyond `## Instructions` with its `### Context`, `### Steps`, and `### Constraints` sub-sections (see `compiled-output.md`);
+- invent sections beyond the canonical peer-level H2s `## Parameters`, `## Context`, `## Steps`, `## Constraints` (see `compiled-output.md`);
 - invent new `{param}` references that do not correspond to declared parameters (declared parameter references must be preserved), or fail to resolve `local_ref` slots into natural-language prose;
 - change effects, types, or the call graph;
 - re-materialize content that was already prose after Step 1 (inline strings and resolved `const` references pass through untouched);
@@ -67,7 +67,7 @@ The scaffold is not exposed via `--emit-ir` and is not stable across compiler ve
 
 ### 3.2 Scoped Constraint Inlining
 
-A `block` (or `export block`) called from within a flow may itself declare constraints. Per `data-flow.md` §Constraint Scoping, these constraints **do not** propagate to the caller's top-level `### Constraints`. They stay scoped to the inlined region of the call.
+A `block` (or `export block`) called from within a flow may itself declare constraints. Per `data-flow.md` §Constraint Scoping, these constraints **do not** propagate to the caller's top-level `## Constraints`. They stay scoped to the inlined region of the call.
 
 **IR shape.** When Lower resolves a call, the resolved-call node carries the callee's declared constraints attached as the `scoped_constraints` field. Each entry is `{ resolved_text, strength, polarity }`, identical in shape to a top-level `Constraint` node, but flagged as scoped to this call.
 
@@ -80,7 +80,7 @@ Step 2 picks per call based on what reads naturally. Multiple scoped constraints
 
 **Strength and polarity wording.** The same wording rules as top-level constraints apply to scoped constraints — `hard` renders with strongest non-negotiable wording, `soft` renders with standard wording, `require` renders as a positive obligation, `avoid` renders as a prohibition (per `compiled-output.md` §Constraint Rendering).
 
-**Output placement.** Scoped constraints **never** appear as items in `### Constraints`. The caller's `### Constraints` section lists only the caller's own top-level `Constraint` IR nodes. Phase 6b enforces this (see §4.1).
+**Output placement.** Scoped constraints **never** appear as items in `## Constraints`. The caller's `## Constraints` section lists only the caller's own top-level `Constraint` IR nodes. Phase 6b enforces this (see §4.1).
 
 **Why this is Step 2's job.** Scoped constraints are call-site contextual: their wording depends on the surrounding step's prose, the strength/polarity, and the position in the flow. Mechanical folding produces awkward output. The whole-skill prompting model (§3.1) already gives Step 2 the visibility needed to weave gracefully.
 
@@ -146,15 +146,13 @@ Phase 6b validates the resulting structure via the same count + ordering checks 
 Step 2 must return **Markdown only** — specifically, the body of the compiled file below the frontmatter. It must not return JSON, IR, explanations, or commentary. The expected shape is:
 
 ```md
-## Instructions
-
-### Steps
+## Steps
 
 1. <expanded step 1>
 2. <expanded step 2>
 ...
 
-### Constraints
+## Constraints
 
 - <expanded constraint 1>
 - <expanded constraint 2>
@@ -163,13 +161,13 @@ Step 2 must return **Markdown only** — specifically, the body of the compiled 
 
 The output must preserve the following structural invariants:
 
-1. **Exactly one `## Instructions` H2.** No other H2 sections.
-2. **H3 sub-sections under `## Instructions`** are limited to: `### Context`, `### Steps`, `### Constraints`, and zero or more `### Procedure: <name>` sections. `### Context` is omitted when the IR has no context. `### Constraints` is omitted when the IR has no constraints. `### Steps` is omitted only for pure constraint-only skills. `### Procedure:` sections appear only for calls with `same_file_procedure` projection.
+1. **Body sections sit at peer H2.** Allowed H2 names are `## Parameters`, `## Context`, `## Steps`, `## Constraints` (Phase 3 will extend the catalogue with freeform headings). No `## Instructions` wrapper is emitted.
+2. **Body H2s are conditional.** `## Context` is omitted when the IR has no context. `## Constraints` is omitted when the IR has no constraints. `## Steps` is omitted only for pure constraint-only skills. `### Procedure: <name>` sections appear at H3 — nested under whichever body H2 came last — only for calls with `same_file_procedure` projection.
 3. **Role preservation** (1-to-1):
-   - Every top-level `Step` node (and every top-level `Call`, `InlineInstruction`, `InstructionRef` that projects to a Step per `compiled-output.md`) must produce exactly one top-level numbered list item under `### Steps`, in the same order as the IR.
-   - Every top-level `Branch` node must produce exactly one top-level numbered list item under `### Steps`, containing lettered sub-steps per arm (see `compiled-output.md` §Constraint Rendering). Each arm is introduced by a condition header (`If <condition>:` for `if`/`elif`, `Otherwise:` for `else`), and each Step-projecting node inside the arm produces a lettered sub-step (`a.`, `b.`, `c.`). Letters reset per arm.
-   - Every `Constraint` node must produce exactly one bulleted list item under `### Constraints`. Order is not required to match the IR.
-   - The `Return` expression must fold into the last `### Steps` item (or the last sub-step of the final arm, if the last Step is a Branch), not produce a separate item or section.
+   - Every top-level `Step` node (and every top-level `Call`, `InlineInstruction`, `InstructionRef` that projects to a Step per `compiled-output.md`) must produce exactly one top-level numbered list item under `## Steps`, in the same order as the IR.
+   - Every top-level `Branch` node must produce exactly one top-level numbered list item under `## Steps`, containing lettered sub-steps per arm (see `compiled-output.md` §Constraint Rendering). Each arm is introduced by a condition header (`If <condition>:` for `if`/`elif`, `Otherwise:` for `else`), and each Step-projecting node inside the arm produces a lettered sub-step (`a.`, `b.`, `c.`). Letters reset per arm.
+   - Every `Constraint` node must produce exactly one bulleted list item under `## Constraints`. Order is not required to match the IR.
+   - The `Return` expression must fold into the last `## Steps` item (or the last sub-step of the final arm, if the last Step is a Branch), not produce a separate item or section.
    - An `OutputContract` from `return <name>` or `return <"description">` must fold into natural output prose. The literal `<name>` token (identifier form) and the literal `<"…">` token, surrounding angle brackets, or bare quoted description (descriptive form) must not survive in the compiled Markdown.
    - Every Call with `projection_mode: same_file_procedure` must additionally produce one `### Procedure: <name>` section with numbered items matching the callee's flow node count. The referencing Step includes the procedure name in its prose.
    - Calls with `projection_mode: external_file` produce one Step whose prose includes the file path from `procedure_path`. No `### Procedure:` section is emitted for external projections.
@@ -184,7 +182,7 @@ The output must preserve the following structural invariants:
 7. **No authoring artifacts.** No `generated` markers, no `with` modifier text, no import paths, no IR field names. `{param}` references for declared parameters are the only authoring-adjacent syntax that survives. Local binding references are fully resolved into prose.
 8. **Standard Markdown only.** Headings, numbered lists, bulleted lists, inline emphasis. No HTML, no tables, no code blocks inside steps.
 
-The frontmatter (`name`, `description`, `effects`) is **not** produced by Step 2. It is assembled deterministically by Phase 7 (Emit) from skill-level IR metadata. The `## Parameters` section is assembled by Step 2: the deterministic emitter scaffolds each bullet (`- **name** (default: …)` / `(required)` trailer) and emits a `ParamDescription` span where the LLM (when wired) fills the description. Step 2 also produces the `## Instructions` section body.
+The frontmatter (`name`, `description`, `effects`) is **not** produced by Step 2. It is assembled deterministically by Phase 7 (Emit) from skill-level IR metadata. The `## Parameters` section is assembled by Step 2: the deterministic emitter scaffolds each bullet (`- **name** (default: …)` / `(required)` trailer) and emits a `ParamDescription` span where the LLM (when wired) fills the description. Step 2 also produces the body sections (`## Context`, `## Steps`, `## Constraints`) at peer H2 level.
 
 ### 3.5 Deterministic Emitter Responsibilities
 
@@ -192,14 +190,14 @@ The deterministic emitter owns all structure that does not require natural-langu
 
 **Owned by the deterministic emitter (no span emitted):**
 
-- Section shape: `## Parameters`, `## Instructions`, and the H3 sub-sections `### Context`, `### Steps`, `### Constraints`, `### Procedure: <name>`.
-- Numbered Step list, lettered sub-step list (with letter reset per Branch arm), and bulleted `### Constraints` list.
+- Section shape: peer-level `## Parameters`, `## Context`, `## Steps`, `## Constraints` H2s, plus the H3 `### Procedure: <name>` (nested under whichever body H2 came last).
+- Numbered Step list, lettered sub-step list (with letter reset per Branch arm), and bulleted `## Constraints` list.
 - Constraint rendering — the four-form lock (`hard avoid`, `soft avoid`, `hard require`, `soft require`) per `compiled-output.md` §Constraint Rendering.
 - `OutputContract.Identifier` return fold — the locked suffix `, and return that as your result.` (or the standalone form `Return <name> as your result.` for return-only skills/procedures), with `<name>` snake_case → space-separated by the shared `kebab_case` / `snake_to_words` helpers.
 - Pure-predicate Branch projection — all three sub-cases from §3.3 (single-arm `Decide whether <resolved predicate text> applies and, if so:`; multi-arm `Decide which of the following applies and follow only that path:` with `If <resolved predicate text>:` arm headers; `Otherwise:` else-arm header). All three predicate forms (`.applies()`, string-const, inline literal) use the same framing; the emitter reads the resolved predicate text from `resolved_predicates` (for `.applies()` and const forms) or directly from the condition string (for inline literals).
 - External-file Call Step template — `Load and follow the procedure in \`{procedure_path}\`.`.
 - `## Parameters` bullet scaffolding — bold name and `(default: …)` / `(required)` trailer.
-- Procedure section ordering (by first reference from `### Steps`) and procedure-name kebab-casing.
+- Procedure section ordering (by first reference from `## Steps`) and procedure-name kebab-casing.
 
 **Filled by spans (LLM when wired; stub today):**
 
@@ -221,23 +219,22 @@ Phase 6b is the deterministic check that runs between Step 2 and Emit. It is arc
 For the Markdown returned by Step 2:
 
 - **Section shape.**
-  - At most two H2 sections: `## Parameters` (conditional) and `## Instructions` (always present).
-  - No other H2 sections exist.
-  - H3 sections under `## Instructions` are limited to: `### Context`, `### Steps`, `### Constraints`, and zero or more `### Procedure: <name>` sections. No other H3s.
-  - At least one of `### Steps` or `### Constraints` is present (per `compiled-output.md`).
-  - H3 ordering: `### Context` first (if present), then `### Steps`, then `### Constraints` (if present), then `### Procedure:` sections (if any) in order of first reference from `### Steps`.
+  - H2 sections sit at peer level. Allowed H2 names in Phase 1: `## Parameters` (conditional), `## Context` (conditional), `## Steps` (conditional only for pure constraint-only skills), `## Constraints` (conditional). Phase 3 will extend the catalogue with freeform headings.
+  - No `## Instructions` wrapper is emitted.
+  - At least one of `## Steps` or `## Constraints` is present (per `compiled-output.md`).
+  - H2 ordering (canonical default): `## Parameters` first (if present), then `## Context`, then `## Steps`, then `## Constraints`. `### Procedure: <name>` sections appear at H3 — nested under whichever body H2 came last — in order of first reference from `## Steps`.
 
 - **Role preservation (1-to-1 count).**
-  - **Top-level Step count.** The number of top-level numbered items under `### Steps` equals:
+  - **Top-level Step count.** The number of top-level numbered items under `## Steps` equals:
     ```
     (count of top-level FlowNodes whose role is Step)
     + (count of top-level Branch nodes × 1)
     - (1 if the flow ends with a Return that folds into the last Step)
     ```
     Each top-level `Branch` node contributes exactly **1** to the top-level count, regardless of how many arms it has or how many statements each arm contains. `Return` folds into the preceding Step and does not produce its own numbered item.
-  - **Per-Branch sub-step count.** Each `Branch` projects to a single numbered Step with lettered sub-steps per arm (`compiled-output.md` §Constraint Rendering). For each arm, the count of lettered sub-steps (`a.`, `b.`, `c.`, resetting per arm) equals the count of Step-projecting nodes in that arm's body. `Constraint` nodes inside an arm do **not** receive their own letter — they inline into adjacent sub-step prose. **Nested `Branch` recursion stops at one level.** A `Branch` nested inside an outer `Branch`'s arm contributes exactly **1** to that arm's sub-step count (it does not re-expand into n sub-steps per its own arms) and flattens into prose within its parent sub-step. In practice, Repair §4.9 auto-extracts nested branches into `generated block` declarations before Phase 6b, so the validator typically sees a `Call` to the extracted block rather than a literal nested `Branch`; this counting rule is defensive for cases where extraction does not run. The `### Steps` count formula at the top of this section — `(Step nodes) + (Branch nodes × 1) − (Return folds)` — is consistent with this rule. The agent-side counter described in `agent-skill.md` §`validate-output` uses the same rule.
-  - The number of bulleted items under `### Constraints` equals the count of **top-level** `Constraint` IR nodes — i.e., entries in `Skill.constraints` / `Block.constraints` / `ExportBlock.constraints` after Lower's flow-top-level hoisting (`ir-and-semantics.md` §Flow-Level Constraint Markers). Two categories are excluded from this count and instead projected into Step prose: (a) **scoped constraints** carried on `Call` nodes (§3.2), and (b) **branch-scoped `Constraint` flow nodes** that remain inside `Branch` bodies after Lower (these inline into the conditional Step's sub-step prose, per `compiled-output.md` §Constraint Rendering).
-  - Ordering under `### Steps` matches the IR's `flow:` order.
+  - **Per-Branch sub-step count.** Each `Branch` projects to a single numbered Step with lettered sub-steps per arm (`compiled-output.md` §Constraint Rendering). For each arm, the count of lettered sub-steps (`a.`, `b.`, `c.`, resetting per arm) equals the count of Step-projecting nodes in that arm's body. `Constraint` nodes inside an arm do **not** receive their own letter — they inline into adjacent sub-step prose. **Nested `Branch` recursion stops at one level.** A `Branch` nested inside an outer `Branch`'s arm contributes exactly **1** to that arm's sub-step count (it does not re-expand into n sub-steps per its own arms) and flattens into prose within its parent sub-step. In practice, Repair §4.9 auto-extracts nested branches into `generated block` declarations before Phase 6b, so the validator typically sees a `Call` to the extracted block rather than a literal nested `Branch`; this counting rule is defensive for cases where extraction does not run. The `## Steps` count formula at the top of this section — `(Step nodes) + (Branch nodes × 1) − (Return folds)` — is consistent with this rule. The agent-side counter described in `agent-skill.md` §`validate-output` uses the same rule.
+  - The number of bulleted items under `## Constraints` equals the count of **top-level** `Constraint` IR nodes — i.e., entries in `Skill.constraints` / `Block.constraints` / `ExportBlock.constraints` after Lower's flow-top-level hoisting (`ir-and-semantics.md` §Flow-Level Constraint Markers). Two categories are excluded from this count and instead projected into Step prose: (a) **scoped constraints** carried on `Call` nodes (§3.2), and (b) **branch-scoped `Constraint` flow nodes** that remain inside `Branch` bodies after Lower (these inline into the conditional Step's sub-step prose, per `compiled-output.md` §Constraint Rendering).
+  - Ordering under `## Steps` matches the IR's `flow:` order.
 
 - **Procedure section validation** (for `same_file_procedure` projections).
   - One `### Procedure: <name>` section per unique callee with `projection_mode: same_file_procedure`.
@@ -247,7 +244,7 @@ For the Markdown returned by Step 2:
   - Every Step that references a procedure uses the procedure's name in its prose.
   - Reference count: the number of Steps referencing procedure X matches the number of Call nodes targeting X with `same_file_procedure` projection.
   - No duplicate procedure names.
-  - Procedure sections appear after `### Context`, `### Steps`, and `### Constraints`, ordered by first reference.
+  - Procedure sections (H3) appear after the body H2s (`## Context`, `## Steps`, `## Constraints`), nested under whichever body H2 came last, ordered by first reference.
 
 - **External file reference validation** (for `external_file` projections).
   - Every Call node with `projection_mode: external_file` produces a Step whose prose includes the procedure file path from `procedure_path`.
@@ -275,13 +272,13 @@ For the Markdown returned by Step 2:
 
 | ID | Classification | Trigger |
 |---|---|---|
-| `G::expand::extra-h2` | error | Step 2 emitted an H2 other than `## Instructions` |
-| `G::expand::missing-instructions` | error | Step 2 did not emit `## Instructions` |
-| `G::expand::extra-h3` | error | Step 2 emitted an H3 not matching `### Context`, `### Steps`, `### Constraints`, or `### Procedure: <name>` |
-| `G::expand::step-count-mismatch` | error | Number of top-level `### Steps` items does not match expected top-level Step count (see §4.1 count formula) |
+| `G::expand::extra-h2` | error | Step 2 emitted an H2 outside the Phase 1 catalogue (`## Parameters`, `## Context`, `## Steps`, `## Constraints`). Phase 3 extends the catalogue with freeform headings. |
+| `G::expand::missing-instructions` | error | RETIRED post-Phase-1. Reserved for forward-compat; no longer emitted because the `## Instructions` wrapper is gone — its role is now covered by `extra-h2` and the body H2 count checks. |
+| `G::expand::extra-h3` | error | RETIRED post-Phase-1. Reserved for forward-compat; with body sections now at H2, the only legal H3 is `### Procedure: <name>` (which has its own dedicated diagnostics). |
+| `G::expand::step-count-mismatch` | error | Number of top-level `## Steps` items does not match expected top-level Step count (see §4.1 count formula) |
 | `G::expand::substep-count-mismatch` | error | Number of lettered sub-steps in a Branch's arm does not match the count of Step-projecting nodes in that arm's IR body |
-| `G::expand::constraint-count-mismatch` | error | Number of `### Constraints` items does not match `Constraint` node count |
-| `G::expand::context-count-mismatch` | error | Number of `### Context` items does not match the IR's top-level `context` array length on the skill/block |
+| `G::expand::constraint-count-mismatch` | error | Number of `## Constraints` items does not match `Constraint` node count |
+| `G::expand::context-count-mismatch` | error | Number of `## Context` items does not match the IR's top-level `context` array length on the skill/block |
 | `G::expand::step-order-mismatch` | error | Step order diverges from `flow:` order |
 | `G::expand::invented-param-ref` | error | `{...}` reference does not match any declared parameter |
 | `G::expand::dropped-param-ref` | error | A parameter reference from Step 1 output was silently removed by Step 2 |
@@ -299,7 +296,7 @@ For the Markdown returned by Step 2:
 | `G::expand::procedure-ref-missing` | error | A `same_file_procedure` Call produced no procedure reference in its Step prose |
 | `G::expand::procedure-ref-dangling` | error | Step references a procedure name that has no matching `### Procedure:` section |
 | `G::expand::procedure-duplicate` | error | Same procedure name appears in two or more `### Procedure:` sections |
-| `G::expand::procedure-order` | error | `### Procedure:` sections are not ordered by first reference from `### Steps` |
+| `G::expand::procedure-order` | error | `### Procedure:` sections are not ordered by first reference from `## Steps` |
 
 All 6b diagnostics are classified `error`, not `repairable`. Phase 3 Repair operates on source; 6b failures are a Step 2 output problem and are handled by the retry / fallback policy in §5, not by re-running Repair.
 
@@ -341,7 +338,7 @@ Up to **two retries per failing span** with the same info-rich feedback model as
 1. **The original prompt.**
 2. **The model's previous failed output** — verbatim.
 3. **The specific 6b violation report** — naming the diagnostic ID(s) (per §4.2), the failing nodes by **stable IR node ID** (§3.1), and where in the previous output the violation appeared. Examples:
-   - "the previous attempt produced 5 steps but the IR has 6 Step-projecting nodes; node `n3` (Call to `identify_root_cause`) was missing from `### Steps`."
+   - "the previous attempt produced 5 steps but the IR has 6 Step-projecting nodes; node `n3` (Call to `identify_root_cause`) was missing from `## Steps`."
    - "the previous attempt invented a `{ctx}` reference in Step 4; `ctx` is not declared in the skill's `InputContract`."
 4. **An edit directive** — "Edit your previous output to fix these violations rather than starting from scratch."
 
@@ -456,7 +453,7 @@ After Step 1, every bare name and inline string has concrete content. `{scope}` 
 Step 2's prompt contains the resolved IR, the output template, and the formatting rules. Conceptually:
 
 ```text
-You are producing the `## Parameters` and `## Instructions` sections of a compiled skill file.
+You are producing the `## Parameters`, `## Context`, `## Steps`, and `## Constraints` sections of a compiled skill file. All four are peer H2s (there is no `## Instructions` wrapper).
 
 Parameters:
   - name: "scope", type: String, default: "."
@@ -484,7 +481,7 @@ Constraints (unordered):
 
 Rules:
   - Emit `## Parameters` with one bulleted item per parameter (name, description, and either `(default: <value>)` or `(required)` per `compiled-output.md` §`## Parameters`).
-  - Emit `## Instructions` with `### Context` (if any), `### Steps`, and `### Constraints`.
+  - Emit body sections as peer H2s: `## Context` (if any), `## Steps`, `## Constraints` (if any). No `## Instructions` wrapper.
   - Every flow item -> exactly one numbered Step, in order.
   - Every constraint -> exactly one bulleted Constraint.
   - The final Step must end with a sentence summarizing the return value.
@@ -499,9 +496,7 @@ Rules:
 ## Parameters
 - **scope**: Area of codebase to focus on (default: ".")
 
-## Instructions
-
-### Steps
+## Steps
 
 1. Inspect the failure in {scope}, focusing on auth boundaries and permission checks. Identify what is failing and whether any auth-related logic is involved.
 2. Identify the root cause of the issue.
@@ -510,7 +505,7 @@ Rules:
 5. Validate that the fix works before reporting success.
 6. Summarize what was changed and why, and return that as your result.
 
-### Constraints
+## Constraints
 
 - Do not make changes outside {scope}.
 - Follow the repository's existing patterns before introducing new abstractions.
@@ -521,7 +516,7 @@ Rules:
 6b walks the output against the IR:
 
 - Parameters section: skill has 1 parameter (`scope`) → `## Parameters` has 1 bulleted item. Pass.
-- Section shape: one `## Parameters`, one `## Instructions`, H3s (`### Context`, `### Steps`, `### Constraints`). Pass.
+- Section shape: peer-level H2s `## Parameters`, `## Steps`, `## Constraints` (no `## Context` because the IR has none). Pass.
 - Step count: 6 IR flow nodes → 6 numbered items. Pass.
 - Step order: matches IR flow order. Pass.
 - Return folding: the 6th Step ends with "and return that as your result." Pass.
@@ -538,6 +533,6 @@ Rules:
 - **Pipeline** (`pipeline.md` §Phase 6): canonical description of Expand's two-step model. This document refines Step 2 and adds Phase 6b.
 - **Repair** (`repair.md`): contrast — Repair is source-to-source, idempotent, and driven by diagnostics; Step 2 is IR-to-Markdown, not idempotent, and driven by the resolved IR itself.
 - **IR and semantics** (`ir-and-semantics.md`): the node shapes Step 2 consumes (`InputContract`, `Step`, `Constraint`, `Context`, `OutputContract`), strength/polarity model, effect vocabulary.
-- **Compiled output** (`compiled-output.md`): the output shape Step 2 must produce — `## Parameters` (conditional), `## Instructions` with `### Context` + `### Steps` + `### Constraints`, formatting rules. YAML frontmatter is assembled by Emit.
+- **Compiled output** (`compiled-output.md`): the output shape Step 2 must produce — peer-level H2s `## Parameters` (conditional), `## Context` (conditional), `## Steps`, `## Constraints` (conditional), formatting rules. YAML frontmatter is assembled by Emit.
 - **Diagnostics** (`diagnostics.md`): the diagnostic schema and ID convention used by Phase 6b.
 - **Foundations** (`foundations.md`): #18 (deterministic passes own correctness — the Safety Sandwich), #33 (novice learnability — motivates `with` modifier as the only call-site specialization mechanism, which in turn motivates the no-fallback posture in §5).

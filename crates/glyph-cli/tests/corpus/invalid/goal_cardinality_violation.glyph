@@ -1,0 +1,7 @@
+skill demo()
+    description: "Demo."
+    goal:
+        "First goal."
+        "Second goal."
+    flow:
+        "Do."

@@ -4,9 +4,7 @@ name: main
 description: 'Two blocks share param name `flag`; each branch must resolve to its own block''s default.'
 ---
 
-## Instructions
-
-### Steps
+## Steps
 
 1. Follow the first procedure below.
 2. Follow the second procedure below.

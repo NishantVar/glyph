@@ -8,7 +8,7 @@ This document defines the shape of compiled Markdown files that the Glyph compil
 - **Targets agents broadly** (foundations). The output must be consumable by general-purpose agents, not tied to one execution environment.
 - **Authoring and execution are separate** (foundations). Source constructs compile away completely. The compiled file is self-contained agent instructions.
 - **The IR is the semantic contract** (foundations). Compiled output is a projection of the IR, not a direct transformation of source.
-- **Novice learnability** (foundations). Compiled output stays radically simple — frontmatter plus one instruction section — so new authors see exactly how their source maps onto agent-facing Markdown.
+- **Novice learnability** (foundations). Compiled output stays radically simple — frontmatter plus a handful of peer-level body H2s (`## Context`, `## Steps`, `## Constraints`) — so new authors see exactly how their source maps onto agent-facing Markdown.
 
 ## Parameterless Compilation
 
@@ -31,10 +31,10 @@ Every source form maps to exactly one compiled location. This is the authoritati
 | `skill <name>` | Frontmatter `name` |
 | `description:` | Frontmatter `description` |
 | `effects:` (declared or inferred) | Frontmatter `effects` (YAML list) — *gated, requires `--enable-effects`; field absent when gate is off* |
-| `flow:` steps (non-`return`) | `### Steps` under `## Instructions` |
-| `return <expr>` in flow | Closing sentence of the final `### Steps` item |
-| `constraints:` content + body-level markers | `### Constraints` under `## Instructions` |
-| `context:` content | `### Context` under `## Instructions` (before `### Steps`) |
+| `flow:` steps (non-`return`) | `## Steps` |
+| `return <expr>` in flow | Closing sentence of the final `## Steps` item |
+| `constraints:` content + body-level markers | `## Constraints` |
+| `context:` content | `## Context` (before `## Steps`) |
 | Header parameters + defaults | `## Parameters` section (names, descriptions, defaults or `(required)` marker) |
 
 Constraint strength (`soft`/`hard`) and polarity (`require`/`avoid`) affect compiled wording and prominence per [ir-and-semantics.md](ir-and-semantics.md).
@@ -59,7 +59,7 @@ The compiled file does not emit a `# <Skill Name>` heading. The frontmatter `nam
 
 ## Sections
 
-MVP compiled output emits two H2 sections: `## Parameters` (conditional) and `## Instructions`. No other sections are produced.
+MVP compiled output emits peer-level H2 sections in canonical order: `## Parameters` (conditional), `## Context` (conditional), `## Steps`, `## Constraints` (conditional). No `## Instructions` wrapper heading is emitted; body sections sit at the same level as `## Parameters`. Section order is canonical-default with explicit-source-position override; see Phase 3 of the freeform-sections design for the merge algorithm.
 
 Deferred sections (`## Output`, `## Effects` as a prose section, `## When To Use`) are logged in [todo.md](todo.md) for possible post-MVP restoration.
 
@@ -139,21 +139,19 @@ Renders as:
 
 The consuming LLM reads this section before executing the Steps. For optional parameters, it resolves each from the user's request context and falls back to the listed default if the user does not specify a value. For required parameters, it must extract a value from context; if the user has not supplied enough information to determine the value, the LLM should ask the user before proceeding. Parameter descriptions are guidance for the LLM, not rigid schemas.
 
-### `## Instructions`
+### Body Sections (`## Context`, `## Steps`, `## Constraints`)
 
-Always emitted. Contains the compiled workflow and behavioral rules via H3 sub-sections:
+Body sections sit at H2, peer to `## Parameters`. No `## Instructions` wrapper heading is emitted:
 
-- **`### Context`** — bulleted list of background information. Passive framing the agent should understand during execution. Each context entry projects to one column-0 `- ` bullet; multi-line bodies indent continuation lines by two spaces so each entry remains a single Markdown list item. When the source entry was a bare-name reference to a `const` / `export const` (rather than an inline string), the bullet leads with a bold **kebab-case label** (the source name) on its own line, followed by a blank line, followed by the indented body. The label gives consuming agents a stable per-entry handle and matches the kebab-case convention used by `### Procedure: <name>`.
-- **`### Steps`** — numbered list (order matters). Each item is one instruction. The `return` expression from the source folds into the final item rather than producing a separate section.
-- **`### Constraints`** — bulleted list (order usually does not matter). Each item is one `Constraint` node. Strength (`soft`/`hard`) and polarity (`require`/`avoid`) affect wording, not placement in MVP.
-- **`### Procedure: <name>`** — zero or more procedure sections for blocks projected at Tier 2 (same-file procedure). Each contains a numbered list of the callee's expanded flow, with an optional constraint preamble. See §Three-Tier Block Projection for format and ordering rules.
+- **`## Context`** — bulleted list of background information. Passive framing the agent should understand during execution. Each context entry projects to one column-0 `- ` bullet; multi-line bodies indent continuation lines by two spaces so each entry remains a single Markdown list item. When the source entry was a bare-name reference to a `const` / `export const` (rather than an inline string), the bullet leads with a bold **kebab-case label** (the source name) on its own line, followed by a blank line, followed by the indented body. The label gives consuming agents a stable per-entry handle and matches the kebab-case convention used by `### Procedure: <name>`.
+- **`## Steps`** — numbered list (order matters). Each item is one instruction. The `return` expression from the source folds into the final item rather than producing a separate section.
+- **`## Constraints`** — bulleted list (order usually does not matter). Each item is one `Constraint` node. Strength (`soft`/`hard`) and polarity (`require`/`avoid`) affect wording, not placement in MVP.
+- **`### Procedure: <name>`** — zero or more procedure sections for blocks projected at Tier 2 (same-file procedure). These stay at H3, nested under whichever body H2 came last. Each contains a numbered list of the callee's expanded flow, with an optional constraint preamble. See §Three-Tier Block Projection for format and ordering rules.
 
-`### Context`, `### Steps`, and `### Constraints` are conditional: `### Context` is omitted when no `context:` is declared; `### Constraints` is omitted when there are no explicit constraints; `### Steps` may be omitted only for pure instruction-only skills (all content is constraints). At least one of `### Steps` or `### Constraints` must be present — `### Context` alone is not sufficient for a valid skill. `### Procedure:` sections are conditional on the projection tier selected for each callee.
+`## Context`, `## Steps`, and `## Constraints` are conditional: `## Context` is omitted when no `context:` is declared; `## Constraints` is omitted when there are no explicit constraints; `## Steps` may be omitted only for pure instruction-only skills (all content is constraints). At least one of `## Steps` or `## Constraints` must be present — `## Context` alone is not sufficient for a valid skill. `### Procedure:` sections are conditional on the projection tier selected for each callee.
 
 ```md
-## Instructions
-
-### Context
+## Context
 
 - This codebase follows a monorepo layout with shared internal packages.
 
@@ -166,13 +164,13 @@ Always emitted. Contains the compiled workflow and behavioral rules via H3 sub-s
   - Headings, numbered lists, and code spans inside the body are preserved
     verbatim and read as part of the same Context entry.
 
-### Steps
+## Steps
 
 1. Inspect the failure and reproduce it.
 2. Identify the root cause before proposing a fix.
 3. Patch minimally and report the summary.
 
-### Constraints
+## Constraints
 
 - Do not make unrelated edits outside the requested scope.
 - Follow the repository's existing patterns before introducing new abstractions.
@@ -187,13 +185,76 @@ Compiled output projects from the typed IR role model defined in [ir-and-semanti
 | Skill name | Frontmatter `name` | String |
 | Skill description | Frontmatter `description` | String |
 | Effect set | Frontmatter `effects` | YAML list; field omitted if effect set is empty or `none`. *Gated — requires `--enable-effects`; omitted entirely when gate is off.* |
-| `Context` | `### Context` | Bulleted list, one column-0 `- ` per IR `Context` node; body is line-wise 2-space-indented under the bullet. NameRef entries lead with a bold kebab-case label on the bullet's first line; inline-string entries place the body directly after `- ` |
-| `Step` | `### Steps` | Numbered list, one concrete instruction per item |
-| `Constraint` | `### Constraints` | Bulleted list, wording shaped by constraint keyword (`require`/`avoid`/`must`/`must avoid`) |
+| `Context` | `## Context` | Bulleted list, one column-0 `- ` per IR `Context` node; body is line-wise 2-space-indented under the bullet. NameRef entries lead with a bold kebab-case label on the bullet's first line; inline-string entries place the body directly after `- ` |
+| `Step` | `## Steps` | Numbered list, one concrete instruction per item |
+| `Constraint` | `## Constraints` | Bulleted list, wording shaped by constraint keyword (`require`/`avoid`/`must`/`must avoid`) |
 | `InputContract` + parameters | `## Parameters` section (names, descriptions, defaults or `(required)` marker) | Bulleted list |
-| `OutputContract` + `return` | Closing sentence of the final `### Steps` item | No dedicated section |
+| `OutputContract` + `return` | Closing sentence of the final `## Steps` item | No dedicated section |
 | Block call (referenced) | `### Procedure: <name>` section | Numbered list with optional constraint preamble |
 | Block call (external) | "Load and follow `<path>`" in Step prose | File path reference |
+
+### Output Order — The D9 Merge Algorithm
+
+The compiler emits section H2 blocks in an order determined jointly by a **canonical-default position list** and the **source-position of each sub-section the author declared**. Sub-sections not declared in source fall back to the canonical position; declared sub-sections override the canonical position when their source-position implies a different slot.
+
+The algorithm (D9 merge):
+
+1. Walk the source declarations (skill/block/export block) and build a `SectionTable`. For each sub-section the author wrote (`description:`, `context:`, `constraints:`, `flow:`, `effects:`, or any freeform colon-keyword), record the source line of its header. Sub-sections not declared in source remain absent from the table.
+2. Walk the **canonical output order** from top to bottom: `description (→ Parameters)`, `context (→ ## Context)`, `constraints (→ ## Constraints)`, `flow (→ ## Steps)`. (Note: `## Parameters` is injected from the skill header, not from a sub-section; the canonical-default order matches the historical layout.)
+3. For each declared sub-section in source order, insert its output H2 at the slot where its source line falls relative to the other declared sub-sections. Specifically: a sub-section declared before any other sub-section keeps the canonical default; a sub-section declared after another sub-section S' must emit its H2 after S''s H2 in the compiled `.md`.
+4. Freeform sections (§Freeform Sections below) participate in this walk on equal footing with built-in sub-sections — their `## Heading` is emitted at the freeform's source-relative slot.
+5. When a sub-section is declared multiple times in source (e.g., two `context:` blocks via the duplicate-subsection recovery shape), the merged H2 lands at the position of the **first** occurrence; the recovery merge concatenates the bodies in source order.
+
+**Worked example.** Source:
+
+```glyph
+skill demo()
+    description: "Demo skill."
+    quality:
+        require accuracy
+        "Prefer minimal diffs."
+    flow:
+        "Investigate."
+```
+
+The `quality:` freeform section was declared between `description:` and `flow:` in source. Compiled output:
+
+```md
+---
+name: demo
+description: 'Demo skill.'
+---
+
+## Quality
+
+- Accuracy.
+- Prefer minimal diffs.
+
+## Steps
+
+1. Investigate.
+```
+
+`## Quality` lands between the frontmatter and `## Steps` because the author placed `quality:` before `flow:`. Had they written `quality:` after `flow:`, the compiled output would render `## Steps` before `## Quality`.
+
+**Consequence for `glyph fmt`.** Because compiled order tracks source order, `glyph fmt` does **not** reorder sub-sections. fmt's contract is "no section reordering, no marker hoisting across section boundaries"; the body-level marker hoisting from §4.2a of `language-surface.md` still happens, but hoisted markers never cross a named section boundary.
+
+### Freeform Sections
+
+A *freeform colon-keyword* section (e.g. `quality:`, `risks:`, `acceptance_criteria:`) is any sub-section header at body-level whose name is not in the built-in catalogue (`description`, `effects`, `context`, `constraints`, `flow`). See [language-surface.md](language-surface.md) §2.5b for the source-side authoring rules and §Output Order above for placement in the compiled `.md`.
+
+**Heading projection.** A freeform section projects to a peer-level `## Heading` block. The heading is derived from the source colon-keyword by replacing underscores with spaces and title-casing each word: `quality:` → `## Quality`, `acceptance_criteria:` → `## Acceptance Criteria`, `risks:` → `## Risks`.
+
+**Shape-detection rule.** The body grammar of a freeform section mirrors `context:` (`ir-and-semantics.md` §`context:` Section). The compiler examines the section's content items to choose between two rendering shapes:
+
+- **Bullet list shape** — when the section contains more than one item, OR contains any reserved-marker clause (`require`, `avoid`, `must`, `must avoid`, `context`), OR contains a `NameRef` to a string-valued `const`. Each item projects to a `- ` bullet. Marker clauses render through the same four-form template as `## Constraints` (§Constraint Rendering); `context X` and bare-name refs follow `## Context` formatting.
+- **Paragraph shape** — when the section contains exactly one inline string and no other items. The string projects as a free-standing paragraph directly under the `## Heading`.
+
+The shape is deterministic given the body; the author does not select it.
+
+**Depth by tier.** When the host declaration is a `skill`, the freeform `## Heading` emits at `##` depth (peer to `## Steps`). When the host declaration is a `block` projected as Tier 2 (same-file procedure under `### Procedure: <name>`), the freeform heading emits at `####` depth, nested under the procedure heading. When the host is a Tier 3 external `export block` (its own `.md` file), the freeform heading emits at `##` depth in the procedure file. A Tier 1 inlined block cannot carry freeform sections — the compiler forces Tier 2 promotion for any block that declares a freeform section (see §Three-Tier Block Projection below and [expand.md](expand.md)).
+
+**Marker semantics inside freeform.** The five reserved marker clauses (`require`, `avoid`, `must`, `must avoid`, `context`) carry their normal semantics inside a freeform body — strength/polarity for `require`/`avoid`/`must`/`must avoid`, context-projection for `context`. They are not "hoisted out" of the freeform section to the canonical `## Constraints` or `## Context` heading; they render under the freeform's own `## Heading`. This is the rule that makes freeform sections useful: an author who wants a `quality:` section showing both pass-criteria markers and prose can use the marker syntax for the deterministic four-form rendering and the prose for context-as-paragraph.
 
 ### Three-Tier Block Projection
 
@@ -203,7 +264,7 @@ When a `Call` node targets a block (same-file or imported), the compiler chooses
 |-----------|------|------------|
 | Callee body has 1 flow statement, no own constraints, called once, **expanded prose < 150 words** | **Inline** | Body becomes Step prose (default behavior) |
 | Callee body has 2–3 flow statements, no own constraints, called once, **expanded prose < 150 words** | **Inline** | Body concatenated into one Step paragraph |
-| Callee body has 4+ flow statements | **Same-file procedure** | `### Procedure: <name>` section under `## Instructions` |
+| Callee body has 4+ flow statements | **Same-file procedure** | `### Procedure: <name>` section nested under the last body H2 |
 | Callee declares its own constraints (any flow count) | **Same-file procedure** | Constraints need a scoping home in the procedure preamble |
 | Callee is called 2+ times in the same skill (same-file block) | **Same-file procedure** | Avoids prose duplication |
 | Imported `export block` called inside a `Branch` | **External file** | Might not be needed — defers context cost until the branch is taken |
@@ -231,18 +292,16 @@ Conditions are checked top-to-bottom; the first `referenced` or `external` trigg
 
 #### Same-File Procedure Sections
 
-A `### Procedure: <name>` H3 section appears under `## Instructions`, after `### Context`, `### Steps`, and `### Constraints`:
+A `### Procedure: <name>` H3 section appears after the body H2s (`## Context`, `## Steps`, `## Constraints`), nested under whichever body H2 came last:
 
 ```md
-## Instructions
-
-### Steps
+## Steps
 
 1. Gather the relevant files in {scope}.
 2. Review the code for issues (follow the review-code procedure below).
 3. Summarize findings and return that as your result.
 
-### Constraints
+## Constraints
 
 - Do not make unrelated edits outside {scope}.
 
@@ -262,7 +321,7 @@ Do not introduce new abstractions during review.
 - Optional preamble paragraph: the callee's scoped constraints and context, rendered as prose sentences (not bulleted — they are contextual to this procedure, not top-level skill constraints). If the callee declares its own `context:`, the context items appear in the preamble alongside any scoped constraints.
 - Numbered list: the callee's flow statements, expanded by Step 2 the same way skill-level Steps are.
 - Return folding: if the callee has a `return`, it folds into the last numbered item of the procedure (same rule as skill-level return).
-- Ordering: procedure sections appear after `### Context`, `### Steps`, and `### Constraints`, in the order of first reference from `### Steps`.
+- Ordering: procedure sections appear after the body H2s (`## Context`, `## Steps`, `## Constraints`), in the order of first reference from `## Steps`. They nest as H3 under whichever body H2 came last.
 
 **Referencing from Steps:** The referencing Step includes a parenthetical cross-reference — e.g., "(follow the review-code procedure below)" or "(see the review-code procedure above)." Step 2 chooses natural phrasing. The reference must include the procedure name so Phase 6b can verify the link.
 
@@ -277,7 +336,7 @@ Do not introduce new abstractions during review.
 
 When the compiler selects the external-file tier, the imported `export block` compiles to a standalone `.md` procedure file. The referencing skill's Step directs the consuming agent to load the file at runtime.
 
-**Procedure file format:** Identical to a skill's compiled format — YAML frontmatter, optional `## Parameters`, `## Instructions` with `### Context`, `### Steps`, and `### Constraints`. The frontmatter carries `kind: procedure` to distinguish from top-level skills:
+**Procedure file format:** Identical to a skill's compiled format — YAML frontmatter, optional `## Parameters`, then peer-level body H2s (`## Context`, `## Steps`, `## Constraints`). The frontmatter carries `kind: procedure` to distinguish from top-level skills:
 
 ```md
 ---
@@ -290,16 +349,14 @@ effects: [reads_files]
 ## Parameters
 - **targets**: Files to review
 
-## Instructions
-
-### Steps
+## Steps
 
 1. Scan the target files for style violations and anti-patterns.
 2. Check for security vulnerabilities.
 3. Check for performance issues in hot paths.
 4. Compile a list of findings with severity ratings.
 
-### Constraints
+## Constraints
 
 - Do not introduce new abstractions during the review.
 ```
@@ -351,9 +408,9 @@ Strength is advisory prose framing — the wording surfaces non-negotiability fo
 
   **Nested branches** (a `Branch` inside another `Branch`'s arm) do **not** receive their own sub-step structure. Instead, they flatten into prose within their parent sub-step (e.g., "If the codebase has public APIs, check backwards compatibility and update the changelog. Otherwise, run internal validation."). Only one level of structured sub-steps is supported. The Repair pass auto-extracts deeply nested branches into helper `generated block` declarations to keep compiled output clean (see `repair.md` §4.9).
 
-- **Branch-scoped constraints.** A `require`/`avoid`/`must` marker that appears inside an `if`/`elif`/`else` branch in `flow:` is **inlined into the prose of an adjacent sub-step**, not surfaced in `### Constraints` and not given its own lettered sub-step. The inlined wording makes the conditional applicability explicit (e.g., a sub-step like "Run the migration, never dropping existing columns."). Only flow-top-level constraint markers (and body-level constraints declared above `flow:`) hoist to `Skill.constraints` and render in `### Constraints`. See [ir-and-semantics.md](ir-and-semantics.md) §Body-Level Constraint Normalization and [pipeline.md](pipeline.md) Phase 4 (Lower) for the hoisting rules.
+- **Branch-scoped constraints.** A `require`/`avoid`/`must` marker that appears inside an `if`/`elif`/`else` branch in `flow:` is **inlined into the prose of an adjacent sub-step**, not surfaced in `## Constraints` and not given its own lettered sub-step. The inlined wording makes the conditional applicability explicit (e.g., a sub-step like "Run the migration, never dropping existing columns."). Only flow-top-level constraint markers (and body-level constraints declared above `flow:`) hoist to `Skill.constraints` and render in `## Constraints`. See [ir-and-semantics.md](ir-and-semantics.md) §Body-Level Constraint Normalization and [pipeline.md](pipeline.md) Phase 4 (Lower) for the hoisting rules.
 
-- **Branch-scoped context.** A `context:` declaration inside an `if`/`elif`/`else` branch in `flow:` follows the same pattern as branch-scoped constraints: it is **inlined into the prose of an adjacent sub-step** (e.g., "Note: this module handles authentication only."), not surfaced in `### Context`. Only skill-level `context:` declarations render in the `### Context` section.
+- **Branch-scoped context.** A `context:` declaration inside an `if`/`elif`/`else` branch in `flow:` follows the same pattern as branch-scoped constraints: it is **inlined into the prose of an adjacent sub-step** (e.g., "Note: this module handles authentication only."), not surfaced in `## Context`. Only skill-level `context:` declarations render in the `## Context` section.
 
 ### Predicate-Driven Branch Projection
 
@@ -438,9 +495,9 @@ Only imports actually used by the skill are inlined; unused imports are dead cod
 
 ## Formatting Rules
 
-1. **One instruction per list item.** No run-on multi-sentence bullets — except the final Step, which may include the return-summary sentence. Applies to `### Steps` and `### Constraints` items only; `### Context` entries may span multiple paragraphs and contain nested lists (see `### Context` projection rules).
+1. **One instruction per list item.** No run-on multi-sentence bullets — except the final Step, which may include the return-summary sentence. Applies to `## Steps` and `## Constraints` items only; `## Context` entries may span multiple paragraphs and contain nested lists (see `## Context` projection rules).
 2. **Numbered lists for Steps, bulleted lists for Context and Constraints.**
-3. **No hard line-wrapping mid-sentence.** Each `### Steps` and `### Constraints` item is a single unwrapped line. `### Context` items are exempt: a Context entry's body may include paragraphs, blank lines, nested lists, and other block content provided every continuation line is indented past the bullet marker (two spaces) so the entry remains a single Markdown list item.
+3. **No hard line-wrapping mid-sentence.** Each `## Steps` and `## Constraints` item is a single unwrapped line. `## Context` items are exempt: a Context entry's body may include paragraphs, blank lines, nested lists, and other block content provided every continuation line is indented past the bullet marker (two spaces) so the entry remains a single Markdown list item.
 4. **Single blank line between sections.** No double blank lines, no trailing whitespace.
 5. **No inline HTML or special formatting.** Standard Markdown only: headings, lists, bold, code spans.
 
@@ -514,13 +571,11 @@ effects: [reads_files, writes_files, runs_commands]
 ## Parameters
 - **scope**: Area of codebase to focus on (default: ".")
 
-## Instructions
-
-### Context
+## Context
 
 - This skill assumes the bug is reproducible in the local environment.
 
-### Steps
+## Steps
 
 1. Inspect the failure in {scope}, focusing on auth boundaries and permission checks. Identify what is failing and whether any auth-related logic is involved.
 2. Identify the root cause of the issue.
@@ -529,7 +584,7 @@ effects: [reads_files, writes_files, runs_commands]
 5. Validate that the fix works before reporting success.
 6. Summarize what was changed and why, and return that as your result.
 
-### Constraints
+## Constraints
 
 - Do not make changes outside {scope}.
 - Follow the repository's existing patterns before introducing new abstractions.
@@ -537,7 +592,7 @@ effects: [reads_files, writes_files, runs_commands]
 
 Notes on the example:
 
-- The `context:` declaration compiles into `### Context` as a bulleted item, appearing before `### Steps`. It provides passive background the agent should keep in mind.
+- The `context:` declaration compiles into `## Context` as a bulleted item, appearing before `## Steps`. It provides passive background the agent should keep in mind.
 - `scope` appears in the `## Parameters` section and is referenced as `{scope}` in Steps 1 and the first Constraint. The consuming LLM resolves `{scope}` from the user's request context at runtime.
 - The `with "focus on auth boundaries"` modifier shaped Step 1's wording to mention auth boundaries and permission checks. The modifier string itself does not survive.
 - The final flow item `return summarize_changes()` folds into Step 6 as "…and return that as your result." — no `## Output` section.

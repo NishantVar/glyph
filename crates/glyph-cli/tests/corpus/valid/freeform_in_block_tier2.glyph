@@ -1,0 +1,12 @@
+block review_code()
+    quality:
+        require accuracy
+        "Prefer minimal diffs."
+    flow:
+        "Scan the codebase."
+        "Report findings."
+
+skill code_review()
+    description: "Review code for issues."
+    flow:
+        review_code()

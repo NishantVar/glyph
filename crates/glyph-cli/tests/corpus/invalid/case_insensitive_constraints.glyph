@@ -1,0 +1,6 @@
+skill demo()
+    description: "Demo."
+    Constraints:
+        "bare string"
+    flow:
+        "Do."

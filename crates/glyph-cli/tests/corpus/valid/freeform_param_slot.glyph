@@ -1,0 +1,6 @@
+skill audit(scope = ".")
+    description: "Audit code under the given scope."
+    quality:
+        "Inspect every file under {scope} before reporting issues."
+    flow:
+        "Audit."
