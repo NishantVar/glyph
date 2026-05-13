@@ -1,6 +1,6 @@
 //! Span types for source-location tracking.
 //!
-//! See `design/build-foundation.md` §A3.
+//! See `docs/adr/` §A3.
 
 /// Byte-offset span into a source file.
 ///

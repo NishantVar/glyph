@@ -2,10 +2,6 @@
 
 This document defines the MVP type vocabulary for Glyph source files. It covers named domain types, implicit type declaration, the role of types in compilation, and deferred structural features.
 
-## Status
-
-Fills the `name: Type` and `-> ReturnType` slots reserved by `language-surface.md`.
-
 ## Design Posture
 
 Types in MVP Glyph are **semantic labels**, not compiler-enforced structural contracts.
@@ -19,30 +15,32 @@ Types in MVP do not carry structural definitions. The compiler does not check wh
 
 This follows foundations: forgiving source, strict IR and foundations: core language is small. Most Glyph skills are linear flows where values pass through by name and the agent figures out the domain semantics from context. Heavy cross-file structural validation is the exception, not the rule, and can be added later without breaking existing source.
 
-## Primitive Kinds (IR-Only)
+## No Primitive Type Names In Author Surface
 
-Glyph's author-facing surface has no primitive or generic-collection type names. Authors never write the primitives `String`, `Int`, `Float`, `Bool`, `None`, the generic collections `List`, `Set`, `Map`, `Array`, `Dict`, `Tuple`, or the catch-alls `Object`, `Any` as type annotations — only semantic domain types like `Plan`, `RepoContext`, or `Diagnosis` are valid in `-> ReturnType` and `name: Type` positions. (Parameterized collection forms like `List[T]` are deferred entirely; see §Deferred. The `Agent` `TypeTag` variant in `ir-schema.md` §Enums is a stdlib-specific kind for `subagent()` results, not a generic type, and is **not** in the banned set.) Pipeline-precedence note: `-> None` in author-facing source is intercepted at parse time by `G::parse::none-as-return-type` (repairable, Phase 3a auto-fix per `diagnostics.md`); the analyze-tier `G::analyze::generic-type-name` warning therefore does not surface for `None` in return-type position end-to-end. The validator that owns the 13-name list still includes `None` for defense in depth at any future call sites where parse interception does not apply.
+Glyph's author-facing surface has no primitive or generic-collection type names. Authors never write `String`, `Int`, `Float`, `Bool`, `None`, the generic collections `List`, `Set`, `Map`, `Array`, `Dict`, `Tuple`, or the catch-alls `Object`, `Any` as type annotations — only semantic domain types like `Plan`, `RepoContext`, or `Diagnosis` are valid in `-> ReturnType` and `name: Type` positions. Parameterized collection forms like `List[T]` are deferred entirely; see §Deferred. (The `Agent` type for `subagent()` results is a stdlib-specific kind, not a generic type, and is **not** in the banned set.)
 
-The compiler still tracks primitive kinds internally in the IR, inferred from literals, defaults, and usage context. The `TypeTag` enum in `ir-schema.md` retains `string`, `int`, `float`, `bool`, and `none` variants for internal analysis, coercion checks, and default-value validation. These kinds are never surfaced to authors.
+`-> None` specifically is intercepted as a repairable error: a block that produces no meaningful return value omits the `->` entirely (see §`none` Value below).
+
+The compiler tracks primitive kinds (string, int, float, bool, none) internally for type inference, coercion checks, and default-value validation, but these kinds are never surfaced to authors.
 
 **Rationale.** Glyph's compiled output is consumed by LLMs. `-> String` carries no useful semantic signal to an LLM. `-> BranchName` does. Primitive type names are a holdover from languages where types serve compilers; in Glyph, types serve the agent reading the compiled output.
 
 ### Condition-Position Kind Routing
 
-When a bare name appears in `if`/`elif` condition position, Phase 2 (Analyze) consults its inferred primitive kind to determine the semantics:
+When a bare name appears in `if`/`elif` condition position, the compiler routes based on its inferred kind:
 
 | Inferred kind | Condition-position treatment |
 |---|---|
 | `bool` | Boolean predicate — standard boolean evaluation |
-| `string` | Natural-language predicate — resolves via `resolved_predicates` side-map; produces `predicate_const` token kind |
-| Opaque domain type | Treated as boolean (no regression from pre-existing behavior) |
-| `int` or `float` | Hard error: `G::analyze::condition-non-boolean-non-predicate` |
+| `string` | Natural-language predicate — the string content is treated as a predicate body |
+| Opaque domain type | Treated as boolean |
+| `int` or `float` | Hard error: numeric values are not valid conditions |
 
-This routing means that a `const` declared with a string value (e.g., `const complex_change_required = "a complex structural change is needed"`) is automatically usable as a natural-language predicate in condition position without any author-visible annotation. The `==` comparison operator carves out an exception: `if risk == "high":` is a boolean equality check — the string is an operand, not a predicate body, and does not trigger the string-predicate path.
+This routing means a `const` declared with a string value (e.g., `const complex_change_required = "a complex structural change is needed"`) is automatically usable as a natural-language predicate in condition position without any author-visible annotation. The `==` comparison operator carves out an exception: `if risk == "high":` is a boolean equality check — the string is an operand, not a predicate body, and does not trigger the string-predicate path.
 
 ### Casing
 
-Type identifiers MUST be PascalCase: leading uppercase letter, no underscores. This is enforced by `G::analyze::type-case-violation` (`diagnostics.md`, `values-and-names.md` §Case Normalization). Examples in the design docs already follow this rule: `RepoContext`, `Plan`, `FileSet`, `ReviewResult`, `ValidationResult`, `FailureReport`, `Summary`.
+Type identifiers MUST be PascalCase: leading uppercase letter, no underscores. This is a compile error otherwise. Examples in the design docs already follow this rule: `RepoContext`, `Plan`, `FileSet`, `ReviewResult`, `ValidationResult`, `FailureReport`, `Summary`.
 
 The strict casing rule is what keeps the type/value namespace split unambiguous: an author reading `Mode` versus `mode_name` knows immediately that the first is a type and the second is a value, even though they canonicalize equally.
 
@@ -66,13 +64,13 @@ Domain types are implicitly declared by first use in a `-> Type` position. No ex
 
 #### Implicit Type Registration Sites
 
-Three syntactic positions register a name into the type namespace. All three route through the unified `register_type_use` helper in Analyze, which (a) validates the PascalCase rule (`values-and-names.md`, Case Normalization section), (b) records the canonical type name in the file's type-symbol table, and (c) tracks the raw spelling for the `inconsistent-type-spelling` check:
+Three syntactic positions register a name into the type namespace:
 
 1. **Return type annotation** — `-> Foo` on a `skill`, `block`, or `export block` header.
 2. **Parameter type annotation** — `param: Foo` in a declaration's parameter list.
-3. **Selective type import** — `import "./x.glyph" { Foo }` when `Foo` resolves to an `export type` decl in the imported file (see `imports.md`, §`ResolvedImportKind`).
+3. **Selective type import** — `import "./x.glyph" { Foo }` when `Foo` resolves to an `export type` decl in the imported file (see [[imports]]).
 
-A single canonical type name may be registered by multiple sites in the same file with no error: the type-namespace registration is idempotent. However, when two raw spellings of the same canonical type appear (e.g., `RepoContext` and `Repocontext`) the compiler emits `G::analyze::inconsistent-type-spelling` (warning) so the author can settle on one spelling. Note that under the strict PascalCase rule, most "inconsistent spelling" cases are already caught earlier by `G::analyze::type-case-violation` — this warning catches the residual class where both spellings are PascalCase but differ in capitalization of letters past the first.
+The same type name may be registered by multiple sites in the same file with no error: type-namespace registration is idempotent. However, when two raw spellings of the same canonical type appear (e.g., `RepoContext` and `Repocontext`), the compiler warns so the author can settle on one spelling. Under the strict PascalCase rule, most inconsistent spelling cases are caught directly by the case-violation rule above; the spelling warning catches the residual class where both spellings are PascalCase but differ in capitalization past the first letter.
 
 The meaning of a domain type is contextually reinforced by return-site output targets and surrounding prose. Authors choose between two output-target forms depending on whether a short identifier or richer guidance better names what the agent must synthesize:
 
@@ -90,7 +88,7 @@ export block diagnose_issue(scope) -> Diagnosis
         return <"root cause analysis including affected files and severity">
 ```
 
-The `-> Diagnosis` on the header serves as the compiler contract (nominal matching). The output target — `<diagnosis>` (identifier form) or `<"…">` (descriptive form) — names the value the agent must synthesize in the final output and is **complementary** to the type annotation, not a substitute. Both forms inherit `ty` from the enclosing return annotation and lower to the same `OutputContract` shape, discriminated by `OutputContract.form` (`ir-schema.md` §OutputContract). Use the identifier form when the target reads cleanly as a name; use the descriptive form when the guidance for the synthesizer is what carries the meaning. Descriptive form is terminal-return-only in MVP — mid-flow output targets, if added later, must use the identifier form (`values-and-names.md` §No Value-Level Operators).
+The `-> Diagnosis` on the header serves as the compiler contract (nominal matching). The output target — `<diagnosis>` (identifier form) or `<"…">` (descriptive form) — names the value the agent must synthesize in the final output and is **complementary** to the type annotation, not a substitute. Both forms inherit their type from the enclosing return annotation. Use the identifier form when the target reads cleanly as a name; use the descriptive form when the guidance for the synthesizer is what carries the meaning. Descriptive form is terminal-return-only in MVP — mid-flow output targets, if added later, must use the identifier form ([[values-and-names]] §No Value-Level Operators).
 
 Two blocks returning the same `-> Type` with different output-target names, descriptions, or prose guidance are valid — that guidance is local to each block's compiled output and does not participate in nominal matching.
 
@@ -106,7 +104,7 @@ Field access such as `result.findings` is not validated against the type in MVP.
 
 ### Naming Convention
 
-Domain type names follow the lexical rules in `values-and-names.md`, Allowed Characters section (`[a-zA-Z_][a-zA-Z0-9_]*`), with the additional MVP-strict requirement that type identifiers be PascalCase (no underscores; enforced by `G::analyze::type-case-violation`). The no-shadowing rule from `values-and-names.md`, No Shadowing section, applies **within the type namespace**: two type decls with canonically-equal names collide. A type and a value with canonically-equal names (e.g., `type Mode` and parameter `mode_name`) do not collide — they live in disjoint namespaces.
+Domain type names follow the lexical rules in [[values-and-names]], Allowed Characters section, with the additional MVP-strict requirement that type identifiers be PascalCase (no underscores). The no-shadowing rule from [[values-and-names]] applies **within the type namespace**: two type decls with canonically-equal names collide. A type and a value with canonically-equal names (e.g., `type Mode` and parameter `mode_name`) do not collide — they live in disjoint namespaces.
 
 ### Explicit `type` Declarations
 
@@ -128,12 +126,12 @@ export type <Name> = <description>
 
 The RHS uses the same `<"…">` (inline) and `<"""…""">` (block-string) form as per-param descriptions and descriptive output targets. The decl has no body, no parameters, and no sub-sections.
 
-`type` decls live at the top level of a file alongside `const`, `block`, `export block`, and `import`, and are represented in the AST by a dedicated `TypeDecl` node.
+`type` decls live at the top level of a file alongside `const`, `block`, `export block`, and `import`.
 
 **Semantics — what a `type` decl does.** A `type` decl associates a description with a type name. The description is consumed at compile time and surfaces in two places in the compiled output:
 
-1. The `## Parameters` block, when a parameter is annotated `: Foo` and no per-param description is supplied (see `compiled-output.md`).
-2. The closing prose of the final Step in a `-> Foo` block, per the locked return-prose templates (see `compiled-output.md`).
+1. The `## Parameters` block, when a parameter is annotated `: Foo` and no per-param description is supplied (see [[design/compiled-output]]).
+2. The closing prose of the final Step in a `-> Foo` block, per the locked return-prose templates (see [[design/compiled-output]]).
 
 The type decl itself emits no Markdown — `type` decls are compile-time only and do not appear in the compiled `.md`.
 
@@ -147,15 +145,15 @@ The type decl itself emits no Markdown — `type` decls are compile-time only an
 
 Per-site descriptions therefore override the type-level default; absence of either leaves the slot or return prose without a description.
 
-**Same-file duplicates.** A second `type Foo` decl in the same file is a hard error (`G::analyze::duplicate-type-decl`). Type decls live in the **type namespace** (`values-and-names.md`, No Shadowing section), which is disjoint from the value namespace: `type Mode` and `block mode_name()` coexist cleanly even though they canonicalize equally. Collisions are scoped per namespace — two type decls collide (`duplicate-type-decl`), and two value-namespace declarations collide (`name-collision`), but a type and a value never collide with each other. The canonical pairing of `type Foo` with `-> Foo` annotations is **not** a collision — both register the same nominal type into the type namespace.
+**Same-file duplicates.** A second `type Foo` decl in the same file is a hard error. Type decls live in the **type namespace** ([[values-and-names]], No Shadowing section), which is disjoint from the value namespace: `type Mode` and `block mode_name()` coexist cleanly even though they canonicalize equally. Collisions are scoped per namespace — two type decls collide, and two value-namespace declarations collide, but a type and a value never collide with each other. The canonical pairing of `type Foo` with `-> Foo` annotations is **not** a collision — both register the same nominal type into the type namespace.
 
-**Cross-file usage.** `export type` decls are importable selectively: `import "./types.glyph" { Foo }` brings the type and its description into scope. A library file that contains only `export type` decls (no `skill`, no `export block`, no `export const`) satisfies the library-export rule and compiles cleanly with no body — see `imports.md`.
+**Cross-file usage.** `export type` decls are importable selectively: `import "./types.glyph" { Foo }` brings the type and its description into scope. A library file that contains only `export type` decls (no `skill`, no `export block`, no `export const`) satisfies the library-export rule and compiles cleanly with no body — see [[imports]].
 
 Whole-module qualified references to types (e.g., `types.Foo` after `import "./types.glyph" as types`) are not supported in MVP; type slots accept bare identifiers only. Authors who need to expose a type to consumers must use selective import. See Deferred for the parking-lot entry.
 
 ## `none` Value (No `None` Type Annotation)
 
-`none` is a reserved keyword and value representing the absence of a value (`values-and-names.md`, None section). It is valid in value positions: `return none`, `result = none`, `effects: none`.
+`none` is a reserved keyword and value representing the absence of a value ([[values-and-names]], None section). It is valid in value positions: `return none`, `result = none`, `effects: none`.
 
 `None` as a type annotation (`-> None`) is dropped. A block that produces no meaningful return value simply omits the `->` from its declaration header:
 
@@ -176,7 +174,7 @@ The MVP does not include a bottom type. Omitting `->` covers the "returns nothin
 
 ## Type-Name Identifier Rules
 
-Types are not a separate lexical class. They are identifiers that follow the same rules as all other identifiers in `values-and-names.md`.
+Types are not a separate lexical class. They are identifiers that follow the same rules as all other identifiers in [[values-and-names]].
 
 The parser knows a name is in type position based on syntax:
 
@@ -187,7 +185,7 @@ No separate type keyword, sigil, or capitalization rule is needed for the parser
 
 ## Interaction With Declaration Headers
 
-`language-surface.md` reserves the `name: Type` and `-> ReturnType` slots. This document fills those slots. Only domain type names are valid in these positions — primitive type names are not part of the author-facing surface.
+[[language-surface]] reserves the `name: Type` and `-> ReturnType` slots. This document fills those slots. Only domain type names are valid in these positions — primitive type names are not part of the author-facing surface.
 
 ```glyph
 // Parameter type annotation (optional, domain types only)
@@ -210,11 +208,11 @@ Parameter type annotations are always optional. When omitted, the compiler infer
 - **`export block` with meaningful return:** `-> DomainType` is required. Missing `->` on an export block that returns a value is a repairable diagnostic; the repair pass infers a domain type name from the block name and return expression.
 - **`export block` with no meaningful return:** omit `->` entirely.
 - **`block` and `skill`:** `-> DomainType` is optional. The repair pass may suggest a domain type but never enforces one.
-- **Output target returns:** Both output-target forms — `return <name>` (identifier) and `return <"description">` (descriptive) — use the enclosing `-> DomainType` as the IR `OutputContract.ty`. The form does not change typing: identifier and descriptive forms inherit `ty` from the same channel, and both lower to the same `OutputContract` shape (discriminated by `OutputContract.form`, see `ir-schema.md` §OutputContract). If the annotation is omitted, the output target still lowers but carries `ty: null`; authors should prefer a semantic domain type when the synthesized output is part of a public or reusable contract.
+- **Output target returns:** Both output-target forms — `return <name>` (identifier) and `return <"description">` (descriptive) — use the enclosing `-> DomainType` as the return type. The form does not change typing: identifier and descriptive forms inherit the same return type. If the annotation is omitted, the output target still compiles but carries no declared type; authors should prefer a semantic domain type when the synthesized output is part of a public or reusable contract.
 
 ## Interaction With Export Block Closure
 
-Export blocks that return a meaningful value must declare `-> DomainType` so callers have a clear contract (see `data-flow.md` for the export-block closure rule). Export blocks with no meaningful return omit `->` entirely. In MVP, this contract is nominal:
+Export blocks that return a meaningful value must declare `-> DomainType` so callers have a clear contract (see [[data-flow]] for the export-block closure rule). Export blocks with no meaningful return omit `->` entirely. In MVP, this contract is nominal:
 
 ```glyph
 // repo_tools.glyph
@@ -244,7 +242,7 @@ The compiled Markdown for `fix_bug` includes "receives a RepoContext from inspec
 
 ## Interaction With Compiled Output
 
-See `compiled-output.md` for how types surface in the final Markdown.
+See [[design/compiled-output]] for how types surface in the final Markdown.
 
 ## Deferred
 
@@ -256,7 +254,7 @@ The following type features are deferred beyond the MVP:
 - **Structural type checking.** Validating that field access like `result.findings` is compatible with the declared or inferred type. The compiler records field access in the IR but does not reject unverifiable access in MVP.
 - **Collection types.** `List[T]`, `Set[T]`, `Map[K, V]`, or similar parameterized types. Existing examples use opaque names like `FileSet` which serve the same documentary purpose without requiring generic type machinery.
 - **Callable types.** Blocks are called by name. First-class function values and their types are not needed.
-- **Enum and union types.** Per `values-and-names.md`, Enums And Symbols section, enumerated values are represented as strings in MVP. Dedicated enum types with exhaustiveness checking may be added later.
+- **Enum and union types.** Per [[values-and-names]], Enums And Symbols section, enumerated values are represented as strings in MVP. Dedicated enum types with exhaustiveness checking may be added later.
 - **Type aliases.** A shorthand for renaming or combining existing types.
 - **`Never` / bottom type.** For blocks that unconditionally fail or diverge.
 - **Divergent output-target guidance warnings.** When the same `-> Type` appears on multiple blocks with substantially different output-target names or prose guidance, the compiler could warn that the type name may be overloaded. Deferred because output guidance is local to each block's compiled output and does not affect nominal matching.

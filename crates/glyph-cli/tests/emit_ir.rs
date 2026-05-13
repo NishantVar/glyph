@@ -1,7 +1,7 @@
 //! Integration tests for `glyph compile --emit-ir` (Slice 17).
 //!
 //! Verifies the `--emit-ir` flag produces a `.ir.json` sidecar file that
-//! conforms to `design/ir-json-schema.md`.
+//! conforms to `docs/reference/ir-json.md`.
 
 use std::path::PathBuf;
 use std::process::Command;

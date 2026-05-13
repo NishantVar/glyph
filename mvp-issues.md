@@ -2,7 +2,7 @@
 
 Vertical slices for the Glyph compiler MVP. Each slice cuts end-to-end through every relevant layer (tokenizer → parser → AST → analyze → lower → validate → expand-step1 → emit, plus CLI/diagnostics where applicable) and is demoable on its own. AFK = implementable without human sync; HITL = needs human review/decision.
 
-Bars referenced below come from `design/mvp-acceptance.md` §5 (exit criteria).
+Bars referenced below come from `docs/reference/mvp-acceptance.md` §5 (exit criteria).
 
 ---
 
@@ -531,23 +531,23 @@ Backfill any diagnostic IDs not already triggered by an earlier slice. Walk the 
 Every implementer agent should load these **universal** files (small, high signal):
 
 - `mvp-issues.md` — its own slice spec (this file, the relevant slice + dependency overview)
-- `design/pipeline.md` — phase boundaries it must respect
-- `design/build-foundation.md` — crate layout, exit codes, JSON determinism, error model
+- `docs/architecture/compiler-pipeline.md` — phase boundaries it must respect
+- `docs/adr/` — crate layout, exit codes, JSON determinism, error model
 - `design/AGENTS.md` (or `CLAUDE.md` symlink) — project-level conventions
 
 Beyond that, per slice:
 
 ### Slice 1 — Walking skeleton
-- `design/mvp-acceptance.md` §1 (walking skeleton spec, golden snapshot)
+- `docs/reference/mvp-acceptance.md` §1 (walking skeleton spec, golden snapshot)
 - `design/language-surface.md` (kernel grammar — drives tokenizer/parser surface)
-- `design/ir-schema.md` (node types, ID scheme)
+- `docs/architecture/ir-schema.md` (node types, ID scheme)
 - `design/ir-and-semantics.md` §1–§2 (the 4 MVP roles)
 - `design/compiled-output.md` (frontmatter + Steps/Constraints rendering)
-- `design/diagnostics.md` (Span semantics, Diagnostic shape stub)
+- `docs/reference/diagnostics.md` (Span semantics, Diagnostic shape stub)
 
 ### Slice 2 — Diagnostic infrastructure
-- `design/diagnostics.md` (full)
-- `design/mvp-acceptance.md` §4 (catalog being plumbed; structure only)
+- `docs/reference/diagnostics.md` (full)
+- `docs/reference/mvp-acceptance.md` §4 (catalog being plumbed; structure only)
 
 ### Slice 3 — `glyph check`
 - `design/cli.md` §`glyph check`
@@ -556,13 +556,13 @@ Beyond that, per slice:
 - `design/language-surface.md` (param syntax, `{slot}` rules)
 - `design/data-flow.md` (parameter semantics)
 - `design/compiled-output.md` §`## Parameters`
-- `design/ir-schema.md` (parameter / InputContract nodes)
+- `docs/architecture/ir-schema.md` (parameter / InputContract nodes)
 
 ### Slice 5 — Constraints + text
 - `design/ir-and-semantics.md` §2, §Body-Level Constraint Normalization, §Flow-Level Constraint Markers
 - `design/language-surface.md` (`text`/`int`/`float`, marker syntax)
 - `design/compiled-output.md` §Constraint Rendering
-- `design/ir-schema.md` (Constraint, InstructionRef)
+- `docs/architecture/ir-schema.md` (Constraint, InstructionRef)
 
 ### Slice 6 — Effects (full)
 - `design/ir-and-semantics.md` §3
@@ -572,7 +572,7 @@ Beyond that, per slice:
 ### Slice 7 — Block calls + Tier 1
 - `design/compiled-output.md` §Three-Tier Block Projection (central)
 - `design/data-flow.md` (named args, UFCS, nested-call desugaring, flat-calls invariant)
-- `design/ir-schema.md` (Call, ResolvedCall)
+- `docs/architecture/ir-schema.md` (Call, ResolvedCall)
 - `design/language-surface.md` (block decls, call syntax, `description:` sub-section)
 - `design/ir-and-semantics.md` §`description:` Section (block description field shape)
 - `design/expand.md` §Step 1 (projection assignment)
@@ -581,21 +581,21 @@ Beyond that, per slice:
 - `design/data-flow.md` §Return
 - `design/language-surface.md` (`return` syntax)
 - `design/compiled-output.md` (return-folding rules)
-- `design/ir-schema.md` (Return node)
+- `docs/architecture/ir-schema.md` (Return node)
 - `design/expand.md` §Step 1 (return folding)
 
 ### Slice 9 — Branching
 - `design/language-surface.md` (`if`/`elif`/`else` grammar)
 - `design/compiled-output.md` §Conditional Projection (lettered sub-steps), §Description-Driven Branch Projection (pure-applies arms)
-- `design/ir-schema.md` (Branch node, `applies_descriptions` side-map)
+- `docs/architecture/ir-schema.md` (Branch node, `applies_descriptions` side-map)
 - `design/ir-and-semantics.md` §Block Trigger Predicate (`.applies()` semantics + 4 diagnostics)
 - `design/expand.md` §Step 1 (conditional projection)
-- `design/mvp-acceptance.md` §2.1 (the `==` clarification)
+- `docs/reference/mvp-acceptance.md` §2.1 (the `==` clarification)
 
 ### Slice 10 — `with` modifier
 - `design/data-flow.md` §`with`
 - `design/expand.md` §Step 2 (only to know what NOT to apply in Step 1)
-- `design/ir-schema.md` (`site_modifier` on Call)
+- `docs/architecture/ir-schema.md` (`site_modifier` on Call)
 - `design/language-surface.md` (`with` syntax)
 
 ### Slice 11 — Imports (single-file)
@@ -605,7 +605,7 @@ Beyond that, per slice:
 
 ### Slice 12 — Multi-file orchestration
 - `design/imports.md` (full, esp. §multi-file order)
-- `design/pipeline.md` §Multi-File Compilation Order, §Partial Failure Policy (already in universal but re-read these sections)
+- `docs/architecture/compiler-pipeline.md` §Multi-File Compilation Order, §Partial Failure Policy (already in universal but re-read these sections)
 - `design/cli.md` §`glyph compile` (directory mode)
 
 ### Slice 13 — Library files + closure
@@ -613,43 +613,43 @@ Beyond that, per slice:
 - `design/language-surface.md` §File-Level Rules, export syntax
 - `design/imports.md` (export visibility)
 - `design/compiled-output.md` (library emission rules)
-- `design/ir-schema.md` (ExportBlock, etc.)
+- `docs/architecture/ir-schema.md` (ExportBlock, etc.)
 
 ### Slice 14 — Tier 2 same-file procedure
 - `design/compiled-output.md` §Three-Tier Block Projection (central)
 - `design/expand.md` §Step 1 (tier assignment)
-- `design/ir-schema.md` (ResolvedCall, projection_mode)
+- `docs/architecture/ir-schema.md` (ResolvedCall, projection_mode)
 
 ### Slice 15 — Tier 3 external-file procedure
 - `design/compiled-output.md` §Three-Tier Block Projection (central)
-- `design/pipeline.md` §Phase 7 (procedure file emission, atomic rename) — already universal
+- `docs/architecture/compiler-pipeline.md` §Phase 7 (procedure file emission, atomic rename) — already universal
 - `design/expand.md` §Step 1
-- `design/ir-schema.md`
+- `docs/architecture/ir-schema.md`
 
 ### Slice 16 — Atomic emission + `.tmp` cleanup
-- `design/pipeline.md` §Phase 7 (atomic rename + startup `.tmp` sweep — already universal; focus there)
+- `docs/architecture/compiler-pipeline.md` §Phase 7 (atomic rename + startup `.tmp` sweep — already universal; focus there)
 
 ### Slice 17 — `--emit-ir` and IR JSON
-- `design/ir-json-schema.md` (the JSON shape — central; includes `applies_descriptions`, `local_refs`, optional `description`)
-- `design/ir-schema.md` (resolved IR structure, LocalRef, Block/ExportBlock description field)
+- `docs/reference/ir-json.md` (the JSON shape — central; includes `applies_descriptions`, `local_refs`, optional `description`)
+- `docs/architecture/ir-schema.md` (resolved IR structure, LocalRef, Block/ExportBlock description field)
 - `design/expand.md` §Step 1 (which fields populate the resolved IR)
 - `design/cli.md` §`compile` flags
 
 ### Slice 18 — `--strict` mode
 - `design/cli.md` (`--strict` flag)
-- `design/mvp-acceptance.md` §5 Bar 4
+- `docs/reference/mvp-acceptance.md` §5 Bar 4
 
 ### Slice 19 — `glyph fmt`
 - `design/cli.md` §`glyph fmt` (full)
-- `design/pipeline.md` §Phase 3a (already universal; focus there)
+- `docs/architecture/compiler-pipeline.md` §Phase 3a (already universal; focus there)
 - `design/ir-and-semantics.md` §Body-Level Constraint Normalization
 - `design/imports.md` §6 (dup merge), §7 (unused removal)
 
 ### Slice 20 — `glyph validate-output`
 - `design/expand.md` §4 (25 structural diagnostics — central, includes `unresolved-local-ref`)
-- `design/agent-skill.md` §`glyph validate-output`
+- `docs/architecture/agent-skill.md` §`glyph validate-output`
 - `design/cli.md` §`glyph validate-output`
-- `design/ir-json-schema.md` (input format, including `local_refs` + `applies_descriptions`)
+- `docs/reference/ir-json.md` (input format, including `local_refs` + `applies_descriptions`)
 - `design/compiled-output.md` (what's being validated against, including §Description-Driven Branch Projection)
 
 ### Slice 21 — Stdlib
@@ -658,12 +658,12 @@ Beyond that, per slice:
 - `design/ir-and-semantics.md` §3 (effect signatures)
 
 ### Slice 22 — Multi-file acceptance project
-- `design/mvp-acceptance.md` §3 (the 5-skill project — central)
+- `docs/reference/mvp-acceptance.md` §3 (the 5-skill project — central)
 - This is integration-only; rely on previously-implemented slices
 
 ### Slice 23 — Diagnostic coverage backfill
-- `design/mvp-acceptance.md` §4 (full catalog — central)
-- `design/diagnostics.md` (Diagnostic shape)
+- `docs/reference/mvp-acceptance.md` §4 (full catalog — central)
+- `docs/reference/diagnostics.md` (Diagnostic shape)
 
 ### Files no slice needs to read directly (handle with care)
 
@@ -671,7 +671,7 @@ These are reference/design-rationale docs. They inform the spec but implementers
 
 - `design/foundations.md` — design principles (already baked into other docs)
 - `design/repair.md` — Phase 3a (deterministic rewrites) is compiler-side but its rules are already in `pipeline.md` §Phase 3a + `cli.md` §`glyph fmt` + `imports.md` §6–§7; Phase 3b (LLM repair) and §3c (constraint conflict scan) are agent-side. No slice needs `repair.md` directly.
-- `design/agent-skill.md` — agent-side workflow (except slice 20 which references its `validate-output` section)
+- `docs/architecture/agent-skill.md` — agent-side workflow (except slice 20 which references its `validate-output` section)
 - `design/types.md` — MVP type-checking is minimal; only nominal matching at boundaries (already in `pipeline.md` §Phase 5)
 - `design/preferences.md` — global preferences are ordinary export decls
 - `design/values-and-names.md` — name-resolution rules (covered in `pipeline.md` §Phase 2 + `imports.md`)

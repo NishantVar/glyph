@@ -1,6 +1,6 @@
 //! Phase 7 (Emit) — deterministic Markdown projection.
 //!
-//! Walking-skeleton scope per `design/mvp-acceptance.md` §1: parameterless skill,
+//! Walking-skeleton scope per `docs/reference/mvp-acceptance.md` §1: parameterless skill,
 //! inline strings as Steps, constraint markers as bulleted Constraints. The output
 //! shape is fixed by `design/compiled-output.md`.
 

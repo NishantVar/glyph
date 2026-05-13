@@ -37,7 +37,7 @@ Every source form maps to exactly one compiled location. This is the authoritati
 | `context:` content | `## Context` (before `## Steps`) |
 | Header parameters + defaults | `## Parameters` section (names, descriptions, defaults or `(required)` marker) |
 
-Constraint strength (`soft`/`hard`) and polarity (`require`/`avoid`) affect compiled wording and prominence per [ir-and-semantics.md](ir-and-semantics.md).
+Constraint strength (`soft`/`hard`) and polarity (`require`/`avoid`) affect compiled wording and prominence per [[ir-and-semantics]].
 
 ## Frontmatter
 
@@ -52,16 +52,16 @@ description: <when this skill should be used>
 ```
 
 - `name` — the skill identifier, taken from the `skill` declaration name. Machine-readable, used for skill selection and referencing.
-- `description` — a concise statement of when and why an agent should use this skill. Primary trigger for coding agents that select skills from frontmatter. Sourced from the `description:` sub-section (see [ir-and-semantics.md](ir-and-semantics.md)). If the source omits `description:`, Repair (Phase 3) generates one from the skill name and body and adds it to the source as a `description:` sub-section.
+- `description` — a concise statement of when and why an agent should use this skill. Primary trigger for coding agents that select skills from frontmatter. Sourced from the `description:` sub-section (see [[ir-and-semantics]]). If the source omits `description:`, the repair pass generates one from the skill name and body and adds it to the source as a `description:` sub-section.
 - `effects` — *(Gated — requires `--enable-effects`; field omitted entirely when the gate is off.)* YAML flow-sequence list of the skill's full inferred effect set. **Omitted unconditionally when the effect set is empty** — that is, when the skill has no meaningful effects or is explicitly `effects: none`. The compiler never emits `effects: none`, `effects: []`, or any other "no effects" placeholder; the field is simply absent. An absent `effects` key and `effects: none` are operationally identical for the consuming agent, and omitting is one fewer surface and one fewer ambiguity. Effects live in frontmatter so selectors and routing tools can read them without parsing the body; they are not repeated in the prose.
 
 The compiled file does not emit a `# <Skill Name>` heading. The frontmatter `name` is the authoritative title.
 
 ## Sections
 
-MVP compiled output emits peer-level H2 sections in canonical order: `## Parameters` (conditional), `## Context` (conditional), `## Steps`, `## Constraints` (conditional). No `## Instructions` wrapper heading is emitted; body sections sit at the same level as `## Parameters`. Section order is canonical-default with explicit-source-position override; see Phase 3 of the freeform-sections design for the merge algorithm.
+MVP compiled output emits peer-level H2 sections in canonical order: `## Parameters` (conditional), `## Context` (conditional), `## Steps`, `## Constraints` (conditional). No `## Instructions` wrapper heading is emitted; body sections sit at the same level as `## Parameters`. Section order is canonical-default with explicit-source-position override; see §Output Order below for the merge rule.
 
-Deferred sections (`## Output`, `## Effects` as a prose section, `## When To Use`) are logged in [todo.md](todo.md) for possible post-MVP restoration.
+Deferred sections (`## Output`, `## Effects` as a prose section, `## When To Use`) are logged in [[todo]] for possible post-MVP restoration.
 
 ### `## Parameters`
 
@@ -178,7 +178,7 @@ Body sections sit at H2, peer to `## Parameters`. No `## Instructions` wrapper h
 
 ## Projection Rules
 
-Compiled output projects from the typed IR role model defined in [ir-and-semantics.md](ir-and-semantics.md). See that file for role semantics. This section covers only the output-side rules: which location each role projects into, formatting, and ordering.
+Compiled output projects from the typed IR role model defined in [[ir-and-semantics]]. See that file for role semantics. This section covers only the output-side rules: which location each role projects into, formatting, and ordering.
 
 | IR role / metadata | Compiled target | Format |
 |--------------------|-----------------|--------|
@@ -193,17 +193,16 @@ Compiled output projects from the typed IR role model defined in [ir-and-semanti
 | Block call (referenced) | `### Procedure: <name>` section | Numbered list with optional constraint preamble |
 | Block call (external) | "Load and follow `<path>`" in Step prose | File path reference |
 
-### Output Order — The D9 Merge Algorithm
+### Output Order
 
 The compiler emits section H2 blocks in an order determined jointly by a **canonical-default position list** and the **source-position of each sub-section the author declared**. Sub-sections not declared in source fall back to the canonical position; declared sub-sections override the canonical position when their source-position implies a different slot.
 
-The algorithm (D9 merge):
+The behavior, stated for authors:
 
-1. Walk the source declarations (skill/block/export block) and build a `SectionTable`. For each sub-section the author wrote (`description:`, `context:`, `constraints:`, `flow:`, `effects:`, or any freeform colon-keyword), record the source line of its header. Sub-sections not declared in source remain absent from the table.
-2. Walk the **canonical output order** from top to bottom: `description (→ Parameters)`, `context (→ ## Context)`, `constraints (→ ## Constraints)`, `flow (→ ## Steps)`. (Note: `## Parameters` is injected from the skill header, not from a sub-section; the canonical-default order matches the historical layout.)
-3. For each declared sub-section in source order, insert its output H2 at the slot where its source line falls relative to the other declared sub-sections. Specifically: a sub-section declared before any other sub-section keeps the canonical default; a sub-section declared after another sub-section S' must emit its H2 after S''s H2 in the compiled `.md`.
-4. Freeform sections (§Freeform Sections below) participate in this walk on equal footing with built-in sub-sections — their `## Heading` is emitted at the freeform's source-relative slot.
-5. When a sub-section is declared multiple times in source (e.g., two `context:` blocks via the duplicate-subsection recovery shape), the merged H2 lands at the position of the **first** occurrence; the recovery merge concatenates the bodies in source order.
+1. The canonical output order, top to bottom, is `description (→ Parameters)`, `context (→ ## Context)`, `constraints (→ ## Constraints)`, `flow (→ ## Steps)`. `## Parameters` is injected from the skill header rather than from a sub-section.
+2. Each sub-section the author declared lands at a slot consistent with its source order. A sub-section declared before any other sub-section keeps the canonical default; a sub-section declared after another section must emit its H2 after that section's H2 in the compiled `.md`.
+3. Freeform sections (§Freeform Sections below) participate on equal footing with built-in sub-sections — their `## Heading` is emitted at the freeform's source-relative slot.
+4. When a sub-section is declared multiple times in source, the merged H2 lands at the position of the **first** occurrence; the merge concatenates the bodies in source order.
 
 **Worked example.** Source:
 
@@ -237,28 +236,28 @@ description: 'Demo skill.'
 
 `## Quality` lands between the frontmatter and `## Steps` because the author placed `quality:` before `flow:`. Had they written `quality:` after `flow:`, the compiled output would render `## Steps` before `## Quality`.
 
-**Consequence for `glyph fmt`.** Because compiled order tracks source order, `glyph fmt` does **not** reorder sub-sections. fmt's contract is "no section reordering, no marker hoisting across section boundaries"; the body-level marker hoisting from §4.2a of `language-surface.md` still happens, but hoisted markers never cross a named section boundary.
+**Consequence for `glyph fmt`.** Because compiled order tracks source order, `glyph fmt` does **not** reorder sub-sections. fmt's contract is "no section reordering, no marker hoisting across section boundaries"; the body-level marker hoisting from §4.2a of [[language-surface]] still happens, but hoisted markers never cross a named section boundary.
 
 ### Freeform Sections
 
-A *freeform colon-keyword* section (e.g. `quality:`, `risks:`, `acceptance_criteria:`) is any sub-section header at body-level whose name is not in the built-in catalogue (`description`, `effects`, `context`, `constraints`, `flow`). See [language-surface.md](language-surface.md) §2.5b for the source-side authoring rules and §Output Order above for placement in the compiled `.md`.
+A *freeform colon-keyword* section (e.g. `quality:`, `risks:`, `acceptance_criteria:`) is any sub-section header at body-level whose name is not in the built-in catalogue (`description`, `effects`, `context`, `constraints`, `flow`). See [[language-surface]] §2.5b for the source-side authoring rules and §Output Order above for placement in the compiled `.md`.
 
 **Heading projection.** A freeform section projects to a peer-level `## Heading` block. The heading is derived from the source colon-keyword by replacing underscores with spaces and title-casing each word: `quality:` → `## Quality`, `acceptance_criteria:` → `## Acceptance Criteria`, `risks:` → `## Risks`.
 
-**Shape-detection rule.** The body grammar of a freeform section mirrors `context:` (`ir-and-semantics.md` §`context:` Section). The compiler examines the section's content items to choose between two rendering shapes:
+**Shape-detection rule.** The body grammar of a freeform section mirrors `context:` ([[ir-and-semantics]] §`context:` Section). The compiler examines the section's content items to choose between two rendering shapes:
 
 - **Bullet list shape** — when the section contains more than one item, OR contains any reserved-marker clause (`require`, `avoid`, `must`, `must avoid`, `context`), OR contains a `NameRef` to a string-valued `const`. Each item projects to a `- ` bullet. Marker clauses render through the same four-form template as `## Constraints` (§Constraint Rendering); `context X` and bare-name refs follow `## Context` formatting.
 - **Paragraph shape** — when the section contains exactly one inline string and no other items. The string projects as a free-standing paragraph directly under the `## Heading`.
 
 The shape is deterministic given the body; the author does not select it.
 
-**Depth by tier.** When the host declaration is a `skill`, the freeform `## Heading` emits at `##` depth (peer to `## Steps`). When the host declaration is a `block` projected as Tier 2 (same-file procedure under `### Procedure: <name>`), the freeform heading emits at `####` depth, nested under the procedure heading. When the host is a Tier 3 external `export block` (its own `.md` file), the freeform heading emits at `##` depth in the procedure file. A Tier 1 inlined block cannot carry freeform sections — the compiler forces Tier 2 promotion for any block that declares a freeform section (see §Three-Tier Block Projection below and [expand.md](expand.md)).
+**Depth by tier.** When the host declaration is a `skill`, the freeform `## Heading` emits at `##` depth (peer to `## Steps`). When the host declaration is a `block` projected as Tier 2 (same-file procedure under `### Procedure: <name>`), the freeform heading emits at `####` depth, nested under the procedure heading. When the host is a Tier 3 external `export block` (its own `.md` file), the freeform heading emits at `##` depth in the procedure file. A Tier 1 inlined block cannot carry freeform sections — the compiler forces Tier 2 promotion for any block that declares a freeform section (see §Three-Tier Block Projection below).
 
 **Marker semantics inside freeform.** The five reserved marker clauses (`require`, `avoid`, `must`, `must avoid`, `context`) carry their normal semantics inside a freeform body — strength/polarity for `require`/`avoid`/`must`/`must avoid`, context-projection for `context`. They are not "hoisted out" of the freeform section to the canonical `## Constraints` or `## Context` heading; they render under the freeform's own `## Heading`. This is the rule that makes freeform sections useful: an author who wants a `quality:` section showing both pass-criteria markers and prose can use the marker syntax for the deterministic four-form rendering and the prose for context-as-paragraph.
 
 ### Three-Tier Block Projection
 
-When a `Call` node targets a block (same-file or imported), the compiler chooses one of three projection tiers based on callee complexity, conditionality, and reuse. The decision is made in Expand Step 1 (deterministic).
+When a call targets a block (same-file or imported), the compiler chooses one of three projection tiers based on callee complexity, conditionality, and reuse. The decision is deterministic and is fixed before any LLM-driven prose reshaping.
 
 | Condition | Tier | Projection |
 |-----------|------|------------|
@@ -278,17 +277,17 @@ When a `Call` node targets a block (same-file or imported), the compiler chooses
 
 Size alone does **not** trigger Tier 3. A 600-word block that is unconditional and single-consumer projects as Tier 2 (same-file procedure). Tier 3 is reserved for blocks that are **conditional** (inside a `Branch` — defers context cost until the branch is taken) or **shared** (called from multiple skills — single source of truth). The rationale: for unconditional loads, externalizing to Tier 3 does not reduce runtime context — the agent reads the external file anyway — so the structural complication of a separate file must be justified by conditionality or sharing, not size.
 
-Word counts are checked in Expand Step 1 after the callee's prose is resolved — that is the earliest point where the actual expanded text is available. Promotion is one-directional: Tier 1 → Tier 2 → Tier 3, never downward. A block initially assigned Tier 1 by statement count but exceeding 150 words is promoted to Tier 2.
+Word counts are computed after the callee's prose is resolved — the earliest point where the actual expanded text is available. Promotion is one-directional: Tier 1 → Tier 2 → Tier 3, never downward. A block initially assigned Tier 1 by statement count but exceeding 150 words is promoted to Tier 2.
 
-**Cross-file word-count sourcing.** When the call site is in a downstream skill and the callee is an imported `export block`, the consumer's Step 1 cannot recompute the callee's word count from scratch — it does not own the callee's resolved expanded prose. Instead, it reads the **derived `resolved_word_count` field** that the library file's own Phase 6 Step 1 attached to the imported `ExportBlock` node when the library compiled (`ir-schema.md` §Top-Level Compilation Units). This field is populated once per export block during the library's compilation and propagated in-memory via the import-resolution mechanism. It is not part of the IR JSON serialization (`ir-json-schema.md`); the consumer relies on the multi-file build seeing the imported library's in-memory IR (`pipeline.md` §Multi-File Compilation Order — strictly serial topological order guarantees that a library's Phase 6 Step 1 has run before any consumer needs the field). For same-file callees, Step 1 computes the count directly from the local resolved prose; no derived field is needed.
+**Cross-file word-count sourcing.** When the call site is in a downstream skill and the callee is an imported `export block`, the consumer cannot recompute the callee's word count from scratch — it does not own the callee's resolved expanded prose. The library's own compilation computes the word count once per export block, and the multi-file build propagates that count to consumers in dependency order. For same-file callees, the word count is computed directly from the local resolved prose.
 
-**Word counting rule.** A "word" is a whitespace-separated token in the Step 1 projection prose. Backticked code spans count as 1 word each (one ident-blob = one unit of cognitive load). Markdown formatting markers (`**`, list bullets, headings) do not count. Comments are stripped before counting.
+**Word counting rule.** A "word" is a whitespace-separated token in the resolved Step prose. Backticked code spans count as 1 word each (one ident-blob = one unit of cognitive load). Markdown formatting markers (`**`, list bullets, headings) do not count. Comments are stripped before counting.
 
-**Configurability.** The 150-word threshold is hard-coded for MVP — not exposed via project config. The load-bearing properties are determinism and documentation; the exact value is tunable post-MVP from real-corpus telemetry. See `todo.md`.
+**Configurability.** The 150-word threshold is hard-coded for MVP — not exposed via project config. The load-bearing properties are determinism and documentation; the exact value is tunable post-MVP from real-corpus telemetry. See [[todo]].
 
 Conditions are checked top-to-bottom; the first `referenced` or `external` trigger wins. The tier is a property of the *(callee, skill)* pair — a block called once in skill A might inline, but the same block called twice in skill B gets a procedure section.
 
-**Library file emission.** Library files emit standalone procedure `.md` files for `export block` declarations whose expanded prose is >= 150 words (i.e., above the Tier 1 inline threshold). The library's Phase 7 writes these to a subdirectory named after the source file (e.g., `repo_tools.glyph` → `repo_tools/inspect-repo.md`). Export blocks below the threshold emit nothing from the library — consumers inline them. Note: a procedure `.md` may exist on disk but go unused at a consumer call site that projects the block as Tier 2 (same-file procedure) rather than Tier 3 — this is intentional, not an error. See `language-surface.md` §File-Level Rules for the full library emission model.
+**Library file emission.** Library files emit standalone procedure `.md` files for `export block` declarations whose expanded prose is >= 150 words (i.e., above the Tier 1 inline threshold). These land in a subdirectory named after the source file (e.g., `repo_tools.glyph` → `repo_tools/inspect-repo.md`). Export blocks below the threshold emit nothing from the library — consumers inline them. Note: a procedure `.md` may exist on disk but go unused at a consumer call site that projects the block as Tier 2 (same-file procedure) rather than Tier 3 — this is intentional, not an error. See [[language-surface]] §File-Level Rules for the full library emission model.
 
 #### Same-File Procedure Sections
 
@@ -319,11 +318,11 @@ Do not introduce new abstractions during review.
 
 - H3 heading: `### Procedure: <callee-name>`. The callee name in the heading is the **kebab-case** form derived from the source `snake_case` identifier — replace each `_` with `-` and apply no other transformation. For an `export block summarize_section`, the heading is `### Procedure: summarize-section`.
 - Optional preamble paragraph: the callee's scoped constraints and context, rendered as prose sentences (not bulleted — they are contextual to this procedure, not top-level skill constraints). If the callee declares its own `context:`, the context items appear in the preamble alongside any scoped constraints.
-- Numbered list: the callee's flow statements, expanded by Step 2 the same way skill-level Steps are.
+- Numbered list: the callee's flow statements, expanded the same way skill-level Steps are.
 - Return folding: if the callee has a `return`, it folds into the last numbered item of the procedure (same rule as skill-level return).
 - Ordering: procedure sections appear after the body H2s (`## Context`, `## Steps`, `## Constraints`), in the order of first reference from `## Steps`. They nest as H3 under whichever body H2 came last.
 
-**Referencing from Steps:** The referencing Step includes a parenthetical cross-reference — e.g., "(follow the review-code procedure below)" or "(see the review-code procedure above)." Step 2 chooses natural phrasing. The reference must include the procedure name so Phase 6b can verify the link.
+**Referencing from Steps:** The referencing Step includes a parenthetical cross-reference — e.g., "(follow the review-code procedure below)" or "(see the review-code procedure above)." The compiler chooses natural phrasing. The reference must include the procedure name so the link can be verified at validation time.
 
 **Multiple references to the same procedure:** The procedure section appears once. Multiple Steps reference it. When called with different `with` modifiers, the modifier shapes the referencing Step's prose, not the procedure section — the procedure stays generic:
 
@@ -363,7 +362,7 @@ effects: [reads_files]
 
 **File output path:** Procedure files are placed in a subdirectory named after the source file. The procedure filename is the **kebab-case** form of the export block's `snake_case` identifier (each `_` → `-`, no other transformation). E.g., `review_tools.glyph` containing `export block review_code(...)` produces `review_tools/review-code.md`. The `.glyph` infix from the source filename is dropped for compiled artifacts: source files are `*.glyph`, compiled outputs (top-level skills and procedure files alike) are `*.md`. The same kebab-case rule governs both the on-disk filename and the H3 heading inside same-file procedure sections (see §Same-File Procedure Sections), so a given block always renders under a single canonical name regardless of projection tier.
 
-**Referencing from Steps (locked template):** The Step prose for an `external_file` Call is the locked template `Load and follow the procedure in \`{procedure_path}\`.`. The `{procedure_path}` is substituted from `IrCall.procedure_path`. The deterministic emitter renders this verbatim; there is no LLM involvement for the top-level case. When inside a conditional branch arm, the same locked template is emitted as a sub-step within the arm's prose:
+**Referencing from Steps (locked template):** The Step prose for an external-file Call is the locked template `` Load and follow the procedure in `<procedure_path>`. ``. The compiler renders this verbatim; the LLM is not involved for the top-level case. When inside a conditional branch arm, the same locked template is emitted as a sub-step within the arm's prose:
 
 ```md
 2. Load and follow the procedure in `review_tools/review-code.md`.
@@ -382,7 +381,7 @@ effects: [reads_files]
 
 ### Constraint Rendering
 
-Constraint text is rendered through a **bold colon-marker template** by the deterministic emitter. The (strength, polarity) tuple selects the label; the LLM never produces constraint prose. The label is grammatically isolated from the const body by the `:` boundary, so the body can be any natural-language shape — declarative, gerund, noun phrase — without the emitter trying to graft a verb onto it. The author owns capitalization; the emitter preserves the body verbatim and appends a terminal `.` only when the body does not already end in sentence punctuation.
+Constraint text is rendered through a **bold colon-marker template**. The (strength, polarity) tuple selects the label; the LLM never produces constraint prose. The label is grammatically isolated from the body by the `:` boundary, so the body can be any natural-language shape — declarative, gerund, noun phrase — without the emitter trying to graft a verb onto it. The author owns capitalization; the body is preserved verbatim with a terminal `.` appended only when the body does not already end in sentence punctuation.
 
 | Strength × Polarity | Template |
 |---|---|
@@ -391,7 +390,7 @@ Constraint text is rendered through a **bold colon-marker template** by the dete
 | `require` (soft require) | `**Require:** <text>` |
 | `avoid` (soft avoid) | `**Avoid:** <text>` |
 
-The template lookup is implemented in the deterministic emitter (`glyph-core::emit::constraint`); there is no fallback rendering. Because the polarity label sits in a bold span and is separated from the body by a colon, ungrammatical compositions like `Avoid routing is by …` (declarative body grafted to a verb prefix) are no longer possible — the body simply reads as its own clause after the label.
+There is no fallback rendering. Because the polarity label sits in a bold span and is separated from the body by a colon, ungrammatical compositions like `Avoid routing is by …` (declarative body grafted to a verb prefix) are no longer possible — the body simply reads as its own clause after the label.
 
 Strength is advisory prose framing — the wording surfaces non-negotiability for `hard` forms and standard obligation for `soft` forms — but compliance by the consuming agent is not enforced by the compiler.
 - **Conditional logic** (`if` in source) projects to a **single numbered Step** with **lettered sub-steps per arm**. Each arm is introduced by a condition header (`If <condition>:`, or `Otherwise:` for `else`), and each Step-projecting node inside the arm becomes a lettered sub-step (`a.`, `b.`, `c.`). Letters **reset per arm**. This preserves the structure of conditional instructions without using code-like syntax. Example:
@@ -406,25 +405,25 @@ Strength is advisory prose framing — the wording surfaces non-negotiability fo
      a. No action needed.
   ```
 
-  **Nested branches** (a `Branch` inside another `Branch`'s arm) do **not** receive their own sub-step structure. Instead, they flatten into prose within their parent sub-step (e.g., "If the codebase has public APIs, check backwards compatibility and update the changelog. Otherwise, run internal validation."). Only one level of structured sub-steps is supported. The Repair pass auto-extracts deeply nested branches into helper `generated block` declarations to keep compiled output clean (see `repair.md` §4.9).
+  **Nested branches** (a `Branch` inside another `Branch`'s arm) do **not** receive their own sub-step structure. Instead, they flatten into prose within their parent sub-step (e.g., "If the codebase has public APIs, check backwards compatibility and update the changelog. Otherwise, run internal validation."). Only one level of structured sub-steps is supported. The Repair pass auto-extracts deeply nested branches into helper `generated block` declarations to keep compiled output clean (see [[design/repair]] §4.9).
 
-- **Branch-scoped constraints.** A `require`/`avoid`/`must` marker that appears inside an `if`/`elif`/`else` branch in `flow:` is **inlined into the prose of an adjacent sub-step**, not surfaced in `## Constraints` and not given its own lettered sub-step. The inlined wording makes the conditional applicability explicit (e.g., a sub-step like "Run the migration, never dropping existing columns."). Only flow-top-level constraint markers (and body-level constraints declared above `flow:`) hoist to `Skill.constraints` and render in `## Constraints`. See [ir-and-semantics.md](ir-and-semantics.md) §Body-Level Constraint Normalization and [pipeline.md](pipeline.md) Phase 4 (Lower) for the hoisting rules.
+- **Branch-scoped constraints.** A `require`/`avoid`/`must` marker that appears inside an `if`/`elif`/`else` branch in `flow:` is **inlined into the prose of an adjacent sub-step**, not surfaced in `## Constraints` and not given its own lettered sub-step. The inlined wording makes the conditional applicability explicit (e.g., a sub-step like "Run the migration, never dropping existing columns."). Only flow-top-level constraint markers (and body-level constraints declared above `flow:`) hoist to the skill's top-level constraints and render in `## Constraints`. See [[docs/architecture/ir-semantics]] §Body-Level Constraint Normalization for the hoisting rules.
 
 - **Branch-scoped context.** A `context:` declaration inside an `if`/`elif`/`else` branch in `flow:` follows the same pattern as branch-scoped constraints: it is **inlined into the prose of an adjacent sub-step** (e.g., "Note: this module handles authentication only."), not surfaced in `## Context`. Only skill-level `context:` declarations render in the `## Context` section.
 
 ### Predicate-Driven Branch Projection
 
-A `Branch` whose conditions are expressed using natural-language predicate forms (see [ir-and-semantics.md](ir-and-semantics.md) §Predicates) is rendered using the resolved predicate prose carried on the IR Branch's `resolved_predicates` side-map (`ir-schema.md` §Resolved IR `ResolvedBranch`, `ir-json-schema.md` §Branch). Three predicate forms contribute to this side-map:
+A Branch whose conditions are expressed using natural-language predicate forms (see [[ir-and-semantics]] §Predicates) is rendered using resolved predicate prose. Three predicate forms exist:
 
-| Predicate form | Source example | Step 1 resolution |
+| Predicate form | Source example | Resolution |
 |---|---|---|
 | Block trigger predicate | `fork_with_plan.applies()` | Reads `description:` from the named block |
 | String-const predicate | `complex_change_required` | Reads the value of the string-kinded `const` |
-| Inline literal predicate | `"the user has explicitly opted out"` | Uses the literal string directly; no map entry |
+| Inline literal predicate | `"the user has explicitly opted out"` | Uses the literal string directly |
 
 The compiled-output rule chooses one of two prose forms based on the shape of the conditions:
 
-- **Pure-predicate form ("decide which applies").** When every arm's condition is *purely* one or more predicate-form tokens combined by `or` — Step 2 emits a single numbered Step that introduces the choice ("Decide which of the following applies and follow only that path:") and renders each arm as a lettered sub-step keyed by the resolved predicate prose rather than by a code-like condition expression. Example:
+- **Pure-predicate form ("decide which applies").** When every arm's condition is *purely* one or more predicate-form tokens combined by `or` — the compiler emits a single numbered Step that introduces the choice ("Decide which of the following applies and follow only that path:") and renders each arm as a lettered sub-step keyed by the resolved predicate prose rather than by a code-like condition expression. Example:
 
   ```md
   3. Decide which of the following applies and follow only that path:
@@ -438,7 +437,7 @@ The compiled-output rule chooses one of two prose forms based on the shape of th
 
 - **Mixed-condition form (inline description).** When an arm's condition combines predicate-form tokens with regular boolean operators or non-predicate names (e.g., `complex_change_required and not is_dry_run`), the resolved predicate prose inlines into the larger condition prose using the standard `If <condition>:` arm header. Example: an arm with condition `complex_change_required and not is_dry_run` produces the header "If a complex change is required and this is not a dry run:". Sub-steps inside the arm follow the lettered convention from §Constraint Rendering above.
 
-The two forms compose: a Branch with one pure-predicate arm and one mixed-condition arm uses the pure-predicate header for the first arm and the mixed-condition header for the second, all under a single numbered Step. The `resolved_predicates` side-map provides the resolved description text for all predicate forms; Step 2 never reads block bodies or rewrites descriptions. Inline literal predicates are already prose — Step 2 uses their literal string directly without a map lookup.
+The two forms compose: a Branch with one pure-predicate arm and one mixed-condition arm uses the pure-predicate header for the first arm and the mixed-condition header for the second, all under a single numbered Step. Inline literal predicates are already prose — they are used as the literal string directly.
 
 ### Parameter References In Steps
 
@@ -447,34 +446,34 @@ Parameters are **not** resolved at compile time. Steps and Constraints may refer
 - A step like `inspect_failure(scope)` expands to a Step whose prose references `{scope}` — e.g., "Inspect the failure in {scope}, focusing on auth boundaries."
 - A `with "modifier"` clause on the call site attaches a specialization prompt that shapes the expanded wording. The modifier itself does not appear in compiled output.
 - **Parameter name references** appear in compiled output as `{param}` slots. A `{param}` slot that does not match a parameter declared in the skill's header is a compile error.
-- **Local binding references** (e.g., `{diagnosis}` where `diagnosis = analyze_error(...)`) are valid in source but do **not** survive as literal `{name}` slots in compiled output. The Expand pass (Step 2) resolves them into natural-language cross-references in the prose (e.g., "based on the diagnosis from your earlier analysis"). A local-ref slot that is not resolved by Step 2 is a Phase 6b error (`G::expand::unresolved-local-ref`).
-- The `{name}` slot is a **name reference**, not source-time interpolation. The compiler never substitutes the slot's value during compilation. For parameters, it preserves the literal `{name}` token for the consuming LLM to fill at runtime. For local bindings, it tags the slot for Step 2 to resolve into prose. Slots are legal only in instruction-bearing string positions (Step/Constraint prose, generated block bodies, inline `flow:` instruction strings, and stdlib instruction arguments). The slot grammar is strict `{IDENTIFIER}` only; see [values-and-names.md](values-and-names.md) §No Interpolation for the full rules.
+- **Local binding references** (e.g., `{diagnosis}` where `diagnosis = analyze_error(...)`) are valid in source but do **not** survive as literal `{name}` slots in compiled output. The compiler resolves them into natural-language cross-references in the prose (e.g., "based on the diagnosis from your earlier analysis"). A local-ref slot that is not resolved is a compile error.
+- The `{name}` slot is a **name reference**, not source-time interpolation. The compiler never substitutes the slot's value during compilation. For parameters, it preserves the literal `{name}` token for the consuming LLM to fill at runtime. For local bindings, it resolves the slot into prose. Slots are legal only in instruction-bearing string positions (Step/Constraint prose, generated block bodies, inline `flow:` instruction strings, and stdlib instruction arguments). The slot grammar is strict `{IDENTIFIER}` only; see [[values-and-names]] §No Interpolation for the full rules.
 
 ### Return Folding
 
-`return <expr>` in `flow:` folds into the final numbered Step. The deterministic emitter appends the locked return-fold suffix; the body before the comma is whatever the prior emitter or LLM produced for the final Step.
+`return <expr>` in `flow:` folds into the final numbered Step. A locked return-fold suffix is appended after whatever prose the final Step already carries.
 
 **Locked return-fold suffixes:**
 
-| `OutputContract.form` | Suffix template |
+| Output form | Suffix template |
 |---|---|
-| `Identifier(name)` (from `return <name>`) | `, and return that as your result.` |
-| `Description(text)` (from `return <"…">`) | `, and return <description> as your result.` where `<description>` is the LLM's Step-shaped paraphrase of `text` (the `DescriptionReturnFold` span). |
+| Identifier (from `return <name>`) | `, and return that as your result.` |
+| Description (from `return <"…">`) | `, and return <description> as your result.` where `<description>` is a Step-shaped paraphrase of the descriptive text. |
 
-When the skill or procedure has an `output_contract` but no visible step body (return-only), the deterministic emitter emits a standalone Step instead of appending a comma-prefixed suffix to a non-existent body:
+When the skill or procedure has an output contract but no visible step body (return-only), a standalone Step is emitted instead of appending a comma-prefixed suffix to a non-existent body:
 
-| `OutputContract.form` | Standalone template |
+| Output form | Standalone template |
 |---|---|
-| `Identifier(name)` | `Return <name as snake-to-words> as your result.` |
-| `Description(text)` | `Return <description> as your result.` |
+| Identifier | `Return <name as snake-to-words> as your result.` |
+| Description | `Return <description> as your result.` |
 
 Example: `return summarize_changes()` as the last flow item becomes a Step like "Summarize what was changed and why, and return that as your result."
 
-For `Identifier` form, `return <current_branch>` for a return-only skill becomes "Return current branch as your result." The literal `<current_branch>` token must never appear in compiled Markdown; Phase 6b rejects leaks with `G::expand::output-target-leak`.
+For the identifier form, `return <current_branch>` for a return-only skill becomes "Return current branch as your result." The literal `<current_branch>` token must never appear in compiled Markdown; output-target leaks are rejected as a compile error.
 
-For `Description` form, `return <"root cause analysis including affected files and severity">` folds into a Step-shaped paraphrase produced by the LLM (today's stub uses the verbatim description text), e.g., "..., and return a root cause analysis including affected files and severity as your result." The literal `<"…">` token, the surrounding angle brackets, and the bare quoted description must never appear in compiled Markdown; Phase 6b rejects leaks with the same `G::expand::output-target-leak` diagnostic that covers the identifier form (the diagnostic's textual scan is form-agnostic — it flags both `<name>` and `<"…">` literals).
+For the description form, `return <"root cause analysis including affected files and severity">` folds into a Step-shaped paraphrase, e.g., "..., and return a root cause analysis including affected files and severity as your result." The literal `<"…">` token, the surrounding angle brackets, and the bare quoted description must never appear in compiled Markdown; the same output-target-leak check covers both the identifier and description forms.
 
-**Agent-typed returns.** When the return expression has type `Agent` (e.g., `return researcher`), the return-folded prose says the agent handle itself is the result — e.g., "Your result is the researcher agent spawned above — the caller may continue sending it instructions." The compiler does **not** interpret `return <agent>` as "return the agent's output." If the author wants the agent's findings, they should use an explicit inline string: `return "Report the researcher's findings as your result."` See `stdlib.md` §Agent Value Lifecycle for the full rule.
+**Agent-typed returns.** When the return expression has type `Agent` (e.g., `return researcher`), the return-folded prose says the agent handle itself is the result — e.g., "Your result is the researcher agent spawned above — the caller may continue sending it instructions." The compiler does **not** interpret `return <agent>` as "return the agent's output." If the author wants the agent's findings, they should use an explicit inline string: `return "Report the researcher's findings as your result."` See [[stdlib]] §Agent Value Lifecycle for the full rule.
 
 There is no separate `## Output` section in MVP.
 
@@ -594,19 +593,19 @@ Notes on the example:
 
 - The `context:` declaration compiles into `## Context` as a bulleted item, appearing before `## Steps`. It provides passive background the agent should keep in mind.
 - `scope` appears in the `## Parameters` section and is referenced as `{scope}` in Steps 1 and the first Constraint. The consuming LLM resolves `{scope}` from the user's request context at runtime.
-- The `with "focus on auth boundaries"` modifier shaped Step 1's wording to mention auth boundaries and permission checks. The modifier string itself does not survive.
+- The `with "focus on auth boundaries"` modifier shaped the first Step's wording to mention auth boundaries and permission checks. The modifier string itself does not survive.
 - The final flow item `return summarize_changes()` folds into Step 6 as "…and return that as your result." — no `## Output` section.
 - Effects appear only in frontmatter. There is no `## Effects` section.
 
 ## Interactions With Other Workstreams
 
-- **Effect vocabulary**: `effects` frontmatter content depends on finalized effect keywords ([ir-and-semantics.md](ir-and-semantics.md)).
-- **IR role taxonomy**: Role semantics, constraint strength (`soft`/`hard`) and polarity (`require`/`avoid`), and projection guidance are in [ir-and-semantics.md](ir-and-semantics.md). This file covers only the output-side projection.
+- **Effect vocabulary**: `effects` frontmatter content depends on finalized effect keywords ([[ir-and-semantics]]).
+- **IR role taxonomy**: Role semantics, constraint strength (`soft`/`hard`) and polarity (`require`/`avoid`), and projection guidance are in [[ir-and-semantics]]. This file covers only the output-side projection.
 - **Source syntax**: Compiled output shape is independent of source syntax, since output is a projection of the IR.
 - **Type vocabulary**: MVP compiled output does not render parameter or return types; they stay in the IR for validation and visualization.
-- **Pipeline**: The expand pass is parameterless — it produces one compiled file per source file (see pipeline doc when canonicalized).
+- **Pipeline**: Compilation is parameterless — it produces one compiled file per source file (see [[compiler-pipeline]]).
 
 ## Open Questions
 
 - The exact wording and prominence rules for `Constraint(strength: hard)` vs `Constraint(strength: soft)`.
-- Whether a skill registry / discovery tool wants additional metadata beyond the compiled file's `## Parameters` section and frontmatter. Since compilation is now parameterless, the compiled file already serves as both the execution artifact and the discovery artifact. Logged as a deferred concern; see [todo.md](todo.md).
+- Whether a skill registry / discovery tool wants additional metadata beyond the compiled file's `## Parameters` section and frontmatter. Since compilation is now parameterless, the compiled file already serves as both the execution artifact and the discovery artifact. Logged as a deferred concern; see [[todo]].

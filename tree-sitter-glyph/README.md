@@ -7,7 +7,7 @@ highlighting, scope-aware refactor tooling, and structural queries.
 ## What this parses
 
 Glyph source files. The grammar covers the full M2 language as
-specified in [`design/tree-sitter-grammar.md`](../design/tree-sitter-grammar.md):
+specified in [`docs/architecture/tree-sitter.md`](../docs/architecture/tree-sitter.md):
 
 - Top-level declarations: `skill`, `block`, `export block`,
   `const`, `generated const`, `generated block`,
@@ -200,7 +200,7 @@ When changing the grammar:
 
 ## Related design documents
 
-- [`../design/tree-sitter-grammar.md`](../design/tree-sitter-grammar.md)
+- [`../docs/architecture/tree-sitter.md`](../docs/architecture/tree-sitter.md)
   — the canonical grammar plan: scope, indentation strategy,
   capture plan, M1/M2/M3 phases, open questions and risks.
 - [`../design/language-surface.md`](../design/language-surface.md)

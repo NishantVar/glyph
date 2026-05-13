@@ -1,8 +1,6 @@
 # Imports
 
-How cross-file names bind at compile time: path resolution, importable declarations, collision handling, effect propagation, and auto-fix behaviors. Import syntax is defined in `language-surface.md`; this document owns the semantics.
-
-MVP Tier 3. Builds on import syntax from `language-surface.md` (Tier 1) and qualified callee resolution from `data-flow.md` (Tier 2).
+How cross-file names bind at compile time: path resolution, importable declarations, collision handling, effect propagation, and auto-fix behaviors. Import syntax is defined in [[language-surface]]; this document owns the semantics.
 
 ## 1. Path Resolution
 
@@ -12,7 +10,7 @@ Concretely, `glyph compile foo.glyph` and `cd subdir && glyph compile ../foo.gly
 
 ### `@glyph/` Reserved Virtual Namespace
 
-Paths beginning with `@glyph/` are not filesystem paths. The `@glyph/` prefix is reserved for compiler-shipped modules and bypasses filesystem resolution entirely — the compiler resolves these in-memory. The MVP recognises exactly one such module: `@glyph/std` (see `stdlib.md` §Distribution and Resolution). Any other `@glyph/*` path fires `G::imports::unknown-stdlib-module` (error). A real on-disk file or directory named `@glyph` is never consulted, even if one exists in the importing file's directory tree.
+Paths beginning with `@glyph/` are not filesystem paths. The `@glyph/` prefix is reserved for compiler-shipped modules and bypasses filesystem resolution entirely. The MVP recognises exactly one such module: `@glyph/std` (see [[stdlib]] §Distribution and Resolution). Any other `@glyph/*` path is a compile error. A real on-disk file or directory named `@glyph` is never consulted, even if one exists in the importing file's directory tree.
 
 ### Extension Auto-Resolution
 
@@ -49,9 +47,9 @@ Attempting to selectively import a private `block` or `const` is a compile error
 
 Library files (zero `skill` declarations) are the primary import targets. They export reusable blocks and constants consumed by skill files. Importing from a library file follows all the same rules as importing from a skill file — selective imports, whole-module imports, collision handling, and effect propagation all apply identically. The only difference: a library file has no `skill` entrypoint, so `M.skill_name` is not available on whole-module imports of a library. Attempting to access a skill entrypoint on a library's whole-module alias is a compile error.
 
-Library files must have at least one `export` declaration (`G::analyze::no-exports-in-library`). See `language-surface.md` §File-Level Rules for the full library compilation and emission model.
+Library files must have at least one `export` declaration. See [[language-surface]] §File-Level Rules for the full library compilation and emission model.
 
-`export type` decls count as library exports, parallel to `export const` and `export block` (see `types.md`, Explicit `type` Declarations section). A file containing only `export type` decls satisfies the library-export rule and compiles cleanly with no `## Parameters` or `### Steps` body — type decls are compile-time only and emit no Markdown.
+`export type` decls count as library exports, parallel to `export const` and `export block` (see [[types]], Explicit `type` Declarations section). A file containing only `export type` decls satisfies the library-export rule and compiles cleanly with no `## Parameters` or `## Steps` body — type decls are compile-time only and emit no Markdown.
 
 ### Selective-Only Imports for Types
 
@@ -67,23 +65,15 @@ A whole-module import of a file that contains `export type` decls remains valid 
 
 ## 3. Name Collision Rules
 
-Imported names participate in the per-namespace no-shadowing rule defined in `values-and-names.md`. That rule is the single authoritative source for collision semantics across all name sources (locals, parameters, const declarations, imports). Key import-specific points:
+Imported names participate in the per-namespace no-shadowing rule defined in [[values-and-names]]. That rule is the single authoritative source for collision semantics across all name sources (locals, parameters, const declarations, imports). Key import-specific points:
 
-**Selective imports.** Each imported name (or its `as` alias) enters one of the importing file's two namespaces (type or value) based on the imported declaration's kind. If it collides with any other visible name in the **same namespace** after case normalization, the compiler emits a collision error. The fix is to alias on the import side or rename the local declaration. Cross-namespace canonical-equal pairs (e.g., importing `type Mode` while a local `block mode_name()` exists) do not collide.
+**Selective imports.** Each imported name (or its `as` alias) enters one of the importing file's two namespaces (type or value) based on the imported declaration's kind. A selective import of an `export type` enters the type namespace; an `export block` or `export const` enters the value namespace. If the imported name collides with any other visible name in the **same namespace** after case normalization, the compiler emits a collision error. The fix is to alias on the import side or rename the local declaration. Cross-namespace canonical-equal pairs (e.g., importing `type Mode` while a local `block mode_name()` exists) do not collide.
 
-**Whole-module imports.** `import "path" as M` reserves `M` as a single identifier in the **value namespace**. Members are accessed only via qualified names (`M.name`) and do not enter either namespace as bare identifiers. Two whole-module imports (`as M` and `as N`) may expose identically-named exports without collision because `M.foo` and `N.foo` are distinct.
+**Whole-module imports.** `import "path" as M` reserves `M` as a single identifier in the **value namespace** — even when the module also exports `type` decls. Members are accessed only via qualified names (`M.name`) and do not enter either namespace as bare identifiers. Two whole-module imports (`as M` and `as N`) may expose identically-named exports without collision because `M.foo` and `N.foo` are distinct.
 
 `M` itself is not callable -- `M()` is invalid. It is a namespace, not a value.
 
-### `ResolvedImportKind`
-
-Internally, every resolved selective import alias carries a `ResolvedImportKind` tag with two variants — `Type` and `Value` — that determines which namespace it enters:
-
-- A selective alias inherits its kind from the imported declaration: `dep_exports.types` → `Type`; `dep_exports.blocks` and `dep_exports.texts` → `Value`. So `import "./types.glyph" { Foo }` adds `Foo` to the type namespace, and `import "./lib.glyph" { run_check }` adds `run_check` to the value namespace.
-- **Whole-module aliases** (filesystem `import "path" as M` and stdlib `import "@glyph/std" as std`) are always `Value` — the alias names a module handle in the value namespace, even when the module also exports `type` decls.
-- **Whole-module qualified type references** (e.g., `param: M.Foo` after `import "./types.glyph" as M`) remain out of MVP scope; type slots accept bare identifiers only. See `types.md` Deferred section.
-
-Two-namespace collision detection runs over the joined set of local declarations and selectively-imported aliases, partitioned by `ResolvedImportKind` and local-decl kind, so the import pipeline and the local sweep share a single mechanism.
+Whole-module qualified type references (e.g., `param: M.Foo` after `import "./types.glyph" as M`) are out of MVP scope; type slots accept bare identifiers only. See [[types]] Deferred section.
 
 ## 4. Re-Export Policy
 
@@ -105,9 +95,9 @@ No lazy-loading or forward-declaration workaround in MVP. If a cycle exists, the
 
 ### Transitive Imports
 
-A library may import another library, which may import another, and so on. There is **no depth limit** on the import chain. The DAG closure that the compiler builds during multi-file resolution (`pipeline.md` §Multi-File Compilation Order) naturally walks every reachable file, so a chain like `consumer.glyph` → `lib_a.glyph` → `lib_b.glyph` → `lib_c.glyph` resolves identically to a single direct import: each file is parsed once and topologically ordered before its consumers.
+A library may import another library, which may import another, and so on. There is **no depth limit** on the import chain. A chain like `consumer.glyph` → `lib_a.glyph` → `lib_b.glyph` → `lib_c.glyph` resolves identically to a single direct import: each file is parsed once and topologically ordered before its consumers.
 
-Cycle detection (`G::analyze::circular-import`) is the only depth-related constraint. Any acyclic chain — regardless of length — is permitted. Re-export of a transitive name is still forbidden by §4: even when `lib_a` imports a name from `lib_b`, the consumer cannot reach that name through `lib_a` and must import directly from `lib_b`.
+Cycle detection is the only depth-related constraint. Any acyclic chain — regardless of length — is permitted. Re-export of a transitive name is still forbidden by §4: even when `lib_a` imports a name from `lib_b`, the consumer cannot reach that name through `lib_a` and must import directly from `lib_b`.
 
 ## 6. Duplicate Imports
 
@@ -121,17 +111,17 @@ If two selective imports from different files introduce the same normalized name
 
 ## 7. Unused Import Auto-Removal
 
-The compiler auto-removes unused imports from the `.glyph` source file (see also `compiled-output.md`).
+The compiler auto-removes unused imports from the `.glyph` source file (see also [[design/compiled-output]]).
 
 **Selective imports:** Each imported name is tracked individually. If `a` is used but `b` is not, the compiler removes `b` from the `{ a, b }` list. If all names are unused, the entire statement is removed.
 
 **Whole-module imports:** If no qualified reference `M.x` appears anywhere in the file, the entire `import "..." as M` statement is removed.
 
-This is a source-to-source fix, not a silent omission from compiled output. It runs in Phase 3a (deterministic source rewrites) of the compiler pipeline — see `pipeline.md`.
+This is a source-to-source fix, not a silent omission from compiled output.
 
 ## 8. Effect Propagation
 
-Imported `export block` declarations carry their full inferred effect set in the IR (`ir-and-semantics.md`).
+Imported `export block` declarations carry their full inferred effect set in the IR ([[ir-and-semantics]]).
 
 When a caller invokes an imported block, the callee's effect set is unioned into the caller's inferred effects:
 
@@ -141,26 +131,26 @@ When a caller invokes an imported block, the callee's effect set is unioned into
 
 No import-specific effect syntax is needed. The existing `effects:` clause and inference machinery handle propagation.
 
-**Projection tier does not affect propagation.** Whether an imported block is projected as inline (Tier 1), same-file procedure (Tier 2), or external file (Tier 3) is a Phase 6 layout decision that does not change the callee's effect contribution resolved in Phases 2/5. Tier 3 selection may require the caller to additionally declare `reads_files` — see `ir-and-semantics.md` §Projection Tier And Effect Propagation for the full mechanism.
+**Projection tier does not affect propagation.** Whether an imported block is projected as inline (Tier 1), same-file procedure (Tier 2), or external file (Tier 3) is a layout decision that does not change the callee's effect contribution. Tier 3 selection may require the caller to additionally declare `reads_files` — see [[docs/architecture/ir-semantics]] §Projection Tier And Effect Propagation for the full mechanism.
 
 ## 9. Closure Enforcement Timing
 
-Closure is checked at the exporter's compile time (full rules in `data-flow.md`). The importer trusts the export contract. At import time, the compiler checks only:
+Closure is checked at the exporter's compile time (full rules in [[data-flow]]). The importer trusts the export contract. At import time, the compiler checks only:
 
 - The referenced name exists and is exported.
-- Types match at call boundaries (nominal matching per `types.md`).
+- Types match at call boundaries (nominal matching per [[types]]).
 - Effects propagate correctly via union.
 
 The importer does not re-check internal closure of the imported block. This keeps compilation modular -- analyzing a file does not require re-analyzing every transitive dependency's internals.
 
 ## Cross-References
 
-- **Declaration headers** (`language-surface.md`): import syntax grammar.
-- **Values and names** (`values-and-names.md`): universal no-shadowing rule and case normalization.
-- **Calls and args** (`data-flow.md`): qualified callee resolution (`M.name`).
-- **Effects** (`ir-and-semantics.md`): effect inference and union propagation.
-- **Data flow** (`data-flow.md`): exported block closure requirements.
-- **Compiled output** (`compiled-output.md`): import inlining and unused-import auto-removal.
+- **Declaration headers** ([[language-surface]]): import syntax grammar.
+- **Values and names** ([[values-and-names]]): universal no-shadowing rule and case normalization.
+- **Calls and args** ([[data-flow]]): qualified callee resolution (`M.name`).
+- **Effects** ([[ir-and-semantics]]): effect inference and union propagation.
+- **Data flow** ([[data-flow]]): exported block closure requirements.
+- **Compiled output** ([[design/compiled-output]]): import inlining and unused-import auto-removal.
 
 ## Deferred
 
@@ -169,4 +159,4 @@ The importer does not re-check internal closure of the imported block. This keep
 - Cycle-breaking mechanisms (interface-only imports, forward declarations, lazy resolution).
 - Selective import glob or wildcard patterns.
 - Deep qualified access (`a.b.c`) for nested module structures.
-- Whole-module qualified type references (`alias.TypeName` after `import "./types.glyph" as alias`). See `types.md` Deferred section.
+- Whole-module qualified type references (`alias.TypeName` after `import "./types.glyph" as alias`). See [[types]] Deferred section.

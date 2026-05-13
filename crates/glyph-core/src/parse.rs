@@ -1,7 +1,7 @@
 //! Phase 1 parser — hand-rolled recursive descent over the tokenizer's output.
 //!
 //! Walking-skeleton scope: parses exactly the constructs needed for
-//! `update_docs.glyph` per `design/mvp-acceptance.md` §1.
+//! `update_docs.glyph` per `docs/reference/mvp-acceptance.md` §1.
 
 use crate::ast::{
     BlockDecl, ConstDecl, ConstValue, ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl,
@@ -2068,7 +2068,7 @@ impl<'a> Parser<'a> {
                         let lit_span = self.peek().span;
                         // Reject `{name}` slots inside parameter defaults
                         // (`G::parse::param-slot-in-non-instruction-string`,
-                        // repairable per `design/diagnostics.md`).
+                        // repairable per `docs/reference/diagnostics.md`).
                         if let Some(off) = crate::slot::first_slot_offset(&raw) {
                             // Map the in-content offset back to a source byte
                             // span. The literal starts with `"` so add 1 for the
@@ -2354,7 +2354,7 @@ impl<'a> Parser<'a> {
                     *description = Some(s);
                     // Phase 3.B: capture the first-occurrence source line so
                     // emit can run the D9 author-positioned vs synthetic
-                    // merge in IR space (`design/ir-schema.md` §Freeform
+                    // merge in IR space (`docs/architecture/ir-schema.md` §Freeform
                     // sections).
                     *description_span = Some(self.section_span_for(kw_span));
                 }

@@ -109,7 +109,7 @@ Binding is the naming primitive. By itself, naming does not act, restrict, infor
 | `import "./path" { name as alias }` | Selective import alias |
 | `import "./path" as module_alias` | Whole-module alias |
 
-**IR role:** Binding is not one of the closed instruction roles. It appears structurally through declarations, `Param`, `Call.output`, `BindingRef`, import tables, and name-resolution metadata.
+**IR role:** Binding is not one of the closed instruction roles. It appears structurally through declarations, parameter slots, call-result names, binding references, and name-resolution metadata.
 
 ---
 
@@ -121,7 +121,7 @@ Binding is the naming primitive. By itself, naming does not act, restrict, infor
 | Constraint | Bound behavior | `require`, `avoid`, `must`, `must avoid`; constraint-position text | `Constraint` |
 | Context | Frame interpretation | `context:` entries, `context` markers, context-position text | `ContextNode` |
 | Interface | Define callable contract | Parameters, defaults, return type, `return`, `effects:`, `description:` | `InputContract`, `OutputContract`, effects, description metadata |
-| Binding | Introduce an addressable name | Declarations, imports, parameters, local assignments, aliases | Declarations, `Param`, `Call.output`, `BindingRef`, import/name-resolution metadata |
+| Binding | Introduce an addressable name | Declarations, imports, parameters, local assignments, aliases | Declarations, parameter slots, call-result names, binding references, import/name-resolution metadata |
 
 ---
 

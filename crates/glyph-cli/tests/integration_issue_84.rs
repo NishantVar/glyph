@@ -339,7 +339,7 @@ skill main() -> Plan
 /// Library exports `compute() -> Plan`; consumer skill declares `-> Report`
 /// and `return compute()`. Different canonicalized names → the cross-file
 /// `G::analyze::nominal-mismatch` diagnostic fires (severity `error` per
-/// `design/diagnostics.md`), `glyph check` exits 1, and the message names
+/// `docs/reference/diagnostics.md`), `glyph check` exits 1, and the message names
 /// both type names plus the call target so the author can locate the
 /// mismatch.
 ///

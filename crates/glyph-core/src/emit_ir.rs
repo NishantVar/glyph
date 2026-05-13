@@ -1,5 +1,5 @@
 //! IR JSON serialization — custom serializer that walks the post-Step-1 IR arena
-//! and produces a nested-tree JSON per `design/ir-json-schema.md`.
+//! and produces a nested-tree JSON per `docs/reference/ir-json.md`.
 //!
 //! The JSON is nested (children inlined under parents) rather than a flat arena dump.
 //! Each node carries its `node_id` as `"n<integer>"`.
@@ -13,7 +13,7 @@ use crate::kind_infer::TypeTag;
 use serde_json::{json, Map, Value};
 
 /// Serialize a `TypeTag` to its IR JSON representation per
-/// `design/ir-json-schema.md` §TypeTag Serialization (FC8 designer relay):
+/// `docs/reference/ir-json.md` §TypeTag Serialization (FC8 designer relay):
 /// built-ins lower to lowercase JSON strings; `DomainType(name)` lowers to a
 /// single-key object `{"domain_type": "<canonical_name>"}`. The payload is
 /// already canonical (lower-time `name_to_typetag` performs the
@@ -252,7 +252,7 @@ fn serialize_freeform_content(c: &IrFreeformContent) -> Value {
 }
 
 /// Serialize a `Vec<LocalRef>` as `[{ "name": ..., "node_id": "n<id>" }]`
-/// per `design/ir-json-schema.md:146-186`. The `node_id` field name (not
+/// per `docs/reference/ir-json.md:146-186`. The `node_id` field name (not
 /// `producing_node_id`) is fixed by the worked example in that doc.
 fn serialize_local_refs(refs: &[crate::ir::LocalRef]) -> Value {
     let arr: Vec<Value> = refs
@@ -591,7 +591,7 @@ pub fn serialize_ir_json(
     // return_type: `{"domain_type": "<canonical>"}` for domain types,
     // lowercase JSON string for built-ins, JSON `null` when no `->` annotation
     // was authored (issue #84 chunk 6, FC8 designer relay). Canonical schema
-    // position is between `params` and `effects` per `design/ir-json-schema.md`
+    // position is between `params` and `effects` per `docs/reference/ir-json.md`
     // §Node Types → Skill (FC9 correction). serde_json::Map is BTreeMap by
     // default so the serialized JSON is alphabetical regardless of insert
     // order, but the insert sequence here mirrors the schema for readability
@@ -720,7 +720,7 @@ pub fn serialize_ir_json(
 #[cfg(test)]
 mod tests {
     //! Issue #84 chunk 6 — IR `return_type` propagation. Unit tests for the
-    //! `TypeTag → JSON` helper per `design/ir-json-schema.md` §TypeTag
+    //! `TypeTag → JSON` helper per `docs/reference/ir-json.md` §TypeTag
     //! Serialization (FC8 designer relay).
     use super::*;
     use crate::kind_infer::TypeTag;
@@ -736,7 +736,7 @@ mod tests {
     }
 
     // f.2: each built-in TypeTag variant lowers to its lowercase JSON string.
-    // Per FC8 designer relay (cite: `design/ir-json-schema.md` §TypeTag
+    // Per FC8 designer relay (cite: `docs/reference/ir-json.md` §TypeTag
     // Serialization L412–421). Match-by-Debug is explicitly forbidden; the
     // arms in `typetag_to_json` must spell the lowercase form literally.
     #[test]

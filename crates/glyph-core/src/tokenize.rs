@@ -1,7 +1,7 @@
 //! Hand-rolled tokenizer (Phase 1, sub-step A/B).
 //!
 //! Walking-skeleton scope: just enough to tokenize `update_docs.glyph`.
-//! Two-phase approach per `design/build-foundation.md` §A2:
+//! Two-phase approach per `docs/adr/` §A2:
 //!   - Phase A: line-oriented pre-processing (compute indent levels, strip comments).
 //!   - Phase B: token-level scanning within each line.
 //!

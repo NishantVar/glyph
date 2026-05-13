@@ -14,7 +14,7 @@ pub struct SourceFile {
 
 /// Source position of a sub-section header (the `<name>:` line). Used by
 /// Phase 6 (Emit) to merge author-positioned sections with synthetic ones
-/// (see `design/ir-schema.md` §Freeform sections for the D9 merge algorithm).
+/// (see `docs/architecture/ir-schema.md` §Freeform sections for the D9 merge algorithm).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SectionSpan {
     /// 0-based source line of the `<name>:` header token.
@@ -112,7 +112,7 @@ pub struct Skill {
     /// lands here instead of being silently dropped, so a `glyph fmt` merge
     /// pass can splice them into the singleton without conversion. Per
     /// `design/language-surface.md` §2.5 line 88 and
-    /// `design/tree-sitter-grammar.md` §2.1 line 147.
+    /// `docs/architecture/tree-sitter.md` §2.1 line 147.
     pub extra_subsections: Vec<DuplicateSubsection>,
     /// Source line of the `description:` sub-section header. `None` when the
     /// sub-section is absent. Populated by the parser in Phase 3.B; consumed
@@ -136,7 +136,7 @@ pub struct Skill {
 /// the corresponding singleton field uses, so `glyph fmt` can merge a duplicate
 /// into the first occurrence without re-parsing or shape conversion (issue
 /// #109; `design/language-surface.md` §2.5 line 88;
-/// `design/tree-sitter-grammar.md` §2.1 line 147).
+/// `docs/architecture/tree-sitter.md` §2.1 line 147).
 #[derive(Clone, Debug)]
 pub enum DuplicateSubsection {
     /// Body of a duplicate `description:` sub-section (a single inline string).

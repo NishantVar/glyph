@@ -1,4 +1,4 @@
-//! IR node schema (walking-skeleton subset) and arena per `design/build-foundation.md` §A4.
+//! IR node schema (walking-skeleton subset) and arena per `docs/adr/` §A4.
 
 use crate::kind_infer::TypeTag;
 use serde::Serialize;
@@ -54,7 +54,7 @@ pub enum IrNode {
 /// in `items` as `IrNode::FreeformContent` arena entries (one IR node per
 /// item) so each item gets its own `node_id` for diagnostics and downstream
 /// references. Emitted as `{"kind": "freeform_section", ...}` per
-/// `design/ir-json-schema.md`.
+/// `docs/reference/ir-json.md`.
 #[derive(Clone, Debug, Serialize)]
 pub struct IrFreeformSection {
     pub node_id: NodeId,
@@ -359,7 +359,7 @@ pub struct IrCall {
     /// position. Populated by Phase 4 (Expand Step 1) via `slot::scan_slots`;
     /// Phase 3 (Lower) initializes to `Vec::new()`. JSON shape:
     /// `[{ "name": <binding>, "node_id": <producer-node-id> }]`
-    /// (`design/ir-json-schema.md:146-186`).
+    /// (`docs/reference/ir-json.md:146-186`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub local_refs: Vec<LocalRef>,
     /// Flow-position-assignments §9.1 agent-shape rule: true iff the callee's

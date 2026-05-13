@@ -14,7 +14,7 @@ The conceptual distinction between `const` and `block` is deliberate and load-be
 - **`block`** — callable. Has parentheses, is invoked at call sites, and its body directs the agent to perform actions.
 - **A string in a block body (with or without an explicit `flow:` header) is always an instruction (`Step`) — never context or background.** For context or metadata about the block itself, use `description:`. For named string constants that are not instructions, use `const`.
 
-**Novice kernel.** A new author only needs a small subset to write useful skills: `skill`, `require`/`avoid`, `flow:`, quoted inline strings, calls with parentheses, and the `with` modifier on calls (see [data-flow.md](data-flow.md)). Blocks, named constants, types, effects, and imports are discoverable later; repair materializes `generated block` definitions for undefined names so novice skills compile without those constructs present in source.
+**Novice kernel.** A new author only needs a small subset to write useful skills: `skill`, `require`/`avoid`, `flow:`, quoted inline strings, calls with parentheses, and the `with` modifier on calls (see [[data-flow]]). Blocks, named constants, types, effects, and imports are discoverable later; repair materializes `generated block` definitions for undefined names so novice skills compile without those constructs present in source.
 
 Glyph source optimizes for easy readability, easy maintenance, and forgiving authoring. The source surface may be duck-typed and partially inferred; the compiler is responsible for turning that into a strict IR. The split is: source can be ergonomic; IR and compiled output must be explicit.
 
@@ -24,27 +24,27 @@ Glyph source optimizes for easy readability, easy maintenance, and forgiving aut
 
 A `.glyph` file is a unit of compilation. The following rules apply at the file level:
 
-- **Non-empty.** A file containing only whitespace or comments emits `G::parse::empty-file` (error). There is nothing to compile.
-- **At most one `skill` declaration per file.** A file may contain zero or one `skill` declarations. A second `skill` in the same file emits `G::parse::multiple-skills` (error). The reason is pragmatic: compiled output is named after the skill (`<skill_name>.md`), and most coding-agent ecosystems expect one skill per file (e.g., `SKILL.md`). Multi-skill files would collide on output naming. Cross-skill composition is via `import`, not by co-locating skills in one source file.
+- **Non-empty.** A file containing only whitespace or comments is an error — there is nothing to compile.
+- **At most one `skill` declaration per file.** A file may contain zero or one `skill` declarations. A second `skill` in the same file is an error. The reason is pragmatic: compiled output is named after the skill (`<skill_name>.md`), and most coding-agent ecosystems expect one skill per file (e.g., `SKILL.md`). Multi-skill files would collide on output naming. Cross-skill composition is via `import`, not by co-locating skills in one source file.
 - **Library files (zero `skill` declarations).** A file containing only `import`, `const`, and `block` / `export block` declarations — no `skill` — is a **library file** (e.g., `prefs.glyph`, `repo_tools.glyph`). Library files are consumed by sibling skill files via `import`. Formal rules:
 
-  - **At least one `export` declaration required.** A file with zero skills AND zero exports has no consumer-visible contribution. This emits `G::analyze::no-exports-in-library` (error). Private helpers (`block`, `const`) alongside exports are fine — they support the exports internally.
-  - **Compilation.** Library files compile through the same 7-phase pipeline as skill files. The DAG-driven multi-file compile (see `pipeline.md` §Multi-File Compilation Order) runs Phases 1–7 on every file in dependency order; a library file is a DAG node like any other, it just has no `skill` to project.
+  - **At least one `export` declaration required.** A file with zero skills AND zero exports has no consumer-visible contribution; this is an error. Private helpers (`block`, `const`) alongside exports are fine — they support the exports internally.
+  - **Compilation.** Library files compile through the same pipeline as skill files; a library file is just a node in the dependency graph that has no `skill` to project.
   - **Emission rules — per-declaration, not per-file.** What a library file emits depends on what it exports:
 
-    | Declaration | Emits standalone `.md`? | Mechanism |
-    |---|---|---|
-    | `export block` whose expanded prose is **>= 150 words** (above the Tier 1 inline threshold; see `compiled-output.md` §Three-Tier Block Projection) | **Yes** — one procedure `.md` per qualifying block | Library's own Phase 7 emits it into a subdirectory named after the source file (e.g., `repo_tools.glyph` → `repo_tools/inspect-repo.md`) |
-    | `export block` whose expanded prose is **< 150 words** (Tier 1 — small, inlinable) | **No** — consumers inline the body at each call site | No emission from the library |
-    | `export const` | **No** — compile-time constants, always inlined into consumers | No emission |
-    | Private `block`, `const`, `import` | **No** — contribute to other compilations only | Validation only |
+    | Declaration | Emits standalone `.md`? |
+    |---|---|
+    | `export block` whose expanded prose is **>= 150 words** (above the Tier 1 inline threshold; see [[design/compiled-output]] §Three-Tier Block Projection) | **Yes** — one procedure `.md` per qualifying block, in a subdirectory named after the source file (e.g., `repo_tools.glyph` → `repo_tools/inspect-repo.md`) |
+    | `export block` whose expanded prose is **< 150 words** (Tier 1 — small, inlinable) | **No** — consumers inline the body at each call site |
+    | `export const` | **No** — compile-time constants, always inlined into consumers |
+    | Private `block`, `const`, `import` | **No** — contribute to other compilations only |
 
   - **Empty emission is normal.** A library file that compiles successfully but produces zero `.md` files (e.g., `prefs.glyph` with only `export const` declarations) is not an error or warning. It contributes names and values to consumers through the validated IR.
-  - **Zero consumers.** In DAG-driven compilation, unreferenced library files are never visited — no diagnostic. If a user explicitly compiles a library file (`glyph compile prefs.glyph`), it compiles and emits whatever qualifies, succeeding silently even if zero files are produced.
-  - **Tier ownership.** Whether an `export block` qualifies for a standalone procedure `.md` is a property of the block itself, decided when the library compiles. Whether a *specific call site* in a consumer inlines that block or references the procedure file is a per-call-site decision in the consumer's Expand Step 1 (the `ResolvedCall.projection_mode` field in `ir-schema.md`). A procedure `.md` may exist but go unused at a call site that projects the block as Tier 1 (inline) or Tier 2 (same-file procedure) — this is intentional, not an error.
-  - **Consumer guarantees.** DAG order (libraries compile before consumers) ensures procedure `.md` files exist before consumers reference them via `load`. If a library failed to compile, the consumer's Phase 5 (Validate) catches the missing dependency.
+  - **Zero consumers.** Unreferenced library files are never visited during a multi-file build — no diagnostic. If a user explicitly compiles a library file (`glyph compile prefs.glyph`), it compiles and emits whatever qualifies, succeeding silently even if zero files are produced.
+  - **Tier ownership.** Whether an `export block` qualifies for a standalone procedure `.md` is a property of the block itself, decided when the library compiles. Whether a *specific call site* in a consumer inlines that block or references the procedure file is a per-call-site decision (see [[design/compiled-output]] §Three-Tier Block Projection). A procedure `.md` may exist but go unused at a call site that projects the block as Tier 1 (inline) or Tier 2 (same-file procedure) — this is intentional, not an error.
+  - **Consumer guarantees.** Libraries compile before consumers, so procedure `.md` files exist before consumers reference them via `load`. If a library fails to compile, the consumer's compilation surfaces the missing dependency.
   - **Mixed library files.** A file exporting both `export block` and `export const` declarations is common (e.g., a `repo_tools.glyph` exporting both procedures and constants). The emission rules apply per-declaration — blocks may emit procedure files while constants are inlined. No special handling needed.
-- **Skill body must contain at least one of `flow:` (with statements) or `constraints:` (with markers).** A skill with empty `description:`, no `flow:`, no `constraints:`, no `effects:` emits `G::analyze::empty-skill-body` (error). A constraint-only skill (no `flow:` at all, but `constraints:` present) is **legal** — its compiled output omits `### Steps` per `compiled-output.md`. An empty `flow:` body (header present but zero statements) emits `G::parse::empty-flow` (error); the author should either remove the header or add a statement.
+- **Skill body must contain at least one of `flow:` (with statements) or `constraints:` (with markers).** A skill with empty `description:`, no `flow:`, no `constraints:`, no `effects:` is an error. A constraint-only skill (no `flow:` at all, but `constraints:` present) is **legal** — its compiled output omits `## Steps` per [[design/compiled-output]]. An empty `flow:` body (header present but zero statements) is an error; the author should either remove the header or add a statement.
 
 ### 2.1 Significant Indentation
 
@@ -81,20 +81,18 @@ Sub-sections within a declaration body use a colon-terminated keyword. MVP sub-s
 
 `constraints:`, `context:`, `description:`, `effects:` *(gated — requires `--enable-effects`)*, `flow:`
 
-`inputs:`, `outputs:`, and `when_to_use:` are deferred from MVP (see [todo.md](todo.md)). Header parameters cover input definition; `return` in `flow:` covers output; `description:` covers routing.
+`inputs:`, `outputs:`, and `when_to_use:` are deferred from MVP (see [[todo]]). Header parameters cover input definition; `return` in `flow:` covers output; `description:` covers routing.
 
-**Sub-section ordering is permissive.** Inside a `skill`, `block`, or `export block` body, the parser accepts `context:`, `constraints:`, `description:`, `effects:`, `flow:`, and body-level constraint markers (`require`/`avoid`/`must`) in **any order** — but source order is semantically significant for compiled output position (see §2.5a). The only structural rule still enforced is the duplicate-subsection check (`G::parse::duplicate-subsection`, repairable) — each named sub-section may appear at most once per body.
+**Sub-section ordering is permissive.** Inside a `skill`, `block`, or `export block` body, the parser accepts `context:`, `constraints:`, `description:`, `effects:`, `flow:`, and body-level constraint markers (`require`/`avoid`/`must`) in **any order** — but source order is semantically significant for compiled output position (see §2.5a). The only structural rule still enforced is that each named sub-section may appear at most once per body; duplicate occurrences are repairable (the deterministic repair pass merges them in source order).
 
-**Recovery shape.** The duplicate-subsection check is *recoverable*, not fatal: the parser does not stop at the second occurrence. Each declaration AST node (`Skill`, `Block`, `ExportBlock`) carries the canonical singleton fields (`description`, `context`, `constraints`, `effects`, `flow`) populated from the **first** occurrence of each kind, plus an additive recovery slot `extra_subsections: Vec<DuplicateSubsection>` that retains every **subsequent** occurrence in source order with its full body span. Phase 3a's deterministic merge consumes `extra_subsections` (see [repair.md](repair.md) §4.11). After a successful Phase 3a merge, `extra_subsections` is empty; if it is still non-empty when Analyze runs (e.g., `--no-repair`, `glyph fmt --check`), Analyze emits the hard error `G::analyze::unmerged-duplicate-subsection` so Lower never sees an inconsistent declaration shape.
-
-Authors do not need to memorise a canonical layout to write valid source. `glyph fmt` does not reorder sections: it preserves the author's chosen sequence (per §2.5a) and only normalizes whitespace / merges duplicate sub-section occurrences; see [cli.md](cli.md) §`glyph fmt` for the recommended source order.
+Authors do not need to memorise a canonical layout to write valid source. `glyph fmt` does not reorder sections: it preserves the author's chosen sequence (per §2.5a) and only normalizes whitespace / merges duplicate sub-section occurrences; see [[design/cli]] §`glyph fmt` for the recommended source order.
 
 #### 2.5a Section Order in Source is Semantically Significant for Compiled Output
 
-While the *parser* accepts sub-sections in any order (§2.5 above), section order in source determines the **placement of any author-declared sub-section in the compiled `.md`**. This applies uniformly to the built-in sub-sections (`description:`, `context:`, `constraints:`, `flow:`, `effects:`) and to freeform colon-keyword sections (§2.5b). The compiler's D9 merge algorithm (see [compiled-output.md](compiled-output.md) §Output Order) walks the source declarations in order and emits each section's H2 heading at the source-relative slot, while sections not declared in source fall back to the canonical default position. Two consequences:
+While the *parser* accepts sub-sections in any order (§2.5 above), section order in source determines the **placement of any author-declared sub-section in the compiled `.md`**. This applies uniformly to the built-in sub-sections (`description:`, `context:`, `constraints:`, `flow:`, `effects:`) and to freeform colon-keyword sections (§2.5b). Sections not declared in source fall back to a canonical default position; sections declared in source emit at their source-relative slot. Two consequences:
 
 - An author who writes `context:` after `flow:` in source will see `## Context` rendered after `## Steps` in the compiled `.md` — not the reverse.
-- `glyph fmt` no longer reorders sections into a canonical layout. The Phase 3 contract (Task 3.14) is "no section reordering, no marker hoisting across section boundaries." Hoisting of body-level constraint/context markers still happens (per §4.2a), but markers never cross a named section boundary.
+- `glyph fmt` does not reorder sections into a canonical layout. The fmt contract is "no section reordering, no marker hoisting across section boundaries." Hoisting of body-level constraint/context markers still happens (per §4.2a), but markers never cross a named section boundary.
 
 This rule is what allows freeform sections (§2.5b) to land predictably in the compiled output: the author chooses where each freeform `## Heading` block appears by writing the freeform colon-keyword at the desired position in source.
 
@@ -102,11 +100,11 @@ This rule is what allows freeform sections (§2.5b) to land predictably in the c
 
 Beyond the built-in sub-section keywords, authors may declare *freeform* colon-keyword sections such as `quality:`, `risks:`, or `acceptance_criteria:`. A freeform section header is any line at body-level indent (4 spaces) of the form `<identifier>:` whose identifier is not a built-in section keyword and not a reserved declaration keyword.
 
-**Body grammar.** A freeform section body uses the same grammar as `context:` (`ir-and-semantics.md` §`context:` Section): inline strings, block strings, bare-name refs to string-valued `const`s, and the 5 reserved marker clauses (`require`, `avoid`, `must`, `must avoid`, `context`). Flow statements (`if`, `elif`, `else`, plain calls) are **not** permitted; they surface `G::parse::flow-statement-in-freeform` (parse error). Any other identifier used as a marker word surfaces `G::parse::unknown-marker-word`. A bare reserved marker with no operand surfaces `G::parse::marker-missing-operand`.
+**Body grammar.** A freeform section body uses the same grammar as `context:` ([[ir-and-semantics]] §`context:` Section): inline strings, block strings, bare-name refs to string-valued `const`s, and the 5 reserved marker clauses (`require`, `avoid`, `must`, `must avoid`, `context`). Flow statements (`if`, `elif`, `else`, plain calls) are **not** permitted in a freeform body. Any other identifier used as a marker word, or a bare reserved marker with no operand, is a parse error.
 
-**Projection.** Each freeform section compiles to a peer-level `## Heading` block in the compiled `.md`, where `Heading` is the colon-keyword name with underscores replaced by spaces and each word title-cased. When a freeform section appears inside a Tier-2 procedure body (i.e. a `block` whose call site renders as a `### Procedure: <name>`), the freeform heading nests at `####` depth instead. See [compiled-output.md](compiled-output.md) §Freeform Sections for the full projection contract, including the shape-detection rule that determines `-` bullet list vs. paragraph form, and depth-by-tier.
+**Projection.** Each freeform section compiles to a peer-level `## Heading` block in the compiled `.md`, where `Heading` is the colon-keyword name with underscores replaced by spaces and each word title-cased. When a freeform section appears inside a Tier-2 procedure body (i.e. a `block` whose call site renders as a `### Procedure: <name>`), the freeform heading nests at `####` depth instead. See [[design/compiled-output]] §Freeform Sections for the full projection contract, including the shape-detection rule that determines `-` bullet list vs. paragraph form, and depth-by-tier.
 
-**Tier-1 incompatibility.** A `block` that declares any freeform section cannot be Tier-1 inlined at its call site — inlining would silently drop the freeform sub-heading scaffolding. The compiler forces such blocks to Tier-2 promotion (see [pipeline.md](pipeline.md) §Phase 6 Step 1 and [expand.md](expand.md)).
+**Tier-1 incompatibility.** A `block` that declares any freeform section cannot be Tier-1 inlined at its call site — inlining would silently drop the freeform sub-heading scaffolding. The compiler forces such blocks to Tier-2 promotion (see [[design/compiled-output]] §Three-Tier Block Projection).
 
 Two forms are allowed:
 
@@ -179,7 +177,7 @@ skill implement_feature(scope = ".", risk = "medium")
 **Rules:**
 
 - Parentheses always required on callable declarations: `skill update_docs()` not `skill update_docs`. This applies to `skill`, `block`, `export block`, and `generated block`. Value-binding declarations (`const` and its `export`/`generated` variants) and `import` do not use parentheses.
-- Return type is optional. When present, it annotates the IR's `OutputContract`; in MVP compiled output, the `return` expression folds into the final Step rather than producing a separate section (see [compiled-output.md](compiled-output.md)).
+- Return type is optional. When present, it annotates the IR's `OutputContract`; in MVP compiled output, the `return` expression folds into the final Step rather than producing a separate section (see [[design/compiled-output]]).
 - Parameters are optional. In MVP, global preferences resolve at compile time as explicit inputs, not hidden state. Parameters appear in the compiled output's `## Parameters` section with names, descriptions, and optional defaults; the consuming LLM resolves them from user context at runtime.
 
 ### 3.2 `block`
@@ -248,7 +246,7 @@ export block inspect_failure(scope) -> FailureReport
 - Every `export block` must end in an explicit `return`. Instruction-only exported blocks should still return `none`.
 - `effects:` appears in the body, not on the header line.
 - MVP effects: `none`, `reads_files`, `reads_env`, `writes_files`, `runs_commands`, `uses_network`, `asks_user`, `creates_artifacts`, `spawns_agent`.
-- The single-string shorthand (omitting `flow:`) is available on `export block` under the same conditions as `block`: one instruction string, no other sub-sections. When the shorthand form is used, Lower implicitly supplies `return none` — the author does not need to write it, and `G::analyze::missing-return` is suppressed for this form. The shorthand therefore only applies to instruction-only export blocks that return `none` (i.e., omit `->` on the header); blocks that return a meaningful value must use the full `flow:` form with an explicit `return` expression.
+- The single-string shorthand (omitting `flow:`) is available on `export block` under the same conditions as `block`: one instruction string, no other sub-sections. When the shorthand form is used, the compiler implicitly supplies `return none` — the author does not need to write it, and the missing-return diagnostic is suppressed for this form. The shorthand therefore only applies to instruction-only export blocks that return `none` (i.e., omit `->` on the header); blocks that return a meaningful value must use the full `flow:` form with an explicit `return` expression.
 
 ### 3.4 `const` / `export const`
 
@@ -287,13 +285,13 @@ Never execute destructive operations without confirmation.
 **Rules:**
 
 - No parameters, no return type. A `const` declaration is a named constant, not a callable. See §1 for the full const/block distinction and when to choose one over the other.
-- `const` declarations are not legal in `flow:` as bare-name instruction steps. A bare `const` name in `flow:` without a keyword prefix (`context`, `require`, `avoid`, `must`) is a compile error (`G::analyze::const-in-flow`). For instruction steps, use `block`. `const` declarations may be referenced in `constraints:` (as constraint content) or `context:` (as context content); the role is determined by sub-section placement.
+- `const` declarations are not legal in `flow:` as bare-name instruction steps. A bare `const` name in `flow:` without a keyword prefix (`context`, `require`, `avoid`, `must`) is a compile error. For instruction steps, use `block`. `const` declarations may be referenced in `constraints:` (as constraint content) or `context:` (as context content); the role is determined by sub-section placement.
 - The `=` is required and separates the name from its value.
-- String literals follow `values-and-names.md`: inline `"..."` or block `"""..."""`. Integer and float literals follow `values-and-names.md`, Numbers section. Boolean literals are `true` and `false` per `values-and-names.md`, Booleans section: source is case-insensitive (`True`, `TRUE` are accepted) and the IR normalizes to lowercase `true` / `false`.
+- String literals follow [[values-and-names]]: inline `"..."` or block `"""..."""`. Integer and float literals follow [[values-and-names]], Numbers section. Boolean literals are `true` and `false` per [[values-and-names]], Booleans section: source is case-insensitive (`True`, `TRUE` are accepted) and the IR normalizes to lowercase `true` / `false`.
 - The compiler infers the value kind from the literal: string from `"..."` or `"""..."""`, integer from `3` or `42`, float from `0.8` or `3.14`, bool from `true` or `false`.
-- The RHS may be a literal or a static reference to another `const` / `export const` (same-file bare name or imported via whole-module alias). Lower resolves the reference at compile time and inlines the underlying value into the IR; the binding is not re-resolved at runtime. References to non-`const` declarations, parameters, locals, or anything that produces a value at flow time are rejected (a `const` body is fixed at compile time, not computed).
+- The RHS may be a literal or a static reference to another `const` / `export const` (same-file bare name or imported via whole-module alias). The compiler resolves the reference at compile time and inlines the underlying value; the binding is not re-resolved at runtime. References to non-`const` declarations, parameters, locals, or anything that produces a value at flow time are rejected (a `const` body is fixed at compile time, not computed).
 - These bindings are not arbitrary expressions. The compiler treats them as named constant resources resolved into IR nodes.
-- **Signed numeric literals are deferred.** Negative numeric literals (`-1`, `-0.5`) are not yet supported in the tokenizer/parser; numeric literals lex as unsigned per `values-and-names.md` §Numeric Coercion, and the leading `-` is currently a tokenize error. A unary `-` prefix at parse time is planned but is the subject of a separate future issue. Until then, write non-negative literals only.
+- **Signed numeric literals are deferred.** Negative numeric literals (`-1`, `-0.5`) are not yet supported; numeric literals lex as unsigned per [[values-and-names]] §Numeric Coercion. A unary `-` prefix is planned post-MVP. Until then, write non-negative literals only.
 
 ### 3.5 `import`
 
@@ -360,12 +358,11 @@ generated const root_cause_before_fix = """
 
 - Same shape as `const`. No parameters, no return type, no body with sub-sections.
 - The `=` is required and separates the name from its value.
-- String literals follow `values-and-names.md`: inline `"..."` or block `"""..."""`.
+- String literals follow [[values-and-names]]: inline `"..."` or block `"""..."""`.
 - Not a callable. A bare name resolves to its string content; a parenthesized form is a compile error.
 - Not exportable. `export generated const` is invalid. To share, promote to `export const`.
-- All `generated const` declarations must appear after all non-generated top-level declarations in the source file.
-- **Placement-order enforcement is deferred.** The compiler does not yet emit a diagnostic when a `generated const` appears before a non-generated top-level declaration; the rule above is the documented contract. A planned analyze-pass diagnostic (working name `G::analyze::generated-placement`) will land in a separate issue. Until then, the repair pass and authors are responsible for honoring the order manually.
-- Full rules for authorship, stability, placement, promotion, and the no-shadowing interaction are in [repair.md](repair.md).
+- All `generated const` declarations must appear after all non-generated top-level declarations in the source file. (Placement-order enforcement at the analyzer is deferred; the repair pass and authors honor the order manually for now.)
+- Full rules for authorship, stability, placement, promotion, and the no-shadowing interaction are in [[design/repair]].
 
 ### 3.7 `generated block`
 
@@ -394,9 +391,8 @@ generated block summarize_changes()
 - Body is a single inline or block string, using the same single-string shorthand available to hand-authored simple blocks (§3.2 above). Compound sentences are allowed; multi-statement `flow:` bodies are not. This keeps the machine-generated definition close to the name's meaning and minimizes drift from author intent.
 - Used for undefined names in `flow:`. Both parens-calls and bare names without parens materialize as `generated block` (bare const names in flow are a compile error, so undefined bare names in flow are treated as intended callable instructions).
 - Not exportable. `export generated block` is invalid. To share, promote to `block` or `export block`.
-- All `generated block` declarations must appear after all non-generated top-level declarations, alongside `generated const`.
-- **Placement-order enforcement is deferred.** The compiler does not yet emit a diagnostic when a `generated block` appears before a non-generated top-level declaration; the rule above is the documented contract. A planned analyze-pass diagnostic (working name `G::analyze::generated-placement`, shared with `generated const` per §3.6) will land in a separate issue. Until then, the repair pass and authors are responsible for honoring the order manually.
-- Full rules for authorship, the single-string constraint, placement, promotion, and the no-shadowing interaction are in [repair.md](repair.md).
+- All `generated block` declarations must appear after all non-generated top-level declarations, alongside `generated const`. (Placement-order enforcement at the analyzer is deferred; the repair pass and authors honor the order manually for now.)
+- Full rules for authorship, the single-string constraint, placement, promotion, and the no-shadowing interaction are in [[design/repair]].
 
 ### 3.8 Parameter Syntax
 
@@ -427,28 +423,28 @@ x: T = name_ref <"...">            // typed, default-from-const + description
 
 **The descriptive form `<"…">` is legal in two positions: param `=` slot (per this section) and return position (`return <"…">`, see §3.7 on output targets). The two roles are syntactically distinguished by position — there is no ambiguity since after `= literal`/`= name_ref` the only legal next tokens are `,`, `)`, or `<`.**
 
-- **`skill` parameter defaults are optional.** A skill parameter without a default is a **runtime-required input**: the consuming LLM must extract its value from the user's request context with no fallback. The compiled `## Parameters` section marks such parameters as required (see [compiled-output.md](compiled-output.md) §`## Parameters`). A skill parameter with a default is optional at runtime — the LLM uses the default if the user does not specify a value. This distinction lets authors separate inputs that must come from the user (e.g., a target file path) from those that have a sensible fallback (e.g., a verbosity level).
-- **`export block` parameter defaults are optional.** Export blocks project to standalone procedure `.md` files at Tier 3, and their parameter slots are filled by the caller's `call` expression at compile time, not by the consuming LLM at runtime. A default exists for caller ergonomics: a caller may omit an argument and inherit the default. A parameter without a default is *required at every call site* — the caller must pass the corresponding positional argument. Omitting it surfaces `G::analyze::missing-required-arg` at the call (**compile error**, not repairable). The rule is uniform across same-file callers and cross-file imported callers (PRD #103 / Issues #104, #105).
-- **Private `block` parameters may omit defaults.** Same call-site rule applies: a parameter without a default is required, and a missing positional argument surfaces `G::analyze::missing-required-arg`.
+- **`skill` parameter defaults are optional.** A skill parameter without a default is a **runtime-required input**: the consuming LLM must extract its value from the user's request context with no fallback. The compiled `## Parameters` section marks such parameters as required (see [[design/compiled-output]] §`## Parameters`). A skill parameter with a default is optional at runtime — the LLM uses the default if the user does not specify a value. This distinction lets authors separate inputs that must come from the user (e.g., a target file path) from those that have a sensible fallback (e.g., a verbosity level).
+- **`export block` parameter defaults are optional.** Export blocks project to standalone procedure `.md` files at Tier 3, and their parameter slots are filled by the caller's `call` expression at compile time, not by the consuming LLM at runtime. A default exists for caller ergonomics: a caller may omit an argument and inherit the default. A parameter without a default is *required at every call site* — the caller must pass the corresponding positional argument. Omitting it is a **compile error**, not repairable. The rule is uniform across same-file callers and cross-file imported callers.
+- **Private `block` parameters may omit defaults.** Same call-site rule applies: a parameter without a default is required, and a missing positional argument is a compile error.
 - Type annotations use the `name: Type` slot. The full type system is a Tier 2 concern; this reserves the syntactic position.
-- Default values are either Tier 0 literals (strings, numbers, booleans, `none`) **or** a name reference to an in-scope value-binding declaration (`const`, including imported ones). Named references must be type-compatible with the parameter and must resolve at compile time — since `const` declarations are compile-time constants, this is always satisfied. The compiled `## Parameters` section emits the **resolved literal value**, not the name; consumers see the concrete default at runtime. This makes preferences (`preferences.md`) usable directly as parameter defaults: `summarize(temperature: Temperature = default_temperature)` resolves to the prefs library's current value at compile time. References to other parameters or to `block` declarations are not permitted; calls and arbitrary expressions are not permitted. A default that is neither a literal nor a name reference to a value-binding is a parse error.
+- Default values are either Tier 0 literals (strings, numbers, booleans, `none`) **or** a name reference to an in-scope value-binding declaration (`const`, including imported ones). Named references must be type-compatible with the parameter and must resolve at compile time — since `const` declarations are compile-time constants, this is always satisfied. The compiled `## Parameters` section emits the **resolved literal value**, not the name; consumers see the concrete default at runtime. This makes preferences ([[preferences]]) usable directly as parameter defaults: `summarize(temperature: Temperature = default_temperature)` resolves to the prefs library's current value at compile time. References to other parameters or to `block` declarations are not permitted; calls and arbitrary expressions are not permitted. A default that is neither a literal nor a name reference to a value-binding is a parse error.
 - The compiler infers types for untyped parameters from usage context and repairs source when inference fails.
 
 ## 4. Authoring Model
 
 ### 4.1 Language Primitives
 
-Authors build skills from defined primitives: `skill`, `export block`, `block`, `flow`, `call`, `if`, `return`. `for_each` is deferred beyond the MVP. Role and constraint markers are disambiguators; the MVP role vocabulary is defined in [ir-and-semantics.md](ir-and-semantics.md).
+Authors build skills from defined primitives: `skill`, `export block`, `block`, `flow`, `call`, `if`, `return`. `for_each` is deferred beyond the MVP. Role and constraint markers are disambiguators; the MVP role vocabulary is defined in [[ir-and-semantics]].
 
-A `flow` becomes an ordered sequence and a `return` becomes an output contract in compiled form. Function-like calls may pass variables and bind return values; the detailed contract is in [data-flow.md](data-flow.md).
+A `flow` becomes an ordered sequence and a `return` becomes an output contract in compiled form. Function-like calls may pass variables and bind return values; the detailed contract is in [[data-flow]].
 
 ### 4.2 Inferred Instruction Roles
 
 Source instructions need not carry compiler-shaped keywords everywhere. A bare name or inline string compiles into an inferred IR role depending on context and metadata.
 
-The closed MVP role set ([ir-and-semantics.md](ir-and-semantics.md)): `InputContract`, `Step`, `Constraint`, `Context`, `OutputContract`. Obligations and prohibitions are `Constraint` nodes with strength (`soft`/`hard`) and polarity (`require`/`avoid`) attributes. **Constraint markers** — three keywords (`require`, `avoid`, `must`) composing into four forms (`require`, `avoid`, `must`, `must avoid`) — set role, strength, and polarity directly. The `context` keyword in `flow:` or at body level assigns the `Context` role directly (no inference needed), parallel to how constraint markers assign the `Constraint` role. For the complete marker-to-IR mapping, see [ir-and-semantics.md](ir-and-semantics.md).
+The closed MVP role set ([[ir-and-semantics]]): `InputContract`, `Step`, `Constraint`, `Context`, `OutputContract`. Obligations and prohibitions are `Constraint` nodes with strength (`soft`/`hard`) and polarity (`require`/`avoid`) attributes. **Constraint markers** — three keywords (`require`, `avoid`, `must`) composing into four forms (`require`, `avoid`, `must`, `must avoid`) — set role, strength, and polarity directly. The `context` keyword in `flow:` or at body level assigns the `Context` role directly (no inference needed), parallel to how constraint markers assign the `Constraint` role. For the complete marker-to-IR mapping, see [[ir-and-semantics]].
 
-**Constraint marker placement.** Constraint markers are legal in three positions: (1) inside a `constraints:` sub-section, (2) at declaration body level, and (3) as a flow statement inside `flow:`, including inside `if`/`elif`/`else` branch bodies. Unconditional markers (positions 1, 2, and flow-top-level in position 3) are normalized into the `constraints:` section via two complementary mechanisms: `glyph fmt` (Phase 3a) performs a source-to-source rewrite for source clarity; Phase 4 (Lower) hoists them at IR level regardless of whether fmt ran (`ir-and-semantics.md` §Body-Level Constraint Normalization, §Flow-Level Constraint Markers). Branch-scoped markers remain inline and render as part of the conditional Step prose (`compiled-output.md` §Constraint Rendering).
+**Constraint marker placement.** Constraint markers are legal in three positions: (1) inside a `constraints:` sub-section, (2) at declaration body level, and (3) as a flow statement inside `flow:`, including inside `if`/`elif`/`else` branch bodies. Unconditional markers (positions 1, 2, and flow-top-level in position 3) are normalized into the `constraints:` section by the compiler (`glyph fmt` rewrites them in source for clarity, and the compiler also hoists them at the IR level regardless of whether fmt ran — see [[docs/architecture/ir-semantics]] §Body-Level Constraint Normalization, §Flow-Level Constraint Markers). Branch-scoped markers remain inline and render as part of the conditional Step prose ([[design/compiled-output]] §Constraint Rendering).
 
 **Context marker placement.** `context` markers follow the same placement rules as constraint markers: (1) inside a `context:` sub-section, (2) at declaration body level, and (3) as a flow statement inside `flow:`, including inside branch bodies. Unconditional `context` markers are hoisted into the `context:` section by the same normalization mechanisms. Branch-scoped `context` markers remain inline and render as part of the conditional Step prose.
 
@@ -500,14 +496,13 @@ If the same text appears repeatedly, promote it to a `const` declaration for use
 
 ## 5. Source-to-IR Pipeline
 
-Glyph source may contain shorthand, omitted annotations, named constants, imported names, and inline natural-language instructions. The compiler resolves them through a 7-phase pipeline: **Parse → Analyze → Repair → Lower → Validate → Expand → Emit**. See [pipeline.md](pipeline.md) for the canonical reference covering phase responsibilities, the Safety Sandwich pattern, the repair loop, multi-file compilation order, and cacheability.
+Glyph source may contain shorthand, omitted annotations, named constants, imported names, and inline natural-language instructions. The compiler resolves them into a typed IR before producing compiled output. See [[compiler-pipeline]] for the implementation pipeline.
 
 Source-level takeaways that shape authoring:
 
-- Deterministic parsing and analysis run first; the LLM repair pass runs only when repairable diagnostics remain and is bounded by re-parse + re-analyze cycles.
+- Deterministic parsing and analysis run before any LLM repair; the LLM repair pass runs only when repairable diagnostics remain.
 - Repair is source-to-source: it may rewrite your `.glyph`, materialize `generated const` / `generated block` definitions, add minimal markers, and fix structural issues. It does not expand shorthand into agent-facing prose.
-- Lower converts the repaired source into the typed IR (resolving positional args to named, desugaring nested calls, filling defaults, propagating effects).
-- Expand is parameterless: compilation produces one `.md` output per source file. Parameters appear in a `## Parameters` section with defaults; the consuming LLM resolves them from context at runtime. `{param}` references in Steps and Constraints are preserved as named slots.
+- Compilation produces one `.md` output per source file. Parameters appear in a `## Parameters` section with defaults; the consuming LLM resolves them from context at runtime. `{param}` references in Steps and Constraints are preserved as named slots.
 
 If ergonomic source does not compile directly, the LLM repair pass rewrites it into valid Glyph source while preserving shorthand and readability. Repair fixes compiler-blocking issues; it does not expand shorthand into prose or produce agent-facing output.
 
@@ -525,5 +520,5 @@ If ergonomic source does not compile directly, the LLM repair pass rewrites it i
 
 - Full type annotation syntax beyond the `name: Type` slot (Tier 2).
 - Package-style, registry-backed, or versioned imports; selective import globs.
-- Skill inheritance and specialization (post-MVP, see `todo.md`).
-- `for_each` control flow; `if` colon syntax (see [data-flow.md](data-flow.md)); nested private block scoping.
+- Skill inheritance and specialization (post-MVP, see [[todo]]).
+- `for_each` control flow; `if` colon syntax (see [[data-flow]]); nested private block scoping.

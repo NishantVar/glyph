@@ -1,7 +1,7 @@
 //! Diagnostic shape, classification, accumulator, and exit-code mapping.
 //!
-//! Implements the structured diagnostic contract from `design/diagnostics.md`
-//! and the exit-code rules from `design/build-foundation.md` §A6.
+//! Implements the structured diagnostic contract from `docs/reference/diagnostics.md`
+//! and the exit-code rules from `docs/adr/` §A6.
 //!
 //! Key invariants:
 //! - `SourceSpan` uses 1-indexed `(line, col)` with **inclusive** end semantics
@@ -24,7 +24,7 @@ use crate::span::{LineIndex, Span};
 ///
 /// Warning tier — non-blocking; compilation continues. Closest neighbor in
 /// classification + phase is `G::analyze::effects-over-declared`. See
-/// `design/diagnostics.md` §Classification.
+/// `docs/reference/diagnostics.md` §Classification.
 pub const GENERIC_TYPE_NAME_DIAG_ID: &str = "G::analyze::generic-type-name";
 
 /// Type identifiers must be strict PascalCase. Emitted by
@@ -128,7 +128,7 @@ impl SourceSpan {
 
 /// One structured diagnostic.
 ///
-/// Shape matches `design/diagnostics.md`. The `id` is `G::<phase>::<name>` and
+/// Shape matches `docs/reference/diagnostics.md`. The `id` is `G::<phase>::<name>` and
 /// is stable across compiler versions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Diagnostic {

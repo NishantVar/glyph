@@ -5,7 +5,7 @@
 //!
 //! 1. **Span coordinate conversion (`design/glyph-lsp.md` §10.B).**
 //!    `glyph-core` emits 1-indexed (line, col) with **inclusive end** semantics
-//!    (per `design/diagnostics.md` §Span Semantics — a single-character span
+//!    (per `docs/reference/diagnostics.md` §Span Semantics — a single-character span
 //!    has `start == end`). LSP wants 0-indexed (line, character) with
 //!    **exclusive end**. The `start` mapping subtracts 1 from both fields. The
 //!    `end` mapping subtracts 1 from `line` (0-indexed) but **keeps `col` as-is**

@@ -11,14 +11,14 @@
 //! - [`TypeTag::DomainType`] — produced by the domain-type registry (#84).
 //!
 //! Single-source-of-truth note: the [`TypeTag`] enum mirrors the canonical
-//! design enum in full (`design/ir-schema.md` §Enums) so it is reusable across
+//! design enum in full (`docs/architecture/ir-schema.md` §Enums) so it is reusable across
 //! sibling issues without re-definition. The inferer's bounded output set
 //! (only the four primitive variants) is documented on
 //! [`infer_primitive`], not enforced by the type.
 
 /// Type tag for values and parameter slots.
 ///
-/// Mirrors the canonical enum from `design/ir-schema.md` §Enums:
+/// Mirrors the canonical enum from `docs/architecture/ir-schema.md` §Enums:
 /// `String | Int | Float | Bool | None | Agent | DomainType(name)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeTag {
