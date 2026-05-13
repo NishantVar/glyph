@@ -1,7 +1,7 @@
 //! Phase 4 (Lower) — converts the loose AST into the typed IR arena.
 //!
 //! Walking-skeleton scope: handles only the constructs in `update_docs.glyph`.
-//! Per `design/build-foundation.md` §A4, IDs are allocated in pre-order source
+//! Per `docs/adr/` §A4, IDs are allocated in pre-order source
 //! traversal starting at `n0`.
 
 use crate::ast::{

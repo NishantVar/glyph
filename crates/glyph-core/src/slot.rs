@@ -2,7 +2,7 @@
 //!
 //! Glyph string literals may contain `{IDENTIFIER}` slots that resolve to
 //! parameters or local bindings. Per `design/values-and-names.md` §No
-//! Interpolation and `design/build-foundation.md` §A2 (Tokenizer), slots:
+//! Interpolation and `docs/adr/` §A2 (Tokenizer), slots:
 //!
 //! - Are recognised by the tokenizer when scanning string content.
 //! - Use the strict `{IDENTIFIER}` grammar — no whitespace, no expressions,
@@ -11,7 +11,7 @@
 //!   Constraint / Context prose, generated block bodies, inline `flow:`
 //!   instruction strings). Any `{name}` in a non-instruction string —
 //!   `description:` body, parameter default value, etc. — fires
-//!   `G::parse::param-slot-in-non-instruction-string` (`design/diagnostics.md`).
+//!   `G::parse::param-slot-in-non-instruction-string` (`docs/reference/diagnostics.md`).
 //!
 //! The walking-skeleton tokenizer keeps string content as a single
 //! `StringLit(String)` token (cooked text). Slot recognition is therefore

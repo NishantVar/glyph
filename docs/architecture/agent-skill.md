@@ -140,14 +140,14 @@ Each repairable diagnostic has a specific fix pattern. The agent applies these t
 |---|---|
 | `G::parse::operator-in-expression` | Glyph has no value-level operators in MVP. Rewrite the expression as a plain call or inline string. E.g., `x + y` → `combine(x, y)` or an inline instruction string. |
 | `G::parse::param-slot-in-non-instruction-string` | `{name}` slots are only valid in instruction-bearing positions (flow statements, constraint text). Move the slot to an instruction string or remove it. |
-| `G::parse::duplicate-subsection` | Phase 3a handles this deterministically — no LLM action needed. The compiler's deterministic merge (`repair.md` §4.11) splices the duplicate body and its comment trivia into the first occurrence and removes the duplicate header. If this diagnostic appears in the 3b residual set, it is a compiler bug; Analyze should have surfaced `G::analyze::unmerged-duplicate-subsection` (error) instead. |
+| `G::parse::duplicate-subsection` | Phase 3a handles this deterministically — no LLM action needed. The compiler's deterministic merge ([[docs/architecture/repair]] §4.4) splices the duplicate body and its comment trivia into the first occurrence and removes the duplicate header. If this diagnostic appears in the 3b residual set, it is a compiler bug; Analyze should have surfaced `G::analyze::unmerged-duplicate-subsection` (error) instead. |
 
 #### Analyze-phase repairables
 
 | Diagnostic ID | Fix |
 |---|---|
 | `G::analyze::undefined-name` | Add a `generated const <name> = "<single-string content>"` declaration at the bottom of the file (after all non-generated declarations). Infer the content from the name and its usage context in the flow. |
-| `G::analyze::undefined-call` | Add a `generated block <name>(<inferred-params>)` with a single-string body (the `flow:`-omitted shorthand per `language-surface.md` §3.2). Infer parameter names from the call arguments. The body should be a single instruction string describing what the block does. Place after all non-generated declarations. |
+| `G::analyze::undefined-call` | Add a `generated block <name>(<inferred-params>)` with a single-string body (the `flow:`-omitted shorthand per [[language-surface]] §3.2). Infer parameter names from the call arguments. The body should be a single instruction string describing what the block does. Place after all non-generated declarations. |
 | `G::analyze::ambiguous-role` | Add an explicit role marker. If the statement is meant as a constraint, prefix with `require` or `avoid`. If it's meant as a step, ensure it's an instruction string or call. |
 | `G::analyze::missing-return` | Add a `return` statement as the last line of the `flow:` body. Infer the return expression from the block's purpose. |
 | `G::analyze::nested-branch` | Extract the inner branch into a `generated block` declaration. Replace the inner branch with a call to the new block. The generated block's body should be a single instruction string summarizing the extracted branch logic. |
@@ -182,22 +182,22 @@ If the agent's conflict assessment is malformed (can't parse its own output as t
 ## Phase 6 Step 2: Prose Reshaping
 
 After `glyph compile` exits 0, the compiler has written:
-- `foo.md` — Markdown produced by the deterministic emitter (Phase 7 output). Frontmatter is final. Section structure, list numbering, constraint rendering (the locked four-form template), pure-`applies()` Branch projection, the external-file Call Step template, and the `Identifier`-form return-fold suffix are final. `## Parameters` contains the parameter list skeleton (names, types, and either a default value or a `(required)` marker per parameter); descriptions are placeholder prose to be filled. Where the agent is responsible for prose, the deterministic emitter has marked typed spans with `SpanKind` ∈ `{ParamDescription, DescriptionReturnFold, BranchCondition, CallBodyShape}` (see `expand.md` §3.5).
+- `foo.md` — Markdown produced by the deterministic emitter (Phase 7 output). Frontmatter is final. Section structure, list numbering, constraint rendering (the locked four-form template), pure-`applies()` Branch projection, the external-file Call Step template, and the `Identifier`-form return-fold suffix are final. `## Parameters` contains the parameter list skeleton (names, types, and either a default value or a `(required)` marker per parameter); descriptions are placeholder prose to be filled. Where the agent is responsible for prose, the deterministic emitter has marked typed spans with `SpanKind` ∈ `{ParamDescription, DescriptionReturnFold, BranchCondition, CallBodyShape}` (see [[docs/architecture/expand]] §3.5).
 - `foo.ir.json` — the full resolved IR (post-Step-1) as JSON.
 
-The agent's job is **scoped to filling spans** — not regenerating Markdown. The agent rewrites span content **in place** on `foo.md`, producing human-quality prose for the LLM-owned slots while preserving every literal chunk emitted by the deterministic emitter. The full per-span contract is enumerated in `llm_expand_pass.md`. The frontmatter, section headers, list numbering, and the locked-template wording (constraints, return-fold suffixes, external-file Step, pure-`applies()` Branch headers) are **not touched** — they are deterministic. For `## Parameters`, the agent fills the `ParamDescription` span for each parameter from the parameter's name, type, usage context, and default value (if any); it must not add, remove, or rename parameters (the parameter list skeleton is compiler-owned).
+The agent's job is **scoped to filling spans** — not regenerating Markdown. The agent rewrites span content **in place** on `foo.md`, producing human-quality prose for the LLM-owned slots while preserving every literal chunk emitted by the deterministic emitter. The full per-span contract is enumerated in [[llm_expand_pass]]. The frontmatter, section headers, list numbering, and the locked-template wording (constraints, return-fold suffixes, external-file Step, pure-`applies()` Branch headers) are **not touched** — they are deterministic. For `## Parameters`, the agent fills the `ParamDescription` span for each parameter from the parameter's name, type, usage context, and default value (if any); it must not add, remove, or rename parameters (the parameter list skeleton is compiler-owned).
 
 ### What the agent rewrites
 
-The agent reads `foo.ir.json` and rewrites the `## Instructions` section to:
+The agent reads `foo.ir.json` and rewrites the body sections (`## Context`, `## Steps`, `## Constraints`, and any `### Procedure: <name>` sub-sections) to:
 
 1. **Expand Call nodes into natural prose.** A Call like `inspect_failure(scope)` with resolved body "Inspect the failure in {area}" becomes a Step like "Inspect the failure in {scope}, focusing on auth boundaries and permission checks."
 
 2. **Apply `with` modifiers.** The `site_modifier` field on Call nodes contains emphasis text. Weave it into the Step prose naturally. The modifier string must **not** appear verbatim in the output — it shapes the wording, it doesn't get quoted.
 
-3. **Constraints are deterministic — not the agent's job.** The locked four-form template (`compiled-output.md` §Constraint Rendering, mirrored in `GLYPH_LANGUAGE_GUIDE.md` §7.2 canonical form) is rendered by the compiler. The agent does **not** reword constraints, regenerate the `### Constraints` section, or paraphrase strength/polarity wording.
+3. **Constraints are deterministic — not the agent's job.** The locked four-form template ([[docs/reference/compiled-output]] §Constraint Rendering, mirrored in [[GLYPH_LANGUAGE_GUIDE]] §7.2 canonical form) is rendered by the compiler. The agent does **not** reword constraints, regenerate the `## Constraints` section, or paraphrase strength/polarity wording.
 
-4. **Project mixed-condition Branch arm headers (`BranchCondition` span only).** Pure-`applies()` Branches and the `Otherwise:` arm header are emitted deterministically per `expand.md` §3.3. The agent fills only the headers for arms whose condition is a code-shaped expression that mixes `applies()` calls with other operators — e.g., `block_x.applies() and not is_dry_run` → `If the user wants a structured plan and this is not a dry run:`. Letters reset per arm (`a.`, `b.`, `c.`) and are emitted by the deterministic emitter.
+4. **Project mixed-condition Branch arm headers (`BranchCondition` span only).** Pure-`applies()` Branches and the `Otherwise:` arm header are emitted deterministically per [[docs/architecture/expand]] §3.3. The agent fills only the headers for arms whose condition is a code-shaped expression that mixes `applies()` calls with other operators — e.g., `block_x.applies() and not is_dry_run` → `If the user wants a structured plan and this is not a dry run:`. Letters reset per arm (`a.`, `b.`, `c.`) and are emitted by the deterministic emitter.
 
 5. **Fold `Description`-form returns (`DescriptionReturnFold` span).** When the `OutputContract.form` is `Description("…")`, the agent paraphrases the description into a Step-shaped sentence inside the locked Description-suffix wrapper. The `Identifier` form (`return <name>`) is folded deterministically — the agent does not touch it.
 
@@ -211,7 +211,7 @@ The agent reads `foo.ir.json` and rewrites the `## Instructions` section to:
 
 - Don't touch the frontmatter (name, description, effects).
 - Don't add, remove, or rename parameters in `## Parameters` — only generate their descriptions.
-- Don't add sections beyond `### Context`, `### Steps`, `### Constraints`, `### Procedure: <name>`.
+- Don't add sections beyond `## Context`, `## Steps`, `## Constraints`, and any `### Procedure: <name>` nested under the last body H2.
 - Don't add code blocks, tables, or HTML to the instructions.
 - Don't exceed 3 sentences per Step (non-conditional) or per sub-step.
 - Don't exceed 1 sentence per Constraint.
@@ -242,61 +242,19 @@ glyph validate-output <ir-json-path> <md-path> [--format pretty|json]
 - **Exit 1:** Structural violations found. Diagnostics on stderr (pretty) or stdout (JSON).
 - **Exit 3:** Invocation error (missing file, bad path, IO failure).
 
-### Validation Checks (25 diagnostic IDs)
+### Validation Check Categories
 
-All checks are deterministic. The validator parses the Markdown structurally (heading extraction, list-item counting) and cross-references against the IR JSON.
+All checks are deterministic. The validator parses the Markdown structurally (heading extraction, list-item counting) and cross-references against the IR JSON. The authoritative catalog of `G::expand::*` IDs, classifications, and exact check semantics lives in [[docs/reference/diagnostics]]. From the agent's perspective the checks fall into four buckets:
 
-#### Section shape
-
-| ID | Check |
-|---|---|
-| `G::expand::extra-h2` | Only `## Parameters` and `## Instructions` allowed as H2 headings. |
-| `G::expand::missing-instructions` | `## Instructions` must be present. |
-| `G::expand::extra-h3` | Only `### Context`, `### Steps`, `### Constraints`, `### Procedure: <name>` allowed as H3 headings. |
-
-#### Role preservation (1-to-1 count matching against IR)
-
-| ID | Check |
-|---|---|
-| `G::expand::step-count-mismatch` | Number of top-level numbered items in `### Steps` must equal the number of Step-projecting flow nodes in the IR (counting each Branch as 1). |
-| `G::expand::substep-count-mismatch` | For each Branch node, the number of lettered sub-steps per arm must equal the number of Step-projecting children in that arm. |
-| `G::expand::constraint-count-mismatch` | Number of bullet items in `### Constraints` must equal the number of top-level Constraint nodes in the IR. |
-| `G::expand::step-order-mismatch` | Steps appear in the same order as their corresponding IR flow nodes. Checked positionally (Step 1 = first flow node, etc.). |
-
-#### Procedure sections
-
-| ID | Check |
-|---|---|
-| `G::expand::procedure-count-mismatch` | Number of `### Procedure: <name>` sections must equal the number of `same_file_procedure` Call nodes in the IR. |
-| `G::expand::procedure-name-mismatch` | Each `### Procedure:` heading name must match a callee name from a `same_file_procedure` Call node. |
-| `G::expand::procedure-step-count-mismatch` | Numbered items in each procedure section must equal the callee's flow node count. |
-| `G::expand::procedure-ref-missing` | Every `same_file_procedure` Call must produce a parenthetical procedure reference in its Step prose. |
-| `G::expand::procedure-ref-dangling` | Every procedure reference in Step prose must have a matching `### Procedure:` section. |
-| `G::expand::procedure-duplicate` | No two `### Procedure:` sections may share a name. |
-| `G::expand::procedure-order` | `### Procedure:` sections appear in order of first reference from `### Steps`. |
-
-#### Parameter references
-
-| ID | Check |
-|---|---|
-| `G::expand::invented-param-ref` | Every `{name}` token in the Markdown must match a declared parameter name in the IR. |
-| `G::expand::dropped-param-ref` | Every parameter referenced in IR node bodies must appear at least once in the Markdown. |
-| `G::expand::unresolved-local-ref` | Every `local_ref` slot must be resolved into prose — no literal `{name}` tokens for local bindings may survive. |
-| `G::expand::params-section-mismatch` | Item count in `## Parameters` must equal the IR's parameter count. |
-| `G::expand::params-section-missing` | If the IR has parameters, `## Parameters` must be present. |
-| `G::expand::params-section-spurious` | If the IR has no parameters, `## Parameters` must be absent. |
-
-#### Content shape
-
-| ID | Check |
-|---|---|
-| `G::expand::frontmatter-returned` | The `## Instructions` content must not begin with YAML frontmatter (`---`). |
-| `G::expand::modifier-leaked` | No `with` modifier string (from `site_modifier` fields in the IR) appears verbatim in the Markdown output. |
-| `G::expand::malformed-markdown` | Output doesn't parse as valid structural Markdown (e.g., unclosed headings, malformed list items). |
+- **Section shape** — only canonical peer-level H2s (`## Parameters`, `## Context`, `## Steps`, `## Constraints`) and the nested `### Procedure: <name>` H3s may appear.
+- **Role preservation (1-to-1 count matching against IR)** — Step / sub-step / Constraint counts and order match the IR; positional ordering is checked.
+- **Procedure sections** — procedure count, name, step count, reference linkage, ordering, and uniqueness match the IR's `same_file_procedure` Call set.
+- **Parameter references** — every `{name}` slot in the output resolves to an IR parameter; no IR parameter is silently dropped; local-binding refs are resolved into prose and do not survive as `{name}` tokens.
+- **Content shape** — body sections do not begin with YAML, `with` modifier strings never leak verbatim, and the output parses as valid structural Markdown.
 
 ### Counting Rules
 
-**Step counting under nested branches.** A top-level `Branch` contributes exactly **1** to the top-level Step count. Inside an arm, the sub-step count equals the number of direct Step-projecting children of that arm; a `Branch` nested inside another `Branch`'s arm counts as **1 sub-step** and does **not** expand into n sub-steps per its own arms — recursion stops at the first nesting level. In practice, Repair §4.9 auto-extracts nested branches into `generated block` declarations before Phase 6b runs, so the validator typically sees a `Call` to the extracted block rather than a literal nested `Branch`; this counting rule is the defensive fallback for cases where extraction did not run. The step-count formula in `expand.md` (`(Step nodes) + (Branch nodes × 1) − (Return folds)`) is consistent with this rule.
+**Step counting under nested branches.** A top-level `Branch` contributes exactly **1** to the top-level Step count. Inside an arm, the sub-step count equals the number of direct Step-projecting children of that arm; a `Branch` nested inside another `Branch`'s arm counts as **1 sub-step** and does **not** expand into n sub-steps per its own arms — recursion stops at the first nesting level. In practice, [[docs/architecture/repair]] §4.1 auto-extracts nested branches into `generated block` declarations before Phase 6b runs, so the validator typically sees a `Call` to the extracted block rather than a literal nested `Branch`; this counting rule is the defensive fallback for cases where extraction did not run. The step-count formula in [[docs/architecture/expand]] (`(Step nodes) + (Branch nodes × 1) − (Return folds)`) is consistent with this rule.
 
 ### Implementation Notes
 
@@ -306,33 +264,36 @@ The Markdown parser for `validate-output` is minimal: line-by-line heading extra
 
 The `--emit-ir` flag causes `glyph compile` to write `foo.ir.json` alongside `foo.md`. This is the **post-Step-1 resolved IR** — bare names inlined, projection tiers assigned, parameter slots preserved, `with` modifiers attached to Call nodes.
 
-**The canonical IR JSON schema lives in [`ir-json-schema.md`](ir-json-schema.md).** That document specifies the top-level envelope, per-node-kind JSON shapes, enum serialization (all snake_case), Expression/Value unions, versioning policy (`ir_version` as monotonic integer, independent of compiler version), and a complete worked example. Both `--emit-ir` and `validate-output` use this schema as their contract.
+**The canonical IR JSON schema lives in [`../reference/ir-json.md`](../reference/ir-json.md).** That document specifies the top-level envelope, per-node-kind JSON shapes, enum serialization (all snake_case), Expression/Value unions, versioning policy (`ir_version` as monotonic integer, independent of compiler version), and a complete worked example. Both `--emit-ir` and `validate-output` use this schema as their contract.
 
 Key points for the agent:
 
-- **Envelope:** `{"ir_version": 1, "compiler": "glyph 0.1.0", "source_file": "...", "skill": {...}}`.
+- **Envelope:** `{"ir_version": 2, "compiler": "glyph 0.1.0", "source_file": "...", "skill": {...}}`.
 - **All enums are lowercase snake_case.** Role values are `"input_contract"`, `"step"`, `"constraint"`, `"context"`, `"output_contract"`. TypeTag built-ins are `"string"`, `"int"`, etc. Domain types are `{"domain_type": "<name>"}`.
 - **Every node carries `node_id`** (string, e.g. `"n0"`), including Param and Expr sub-nodes.
-- **Expression and Value unions use a `kind` discriminator.** See `ir-json-schema.md` §Expression Union and §Value Union.
+- **Expression and Value unions use a `kind` discriminator.** See `../reference/ir-json.md` §Expression Union and §Value Union.
 - **Version check:** If `ir_version > KNOWN_MAX`, warn and attempt to proceed. Ignore unknown fields.
 
 ## What the Skill File Looks Like
 
 The agent skill is a plain Markdown file (e.g., `glyph-compile.skill.md`) that a coding agent loads. It encodes the workflow state machine, repair patterns, and Step 2 rules from this document as agent instructions.
 
-The skill is **not** a `.glyph` file. It does not compile itself. Dogfooding (authoring the skill in Glyph) is a post-MVP goal.
+The skill is **not** a `.glyph` file. It does not compile itself.
 
 The skill references the `glyph` CLI binary and expects it to be on `PATH`. It does not import any libraries, call any APIs, or depend on any specific LLM provider.
 
 ### Shipping Location
 
-For MVP, the agent skill ships **inside the `glyph` repo** at a known path (e.g., `glyph-cli/agent/glyph.skill.md`). Installation is **manual**: the user copies the file into their coding agent's skill directory. There is no `glyph install-skill` subcommand and no installer; packaging mechanics are deferred post-MVP.
+The agent skill ships inside the `glyph` repo at a known path (e.g., `glyph-cli/agent/glyph.skill.md`). Users copy the file into their coding agent's skill directory.
 
-## Interactions With Other Design Docs
+Deferred work (installer subcommand, dogfooding the skill as `.glyph`) is tracked in [[agent-skill-todos]].
 
-- **`cli.md`** — exit code 3 added for invocation errors (previously overloaded on exit 2). `validate-output` subcommand added.
-- **`build-foundation.md`** — exit code contract is 0/1/2/3, matching `cli.md`.
-- **`diagnostics.md`** — 24 `G::expand::*` diagnostic IDs are compiler-scope (implemented in `validate-output`), not agent-scope.
-- **`mvp-acceptance.md`** — the 25 agent-scope 6b diagnostics move to compiler-scope under `validate-output`. Agent-scope diagnostic count is 11 (5 repair notifications + 5 repair execution failures + 1 expand `llm-unavailable`). Compiler-scope is 80 (19 Parse + 29 Analyze + 1 Imports + 5 Validate + 1 Build + 25 Validate-output).
-- **`ir-schema.md`** — JSON serialization shapes defined here are the `serde_json` projection of the Rust IR types from `ir-schema.md`.
-- **`compiled-output.md`** — constraint wording exemplars in §Step 2 are the authoritative patterns for the open question in `compiled-output.md` §Open Questions.
+## Interactions With Other Docs
+
+- **[[docs/reference/cli]]** — exit code 3 is reserved for invocation errors (previously overloaded on exit 2). `validate-output` subcommand defined there.
+- **[[docs/reference/diagnostics]]** — `G::expand::*` diagnostic IDs are compiler-scope (implemented in `validate-output`), not agent-scope.
+- **[[ir-schema]]** — JSON serialization shapes defined here are the `serde_json` projection of the Rust IR types from [[ir-schema]].
+- **[[ir-json]]** — canonical IR JSON serialization contract; produced by `--emit-ir` and consumed by `validate-output`.
+- **[[docs/architecture/repair]]** — deterministic auto-fix mechanics (`glyph fmt`) for Phase 3a; LLM repair patterns extend that contract here.
+- **[[docs/architecture/expand]]** — span model and Phase 6b validator implementation; this doc defines what the agent fills.
+- **[[design/compiled-output]]** — constraint wording exemplars in §Step 2 are the authoritative patterns matching the locked four-form template.

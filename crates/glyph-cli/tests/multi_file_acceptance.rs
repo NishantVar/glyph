@@ -1,7 +1,7 @@
 //! Slice 22: Multi-file acceptance project integration tests.
 //!
 //! Exercises the 5-skill project in `tests/corpus/multi-file/` per
-//! `design/mvp-acceptance.md` §3. All files are fully valid (no repair
+//! `docs/reference/mvp-acceptance.md` §3. All files are fully valid (no repair
 //! needed) and compile end-to-end with exit code 0.
 //!
 //! Acceptance criteria (Bar 3):

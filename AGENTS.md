@@ -2,8 +2,17 @@
 
 Glyph is a human-readable, visualizable DSL for authoring reusable agent skills that compiles into explicit, task-specific instructions for coding agents. See the top-level [README.md](README.md) for the public project description.
 
-## Design
-- [design/](design/) — **main design docs** (flat, this is the top-level design for Glyph): principles, boundaries, language core, semantics, types & effects, constraints, IR, compiler pipeline, output format, validation strategy, and a gap checklist
+## Documentation Layout
+
+Documentation is split by audience. Pick the folder that matches what you're writing or reading.
+
+- [design/](design/) — **language and product design** for Glyph. Principles, boundaries, language core, semantics, types & effects, constraints, IR shape from a designer's perspective. Audience: language/product designers.
+- [docs/reference/](docs/reference/) — **stable contracts** for users, tools, agents, and downstream integrations (CLI surface, compiled-output shape, diagnostic IDs, IR JSON contract, MVP acceptance).
+- [docs/architecture/](docs/architecture/) — **maintainer-facing architecture** and invariants for the compiler, repair pass, expand pass, IR schema/semantics, LSP, tree-sitter grammar, agent-skill companion, walking-skeleton example.
+- [docs/adr/](docs/adr/) — **architecture decision records** (numbered, short, immutable rationale for non-obvious internal choices).
+- [todo/](todo/) — **bugs, implementation TODOs, migration chores, test gaps**. In a normal repo these would be GitHub issues; the owner asked for in-tree tracking instead.
+
+If you're about to add docs, see each folder's own `AGENTS.md` for the rules on what belongs there.
 
 ## Research
 

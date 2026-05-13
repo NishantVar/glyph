@@ -9,7 +9,7 @@ the symptom, the impact, and the proposed fix.
 - **Silent parse failure on `name = call(...)` binding inside `flow:`.** The
   parser's `parse_with_diagnostics_opts` returns `None` (parse failure) without
   pushing any diagnostic when it encounters a flow-level binding of the form
-  `ctx = inspect_repo(scope)`. The language surface (`language-surface.md`)
+  `ctx = inspect_repo(scope)`. The language surface ([[language-surface]])
   treats this as valid syntax — flow can contain variable bindings whose right-
   hand side is a call expression — but the parser doesn't accept it.
 
@@ -41,7 +41,7 @@ the symptom, the impact, and the proposed fix.
 - **Inline-form `description:` merge separator may not match design intent.**
   `crates/glyph-core/src/fmt.rs` `emit_merged_descriptions` joins the bodies of
   duplicate inline `description: "..."` sub-sections with a single `\n`. The
-  multi-line bare form's merge rule in `design/repair.md` §4.11.4 specifies
+  multi-line bare form's merge rule in [[design/repair]] §4.11.4 specifies
   "concatenate body text with a single blank line between bodies" (i.e. `\n\n`).
   The design is silent on the inline-string form, so #109 chose `\n` as a
   default. If §4.11.4's blank-line rule is meant to apply uniformly to all
@@ -92,7 +92,7 @@ the symptom, the impact, and the proposed fix.
       ungrammatical or doubled bullets (`Avoid routing is by …`,
       `Avoid avoid leaving …`).
   Both defects are gone with the bold colon-marker emitter (see
-  `design/compiled-output.md` §Constraint Rendering). The label sits in a
+  [[design/compiled-output]] §Constraint Rendering). The label sits in a
   bold span and is separated from the body by a colon, so the body is its
   own clause: capitalization, phrasing, and punctuation are now the
   author's choice and the emitter never rewrites them. The

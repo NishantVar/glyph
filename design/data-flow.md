@@ -41,7 +41,7 @@ Compile-time resolution: preference values are inlined into the compiled Markdow
 
 An `export block` that reads a preference does so through an explicit import, keeping its closure contract intact.
 
-See `preferences.md` for the full preferences design. Override mechanism and standard prefs library are deferred (see `todo.md`).
+See [[preferences]] for the full preferences design. Override mechanism and standard prefs library are deferred (see [[todo]]).
 
 ## Local Bindings
 
@@ -65,7 +65,7 @@ Local bindings are scoped to the smallest enclosing structural region:
 - A binding introduced at the top level of `flow:` (or at the body level of a `skill` / `block` outside any `if`/`elif`/`else`) is scoped to the entire enclosing `skill` or `block` and is visible to all subsequent flow statements in that declaration.
 - A binding introduced inside an `if`, `elif`, or `else` branch body is scoped **only to that branch body**. It is not visible after the conditional ends, nor in sibling branches. Re-binding the same name in a different branch is allowed because the scopes do not overlap.
 
-Across either scope, a binding should not silently shadow an existing binding if doing so would make data flow ambiguous (per `values-and-names.md` §No Shadowing — name collisions across overlapping scopes are hard errors).
+Across either scope, a binding should not silently shadow an existing binding if doing so would make data flow ambiguous (per [[values-and-names]] §No Shadowing — name collisions across overlapping scopes are hard errors).
 
 The source may omit types. The compiler infers or repairs types as needed.
 
@@ -87,11 +87,11 @@ Rules:
 - Named arguments use `name = value` syntax, where `name` matches a declared parameter name.
 - A named argument may not duplicate a parameter already filled by a positional argument. This is a compile error.
 - All required parameters (those without defaults) must be supplied, either positionally or by name.
-- The compiler resolves all positional arguments to named arg-to-param mappings during IR normalization; the IR contains only named arguments.
+- The compiler resolves all positional arguments to named arg-to-param mappings during normalization.
 
 ### Default-Value Interaction
 
-Omitting an argument uses the parameter's declared default from the header (`language-surface.md`). To skip an optional positional parameter and supply a later one, the caller must switch to named arguments.
+Omitting an argument uses the parameter's declared default from the header ([[language-surface]]). To skip an optional positional parameter and supply a later one, the caller must switch to named arguments.
 
 ```glyph
 // Given: block make_plan(ctx, risk = "medium", verbose = false)
@@ -106,7 +106,7 @@ There is no placeholder or sentinel value for "use the default." Omission or nam
 
 Trailing commas are allowed in all argument lists, both single-line and multi-line. They are optional and never required.
 
-Call arguments may span multiple lines using the implicit line-continuation rule for paired delimiters defined in `language-surface.md`. Inside parentheses, indentation is not structurally significant. No backslash continuation is needed or supported.
+Call arguments may span multiple lines using the implicit line-continuation rule for paired delimiters defined in [[language-surface]]. Inside parentheses, indentation is not structurally significant. No backslash continuation is needed or supported.
 
 ```glyph
 plan = make_plan(
@@ -118,7 +118,7 @@ plan = make_plan(
 
 ### Qualified Callees
 
-A callee is either a bare identifier resolved through the standard name resolution order (see `values-and-names.md`), or a single-level qualified name where the left side is a whole-module import alias:
+A callee is either a bare identifier resolved through the standard name resolution order (see [[values-and-names]]), or a single-level qualified name where the left side is a whole-module import alias:
 
 ```glyph
 import "./repo_tools.glyph" as repo_tools
@@ -127,7 +127,7 @@ ctx = repo_tools.inspect_repo(scope)
 repo_tools.validate_changes(ctx)
 ```
 
-The left side must be a whole-module import alias (`language-surface.md`).
+The left side must be a whole-module import alias ([[language-surface]]).
 
 No computed callees and no first-class functions in the MVP.
 
@@ -151,24 +151,24 @@ skill investigate(scope = ".")
 
 **Rules:**
 
-- `<value>.<name>(args)` desugars to `<name>(<value>, args)` during Lower.
+- `<value>.<name>(args)` desugars to `<name>(<value>, args)`.
 - The receiver may be any value expression: a binding, a parameter, a call result, or a dot access.
-- `<name>` is resolved through the standard name resolution order (`values-and-names.md`): same-file binding, explicit import, stdlib. It must resolve to a callable (`block`, `export block`, or stdlib primitive).
-- If the resolved callable's first parameter has a type annotation, the receiver's type must match it (nominal matching per `types.md`). If either side is untyped, no check is performed.
+- `<name>` is resolved through the standard name resolution order ([[values-and-names]]): same-file binding, explicit import, stdlib. It must resolve to a callable (`block`, `export block`, or stdlib primitive).
+- If the resolved callable's first parameter has a type annotation, the receiver's type must match it (nominal matching per [[types]]). If either side is untyped, no check is performed.
 - `with` modifiers work: `researcher.send(msg) with "be thorough"` desugars to `send(researcher, msg) with "be thorough"`.
 - UFCS calls may bind results: `result = items.transform(filter)` desugars to `result = transform(items, filter)`.
 - Zero additional arguments are allowed: `agent.finish()` desugars to `finish(agent)`.
 
 **Disambiguation from qualified callees:**
 
-Both UFCS and qualified callees use dot syntax. The compiler disambiguates in Analyze:
+Both UFCS and qualified callees use dot syntax. The compiler disambiguates by what the left-hand side resolves to:
 
 - If the name before the dot resolves to a **whole-module import alias** → qualified callee (`repo_tools.inspect_repo(scope)`).
 - If it resolves to a **value binding, parameter, or other value expression** → UFCS method call (`researcher.send(msg)`).
-- If it resolves to a **`block` or `export block` declaration** (or a `module_alias.block_name` form), the method name is `applies`, the call has zero arguments, and the call appears in an `if` / `elif` condition position → block trigger predicate (not UFCS, not a qualified callee — see §Condition Expressions and `ir-and-semantics.md` §Block Trigger Predicate). The form is preserved as a special syntactic shape on the Branch's `condition` string and is not desugared.
+- If it resolves to a **`block` or `export block` declaration** (or a `module_alias.block_name` form), the method name is `applies`, the call has zero arguments, and the call appears in an `if` / `elif` condition position → block trigger predicate (not UFCS, not a qualified callee — see §Condition Expressions and [[ir-and-semantics]] §Block Trigger Predicate). The form is preserved as a special syntactic shape and is not desugared.
 - If it resolves to neither → diagnostic (unresolved name).
 
-This check is unambiguous because import aliases and value bindings occupy distinct namespaces and cannot collide (per `values-and-names.md` no-shadowing rules).
+This check is unambiguous because import aliases and value bindings occupy distinct namespaces and cannot collide (per [[values-and-names]] no-shadowing rules).
 
 ### Bare Name vs Call Distinction
 
@@ -179,7 +179,7 @@ summarize()                    // zero-argument call
 summarize                      // bare name reference (const, parameter, binding)
 ```
 
-See `values-and-names.md` for the full name resolution rules, reserved keywords, and identifier conventions.
+See [[values-and-names]] for the full name resolution rules, reserved keywords, and identifier conventions.
 
 ### `with` Modifier
 
@@ -195,12 +195,10 @@ Rules:
 
 - Syntax: `<call-expression> with <string-literal>`. The string is a single inline `"..."` or block `"""..."""`; no interpolation.
 - The modifier attaches to the call site, not the binding. With a binding, it still attaches to the call: `report = inspect_failure(scope) with "focus on auth"`.
-- The modifier is consumed by the expand pass. It shapes the generated prose for that one invocation and does **not** survive into compiled output (no "with modifier" text appears in the `.md`).
+- The modifier is consumed during expansion. It shapes the generated prose for that one invocation and does **not** survive into compiled output (no "with modifier" text appears in the `.md`).
 - The modifier does not change the callee's declared effects, constraints, return type, or parameters. It only adjusts the wording of the expanded Step.
 - Exactly one `with` clause per call site in MVP. No chained `with ... with ...`.
 - Applies to bare calls (`foo()`), qualified calls (`Alias.foo()`), UFCS calls (`x.foo()`), and calls inside bindings (`x = foo()`). Does not apply to bare-name statements (no parens).
-
-IR representation: the modifier is stored on the `Call` IR node as an optional `site_modifier: String` field. See the call-node normalization below.
 
 ### Nested Calls
 
@@ -211,37 +209,26 @@ result = validate(make_plan(ctx, risk))
 apply_changes(merge(base, overlay))
 ```
 
-The compiler desugars nested calls into flat IR nodes by introducing temporary bindings, keeping the IR as a flat, visualizable data-flow graph.
+The compiler desugars nested calls by introducing temporary bindings, keeping the IR as a flat, visualizable data-flow graph.
 
 Deeply nested calls (three or more levels) are legal but discouraged by convention -- intermediate bindings with descriptive names improve readability.
 
-### IR Call-Node Normalization
+### Call Normalization (Authoring Model)
 
-Every source call normalizes to an explicit IR node:
+Every source call is normalized into an explicit IR call carrying: the resolved callee, named arguments (positional are resolved to named), the optional output binding, the return type, the inferred effect set, and the optional `with` site modifier.
 
-```text
-Call {
-  target: <resolved identifier or qualified name>,
-  args: { <param_name>: <value_or_ref>, ... },
-  output: Binding(<name>) | none,
-  return_type: <resolved type>,
-  effects: [<inferred effect set>],
-  site_modifier: <string> | none
-}
-```
+The author-visible consequences of normalization:
 
-Key normalization steps:
-
-- UFCS calls are desugared: `x.foo(args)` becomes `foo(x, args)` with the receiver as the first positional argument.
-- All positional arguments are resolved to named arg-to-param mappings. The IR has no positional arguments.
-- Nested calls are desugared into sequential flat calls with compiler-generated temporary bindings.
-- Default values are filled in for omitted optional parameters.
-- The callee is resolved to its declaration (same-file block, imported block, or standard-library primitive).
-- Effects are inferred from the callee's declared or inferred effect set.
+- UFCS calls (`x.foo(args)`) behave as `foo(x, args)` for type checking, effect inference, and projection.
+- Positional arguments are resolved to named arg-to-param mappings; mismatched argument names or missing required arguments surface as compile errors.
+- Nested calls are flattened into sequential calls with compiler-generated temporary bindings; the visualizable data-flow graph stays flat.
+- Default values fill in for omitted optional parameters.
+- The callee is resolved to a same-file `block`, an imported `export block`, or a standard-library primitive.
+- Effects propagate from the callee's declared or inferred effect set into the caller's inferred set.
 
 ### Repair Behavior At Call Sites
 
-The LLM repair pass may add minimal syntax when call-site data flow cannot compile: adding explicit argument names when positional mapping is ambiguous, adding missing type annotations on bindings when inference fails, or renaming a local binding only if the current name collides and no smaller repair exists. Repair should not rewrite the call structure, reorder arguments, or expand shorthand instruction names into prose. Full repair rules are in `repair.md`.
+The LLM repair pass may add minimal syntax when call-site data flow cannot compile: adding explicit argument names when positional mapping is ambiguous, adding missing type annotations on bindings when inference fails, or renaming a local binding only if the current name collides and no smaller repair exists. Repair should not rewrite the call structure, reorder arguments, or expand shorthand instruction names into prose. Full repair rules are in [[design/repair]].
 
 ## Control Flow
 
@@ -263,9 +250,9 @@ Nine statement forms are allowed inside `flow:` blocks. All content defaults to 
 
 A call without a binding is a statement call -- the return value, if any, is discarded. Both binding and bare-call forms occupy one line each unless the argument list wraps inside parentheses.
 
-A **constraint marker** (`require <name>`, `avoid <name>`, `must <name>`, `must avoid <name>`, or any of those forms with an inline string in place of the bare name) parses to a `Constraint` IR node admitted in the flow's `FlowNode` union (`ir-schema.md` §Flow Nodes). Lower (`pipeline.md` Phase 4) splits these by location: a constraint marker at flow top-level is hoisted into the enclosing declaration's `constraints` list; a constraint marker inside an `if`/`elif`/`else` branch body stays inline and is rendered as part of the conditional Step prose by Expand. See `ir-and-semantics.md` §Flow-Level Constraint Markers and `compiled-output.md` §Constraint Rendering for the projection rules.
+A **constraint marker** (`require <name>`, `avoid <name>`, `must <name>`, `must avoid <name>`, or any of those forms with an inline string in place of the bare name) is a Constraint node. Its location decides projection: a constraint marker at flow top-level hoists into the enclosing declaration's constraints list; a constraint marker inside an `if`/`elif`/`else` branch body stays inline and is rendered as part of the conditional Step prose. See [[docs/architecture/ir-semantics]] §Flow-Level Constraint Markers and [[design/compiled-output]] §Constraint Rendering for the projection rules.
 
-A **context marker** (`context <name>` or `context "<inline string>"`) parses to a `ContextNode` IR node, also admitted in the `FlowNode` union. The same hoisting rules apply: a context marker at flow top-level is hoisted into the declaration's `context` list; a context marker inside a branch body stays inline. See `ir-and-semantics.md` for full context marker rules.
+A **context marker** (`context <name>` or `context "<inline string>"`) is a Context node. The same hoisting rules apply: a context marker at flow top-level is hoisted into the declaration's context list; a context marker inside a branch body stays inline. See [[ir-and-semantics]] for full context marker rules.
 
 ### Branching: `if`/`elif`/`else`
 
@@ -297,7 +284,7 @@ Rules:
 - `elif` and `else` appear at the same indentation level as their matching `if`.
 - No parentheses are required around conditions, but parentheses are allowed for grouping complex expressions.
 - Branch bodies may contain any statement form allowed in `flow:` *except* `return`: bindings, bare calls, bare names, inline strings, constraint markers, and nested `if`/`elif`/`else`. `return` is restricted to the top level of `flow:` (see §Return Semantics).
-- `if`, `elif`, `else`, `return`, and `flow` are reserved keywords (see `values-and-names.md`).
+- `if`, `elif`, `else`, `return`, and `flow` are reserved keywords (see [[values-and-names]]).
 
 ### Condition Expressions
 
@@ -318,15 +305,15 @@ Condition expressions inside `if` and `elif` are intentionally minimal in the MV
 | String-const predicate | `if complex_change_required:` (where `complex_change_required` is a `const` with a string RHS) |
 | Inline literal predicate | `if "the user has explicitly opted out of compile-on-save":` |
 
-The block-trigger form `BLOCKNAME.applies()` is a special syntactic shape (not UFCS) for description-driven dispatch. Receiver must resolve to a `block` / `export block` (or `module_alias.block_name`) carrying `description:`; `applies` takes zero arguments; parens are required. See `ir-and-semantics.md` §Predicates for full semantics and resolution behavior. It composes with `and`/`or`/`not` like any other predicate.
+The block-trigger form `BLOCKNAME.applies()` is a special syntactic shape (not UFCS) for description-driven dispatch. Receiver must resolve to a `block` / `export block` (or `module_alias.block_name`) carrying `description:`; `applies` takes zero arguments; parens are required. See [[ir-and-semantics]] §Predicates for full semantics and resolution behavior. It composes with `and`/`or`/`not` like any other predicate.
 
-**String-const predicate.** A bare identifier in condition position that resolves to a string-kinded `const` or `export const` is treated as a natural-language predicate — the consuming agent evaluates the resolved string against current context. Example: `const complex_change_required = "the requested change requires regenerating multi-line prose …"` then `if complex_change_required:`. Analyze classifies the condition as predicate-kinded based on the inferred kind of the resolved declaration (see `types.md` §Inferred Kinds). The string body flows into `resolved_predicates` on the Branch IR node; Expand Step 1 populates the map and Step 2 projects it as a natural-language condition header.
+**String-const predicate.** A bare identifier in condition position that resolves to a string-kinded `const` or `export const` is treated as a natural-language predicate — the consuming agent evaluates the resolved string against current context. Example: `const complex_change_required = "the requested change requires regenerating multi-line prose …"` then `if complex_change_required:`. The classification is driven by the inferred kind of the resolved declaration (see [[types]] §Inferred Kinds).
 
-**Inline literal predicate.** A quoted string literal in condition position is treated as a self-contained natural-language predicate. The literal is its own resolved value — no `resolved_predicates` map entry is needed. Example: `if "the user has explicitly opted out of compile-on-save":`. This form is concise for one-off conditions; extract to a named `const` when the predicate is reused or long.
+**Inline literal predicate.** A quoted string literal in condition position is treated as a self-contained natural-language predicate. Example: `if "the user has explicitly opted out of compile-on-save":`. This form is concise for one-off conditions; extract to a named `const` when the predicate is reused or long.
 
 **`==` carve-out.** The equality form `if risk == "high":` is **not** a predicate — the `==` operator is a boolean comparison expression and the right-hand string is an operand, not a predicate body. The condition evaluates to a boolean. A bare string in condition position (`if "high":`) is a predicate; a string on the right side of `==` is a comparison value.
 
-**Composition rules.** All three predicate forms compose with `and`, `or`, `not`, and parenthesization. A Branch is **pure-predicate** when every arm's condition is one or more predicate-form tokens combined by `or` only (no `and`, no `not`, no boolean tokens). Pure-predicate branches use the deterministic "decide which applies" framing; mixed conditions (predicates composed with boolean tokens via `and`/`not`) go through the `BranchCondition` LLM span. See `compiled-output.md` §Predicate-Driven Branch Projection.
+**Composition rules.** All three predicate forms compose with `and`, `or`, `not`, and parenthesization. A Branch is **pure-predicate** when every arm's condition is one or more predicate-form tokens combined by `or` only (no `and`, no `not`, no boolean tokens). Pure-predicate branches use the deterministic "decide which applies" framing; mixed conditions (predicates composed with boolean tokens via `and`/`not`) inline the resolved predicate prose into the larger condition. See [[design/compiled-output]] §Predicate-Driven Branch Projection.
 
 Standard Python precedence: `not` binds tightest, then `and`, then `or`. Parentheses override precedence.
 
@@ -350,7 +337,7 @@ Only single-level dot access is allowed in the MVP. Chained access (`ctx.config.
 
 ### Indentation
 
-Control-flow indentation follows `language-surface.md` with 4-space indent units:
+Control-flow indentation follows [[language-surface]] with 4-space indent units:
 
 ```
 Level 0 (col 0):   top-level declarations (skill, block)
@@ -364,23 +351,23 @@ Blank lines inside `if`/`elif`/`else` bodies are visual separators and do not cl
 
 ### IR Mapping
 
-| Source Form | IR Node | Role |
-|-------------|---------|------|
-| `x = call(...)` | `Call { output: Binding(x), ... }` | `Step` |
-| `call(...)` | `Call { output: none, ... }` | `Step` |
-| `bare_name` | `InstructionRef { name }` | `Step` |
-| `"text"` | `InlineInstruction { text }` | `Step` |
-| `return expr` | `Return { value }` | `OutputContract` |
-| `if/elif/else` | `Branch { condition, then_body, elif_branches, else_body }` | Container |
-| `x.prop` | `PropertyAccess { object, property }` | Value expression |
+| Source Form | IR Role |
+|-------------|---------|
+| `x = call(...)` | `Step` with output binding |
+| `call(...)` | `Step` |
+| `bare_name` | `Step` (instruction reference) |
+| `"text"` | `Step` (inline instruction) |
+| `return expr` | `OutputContract` |
+| `if/elif/else` | Branch container |
+| `x.prop` | Value expression (property access) |
 
-The `Branch` IR node is a container. Its children carry their own roles. The branch itself does not have an instruction role -- it structures the execution path.
+A Branch is a container. Its children carry their own roles. The branch itself does not have an instruction role -- it structures the execution path. See [[ir-schema]] for the canonical IR node shapes.
 
-> **Compiled-output note:** The `OutputContract` role is an IR-level concept used for type-checking, importer validation, and visualization. In compiled Markdown, the `Return` node **folds into the closing sentence of the final `### Steps` item** — there is no dedicated `### Returns` or `### Output` section in MVP. See `compiled-output.md` §Return Folding and `ir-and-semantics.md` §Roles for details.
+> **Compiled-output note:** The `OutputContract` role is an IR-level concept used for type-checking, importer validation, and visualization. In compiled Markdown, the `Return` node **folds into the closing sentence of the final `## Steps` item** — there is no dedicated `## Returns` or `## Output` section in MVP. See [[design/compiled-output]] §Return Folding and [[ir-and-semantics]] §Roles for details.
 
 ### Compiled-Output Projection
 
-Conditional logic in `flow:` projects to a **single numbered Step** with **lettered sub-steps per arm** under `### Steps` in `## Instructions` (`compiled-output.md`). Each arm is introduced by a condition header (`If <condition>:` for `if`/`elif`, `Otherwise:` for `else`), and each Step-projecting node inside the arm becomes a lettered sub-step (`a.`, `b.`, `c.`). Letters reset per arm.
+Conditional logic in `flow:` projects to a **single numbered Step** with **lettered sub-steps per arm** under the peer-level `## Steps` heading ([[design/compiled-output]]). Each arm is introduced by a condition header (`If <condition>:` for `if`/`elif`, `Otherwise:` for `else`), and each Step-projecting node inside the arm becomes a lettered sub-step (`a.`, `b.`, `c.`). Letters reset per arm.
 
 ```md
 3. If the risk is high and tests exist:
@@ -392,7 +379,7 @@ Conditional logic in `flow:` projects to a **single numbered Step** with **lette
    a. No action needed.
 ```
 
-Nested branches (a `Branch` inside another `Branch`'s arm) flatten into prose within their parent sub-step rather than producing their own sub-step structure. Only one level of structured sub-steps is supported. The Repair pass auto-extracts deeply nested branches into helper `generated block` declarations (see `repair.md` §4.9).
+Nested branches (a `Branch` inside another `Branch`'s arm) flatten into prose within their parent sub-step rather than producing their own sub-step structure. Only one level of structured sub-steps is supported. The Repair pass auto-extracts deeply nested branches into helper `generated block` declarations (see [[design/repair]] §4.9).
 
 Branch-scoped constraints inline into adjacent sub-step prose rather than receiving their own letter. Bindings inside arms project their call as a lettered sub-step; the binding name is invisible in compiled output.
 
@@ -410,20 +397,18 @@ Rules:
 
 - `return <expr>` where `<expr>` is a call, binding reference, dot access, literal, `none`, an output target identifier (`<name>`), or an output target description (`<"…">`).
 - `return` alone (no expression) is equivalent to `return none`.
-- `return <name>` and `return <"description">` mark an agent-synthesized output target. The identifier form's name must be identifier-shaped and must not shadow an existing visible binding. The descriptive form's quoted string follows inline-string rules — double quotes only, MVP escapes `\"` and `\\`, no interpolation, no `{name}` slots (`values-and-names.md` §Inline Strings). Lower records the return as an `OutputContract { form, ty, source }` (`ir-schema.md` §OutputContract) where `form` is `Identifier(name)` or `Description(text)` and `ty` comes from the enclosing declaration's `-> DomainType` annotation. Expand folds either form into natural prose; the literal `<name>` or `<"…">` token must not appear in compiled Markdown.
+- `return <name>` and `return <"description">` mark an agent-synthesized output target. The identifier form's name must be identifier-shaped and must not shadow an existing visible binding. The descriptive form's quoted string follows inline-string rules — double quotes only, MVP escapes `\"` and `\\`, no interpolation, no `{name}` slots ([[values-and-names]] §Inline Strings). The compiler records the return as an OutputContract with either an Identifier or Description form, paired with the enclosing declaration's `-> DomainType` annotation. The compiled output folds either form into natural prose; the literal `<name>` or `<"…">` token must not appear in compiled Markdown.
 - **Single, terminal-only.** Exactly **one** `return` statement per `skill`, `block`, or `export block`, and it must appear as the **last statement at the top level of `flow:`**. `return` is **not** allowed inside `if`/`elif`/`else` branch bodies (no early return). Multiple `return` statements in a single `flow:` are a parse error.
-- **Implicit vs. explicit:** If `return` is omitted, the body implicitly returns `none`. This applies to `skill` and private `block` declarations. **`export block` requires an explicit `return`** (even `return none`) because its output is a public contract visible to importers (see `language-surface.md` §3.3). Export blocks with a meaningful return must also declare `-> DomainType` on the header; export blocks with no meaningful return omit `->` entirely. The compiler inserts an implicit `Return { value: none }` during Lower only for `skill` and `block` — omitting `return` in an `export block` is a repairable diagnostic (`G::analyze::missing-return`). There is no per-path return-coverage analysis, because `return` is forbidden in branches and only appears once at the end of `flow:` (or not at all).
+- **Implicit vs. explicit:** If `return` is omitted, the body implicitly returns `none`. This applies to `skill` and private `block` declarations. **`export block` requires an explicit `return`** (even `return none`) because its output is a public contract visible to importers (see [[language-surface]] §3.3). Export blocks with a meaningful return must also declare `-> DomainType` on the header; export blocks with no meaningful return omit `->` entirely. The compiler inserts an implicit `return none` for `skill` and `block` only — omitting `return` in an `export block` is repairable. There is no per-path return-coverage analysis, because `return` is forbidden in branches and only appears once at the end of `flow:` (or not at all).
 
-Parse-level diagnostics enforcing this rule:
+Author-visible errors enforcing this rule:
 
-| ID | Trigger |
-|---|---|
-| `G::parse::return-not-terminal` | `return` appears before the last statement of `flow:` |
-| `G::parse::return-in-branch` | `return` appears inside an `if`/`elif`/`else` body |
-| `G::parse::multiple-returns` | More than one `return` in a single `flow:` |
-| `G::parse::output-target-outside-return` | An output target form (`<name>` or `<"description">`) appears outside a terminal top-level `return` |
+- `return` appears before the last statement of `flow:` → parse error.
+- `return` appears inside an `if`/`elif`/`else` body → parse error.
+- More than one `return` in a single `flow:` → parse error.
+- An output target form (`<name>` or `<"description">`) appears outside a terminal top-level `return` → parse error.
 
-(See `todo.md` for the deferred consideration of branch-nested early returns.)
+(See [[todo]] for the deferred consideration of branch-nested early returns.)
 
 Returns become explicit output contracts in the IR. If the return expression is a call, the call is evaluated first and its result becomes the return value, following the same desugaring as nested calls.
 
@@ -457,8 +442,8 @@ Private `block`s are not importable and may only be called from the same source 
 Closure is enforced **once per file, at the export boundary**, never transitively across imports. When file X imports `do_thing` from file Y:
 
 - X sees only `do_thing`'s **declared contract**: parameters, return type, declared `effects:`, declared `constraints:`. Private declarations in Y are invisible to X, even when reachable transitively from `do_thing`'s body.
-- Y's compilation must have already produced a `do_thing` whose declared `effects:` is a superset of all effects inferred from its body (including effects of any private blocks it inlines). This check happens locally in Y's Phase 5 (Validate); see `pipeline.md`.
-- X's compilation never re-analyses Y's interior. This preserves the multi-file compile order in `imports.md` (a dependency must pass Phase 5 before its importer can Analyze) and keeps cacheability honest.
+- Y's compilation must produce a `do_thing` whose declared `effects:` is a superset of all effects inferred from its body (including effects of any private blocks it inlines). This is checked locally when Y compiles.
+- X's compilation never re-analyses Y's interior. This keeps the multi-file build order honest: a dependency must validate before its importer reads its contract.
 
 This is the only model compatible with encapsulation: Y can refactor private helpers without breaking X.
 
@@ -466,17 +451,17 @@ This is the only model compatible with encapsulation: Y can refactor private hel
 
 When an `export block` (or any callable being compiled) calls or inlines another callable, the caller's declared `effects:` **must be a superset** of every imported callee's declared effects and every inlined private callee's inferred effects.
 
-- This is a Validate (Phase 5) **error** if violated, not a warning.
-- Repair (Phase 3) may add missing effect keywords to the caller's `effects:` when the missing effects are unambiguously implied by the call graph.
-- Mechanism: effects are global per-skill (they project to YAML frontmatter in `compiled-output.md`), so the agent runtime sees the full set when it runs the skill. A caller that omits an inlined callee's effect produces a frontmatter that lies about the skill's behavior — hence the error.
+- A violation is a hard compile error, not a warning.
+- Repair may add missing effect keywords to the caller's `effects:` when the missing effects are unambiguously implied by the call graph.
+- Why: effects are global per-skill (they project to YAML frontmatter in [[design/compiled-output]]), so the agent runtime sees the full set when it runs the skill. A caller that omits an inlined callee's effect produces a frontmatter that lies about the skill's behavior — hence the error.
 
 #### Constraint Scoping (No Top-Level Propagation)
 
-When a caller calls a `block` or `export block`, the callee's declared `constraints:` **stay scoped to the inlined region** of that call. They are **not** merged into the caller's top-level `### Constraints` section.
+When a caller calls a `block` or `export block`, the callee's declared `constraints:` **stay scoped to the inlined region** of that call. They are **not** merged into the caller's top-level `## Constraints` section.
 
-- IR representation: when Lower resolves the call, the resolved-call node carries the callee's constraints attached as scoped metadata. They are not added to the caller's top-level `Constraint` IR nodes.
-- Expand projection: Phase 6 Step 2 weaves these scoped constraints into the prose of the inlined steps (or as a localized phrase preceding/following the inlined region). See `expand.md` §Scoped Constraint Inlining.
-- Compiled output: the caller's `### Constraints` section lists only the caller's own declared constraints. The agent reading the compiled `.md` sees the callee's constraints in context, governing only the inlined span — not the whole skill.
+- In the IR, the resolved call carries the callee's constraints attached as scoped metadata; they are not added to the caller's top-level Constraint nodes.
+- In compiled output, the scoped constraints weave into the prose of the inlined steps (or as a localized phrase preceding/following the inlined region).
+- The caller's `## Constraints` section lists only the caller's own declared constraints. The agent reading the compiled `.md` sees the callee's constraints in context, governing only the inlined span — not the whole skill.
 
 Why the asymmetry with effects: frontmatter is global per-skill, so effects must propagate. Step prose is local, so constraints can — and should — stay scoped to the steps they govern. Hoisting a callee's constraint to the caller's top level would over-apply it to the caller's own steps.
 
@@ -486,14 +471,14 @@ Glyph source supports Python-like duck typing: a call can accept a value if the 
 
 ### Effects At Call Sites
 
-Effects are declared on callables (via `ir-and-semantics.md`), not at call sites. The compiler infers and propagates effects through the call graph.
+Effects are declared on callables (via [[ir-and-semantics]]), not at call sites. The compiler infers and propagates effects through the call graph.
 ### Visualization
 
 Data flow should be visualizable as a graph: parameters are entry nodes, calls are operation nodes, bindings are value edges, returns are exit nodes, and effects are annotations on call nodes. This is one reason hidden ambient context should be minimized -- if a call depends on a value, that value should be visible as an argument or declared dependency.
 
 ## Interaction With Other Design Areas
 
-`language-surface.md` (parameter definition syntax), `language-surface.md` (indentation, line continuation, colon-terminated headers), `values-and-names.md` (identifier rules, name resolution, bare name vs call, reserved keywords), `ir-and-semantics.md` (effect propagation, no call-site effect syntax), `types.md` (nominal matching at call boundaries), `ir-and-semantics.md` (`flow:` section), `ir-and-semantics.md` (`Step`, `OutputContract`, `Branch`), `compiled-output.md` (conditional logic flattens to prose).
+[[language-surface]] (parameter definition syntax), [[language-surface]] (indentation, line continuation, colon-terminated headers), [[values-and-names]] (identifier rules, name resolution, bare name vs call, reserved keywords), [[ir-and-semantics]] (effect propagation, no call-site effect syntax), [[types]] (nominal matching at call boundaries), [[ir-and-semantics]] (`flow:` section), [[ir-and-semantics]] (`Step`, `OutputContract`, `Branch`), [[design/compiled-output]] (conditional logic flattens to prose).
 
 ## Deferred
 
@@ -504,4 +489,4 @@ Data flow should be visualizable as a graph: parameters are entry nodes, calls a
 - Exception handling / `try`/`catch`.
 - Spread/splat arguments, variadic parameters.
 - Pipeline or chaining syntax (beyond UFCS).
-- Runtime preference injection or override mechanism (see `preferences.md`).
+- Runtime preference injection or override mechanism (see [[preferences]]).

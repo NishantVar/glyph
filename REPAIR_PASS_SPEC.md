@@ -1,6 +1,6 @@
 # Glyph Repair Pass — What the LLM Has To Do
 
-A complete description of every action the LLM performs across the repair passes. Compiler and agent-loop concerns (exit code handling, iteration counting, `glyph fmt` invocation, name-collision hard-fails) are intentionally omitted — see `design/agent-skill.md` and `design/repair.md` for the surrounding workflow.
+A complete description of every action the LLM performs across the repair passes. Compiler and agent-loop concerns (exit code handling, iteration counting, `glyph fmt` invocation, name-collision hard-fails) are intentionally omitted — see `docs/architecture/agent-skill.md` and `design/repair.md` for the surrounding workflow.
 
 This file is a working aid and will be deleted once the implementation stabilises.
 

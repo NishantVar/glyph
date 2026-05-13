@@ -35,18 +35,18 @@ This follows foundations: not a prompt template system and foundations: text reu
 
 **Name slot exception (`{name}`).** A `{name}` slot — a strict identifier (`[a-zA-Z_][a-zA-Z0-9_]*`) inside single curly braces — is **not** source-time interpolation. It is a *name reference* that can resolve to a declared parameter or a local binding in scope. The two kinds compile differently:
 
-- **Parameter references** (`{name}` resolves to a declared parameter) are preserved verbatim as runtime slots in the compiled Markdown for the consuming LLM to fill from user context at runtime (`compiled-output.md` §Parameter References In Steps). The compiler never substitutes the slot's value.
-- **Local binding references** (`{name}` resolves to a local binding from an assignment like `diagnosis = analyze_error(...)`) are resolved by the Expand pass (Step 2) into natural-language cross-references in the compiled prose. They do **not** survive as literal `{name}` slots — the consuming LLM already produced the referenced value in a prior step and does not need a placeholder for its own output. For example, `"Apply the fix based on {diagnosis}"` might compile to "Apply the fix based on the diagnosis from your earlier analysis."
+- **Parameter references** (`{name}` resolves to a declared parameter) are preserved verbatim as runtime slots in the compiled Markdown for the consuming LLM to fill from user context at runtime ([[design/compiled-output]] §Parameter References In Steps). The compiler never substitutes the slot's value.
+- **Local binding references** (`{name}` resolves to a local binding from an assignment like `diagnosis = analyze_error(...)`) are resolved into natural-language cross-references in the compiled prose. They do **not** survive as literal `{name}` slots — the consuming LLM already produced the referenced value in a prior step and does not need a placeholder for its own output. For example, `"Apply the fix based on {diagnosis}"` might compile to "Apply the fix based on the diagnosis from your earlier analysis."
 
-Slots are legal **only inside instruction-bearing string positions**: `const` / `generated const` bodies, `generated block` body strings, inline instruction strings inside `flow:`, constraint texts, and string arguments to stdlib calls whose body becomes a compiled instruction (`subagent`, `send`). A `{name}` token in any other string position (a parameter default value, a `description:` field, etc.) emits `G::parse::param-slot-in-non-instruction-string` (repairable: the braces are stripped and the content is treated as literal).
+Slots are legal **only inside instruction-bearing string positions**: `const` / `generated const` bodies, `generated block` body strings, inline instruction strings inside `flow:`, constraint texts, and string arguments to stdlib calls whose body becomes a compiled instruction (`subagent`, `send`). A `{name}` token in any other string position (a parameter default value, a `description:` field, etc.) is repairable: the braces are stripped and the content is treated as literal.
 
 The slot grammar is strict: `{IDENTIFIER}` only. Anything else with braces — `{ "key": "value" }`, `{x, y}`, `if x { ... }`, or any other non-identifier content — is literal text and is parsed as such. There is no escape mechanism; an author who wants the literal text `{name}` where `name` happens to also be an in-scope parameter or binding must rephrase the instruction.
 
-A slot whose `name` does not resolve to a parameter or a local binding in scope at the slot's source position is a hard error (`G::analyze::unknown-param-slot`, not repairable). The resolution scope is the enclosing declaration's parameters plus the local bindings visible at that point; neither imports nor `const` declarations participate in slot resolution (those are reused via bare-name reference, a separate mechanism).
+A slot whose `name` does not resolve to a parameter or a local binding in scope at the slot's source position is a hard error (not repairable). The resolution scope is the enclosing declaration's parameters plus the local bindings visible at that point; neither imports nor `const` declarations participate in slot resolution (those are reused via bare-name reference, a separate mechanism).
 
 ### No Value-Level Operators
 
-MVP expressions contain only four forms: bindings, literals, calls, and dot access (`data-flow.md` §IR Mapping). There are no value-level operators — no `+`, `-`, `*`, `/`, comparisons, or any other infix/prefix operator in expression position.
+MVP expressions contain only four forms: bindings, literals, calls, and dot access ([[data-flow]] §IR Mapping). There are no value-level operators — no `+`, `-`, `*`, `/`, comparisons, or any other infix/prefix operator in expression position.
 
 Angle brackets are not comparison operators. In the MVP they are reserved for output-target expressions in terminal return position, in two forms — identifier and descriptive:
 
@@ -55,11 +55,11 @@ return <current_branch>                                          // identifier f
 return <"root cause analysis including affected files">          // descriptive form
 ```
 
-Outside that position, both `<name>` and `<"description">` emit `G::parse::output-target-outside-return`.
+Outside that position, both `<name>` and `<"description">` are rejected as a parse error.
 
-String concatenation via `+` is explicitly forbidden. Authors who need to combine context with a call should use the `with` modifier (`data-flow.md`) to pass specialization context at the call site. The Expand LLM weaves parameter context into prose instructions — manual string assembly is redundant with the pipeline's job.
+String concatenation via `+` is explicitly forbidden. Authors who need to combine context with a call should use the `with` modifier ([[data-flow]]) to pass specialization context at the call site. The compiler weaves parameter context into prose instructions — manual string assembly is redundant with the pipeline's job.
 
-If the parser encounters an operator token in expression position, it emits a `G::parse::operator-in-expression` diagnostic (repairable). The Repair pass can mechanically rewrite patterns like `f("prefix " + x)` into `f(x) with "prefix"`.
+If the parser encounters an operator token in expression position, the error is repairable. The Repair pass can mechanically rewrite patterns like `f("prefix " + x)` into `f(x) with "prefix"`.
 
 General-purpose operators (arithmetic, comparison, string manipulation) are deferred post-MVP.
 
@@ -74,7 +74,7 @@ max_attempts = 3
 offset = 2
 ```
 
-Signed numeric literals (`-1`, `-0.5`) are deferred beyond MVP. The tokenizer rejects a leading `-` on a numeric literal today; a unary `-` prefix at parse time is planned in a future issue. See `language-surface.md` §3.4 for the matching deferral note on `const` RHS.
+Signed numeric literals (`-1`, `-0.5`) are deferred beyond MVP. The tokenizer rejects a leading `-` on a numeric literal today; a unary `-` prefix at parse time is planned in a future issue. See [[language-surface]] §3.4 for the matching deferral note on `const` RHS.
 
 ### Floats
 
@@ -128,9 +128,9 @@ Source is case-insensitive: `none`, `None`, and `NONE` are all accepted. The IR 
 
 Identifiers match `[a-zA-Z_][a-zA-Z0-9_]*`. They must start with a letter or underscore and may contain letters, digits, and underscores. Hyphens are not allowed in identifiers.
 
-The output-target identifier form uses the same identifier grammar inside angle brackets. `<current_branch>` is valid; `<a.b>`, `<foo()>`, `< name >`, and `<>` are malformed output targets (`G::parse::malformed-output-target`). Quoted placeholder strings such as `return "<current_branch>"` remain string literals, but when they appear as a terminal return on a `-> DomainType` declaration the analyzer emits `G::analyze::placeholder-string-return` so Repair can rewrite them to `return <current_branch>`.
+The output-target identifier form uses the same identifier grammar inside angle brackets. `<current_branch>` is valid; `<a.b>`, `<foo()>`, `< name >`, and `<>` are malformed output targets. Quoted placeholder strings such as `return "<current_branch>"` remain string literals, but when they appear as a terminal return on a `-> DomainType` declaration Repair rewrites them to `return <current_branch>`.
 
-The output-target **descriptive form** is `<"…">` — a quoted string inside angle brackets, e.g. `<"whether the user confirmed">`. The string follows the same rules as inline strings (`§Inline Strings`): double quotes only, MVP escapes `\"` and `\\`, no interpolation, no `{name}` slots. Empty `<"">` is malformed (`G::parse::malformed-output-target`); an unterminated `<"…EOF` surfaces as the standard unterminated-string parse error rather than a dedicated output-target diagnostic. Quoted placeholder strings such as `return "<root cause analysis>"` whose inner content is not identifier-shaped also trigger `G::analyze::placeholder-string-return`; Repair rewrites them into descriptive form (`return <"root cause analysis">`) rather than the identifier form (`types.md` §Implicit Declaration).
+The output-target **descriptive form** is `<"…">` — a quoted string inside angle brackets, e.g. `<"whether the user confirmed">`. The string follows the same rules as inline strings (`§Inline Strings`): double quotes only, MVP escapes `\"` and `\\`, no interpolation, no `{name}` slots. Empty `<"">` is malformed; an unterminated `<"…EOF` surfaces as the standard unterminated-string parse error. Quoted placeholder strings such as `return "<root cause analysis>"` whose inner content is not identifier-shaped get rewritten into descriptive form (`return <"root cause analysis">`) rather than the identifier form ([[types]] §Implicit Declaration).
 
 ### Output-Target Forms vs Other Name Uses
 
@@ -143,11 +143,11 @@ For quick disambiguation, Glyph distinguishes four name forms in source:
 | `<name>` | Output target, identifier form — names a value the enclosing block's agent must synthesize as the return value |
 | `<"description">` | Output target, descriptive form — provides synthesis guidance for the return value as inline prose |
 
-The two output-target forms are interchangeable at the IR level — both lower to `OutputContract` (`ir-schema.md` §OutputContract). Use the identifier form when a short snake-case name conveys the synthesized value; use the descriptive form when the value benefits from a sentence of guidance.
+The two output-target forms are interchangeable at the IR level — both compile to an `OutputContract`. Use the identifier form when a short snake-case name conveys the synthesized value; use the descriptive form when the value benefits from a sentence of guidance.
 
 ### Dot Access
 
-Dots are reserved for module-qualified access (`repo_tools.inspect_repo`). Control-flow adds single-level property dot access for bound values (e.g. `ctx.has_tests`); see `data-flow.md` for full rules and disambiguation.
+Dots are reserved for module-qualified access (`repo_tools.inspect_repo`). Control-flow adds single-level property dot access for bound values (e.g. `ctx.has_tests`); see [[data-flow]] for full rules and disambiguation.
 
 ### Case Normalization
 
@@ -155,8 +155,8 @@ The compiler normalizes all identifiers to a canonical form for collision detect
 
 **Per-namespace case is strictly enforced.** Case is not "convention" in MVP — each namespace requires a single canonical casing:
 
-- **Type identifiers MUST be PascalCase** with no underscores. Violations are a hard error: `G::analyze::type-case-violation`. Examples of legal type names: `RepoContext`, `Plan`, `Diagnosis`. Examples that fail: `repo_context`, `plan`, `Repo_Context`, `MAKE_PLAN`.
-- **Value identifiers MUST be snake_case** (lowercase letters, digits, and underscores; no uppercase). Violations are a hard error: `G::analyze::value-case-violation`. Examples of legal value names: `make_plan`, `repo_context`, `risk_level`. Examples that fail: `MakePlan`, `makePlan`, `RepoContext`.
+- **Type identifiers MUST be PascalCase** with no underscores. Violations are a hard error. Examples of legal type names: `RepoContext`, `Plan`, `Diagnosis`. Examples that fail: `repo_context`, `plan`, `Repo_Context`, `MAKE_PLAN`.
+- **Value identifiers MUST be snake_case** (lowercase letters, digits, and underscores; no uppercase). Violations are a hard error. Examples of legal value names: `make_plan`, `repo_context`, `risk_level`. Examples that fail: `MakePlan`, `makePlan`, `RepoContext`.
 
 Strict casing is what makes the two-namespace split unambiguous in source: an author can read `Mode` versus `mode_name` and know immediately which namespace each belongs to.
 
@@ -212,8 +212,8 @@ The author's fix is always to rename one of the conflicting names. This is cheap
 
 **Same-namespace canonical-equal pairs are collisions:**
 
-- Two type decls with canonically-equal names → `G::analyze::duplicate-type-decl`.
-- Two value-namespace declarations with canonically-equal names (e.g., a parameter and a `const`, two `block`s, an `import` alias and a `block`) → `G::analyze::name-collision`.
+- Two type decls with canonically-equal names → hard error.
+- Two value-namespace declarations with canonically-equal names (e.g., a parameter and a `const`, two `block`s, an `import` alias and a `block`) → hard error.
 
 The author's fix is always to rename one of the conflicting names.
 
@@ -223,26 +223,26 @@ When the repair pass generates definitions for undefined bare names, the compile
 
 ### UFCS Name Resolution
 
-UFCS (Uniform Function Call Syntax) is **pure syntactic sugar in a single namespace**. `x.foo(args)` desugars to `foo(x, args)` during Lower (Phase 4). There is no method namespace, no trait dispatch, and no overload resolution.
+UFCS (Uniform Function Call Syntax) is **pure syntactic sugar in a single namespace**. `x.foo(args)` desugars to `foo(x, args)`. There is no method namespace, no trait dispatch, and no overload resolution.
 
 The name `foo` in `x.foo(args)` resolves through the **same name resolution rules** as a free call `foo(x, args)` — the resolution table above applies identically. If `foo` resolves to an imported `export block`, a same-file `block`, or a stdlib entry, the desugared call proceeds normally. If `foo` does not resolve, it is an undefined-call error, same as any other unresolved parens-call.
 
-After desugaring, the receiver's type is checked against the callee's first parameter type via nominal matching (`types.md`). If the types are annotated and the names differ, the compiler emits `G::analyze::nominal-mismatch` — the same error as if the author had written `foo(x, args)` directly with a mismatched first argument.
+After desugaring, the receiver's type is checked against the callee's first parameter type via nominal matching ([[types]]). If the types are annotated and the names differ, the compiler reports a nominal-mismatch error — the same error as if the author had written `foo(x, args)` directly with a mismatched first argument.
 
 The no-shadowing rule applies unchanged: if multiple declarations named `foo` are visible after case normalization, the compiler rejects the program regardless of whether the call was written as `x.foo()` or `foo(x)`.
 
-UFCS desugaring happens in Lower (Phase 4), not Parse. The AST preserves the `.foo()` syntax so diagnostic spans point to what the author actually wrote. Analyze disambiguates dot syntax from qualified-call syntax (`M.foo()`) based on what the left-hand side resolves to — see `data-flow.md` §UFCS for the full disambiguation rule and worked examples.
+The compiler disambiguates dot syntax from qualified-call syntax (`M.foo()`) based on what the left-hand side resolves to — see [[data-flow]] §UFCS for the full disambiguation rule and worked examples.
 
 ### Bare-Name Resolution In Condition Position
 
-When a bare identifier appears in an `if` / `elif` condition position, name resolution follows the standard order above (const, parameter, local binding, import, generated definition). After resolution, the **inferred kind** of the resolved declaration determines the condition's treatment (see `types.md` §Inferred Kinds):
+When a bare identifier appears in an `if` / `elif` condition position, name resolution follows the standard order above (const, parameter, local binding, import, generated definition). After resolution, the **inferred kind** of the resolved declaration determines the condition's treatment (see [[types]] §Inferred Kinds):
 
-- **String-kinded** (`const x = "…"`, parameter with string default, etc.) → the condition is classified as a natural-language predicate. The string body is routed to `resolved_predicates` on the Branch IR node; Expand Step 1 populates it for Step 2 to project.
+- **String-kinded** (`const x = "…"`, parameter with string default, etc.) → the condition is classified as a natural-language predicate; the consuming agent evaluates the resolved string against current context.
 - **Bool-kinded** (explicit `const x = true`, Bool-returning call binding, etc.) → the condition remains a standard boolean, unchanged behavior.
 - **Opaque / domain-kinded** (return value from a typed call, untyped parameter) → treated as boolean (no regression from today's behavior).
-- **Int- or Float-kinded** → hard error `G::analyze::condition-non-boolean-non-predicate`; the compiler does not implicitly truth-test numeric values.
+- **Int- or Float-kinded** → hard error; the compiler does not implicitly truth-test numeric values.
 
-This routing is Analyze's responsibility. It fires at the single point where name resolution meets condition classification; no other phase re-derives the kind for this purpose. See `data-flow.md` §Condition Expressions for the full condition-form table and composition rules.
+See [[data-flow]] §Condition Expressions for the full condition-form table and composition rules.
 
 ## Enums And Symbols
 

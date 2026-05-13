@@ -1,6 +1,6 @@
 //! Phase 6 Step 1 (Expand, deterministic) — projection-tier assignment and Tier 1 inline.
 //!
-//! Per `design/pipeline.md` §Phase 6, Step 1 is deterministic:
+//! Per `docs/architecture/compiler-pipeline.md` §Phase 6, Step 1 is deterministic:
 //! - Computes `resolved_word_count` per block.
 //! - Assigns projection tiers to call sites.
 //! - Tier 1 (inline): callee body < 150 words → call keeps inline projection metadata.

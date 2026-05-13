@@ -4,7 +4,7 @@
 //!   glyph compile <path-to.glyph> [--format pretty|json]
 //!   glyph check   <path-or-dir>      [--format pretty|json]
 //!
-//! Exit codes (per `design/build-foundation.md` §A6):
+//! Exit codes (per `docs/adr/` §A6):
 //!   0 — success (Markdown emitted, or `check` clean)
 //!   1 — hard errors (compilation cannot proceed)
 //!   2 — repairable diagnostics only
@@ -49,7 +49,7 @@ enum Command {
         #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
         format: OutputFormat,
         /// Emit the post-Step-1 resolved IR as a sidecar JSON file (`foo.ir.json`)
-        /// next to the compiled `.md`. See `design/ir-json-schema.md`.
+        /// next to the compiled `.md`. See `docs/reference/ir-json.md`.
         #[arg(long)]
         emit_ir: bool,
         /// Treat `repairable` diagnostics as hard errors: exit code 1 instead of
@@ -291,7 +291,7 @@ fn run_check(path: PathBuf, format: OutputFormat, strict: bool, enable_effects: 
 }
 
 /// Combine two exit codes per the `1`-wins-over-`2` rule
-/// (`design/build-foundation.md` §A6).
+/// (`docs/adr/` §A6).
 fn combine_exit_codes(a: u8, b: u8) -> u8 {
     match (a, b) {
         (1, _) | (_, 1) => 1,

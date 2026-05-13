@@ -2,10 +2,6 @@
 
 This document defines how Glyph handles user and project preferences — stable configurable values like terminal multiplexer, communication style, validation strictness, preferred tools, or project conventions.
 
-## Status
-
-Formalizes decisions captured during Tier 3 work. Builds on `language-surface.md` (value-binding declaration kinds), `imports.md` (import semantics), and `ir-and-semantics.md` (effect vocabulary).
-
 ## Design Posture
 
 Preferences in Glyph are **ordinary exported constants**, not a dedicated language feature. There is no `pref(...)` call syntax, no `reads_prefs` effect, and no ambient lookup. A preference is a named value — a `const` declaration marked `export` — that callers bring into scope with a normal `import`.
@@ -30,12 +26,12 @@ Rules:
 
 - MVP pref values are string, integer, or float literals. The compiler infers the value kind from the literal on the right side.
 - **A default value is mandatory.** Every preference declaration must include the `= <literal>` assignment. An `export const tone` without a right-hand side is a parse error. This ensures every preference has a known fallback — both for the current compile-time inlining model and for any future runtime-slot mechanism.
-- The literal on the right-hand side is the **final value** in MVP. An override mechanism (project config file, CLI flags, env vars) is deferred; see `todo.md`.
+- The literal on the right-hand side is the **final value** in MVP. An override mechanism (project config file, CLI flags, env vars) is deferred; see [[todo]].
 - Any `.glyph` file may declare preferences. A dedicated prefs file is conventional, not required.
 
 ## Importing a Preference
 
-Preferences are imported like any other exported name, using the import forms defined in `language-surface.md` and the resolution rules in `imports.md`:
+Preferences are imported like any other exported name, using the import forms defined in [[language-surface]] and the resolution rules in [[imports]]:
 
 ```glyph
 import "./prefs.glyph" { tone, terminal_mux, validation_strictness }
@@ -57,7 +53,7 @@ skill write_summary()
 
 At compile time the preference value is inlined into the compiled Markdown, identical to any other imported `const` value.
 
-Preferences may also be used directly as **parameter defaults** on `skill` and `export block` declarations (per `language-surface.md` §3.8). For example:
+Preferences may also be used directly as **parameter defaults** on `skill` and `export block` declarations (per [[language-surface]] §3.8). For example:
 
 ```glyph
 import "./prefs.glyph" { default_temperature }
@@ -77,17 +73,17 @@ The compiler ships a default prefs file so any project can import a baseline pre
 import "@glyph/prefs" { tone, terminal_mux }
 ```
 
-The exact import scheme, the standard pref set, and how it composes with user-defined prefs are TODOs; see `todo.md`.
+The exact import scheme, the standard pref set, and how it composes with user-defined prefs are TODOs; see [[todo]].
 
 ## Effects
 
 Importing or reading a preference does **not** contribute any effect. A `reads_prefs` effect was considered and rejected: preferences are ordinary compile-time constants, and treating them specially would conflate configuration with runtime side effects.
 
-An `export block` that reads a preference does so through an explicit import. The preference appears as a declared dependency, not hidden ambient context, so closure (see `data-flow.md`) is preserved automatically.
+An `export block` that reads a preference does so through an explicit import. The preference appears as a declared dependency, not hidden ambient context, so closure (see [[data-flow]]) is preserved automatically.
 
 ## Library File Semantics
 
-A prefs file like `prefs.glyph` is a library file under the rules in `language-surface.md` §File-Level Rules. It has zero `skill` declarations and only `export const` declarations. Under the library emission model:
+A prefs file like `prefs.glyph` is a library file under the rules in [[language-surface]] §File-Level Rules. It has zero `skill` declarations and only `export const` declarations. Under the library emission model:
 
 - **It emits zero `.md` files.** Constants are always inlined into consumers at compile time — they never meet a tier threshold for standalone procedure files.
 - **It compiles successfully.** Zero output is not an error. The file contributes names and values to consumers through the validated IR.
@@ -95,7 +91,7 @@ A prefs file like `prefs.glyph` is a library file under the rules in `language-s
 
 ## Recompilation On Preference Change
 
-Preference values are inlined at compile time. If a preference value changes, affected skills must be recompiled. The compiler's cache key for each file includes the post-repair source hashes of **all transitive dependencies** (see `pipeline.md` §Cacheability). Since the prefs file is a transitive dependency of every skill that imports it, changing a preference value invalidates every consuming skill's cache entry and triggers recompilation.
+Preference values are inlined at compile time. If a preference value changes, every skill that imports the prefs file (directly or transitively) must be recompiled. The compiler's caching guarantees that changing a prefs source file invalidates all consumers.
 
 Runtime injection of preference values is not part of MVP. A future Glyph-aware loader or hook could substitute preference values before the agent reads the compiled skill.
 
@@ -103,16 +99,16 @@ Runtime injection of preference values is not part of MVP. A future Glyph-aware 
 
 - **Not a call.** There is no `pref("key")` form. Preferences are plain identifiers.
 - **Not ambient.** A skill that depends on a preference must import it explicitly.
-- **Not typed by a magic system.** Preferences carry the value kind inferred from their literal (string, integer, float). Callers can declare matching parameter types per `types.md`.
+- **Not typed by a magic system.** Preferences carry the value kind inferred from their literal (string, integer, float). Callers can declare matching parameter types per [[types]].
 - **Not mutable at runtime.** The compiled Markdown contains the resolved value. Mutation happens only by editing source and recompiling.
 
 ## Interaction With Other Design Areas
 
-- **Declaration headers** (`language-surface.md`): Value-binding declaration grammar for `const` and its `export` variant is defined there.
-- **Import resolution** (`imports.md`): Pref imports follow the standard path and selective-import rules; no special resolution is needed.
-- **Effects** (`ir-and-semantics.md`): Pref reads contribute no effects. The 9-keyword MVP effect vocabulary is unchanged.
-- **Data flow** (`data-flow.md`): The "Global Preferences" section there defers to this document.
-- **Todo** (`todo.md`): Pref override mechanism and standard prefs file details are tracked as deferred items.
+- **Declaration headers** ([[language-surface]]): Value-binding declaration grammar for `const` and its `export` variant is defined there.
+- **Import resolution** ([[imports]]): Pref imports follow the standard path and selective-import rules; no special resolution is needed.
+- **Effects** ([[ir-and-semantics]]): Pref reads contribute no effects. The 9-keyword MVP effect vocabulary is unchanged.
+- **Data flow** ([[data-flow]]): The "Global Preferences" section there defers to this document.
+- **Todo** ([[todo]]): Pref override mechanism and standard prefs file details are tracked as deferred items.
 
 ## Deferred
 

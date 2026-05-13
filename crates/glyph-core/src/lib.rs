@@ -2,7 +2,7 @@
 //!
 //! Walking-skeleton scope (slice 1): minimum viable Phase 1 / 2 / 4 / 5 / 6-Step1 / 7
 //! that produces a byte-identical golden snapshot for `update_docs.glyph` per
-//! `design/mvp-acceptance.md` §1.
+//! `docs/reference/mvp-acceptance.md` §1.
 
 pub mod analyze;
 pub mod ast;
@@ -117,7 +117,7 @@ pub enum CompileError {
 ///   The pipeline halted; no Markdown was produced.
 ///
 /// The CLI maps this onto exit codes via `DiagBag::exit_code()` and the `1`-wins-over-`2`
-/// rule in `design/build-foundation.md` §A6.
+/// rule in `docs/adr/` §A6.
 #[derive(Debug)]
 pub enum CompileOutcome {
     Compiled {

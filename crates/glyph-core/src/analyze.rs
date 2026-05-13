@@ -1395,7 +1395,7 @@ fn emit_type_decl_collision(
 /// does not canonical-match the enclosing callable's declared `-> Type`.
 ///
 /// `primary_span` is the enclosing decl's span — synthetic-fallback option
-/// (3) per `design/diagnostics.md` §Span Semantics. The AST has no
+/// (3) per `docs/reference/diagnostics.md` §Span Semantics. The AST has no
 /// per-statement span (`flow: Vec<FlowStmt>`, not `Vec<Spanned<FlowStmt>>`;
 /// `FlowStmt` itself has no span field), so we cannot pin the actual
 /// `return foo()` line. `related_span` is the enclosing callable's
@@ -1991,7 +1991,7 @@ pub(crate) fn check_block_flow_assign_rejected(
 /// Shared by the skill flow walk in `analyze_skill` and the BlockDecl
 /// flow walk in [`check_block_return_calls`]. `decl_span` is the
 /// enclosing callable's declaration span (D14 primary, synthetic
-/// fallback option 3 per `design/diagnostics.md` §Span Semantics).
+/// fallback option 3 per `docs/reference/diagnostics.md` §Span Semantics).
 fn check_return_call_nominal(
     caller_return_type: Option<&Spanned<String>>,
     stmt: &FlowStmt,
@@ -2471,7 +2471,7 @@ fn sweep_typed_decl_missing_return(
 ///
 /// Pushes any structured diagnostics onto `bag` and returns the AST unchanged.
 /// `file_label` and `line_index` follow the same contract as the parser entry
-/// point (`design/diagnostics.md` §Span Semantics).
+/// point (`docs/reference/diagnostics.md` §Span Semantics).
 pub fn analyze_with_diagnostics(
     mut file: SourceFile,
     file_id: u32,
@@ -4364,7 +4364,7 @@ fn track_flow_usage(
 ///
 /// The slot span isn't reachable from the AST today (string-literal bodies and
 /// freeform-content cooked text are stored without per-slot offsets), so the
-/// diagnostic is attributed to `decl_span` per `design/diagnostics.md` §Span
+/// diagnostic is attributed to `decl_span` per `docs/reference/diagnostics.md` §Span
 /// Semantics synthetic-fallback option 3 — the same fallback the legacy flow
 /// inline-string scan uses in `walk_skill_flow_assign_checks`.
 fn scan_param_slots_in_text(
@@ -4765,7 +4765,7 @@ fn analyze_skill(
     // string, not its source span — so we cannot pinpoint a slot inside it
     // back to the original source. Until the AST grows per-statement spans we
     // attribute slot diagnostics to the enclosing skill header span; this is
-    // synthetic-fallback option (3) per `design/diagnostics.md` §Span
+    // synthetic-fallback option (3) per `docs/reference/diagnostics.md` §Span
     // Semantics. The IDs and messages remain accurate.
 
     // Flow-position assignments (`.flow-assign-spec.md` §6).
