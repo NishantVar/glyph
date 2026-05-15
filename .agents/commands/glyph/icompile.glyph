@@ -6,12 +6,12 @@
 // prose in the compiled output is preserved verbatim.
 
 skill icompile(source_path, change)
-    description: "Use when the user invokes /glyph:icompile on a Glyph skill. Apply a small targeted change to both the .glyph source and the sibling compiled .md output in tandem, bypassing the full compile pipeline so unrelated prose is preserved."
+    description: "Apply a small targeted change to both the .glyph source and the sibling compiled .md output in tandem, bypassing the full compile pipeline so unrelated prose is preserved."
 
-    require keep_files_in_sync
-    must avoid full_pipeline_run
-    avoid unrelated_edits
-
+    constraints:
+        require keep_files_in_sync
+        must avoid full_pipeline_run
+        avoid unrelated_edits
     flow:
         read_source_and_compiled(source_path)
         plan_paired_edit(change)

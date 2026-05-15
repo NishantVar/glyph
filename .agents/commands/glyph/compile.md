@@ -1,6 +1,6 @@
 ---
 name: compile
-description: Use when the user invokes /glyph:compile on a Glyph source file or directory. Runs the full Glyph pipeline — compile, fmt, LLM repair loop, prose reshape, validate-output — and surfaces every emitted compiled `.md` (top-level skills and procedure files) to the user.
+description: Runs the full Glyph pipeline — compile, fmt, LLM repair loop, prose reshape, validate-output — and surfaces every emitted compiled `.md` (top-level skills and procedure files) to the user.
 ---
 
 ## Parameters

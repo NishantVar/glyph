@@ -1,6 +1,6 @@
 ---
 name: audit
-description: Use when the user invokes /glyph:audit on a Glyph source file or directory. Runs semantic checks (currently constraint-conflict scanning) against each declaration's resolved constraint set and surfaces any contradictions or tensions to the author.
+description: Runs semantic checks (currently constraint-conflict scanning) against each declaration's resolved constraint set and surfaces any contradictions or tensions to the author.
 ---
 
 ## Parameters

@@ -6,7 +6,7 @@
 // conflict scan; more semantic checks may be added over time.
 
 skill audit(source_path)
-    description: "Use when the user invokes /glyph:audit on a Glyph source file or directory. Runs semantic checks (currently constraint-conflict scanning) against each declaration's resolved constraint set and surfaces any contradictions or tensions to the author."
+    description: "Runs semantic checks (currently constraint-conflict scanning) against each declaration's resolved constraint set and surfaces any contradictions or tensions to the author."
 
     flow:
         scan_constraint_conflicts(source_path)
