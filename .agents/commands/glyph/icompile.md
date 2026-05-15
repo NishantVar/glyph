@@ -1,6 +1,6 @@
 ---
 name: icompile
-description: Use when the user invokes /glyph:icompile on a Glyph skill. Apply a small targeted change to both the .glyph source and the sibling compiled .md output in tandem, bypassing the full compile pipeline so unrelated prose is preserved.
+description: Apply a small targeted change to both the .glyph source and the sibling compiled .md output in tandem, bypassing the full compile pipeline so unrelated prose is preserved.
 ---
 
 ## Parameters

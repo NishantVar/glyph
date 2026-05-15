@@ -1,3 +1,8 @@
+# Glyph source files — use Markdown as the closest linguist approximation until
+# the github-linguist PR (tree-sitter-glyph/linguist/) lands.
+*.glyph linguist-detectable=true
+*.glyph linguist-language=Markdown
+
 # Generated artifacts — do not show in diffs or count toward language stats.
 # `-diff` makes `git diff` and downstream reviewers (e.g. Codex) see only a
 # "Binary files differ" line instead of the full content.

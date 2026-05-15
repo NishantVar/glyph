@@ -30,6 +30,7 @@ skill repair(source_path, diagnostics) -> RewrittenSource
         synthesize_same_file_block_description()
         surface_imported_undescribed_block_as_non_repairable()
         skip_already_resolved_names()
+        repair_other_unambiguous_parse_or_analyze_error()
         return <"the full rewritten Glyph source file as a single text blob">
 
 block repair_operator_in_expression()
@@ -67,6 +68,9 @@ block surface_imported_undescribed_block_as_non_repairable()
 
 block skip_already_resolved_names()
     "Skip any unresolved-name or unresolved-call diagnostic whose name already resolves via existing imports, stdlib entries, or other local declarations. Idempotence requires that already-resolved names are never regenerated."
+
+block repair_other_unambiguous_parse_or_analyze_error()
+    "For any repairable diagnostic whose code is not handled by the rules above, read the source span identified by the diagnostic and apply the minimal syntactic fix that resolves it — only when the fix is unambiguous from the source context. When the fix is ambiguous or multiple reasonable rewrites exist, leave the diagnostic alone so the compile pipeline can surface it to the author."
 
 const diagnostic_driven_rewrites_only = "Apply only rewrites that match a diagnostic in the input set. Do not introduce edits that no diagnostic asked for."
 

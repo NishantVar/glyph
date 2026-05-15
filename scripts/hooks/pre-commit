@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -e
+
+staged_rs=$(git diff --cached --name-only --diff-filter=ACM | grep '\.rs$' || true)
+staged_glyph=$(git diff --cached --name-only --diff-filter=ACM | grep '\.glyph$' || true)
+
+if [ -n "$staged_rs" ]; then
+    echo "pre-commit: running cargo fmt..."
+    cargo fmt --all
+    git add $staged_rs
+fi
+
+if [ -n "$staged_glyph" ]; then
+    if ! command -v glyph &>/dev/null; then
+        echo "pre-commit: glyph not found in PATH, skipping .glyph checks"
+    else
+        echo "pre-commit: formatting staged .glyph files..."
+        for f in $staged_glyph; do
+            glyph fmt "$f"
+            git add "$f"
+        done
+
+        echo "pre-commit: checking staged .glyph files..."
+        for f in $staged_glyph; do
+            glyph check "$f"
+        done
+    fi
+fi
+
+exit 0

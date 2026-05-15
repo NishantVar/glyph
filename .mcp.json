@@ -6,7 +6,7 @@
     },
     "ast-grep": {
       "command": "ast-grep-mcp-server",
-      "args": ["--root", "."]
+      "args": []
     }
   }
 }
