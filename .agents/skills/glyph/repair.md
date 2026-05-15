@@ -37,7 +37,8 @@ description: Use during a /glyph:compile run when the compiler has exited 2 with
 9. For each `G::analyze::missing-description` diagnostic on a skill, generate a single-line `description:` phrased as a trigger condition the consuming agent can match on.
 10. For each `G::analyze::applies-on-undescribed-block` diagnostic where the referenced block is in the same file, generate a trigger-shaped `description:` for that block.
 11. For an `G::analyze::applies-on-undescribed-block` diagnostic where the referenced block is imported from another file, leave it alone — the diagnostic is non-repairable and the imported file must not be edited.
-12. Skip any unresolved-name or unresolved-call diagnostic whose name already resolves via existing imports, stdlib entries, or other local declarations. Idempotence requires that already-resolved names are never regenerated. Produce: the full rewritten Glyph source file as a single text blob.
+12. Skip any unresolved-name or unresolved-call diagnostic whose name already resolves via existing imports, stdlib entries, or other local declarations. Idempotence requires that already-resolved names are never regenerated.
+13. For any repairable diagnostic whose code is not handled by the rules above, read the source span identified by the diagnostic and apply the minimal syntactic fix that resolves it — only when the fix is unambiguous from the source context. When the fix is ambiguous or multiple reasonable rewrites exist, leave the diagnostic alone so the compile pipeline can surface it to the author. Produce: the full rewritten Glyph source file as a single text blob.
 
 ### Constraints
 

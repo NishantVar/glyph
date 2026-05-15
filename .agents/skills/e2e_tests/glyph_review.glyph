@@ -1,0 +1,80 @@
+// glyph_review.glyph
+//
+// Semantic-equivalence oracle for two .glyph source files. Used by the
+// `roundtrip` skill to compare an original .glyph against the .glyph
+// produced by /glyph:decompile of its sibling .md. Mirror of
+// decompile_review (which compares two .md files).
+
+skill glyph_review(original_glyph = "" <"path to the source-of-truth .glyph file — the original that was compiled into the .md that /glyph:decompile reverse-mapped.">, roundtrip_glyph = "" <"path to the .glyph file produced by /glyph:decompile from the original's sibling .md.">) -> EquivalenceReport
+    description: "Compare two Glyph source files semantically — the original .glyph against the .glyph produced by /glyph:decompile of its sibling .md — and report every item that is missing, changed, or added between them. Used by the `roundtrip` skill as the decompile-direction oracle."
+
+    require compare_by_meaning_not_surface_form
+    require report_every_semantic_difference
+    must avoid modifying_either_file
+    must avoid emitting_findings_as_json
+    must avoid flagging_surface_only_differences
+
+    context:
+        original_is_source_of_truth
+        roundtrip_is_post_decompile_artifact
+        report_is_plain_prose_for_a_human
+        equivalence_table
+        non_differences_to_ignore
+
+    flow:
+        read_both_glyph_files(original_glyph, roundtrip_glyph)
+        cross_read_by_construct_category()
+        print_equivalence_report()
+        return <"the human-readable equivalence report shown to the user">
+
+block read_both_glyph_files(original_glyph, roundtrip_glyph)
+    "Read the Glyph source at {original_glyph} and the Glyph source at {roundtrip_glyph}. Both files are .glyph sources with the declarations and sub-sections defined by the Glyph DSL — `skill`, `block`, `export block`, `const`, `type`, and `import` declarations; `description:`, `context:`, `constraints:`, and `flow:` sub-sections."
+
+block cross_read_by_construct_category()
+    "Cross-read the two files construct by construct rather than line by line. Use the equivalence_table as the rule book for what counts as `equivalent` versus `different` within each Glyph construct category — skill declaration, parameters, per-param descriptions, `description:`, `context:` entries, constraint markers with polarity, `flow:` steps, branches, `block` and `export block` definitions, `const` definitions, `import` statements, and `type` declarations. Mark items present in the original but absent from the roundtrip as `missing`. Mark items present in the roundtrip but absent from the original as `added`. Mark items present in both whose meaning has shifted as `changed`. Items whose surface form differs but whose semantic content is preserved are equivalent — do not report them, and ignore the surface-only differences enumerated in non_differences_to_ignore."
+
+block print_equivalence_report()
+    "Print a human-readable report directly to the user as plain text. Lead with one summary line in the shape `Glyph round-trip review for {original_glyph} vs {roundtrip_glyph} — equivalent` when no semantic differences exist, or `Glyph round-trip review for {original_glyph} vs {roundtrip_glyph} — N differences` otherwise. Then under a `Missing` heading, list each item present in the original but absent from the roundtrip as a short bullet showing the construct category and a brief snippet. Then under a `Changed` heading, list each item whose meaning shifted with a one-line before-and-after snippet. Then under an `Added` heading, list each item present in the roundtrip but absent from the original. Omit a heading whose section has no entries. Never emit JSON, code-fenced data, or any other structured payload — the report is for a human reader."
+
+const compare_by_meaning_not_surface_form = "Compare the two files by meaning, not by surface form. Equivalent intent with different surface phrasing, different identifier names, or different factoring choices is not a semantic difference. Only items whose semantic content has shifted count."
+
+const report_every_semantic_difference = "Report every semantic difference produced by the cross-read pass under the appropriate heading. A difference left unreported defeats the purpose of the round-trip equivalence check."
+
+const modifying_either_file = "modify, rewrite, or normalize either the original or the roundtrip Glyph file. The equivalence review is read-only — both files stay on disk untouched."
+
+const emitting_findings_as_json = "emit findings as JSON, code-fenced data, or any other structured payload. The report is plain prose for a human reader, with section headings and bullets only."
+
+const flagging_surface_only_differences = "flag any of these surface-only differences as semantic differences: block or const naming differences (the decompile pipeline is LLM-driven and may rename declarations), top-level declaration order, sub-section order within a body (`description:` vs `context:` vs `constraints:` vs `flow:` position), inline-string-vs-named-const factoring when intent matches, extracted-block-vs-inline-string-sequence factoring when actions match, or surface phrasing of any prose."
+
+const original_is_source_of_truth = "The original .glyph is the source of truth — the hand-authored file that was compiled into the .md that /glyph:decompile reverse-mapped back into Glyph source."
+
+const roundtrip_is_post_decompile_artifact = "The roundtrip .glyph is the post-decompile artifact — the file written by /glyph:decompile from the original's sibling .md."
+
+const report_is_plain_prose_for_a_human = "The report is plain prose for a human reader: a summary line, a `Missing` section, a `Changed` section, and an `Added` section. Each heading is omitted when its section has no entries. No JSON, no code fences containing structured data."
+
+const equivalence_table = """
+Cross-read each Glyph construct category by meaning, not by surface form:
+
+- Skill declaration: same role; parameter count, parameter roles, and defaults match; return type tag matches in intent; presence vs absence of a return type tag on either side is a difference.
+- Per-parameter descriptions: same meaning; surface phrasing differences ignored.
+- `description:` sub-section: same intent.
+- `context:` entries: set-equality by meaning, order ignored.
+- `constraints:` markers: set-equality including polarity; a polarity flip (`require` ↔ `avoid`, soft ↔ hard) is always a difference.
+- `flow:` steps: ordered comparison by intent; inline-string vs block-call vs const-reference factoring is not a difference when the resulting action is the same.
+- Branches (`if`/`elif`/`else`): same predicate intent; same per-arm action set; arm order matters when predicates are mutually exclusive.
+- `block` / `export block` definitions: compared by body intent, not by name (the decompiler may rename); a block in one file with no semantic counterpart in the other is flagged as missing or added.
+- `const` definitions: set-equality by value-meaning; inline-string ↔ named-const refactoring is not flagged when intent matches.
+- `import` statements: not compared directly. The effect — which names resolve in each file — is what matters; flag only when a referenced name has no counterpart on the other side.
+- `type` declarations: compared by attached description meaning.
+"""
+
+const non_differences_to_ignore = """
+Surface-only differences the reviewer must ignore and never flag:
+
+- Block or const naming differences (LLM rename during decompile).
+- Top-level declaration order.
+- Sub-section order within a body (`description:` vs `context:` vs `constraints:` vs `flow:` position).
+- Inline string vs named `const` factoring when intent matches.
+- Extracted `block` vs inline string sequence when actions match.
+- Surface phrasing of any prose.
+"""

@@ -1,6 +1,6 @@
 ---
 name: compile
-description: Use when the user invokes /glyph:compile on a Glyph source file or directory. Runs the full Glyph pipeline — compile, fmt, LLM repair loop, constraint conflict scan, prose reshape, validate-output — and surfaces every emitted compiled `.md` (top-level skills and procedure files) to the user.
+description: Use when the user invokes /glyph:compile on a Glyph source file or directory. Runs the full Glyph pipeline — compile, fmt, LLM repair loop, prose reshape, validate-output — and surfaces every emitted compiled `.md` (top-level skills and procedure files) to the user.
 ---
 
 ## Parameters
@@ -12,9 +12,8 @@ description: Use when the user invokes /glyph:compile on a Glyph source file or 
 ### Steps
 
 1. Follow the compile-with-repair procedure below.
-2. Follow the scan-constraint-conflicts procedure below.
-3. Follow the expand-and-validate procedure below.
-4. Follow the final-review procedure below.
+2. Follow the expand-and-validate procedure below.
+3. Follow the final-review procedure below.
 
 ### Procedure: compile-with-repair
 
@@ -26,16 +25,9 @@ description: Use when the user invokes /glyph:compile on a Glyph source file or 
 6. If repairable diagnostics persist after fmt, load `.agents/skills/glyph/repair.md` and follow its procedure for each offending source file, passing that source path and its NDJSON diagnostics as inputs. The skill writes the rewritten source back to disk. Then re-run `glyph compile {source_path} --format json --emit-ir`; if exit 0, exit the loop.
 7. After 3 iterations, if repairable diagnostics remain, hard-fail: surface the residual diagnostics verbatim to the user and stop.
 
-### Procedure: scan-constraint-conflicts
-
-1. Enumerate every compiled `.glyph` source under {source_path}: a single file when {source_path} is a `.glyph` file, or every `*.glyph` recursively under {source_path} when it is a directory. For each source, derive `<stem>` by stripping the trailing `.glyph` from the basename and read the IR sidecar at `<dir>/<stem>.ir.json` (every successfully compiled source has one).
-2. Across every IR sidecar, enumerate every declaration whose `constraints:` set has 2 or more entries. Skip declarations with 0 or 1 constraints without an LLM call.
-3. For each such declaration, load `.agents/skills/glyph/semantic_validation.md` and follow its procedure, passing the declaration's resolved constraint set as input.
-4. Aggregate the returned JSON conflict reports: on any `contradiction`, hard-fail and surface the conflict to the author — note that the compiled `.md` and `.ir.json` artifacts are already on disk per `design/repair.md` §4.10 (Phase 3c runs post-compile in the agent loop), and the contract is that the author edits the source and recompiles. Treat each `tension` as a warning; otherwise the build proceeds.
-
 ### Procedure: expand-and-validate
 
-1. Enumerate every compiled `.glyph` source under {source_path} the same way as `scan_constraint_conflicts`: a single file when {source_path} is a `.glyph` file, or every `*.glyph` recursively under {source_path} when it is a directory. For each source, derive `<stem>` by stripping `.glyph` from the basename; the IR sidecar lives at `<dir>/<stem>.ir.json`.
+1. Enumerate every compiled `.glyph` source under {source_path}: a single file when {source_path} is a `.glyph` file, or every `*.glyph` recursively under {source_path} when it is a directory. For each source, derive `<stem>` by stripping `.glyph` from the basename; the IR sidecar lives at `<dir>/<stem>.ir.json`.
 2. For each source, collect the set of emitted `.md` artifacts: the top-level scaffold at `<dir>/<stem>.md` if it exists on disk (present for sources containing at least one `skill` declaration; absent for pure library files, which is normal — not an error), plus every `*.md` inside the sibling subdirectory `<dir>/<stem>/` if that directory exists (these are Tier-3 / library procedure files).
 3. For each collected `.md` path, run the expand-then-validate cycle: load `.agents/skills/glyph/expand.md` and follow its procedure, passing that `.md` path as `scaffold_path` and the source's `<dir>/<stem>.ir.json` as `resolved_ir`. The skill writes the expanded Markdown back to the same `.md` path.
 4. After expansion, run `glyph validate-output <dir>/<stem>.ir.json <md_path>` for that pair. On exit 0, the file is done. On exit 1, retry the expand pass for that one file using the structural diagnostics as revise-with-feedback input. Budget at most 2 retries per file before surfacing the failure verbatim.
