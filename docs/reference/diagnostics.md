@@ -164,6 +164,7 @@ Build-phase diagnostics cover project-level orchestration concerns rather than a
 | ID | Classification | Trigger |
 |---|---|---|
 | `G::build::skipped-due-to-failed-import` | warning | A file was skipped (no `.md` written) because a transitive dependency failed earlier in the same build. The diagnostic surfaces the failed dependency's file path so the author knows which upstream failure cascaded. |
+| `G::build::import-outside-out-dir` | warning | Under `--out-dir`, a transitive import resolves outside the input root and therefore cannot be mirrored under the output directory. The imported file is compiled in-place next to its source, and the warning identifies the offending path so the author knows the output tree is not self-contained. |
 
 ### Validate-output phase (structural validation)
 

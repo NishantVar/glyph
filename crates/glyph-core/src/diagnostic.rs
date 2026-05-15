@@ -45,6 +45,11 @@ pub const INCONSISTENT_TYPE_SPELLING_DIAG_ID: &str = "G::analyze::inconsistent-t
 /// `analyze::register_type_use` when called twice with `TypeUseKind::ExplicitDecl`.
 pub const DUPLICATE_TYPE_DECL_DIAG_ID: &str = "G::analyze::duplicate-type-decl";
 
+/// An imported `.glyph` file resolves outside the canonicalized input root used
+/// by `--out-dir`. The file is written in-place rather than mirrored under
+/// `--out-dir`. Emitted once per outside-root file per build. Warning-tier.
+pub const IMPORT_OUTSIDE_OUT_DIR_DIAG_ID: &str = "G::build::import-outside-out-dir";
+
 /// The three trust tiers from `pipeline.md` Phase 2.
 ///
 /// Stable serialization: lowercase string for JSON output.
