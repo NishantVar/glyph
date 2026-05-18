@@ -14,16 +14,32 @@ if [ -n "$staged_glyph" ]; then
     if ! command -v glyph &>/dev/null; then
         echo "pre-commit: glyph not found in PATH, skipping .glyph checks"
     else
+        # Test-corpus fixtures live under crates/glyph-cli/tests/corpus/. By design
+        # many of them are not standalone-checkable: invalid/ holds intentionally
+        # broken sources, repairable/ holds sources that exit non-zero with
+        # repairable diagnostics, and multi-file/ and valid/imports/ depend on
+        # sibling files that single-file `glyph check` cannot resolve. The full
+        # `cargo nextest` workspace run is the authoritative gate for those.
+        check_glyph=""
+        for f in $staged_glyph; do
+            case "$f" in
+                crates/glyph-cli/tests/corpus/*) ;;
+                *) check_glyph="$check_glyph $f" ;;
+            esac
+        done
+
         echo "pre-commit: formatting staged .glyph files..."
         for f in $staged_glyph; do
             glyph fmt "$f"
             git add "$f"
         done
 
-        echo "pre-commit: checking staged .glyph files..."
-        for f in $staged_glyph; do
-            glyph check "$f"
-        done
+        if [ -n "$check_glyph" ]; then
+            echo "pre-commit: checking staged .glyph files..."
+            for f in $check_glyph; do
+                glyph check "$f"
+            done
+        fi
     fi
 fi
 
