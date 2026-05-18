@@ -1,6 +1,6 @@
 # CallBodyShape Span Emission — Closing the `with` Modifier Drop
 
-**Status:** draft (rev 2, post-review)
+**Status:** draft (rev 3, post-second-pass review)
 **Date:** 2026-05-18
 **Phase:** 6 / Step 2 (Expand)
 **Related ADRs:** [[docs/adr/0016-llm-reshape-no-deterministic-fallback]], [[docs/adr/0018-phase-6b-structural-only-gate]]
@@ -14,9 +14,10 @@ The IR is correct: `with` parses and lowers into `IrCall.site_modifier` faithful
 
 - `SpanKind::CallBodyShape` and `SpanPayload { site_modifier, resolved_body, … }` are defined in `crates/glyph-core/src/emit/scaffold.rs`.
 - `crates/glyph-core/src/emit/stub_fill.rs:24` knows how to fill a `CallBodyShape` span (verbatim `resolved_body`, with modifier deliberately ignored — documented in `expand.md` §3.5).
-- **No emit site ever pushes a `CallBodyShape` span.** Every Call emission path pushes a literal-template string. The seven sites are:
-  - `scaffold.rs` top-level: tier 1 (~L1037), tier 2 (~L1060), tier 3 (~L1071), stdlib/bound unresolved (`bound_name.is_some()`, ~L1086).
-  - `branch.rs::emit_lettered_substeps` in-arm: tier 1 (L300–318), tier 2 (L319–327), tier 3 (L328–336).
+- **No emit site ever pushes a `CallBodyShape` span.** Every Call emission path pushes a literal-template string. The seven sites are **all three tiers in both positions, plus top-level stdlib/bound unresolved** = 3 × 2 + 1 = 7:
+  - `scaffold.rs` top-level: tier 1 inline (~L1037), tier 2 same-file procedure (~L1060), tier 3 external file (~L1071), stdlib/bound unresolved (`bound_name.is_some()`, ~L1086).
+  - `branch.rs::emit_lettered_substeps` in-arm: tier 1 inline (L300–318), tier 2 same-file procedure (L319–327), tier 3 external file (L328–336).
+  - (Stdlib/bound in-arm is structurally impossible today: lettered sub-steps are only emitted under a Branch, and the bound-name path is a top-level skill-Step shape. If branch.rs gains stdlib/bound handling later, that site adopts the same pattern.)
 
 Because no span is emitted, the modifier is structurally invisible to the fill layer — even a fully-wired LLM expand pass would never see it. LLM-grade `local_refs` cross-references (`llm_expand_pass.md` §1.2) are silently degraded to bare substitution in the same way.
 
@@ -25,7 +26,7 @@ Because no span is emitted, the modifier is structurally invisible to the fill l
 **Goals.**
 
 1. Plumb every Call emission path (all seven sites above) through a `CallBodyShape` span when LLM judgment is required.
-2. Make the failure mode loud: when the stub filler is asked to fill a `CallBodyShape` span it cannot, abort compilation with a specific diagnostic. No silent drop. No deterministic fallback that produces clunkier prose (per [[docs/adr/0016-llm-reshape-no-deterministic-fallback]]).
+2. Make the failure mode loud at **production** entry points (`emit::emit` and every caller that produces `CompileOutcome`): when the stub filler is asked to fill a `CallBodyShape` span it cannot, the production emit returns an error variant that the lib-level callers convert into a `CompileOutcome::Diagnostics(bag)`, which `compile_directory_with_layout` already routes to `FileOutcome::Failed` and therefore already skips `atomic_write`. No silent drop. No deterministic fallback that produces clunkier prose (per [[docs/adr/0016-llm-reshape-no-deterministic-fallback]]).
 3. Preserve existing behavior for Calls that need no LLM judgment, so today's snapshots and test corpus are unaffected except in the cases that are actually buggy today.
 
 **Non-goals.**
@@ -33,17 +34,17 @@ Because no span is emitted, the modifier is structurally invisible to the fill l
 - **Scoped constraints are out of scope.** `IrCall` has no `scoped_constraints` field today (`emit_ir.rs` hardcodes `"scoped_constraints": []`). Lowering callee constraints into the call site, serializing the field, and exercising it end-to-end is a separate, larger piece of work tracked as a follow-up in §7. The CallBodyShape span this spec emits does **not** carry scoped constraints, and the triviality predicate does not check them.
 - Wiring the actual LLM filler. This spec covers the deterministic-emitter + stub side only.
 - Phase 6b semantic checks that the LLM's woven prose faithfully reflects modifier intent (out of scope per [[docs/adr/0018-phase-6b-structural-only-gate]]). See §3.9 for how Phase 6b complements this work.
-- Any change to Step 1 resolution, the `with` parse path, or the IR shape (beyond extending `SpanPayload`, which is internal to the emit module).
+- Any change to Step 1 resolution, the `with` parse path, or the IR shape (beyond extending `SpanPayload`, which is internal to the emit module, and the source-span follow-up tracked in §7).
 
 ## 3. Design
 
 ### 3.1 Posture (locked)
 
-**Loud failure**, per ADR-0016. When LLM judgment is needed and no LLM is wired, the build aborts with a structural diagnostic. The user re-runs once the LLM is wired (or removes the `with` modifier that requires it). No `.md` is written.
+**Loud failure**, per ADR-0016. When LLM judgment is needed and no LLM is wired, the build aborts with a structural diagnostic. The user re-runs once the LLM is wired (or removes the `with` modifier that requires it). No `.md` is written — and this is enforced by the `CompileOutcome::Diagnostics` path in `lib.rs`, which never reaches `atomic_write` (see §3.6).
 
 ### 3.2 Scope (locked)
 
-The fix covers **all three Call projection tiers** (tier 1 inline, tier 2 same_file_procedure, tier 3 external_file) plus the **stdlib/bound unresolved** path, in **both positions** (top-level under `## Steps` and lettered sub-steps inside a Branch arm). The CallBodyShape span's responsibilities for this spec are **two**: `site_modifier` weaving and LLM-grade `local_refs` cross-reference resolution. Scoped constraints are explicitly deferred to a follow-up (§7).
+The fix covers **all three Call projection tiers** (tier 1 inline, tier 2 same_file_procedure, tier 3 external_file) **in both positions** (top-level under `## Steps` and lettered sub-steps inside a Branch arm), **plus the top-level stdlib/bound unresolved path** (`bound_name.is_some()`). That is 3 × 2 + 1 = **7 emit sites**. The CallBodyShape span's responsibilities for this spec are **two**: `site_modifier` weaving and LLM-grade `local_refs` cross-reference resolution. Scoped constraints are explicitly deferred to a follow-up (§7).
 
 ### 3.3 Triviality predicate
 
@@ -59,23 +60,39 @@ Non-empty `local_refs` is treated as non-trivial because `llm_expand_pass.md` §
 
 Scoped constraints are not part of the predicate. When that responsibility is added, the predicate gains an `|| !c.scoped_constraints.is_empty()` clause and the follow-up spec re-introduces the corresponding test row.
 
+**`local_refs` invariant.** `IrCall.local_refs` is non-empty only for tier-1 inline Calls — tier 2, tier 3, and stdlib/bound Calls do not carry resolved-body slots and so cannot host local-ref cross-references. The triviality predicate is uniform across all seven sites (cheap to evaluate, no special case), but the `local_refs` reason only ever fires at the two tier-1 sites; tests in §6.3 assert this invariant.
+
 ### 3.4 Emit-site changes
 
-Each of the seven Call emission sites adopts the same pattern: keep the existing literal path under the triviality predicate, otherwise emit a `CallBodyShape` span.
+Each of the seven Call emission sites adopts the same pattern: keep the existing literal path under the triviality predicate, otherwise emit a `CallBodyShape` span. The span owns **only the call-body prose** as one chunk; everything else is a separate `Literal` chunk in the scaffold.
 
-**Span boundaries.** The `CallBodyShape` span owns **only the call-body prose**. The following remain deterministic literals **outside** the span, in their current emit order:
+**Span boundaries — chunk layout.** For every site, the scaffold emits an explicit chunk sequence. The literal chunks immediately before and after the span carry the surrounding structure deterministically:
 
-- Numbered list prefix (`{idx}.` at top level) and lettered prefix (`{letter}.` in arms).
-- The naming sentence trailing (`Refer to this result as …` / `Refer to this agent as …`) appended via `naming_sentence_for_call` + `append_sentence`.
-- The return-fold suffix (`, and return that as your result.` / the §9.3 return-prose paragraph) emitted by `templates::append_return_sentence` for the Identifier-form Output Contract.
+```
+[ Literal("{idx}. ")                     // numbered prefix (top-level) or "   {letter}. " (in-arm)
+, Span(CallBodyShape, payload)            // body prose only
+, Literal(" {return-fold suffix}")?       // §9.3 return-fold (final Step + Identifier-form only)
+, Literal(" {naming sentence}")?          // §9.1 producer naming (only when naming_sentence_for_call returns Some)
+, Literal("\n")                           // line terminator
+]
+```
+
+Concretely, the following remain deterministic literals **outside** the span:
+
+- Numbered list prefix (`{idx}. ` at top level) and lettered prefix (`   {letter}. ` in arms).
+- The return-fold suffix (`, and return that as your result.` and the §9.3 return-prose paragraph) emitted by `templates::append_return_sentence` for the Identifier-form Output Contract. This is the chunk **immediately after** the span when present.
+- The naming sentence (`Refer to this result as …` / `Refer to this agent as …`) appended via `naming_sentence_for_call` + `append_sentence`. This is the chunk **after** any return-fold chunk when present.
+- The trailing `\n`.
 - The procedure-section anchor and ordering side-effect (`procedure_seen.insert(...)`, `procedure_order.push(...)`).
 
-The LLM (when wired) writes only the prose that replaces the literal anchor — *"Follow the X procedure below."*, *"Load and follow the procedure in `path`."*, the resolved inline body, or *"Call `target`."*. The deterministic emitter still owns surrounding structure.
+The merger contract therefore needs no new behavior: post-span literal chunks already merge in their existing order. The LLM (when wired) writes only the prose that replaces the literal anchor — *"Follow the X procedure below."*, *"Load and follow the procedure in `path`."*, the resolved inline body, or *"Call `target`."*. The deterministic emitter still owns surrounding structure.
+
+**Tier-1 raw-slot rule (local_refs).** The CallBodyShape span's `payload.resolved_body` for a non-trivial tier-1 Call (both top-level and in-arm) carries the **raw** `c.resolved_body` — `{name}` slots **intact**, not pre-substituted. The LLM filler weaves the cross-reference using `payload.local_refs` (which carries `crate::ir::LocalRef` values, see §3.5) to produce natural-language references like *"the diagnosis from your earlier analysis"* rather than bare names. The trivial tier-1 path retains today's `substitute_local_refs_in` bare-substitution behavior. This is the load-bearing distinction between the trivial and non-trivial tier-1 paths.
 
 **Pseudocode — representative site (tier 2 same_file_procedure, top-level, currently `scaffold.rs:1058–1068`):**
 
 ```rust
-IrNode::Call(c) if c.projection_tier == Some(2) => {
+IrNode::Call(c) if c.projection_mode == Some(ProjectionMode::SameFileProcedure) => {
     s.push_literal(format!("{}. ", idx + 1));
     let kebab = c.target.replace('_', "-");
     let anchor = format!("Follow the {} procedure below.", kebab);
@@ -86,18 +103,19 @@ IrNode::Call(c) if c.projection_tier == Some(2) => {
             ir_node: c.node_id,
             payload: SpanPayload {
                 target_name: Some(c.target.clone()),
-                projection_tier: Some(2),
+                projection_mode: Some(ProjectionMode::SameFileProcedure),
                 site_modifier: c.site_modifier.clone(),
                 resolved_body: Some(anchor),
-                local_refs: c.local_refs.iter().cloned().collect(),
+                local_refs: c.local_refs.clone(),  // crate::ir::LocalRef, see §3.5
                 ..SpanPayload::default()
             },
         });
     } else {
         s.push_literal(anchor);
     }
+    // Return-fold (final-Step + Identifier-form) goes here, BEFORE naming, as a separate Literal chunk.
+    // Naming sentence (when present) is the next separate Literal chunk.
     if let Some(naming) = naming_sentence_for_call(c) {
-        // Naming sentence trails the body — deterministic, outside the span.
         s.push_literal(format!(" {}", naming));
     }
     s.push_literal("\n");
@@ -107,27 +125,55 @@ IrNode::Call(c) if c.projection_tier == Some(2) => {
 }
 ```
 
+**Tier-1 pseudocode sketch (top-level and in-arm, non-trivial case):**
+
+```rust
+// trivial path: existing substitute_local_refs_in flow, unchanged.
+// non-trivial path:
+s.push_span(SpanRef {
+    id: s.next_span_id(),
+    kind: SpanKind::CallBodyShape,
+    ir_node: c.node_id,
+    payload: SpanPayload {
+        target_name: Some(c.target.clone()),
+        projection_mode: Some(ProjectionMode::Inline),
+        site_modifier: c.site_modifier.clone(),
+        resolved_body: c.resolved_body.clone(),    // RAW {name} slots, not pre-substituted
+        local_refs: c.local_refs.clone(),          // crate::ir::LocalRef
+        ..SpanPayload::default()
+    },
+});
+```
+
 Equivalent changes at the other six sites with site-specific anchors:
 
 | Site | Position | Anchor when trivial / payload.resolved_body when non-trivial |
 |---|---|---|
-| tier 1 (inline) | top-level | `c.resolved_body` (with §9.1 producer-naming and §9.3 return-fold rules applied **outside** the span) |
+| tier 1 (inline) | top-level | trivial: substituted `c.resolved_body`. non-trivial: **raw** `c.resolved_body` with `{name}` slots intact (return-fold / naming sentence stay as separate post-span Literal chunks). |
 | tier 2 (same_file_procedure) | top-level | `"Follow the {kebab} procedure below."` |
 | tier 3 (external_file) | top-level | `templates::external_file_step(path)` |
 | stdlib/bound (`bound_name.is_some()`) | top-level | `format!("Call \`{}\`.", c.target)` |
-| tier 1 (inline) | in-arm | substituted resolved body |
+| tier 1 (inline) | in-arm | trivial: substituted `c.resolved_body`. non-trivial: **raw** `c.resolved_body` (same rule as tier-1 top-level). |
 | tier 2 (same_file_procedure) | in-arm | `"Follow the {kebab} procedure."` |
 | tier 3 (external_file) | in-arm | `templates::external_file_step(path)` |
 
-**Tier-1 final-call handling.** Today's top-level tier-1 path (`scaffold.rs:1020–1056`) has specialized handling for: (a) the final Step folding in the Identifier-form return suffix, (b) the producer naming sentence trailing, (c) the empty-body + return-only case. All of this remains deterministic. The span replaces only the body text — the return-fold concatenation in `templates::append_return_sentence` runs against the span's resolved-body anchor when trivial, and runs against the *literal anchor string* (not the LLM's filled prose) at scaffold-build time, with the LLM's prose merged in afterward by `merger.rs`. The merger must therefore preserve the return-suffix as a post-span literal chunk; this is already its existing contract.
+**Tier-1 final-call handling.** Today's top-level tier-1 path (`scaffold.rs:1020–1056`) has specialized handling for: (a) the final Step folding in the Identifier-form return suffix, (b) the producer naming sentence trailing, (c) the empty-body + return-only case. All of this remains deterministic. The span replaces only the body text — the return-fold suffix is appended as a **separate post-span Literal chunk**, never concatenated into the span payload. This means an Identifier-form final tier-1 Call with a `with` modifier yields the chunk sequence `[Literal("N. "), Span(CallBodyShape), Literal(", and return that as your result."), Literal("\n")]` — the return suffix is recoverable from the scaffold by an external consumer even when the LLM filler has not yet run.
 
 **Empty body + `with` modifier.** A tier-1 Call whose `resolved_body` is empty but carries a `with` modifier is non-trivial → span emitted → stub hard-fails. (The LLM, when wired, would author the body from the modifier alone.) The span payload's `resolved_body` is `Some("")` rather than `None`, so consumers can distinguish "empty body, has modifier" from "no body field at all."
 
 ### 3.5 SpanPayload extension
 
-`crates/glyph-core/src/emit/scaffold.rs` ~L302. Add three fields:
+`crates/glyph-core/src/emit/scaffold.rs` ~L302. Add a `ProjectionMode` enum to replace the loose `Option<u8>` tier indicator, and add three fields to `SpanPayload`:
 
 ```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProjectionMode {
+    Inline,                 // tier 1: resolved_body is inlined
+    SameFileProcedure,      // tier 2: a separate procedure section in the same file
+    ExternalFile,           // tier 3: a separate .md file
+    StdlibBound,            // bound_name.is_some() (today: stdlib / Library only)
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct SpanPayload {
     pub site_modifier: Option<String>,
@@ -139,24 +185,21 @@ pub struct SpanPayload {
     pub param_name: Option<String>,
     pub param_type: Option<String>,
     pub param_default: Option<String>,
-    // New:
+    // New for CallBodyShape:
     pub target_name: Option<String>,
-    pub projection_tier: Option<u8>,
-    pub local_refs: Vec<LocalRefPayload>,
-}
-
-#[derive(Clone, Debug)]
-pub struct LocalRefPayload {
-    pub name: String,
-    pub producer_node: NodeId,
+    pub projection_mode: Option<ProjectionMode>,
+    pub local_refs: Vec<crate::ir::LocalRef>,   // reuse the existing IR type, no new payload struct
 }
 ```
 
-`target_name` and `projection_tier` let the LLM-side filler (when wired) know the kind of Call being expanded so it can shape prose around the correct anchor and naming convention. They're cheap and Option-typed so existing span constructions (`ParamDescription`, `BranchCondition`) stay source-compatible. `local_refs` is the LLM-grade cross-reference vector.
+- `target_name` and `projection_mode` let the LLM-side filler (when wired) know the kind of Call being expanded so it can shape prose around the correct anchor and naming convention. They're cheap and `Option`-typed so existing span constructions (`ParamDescription`, `BranchCondition`) stay source-compatible.
+- `local_refs` is the LLM-grade cross-reference vector. **It reuses `crate::ir::LocalRef` directly** — no new `LocalRefPayload` wrapper. The producing pseudocode is simply `c.local_refs.clone()`, with no field translation. If a future change to `LocalRef` needs more fields the span payload picks them up automatically.
 
 Scoped constraints intentionally absent — see §7.
 
-### 3.6 Stub-fill behavior change
+### 3.6 Stub-fill and production-path plumbing
+
+Two coupled changes: the stub returns a `Result`, and **`emit::emit` (the production entry point) plus its lib-level callers propagate the failure into `CompileOutcome::Diagnostics`**. The `compile_directory_with_layout` path (`lib.rs:1693`) already routes `CompileOutcome::Diagnostics` to `FileOutcome::Failed` and **never reaches `atomic_write`**, so the loud-failure posture is enforced without new bookkeeping.
 
 `crates/glyph-core/src/emit/stub_fill.rs`. The `CallBodyShape` arm changes from infallible verbatim pass-through to a hard-fail when called. Because under §3.4 a `CallBodyShape` span is only ever emitted when `call_needs_llm_fill` is true, the stub's posture is "any emitted CallBodyShape means LLM was required."
 
@@ -194,26 +237,97 @@ pub fn fill(scaffold: &Scaffold) -> Result<HashMap<SpanId, String>, Vec<StubFill
 }
 ```
 
-The caller (`compile_markdown` / `compile_to_md` in `expand.rs` / `scaffold.rs`) propagates the error, converts each `StubFillError` into a `G::expand::llm-required-for-call` diagnostic per §3.7, and aborts the compile before the merger runs. No `.md` is written.
+`crates/glyph-core/src/emit/mod.rs`. The production entry `emit` (`emit/mod.rs:16`) returns `Result<String, Vec<StubFillError>>`:
+
+```rust
+pub fn emit(arena: &IrArena, enable_effects: bool) -> Result<String, Vec<StubFillError>> {
+    let scaffold = scaffold::build(arena, enable_effects);
+    match stub_fill::fill(&scaffold) {
+        Ok(fills) => Ok(merger::merge(scaffold, fills).expect("scaffold/fill mismatch is a bug")),
+        Err(errors) => Err(errors),
+    }
+}
+```
+
+`crates/glyph-core/src/lib.rs`. The two functions that build `CompileOutcome` from emit output (`compile_source_with_effects` ~L142, `compile_source_with_resolved_imports` ~L2672/2741) wrap the `Err` variant into a fresh diagnostic bag:
+
+```rust
+// inside e.g. compile_source_with_effects, where emit::emit is currently called:
+let markdown = match emit::emit(&arena, enable_effects) {
+    Ok(md) => md,
+    Err(errors) => {
+        let mut bag = DiagBag::new();
+        let li = LineIndex::new("");                          // synthetic; see §3.7
+        let label = source_label_for(file_path);              // file path string, no line/col
+        for e in errors {
+            let span = Span::new(0, 0, 0);                    // synthetic zero-width at file start
+            bag.push(
+                Diagnostic::error(
+                    "G::expand::llm-required-for-call",
+                    format_llm_required_message(&e),          // §3.7
+                    SourceSpan::from_byte_span(&label, span, &li),
+                ),
+                span,
+            );
+        }
+        return Ok(CompileOutcome::Diagnostics(bag));
+    }
+};
+```
+
+(This mirrors the existing fallback at `lib.rs:1726–1747` which already synthesizes diagnostics with a zero-width `Span::new(0, 0, 0)` for pipeline failures that aren't already wired to a structured ID.)
+
+`compile_directory_with_layout` requires **no change**: the existing match-arm at `lib.rs:1693` (`Ok(CompileOutcome::Diagnostics(mut bag))`) routes the new diagnostic to `FileOutcome::Failed`, suppresses `atomic_write`, and propagates `any_failure = true` for non-zero exit.
+
+Test helpers (`compile_markdown`, `compile_to_md`) absorb the new `Result` shape — most call `emit::emit` indirectly through `compile_source_*` and so are unaffected. The two helpers that call `emit::emit` directly (if any survive after the signature change) panic on `Err` with a clear message, since they exist for snapshot tests of happy-path output.
 
 ### 3.7 Diagnostic
 
 - **ID:** `G::expand::llm-required-for-call`
 - **Phase:** Step 2 fill-time (pre-6b). Fires in the fill layer before merge; **not** a Phase 6b structural diagnostic. See §3.9 for the relationship.
 - **Classification:** `error`. Not `repairable` — Phase 3 Repair operates on source, and this is a build configuration / filler-wiring issue.
+- **Source span (synthetic).** `IrCall` has no source span field today. Per the existing pattern at `lib.rs:1726–1747`, this spec uses a **synthetic zero-width file-level span** (`Span::new(0, 0, 0)` against an empty `LineIndex`, with the source file path as the `label`). The diagnostic message names the IR node id (`n3`, `n7`, …) so the failing Call is unambiguously identifiable to the user even without precise source coordinates. Surfacing a real source span for `IrCall` is tracked as a follow-up in §7 (it requires threading a span through `IrCall`, parser → lower → IR; out of scope for this spec).
+- **Ordering.** Diagnostics are ordered by the existing `DiagBag` sort (source byte offset). All `G::expand::llm-required-for-call` diagnostics for one compile share the same synthetic offset (0), so the **tiebreaker is IR node id ascending** — emitted in node-id order when the bag is built, which matches both how `compile_source_*` iterates the scaffold and what tests in §6.5 assert.
 - **Registered in:**
   - `docs/reference/diagnostics.md` — the public catalog. This is the contract-bearing location.
   - A new subsection in `docs/architecture/expand.md` (see §3.8) — internal rationale.
-- **Message template** (one diagnostic per failing Call, reasons in deterministic order — `with modifier` first, then `local-ref cross-references`):
-  > `` Call to `{target}` (IR node {node_id}) requires LLM-grade expansion because it has a {reasons}; this compiler build is using the stub filler. Enable the LLM expand filler, or remove the {remediation}. ``
-  >
-  > `{reasons}` example: *"with modifier and local-ref cross-references"* / *"with modifier"* / *"local-ref cross-references"*.
-  > `{remediation}` example: *"with modifier / rewrite the local reference"* / *"with modifier"* / *"local reference"*.
+- **Message construction.** The reason phrase is **prebuilt deterministically** by the caller before formatting the message — no template-substitution glue, no risk of `"a {empty}"` or grammar bugs:
 
-- **Concrete example (matches the reviewer's preferred wording):**
+  ```rust
+  fn format_llm_required_message(e: &StubFillError) -> String {
+      let reason_phrase = match (e.has_modifier, e.has_local_refs) {
+          (true,  false) => "a with modifier",
+          (false, true ) => "local-ref cross-references",
+          (true,  true ) => "a with modifier and local-ref cross-references",
+          (false, false) => unreachable!(
+              "StubFillError pushed only when site_modifier or local_refs is non-empty"
+          ),
+      };
+      let remediation = match (e.has_modifier, e.has_local_refs) {
+          (true,  false) => "the with modifier",
+          (false, true ) => "the local reference",
+          (true,  true ) => "the with modifier / rewrite the local reference",
+          (false, false) => unreachable!(),
+      };
+      let target = e.target_name.as_deref().unwrap_or("<unknown>");
+      format!(
+          "Call to `{target}` (IR node {node}) requires LLM-grade expansion because it has \
+           {reason_phrase}; this compiler build is using the stub filler. \
+           Enable the LLM expand filler, or remove {remediation}.",
+          target = target,
+          node = e.ir_node,
+          reason_phrase = reason_phrase,
+          remediation = remediation,
+      )
+  }
+  ```
+
+  Reason order is deterministic by construction (with-modifier first, then local-ref cross-references, when both apply).
+
+- **Concrete example (combined case):**
   > `` Call to `inspect_failure` (IR node n3) requires LLM-grade expansion because it has a with modifier and local-ref cross-references; this compiler build is using the stub filler. Enable the LLM expand filler, or remove the with modifier / rewrite the local reference. ``
 
-- **No `.md` file written.** Matches the §5.6 "validation failure persists" row of `expand.md`.
+- **No `.md` file written.** Guaranteed by the existing `CompileOutcome::Diagnostics` branch in `compile_directory_with_layout` — see §3.6.
 
 ### 3.8 Documentation updates
 
@@ -227,7 +341,9 @@ The caller (`compile_markdown` / `compile_to_md` in `expand.rs` / `scaffold.rs`)
 
 3. **`llm_expand_pass.md` preamble.** Add a one-line note: the stub filler no longer silently elides `with` modifiers or LLM-grade local-ref cross-references — it refuses with a structural diagnostic until the LLM expand pass is wired.
 
-4. **`todo/expand-todos.md`.** Add a follow-up item: *"Lower callee constraints into `IrCall.scoped_constraints`, serialize via `emit_ir.rs`, extend the CallBodyShape triviality predicate and the stub-fill `StubFillError` to cover scoped constraints. Reuses the span-emission machinery from this spec."*
+4. **`todo/expand-todos.md`.** Add two follow-up items:
+   - *Scoped constraints:* "Lower callee constraints into `IrCall.scoped_constraints`, serialize via `emit_ir.rs`, extend the CallBodyShape triviality predicate and the stub-fill `StubFillError` to cover scoped constraints. Reuses the span-emission machinery from this spec."
+   - *Source spans on IrCall:* "Thread a `SourceSpan` (or byte-offset pair) through `IrCall` from parser → lower → IR so `G::expand::llm-required-for-call` can carry a real source span instead of the synthetic zero-width file-level span the introductory spec uses."
 
 ### 3.9 Relationship to Phase 6b
 
@@ -246,8 +362,8 @@ When the LLM filler is eventually wired, this diagnostic stops firing on well-fo
 |---|---|---|
 | No modifier, no local refs | Deterministic literal | **Unchanged** — same literal, no span |
 | `with "…"`, no local refs | Deterministic literal (modifier silently dropped — **bug**) | `CallBodyShape` span emitted; stub hard-fails with `G::expand::llm-required-for-call` |
-| `local_refs` non-empty, no modifier | Bare `substitute_local_refs_in` substitution | Span emitted; stub hard-fails |
-| `with "…"` + `local_refs` non-empty | Both silently degraded | Span emitted with both payloads; stub hard-fails listing both reasons |
+| `local_refs` non-empty, no modifier (tier 1 only) | Bare `substitute_local_refs_in` substitution | Span emitted with raw-slot `resolved_body`; stub hard-fails |
+| `with "…"` + `local_refs` non-empty (tier 1 only) | Both silently degraded | Span emitted with both payloads; stub hard-fails listing both reasons |
 | Empty body + `with "…"` (tier 1) | Empty step text (modifier dropped) | Span emitted with `resolved_body: Some("")` and modifier; stub hard-fails |
 | Scoped-constraint Call | Constraints silently dropped | **Still silent today** — explicit follow-up (§7). Not regressed by this spec; tracked separately. |
 
@@ -255,25 +371,35 @@ When the LLM filler is eventually wired, this diagnostic stops firing on well-fo
 
 ```
 crates/glyph-core/src/emit/scaffold.rs
-  - Extend SpanPayload (target_name, projection_tier, local_refs) per §3.5.
+  - Add ProjectionMode enum per §3.5.
+  - Extend SpanPayload (target_name, projection_mode, local_refs: Vec<crate::ir::LocalRef>) per §3.5.
   - Add call_needs_llm_fill helper per §3.3.
   - Replace tier 1/2/3/stdlib literal emission (~L1037–L1091) with span-when-needed.
+  - Tier-1 non-trivial path uses RAW c.resolved_body (with {name} slots) per §3.4.
 
 crates/glyph-core/src/emit/branch.rs
   - Replace tier 1/2/3 in-arm literal emission (L300–L336) with span-when-needed.
+  - Tier-1 in-arm non-trivial path uses RAW c.resolved_body per §3.4.
 
 crates/glyph-core/src/emit/stub_fill.rs
   - Change fill() signature to Result<HashMap, Vec<StubFillError>>.
   - Define StubFillError per §3.6.
 
 crates/glyph-core/src/emit/merger.rs
-  - Plumb Result up; update test fixtures.
+  - No signature change required — merger still receives the OK fill map.
+  - Update internal call sites and test fixtures that assumed an infallible fill.
 
-crates/glyph-core/src/expand.rs (compile_markdown / compile_to_md)
-  - Propagate stub_fill Err into diagnostics; emit one G::expand::llm-required-for-call per failing span; abort before merger runs; do not write .md.
+crates/glyph-core/src/emit/mod.rs
+  - Change emit() signature to Result<String, Vec<StubFillError>> per §3.6.
 
-crates/glyph-core/src/diagnostic.rs (or wherever IDs live)
-  - Register G::expand::llm-required-for-call.
+crates/glyph-core/src/lib.rs
+  - In every CompileOutcome-producing function that calls emit::emit
+    (compile_source_with_effects ~L142, compile_source_with_resolved_imports ~L2672/2741):
+      convert Err(errors) into CompileOutcome::Diagnostics(bag) with one
+      G::expand::llm-required-for-call diagnostic per failing span, using the
+      synthetic zero-width file-level SourceSpan pattern at L1738–1743.
+  - compile_directory_with_layout (L1462): no change — existing Diagnostics
+    branch at L1693 already routes to FileOutcome::Failed and skips atomic_write.
 
 docs/reference/diagnostics.md
   - Register the diagnostic ID with trigger text (§3.8 item 1).
@@ -285,12 +411,13 @@ llm_expand_pass.md
   - Preamble note on refusal semantics (§3.8 item 3).
 
 todo/expand-todos.md
-  - Add scoped-constraints follow-up entry (§3.8 item 4).
+  - Add scoped-constraints follow-up entry (§3.8 item 4a).
+  - Add IrCall source-span follow-up entry (§3.8 item 4b).
 ```
 
 ## 6. Test plan
 
-The matrix below covers seven emit sites × responsibility combinations, plus regression coverage for the deterministic paths that are intentionally unchanged.
+Covers seven emit sites × responsibility combinations, plus regression coverage for the deterministic paths that are intentionally unchanged.
 
 ### 6.1 Regression: trivial Calls unchanged
 
@@ -300,49 +427,60 @@ Per-site regression tests (one per emit path), each asserting the exact rendered
 - T2 top-level same_file_procedure Call → still emits `"N. Follow the {kebab} procedure below."`.
 - T3 top-level external_file Call → still emits `templates::external_file_step(path)`.
 - Stdlib/bound top-level Call with `bound_name.is_some()` and no modifier → still emits `"N. Call \`target\`."`.
-- T1 in-arm inline Call → still emits substituted resolved body.
+- T1 in-arm inline Call → still emits substituted resolved body (i.e. `substitute_local_refs_in` runs).
 - T2 in-arm same_file_procedure → still emits `"   X. Follow the {kebab} procedure."`.
 - T3 in-arm external_file → still emits external_file_step.
 
-These do not rely on snapshot-passes-through; each is an explicit assert against the rendered string. Branching inside formatting-sensitive emit code (per reviewer item 11) warrants targeted coverage.
+These do not rely on snapshot-passes-through; each is an explicit assert against the rendered string. Branching inside formatting-sensitive emit code warrants targeted coverage.
 
 ### 6.2 New: hard-fail on `with` modifier (per site)
 
 One test per emit site, each:
 - Builds a skill exercising the site with a non-empty `site_modifier`.
-- Asserts compile aborts with exactly one `G::expand::llm-required-for-call` diagnostic naming the correct IR node id.
-- Asserts no `.md` file is written.
-- Asserts the diagnostic message includes the target name, IR node id, `"with modifier"` reason, and the remediation hint.
+- Asserts compile produces `CompileOutcome::Diagnostics` (not `Compiled`) carrying exactly one `G::expand::llm-required-for-call` diagnostic naming the correct IR node id.
+- Asserts no `.md` file is written (via `compile_directory_with_layout`'s `FileOutcome::Failed` path).
+- Asserts the diagnostic message includes the target name, IR node id, the `"a with modifier"` reason phrase, and `"the with modifier"` remediation.
 
-Seven sites → seven tests. The flow_assign with-modifier corpus fixture and any multi-file fix/review fixtures that today use `with` are updated to expect hard-failure (or moved to a dedicated `expected-failure` corpus directory if one exists).
+Seven sites → seven tests. Existing `with`-modifier corpus fixtures (`flow_assign` and any multi-file fixtures) are updated to expect hard-failure (or moved to a dedicated `expected-failure` corpus directory if one exists).
 
-### 6.3 New: hard-fail on `local_refs` (per site, where the site can host local_refs)
+### 6.3 New: hard-fail on `local_refs` (tier-1 sites only)
 
-Tier 1 paths (both top-level and in-arm) accept local_refs. Two tests, each asserting hard-fail with the `"local-ref cross-references"` reason.
+Per §3.3, `IrCall.local_refs` is non-empty only on tier-1 inline Calls. Two tests:
 
-### 6.4 New: combined modifier + local_refs
+- Tier-1 top-level inline Call with non-empty `local_refs` and **no** modifier.
+- Tier-1 in-arm inline Call with non-empty `local_refs` and **no** modifier.
 
-One test where a single Call has both. Asserts:
+Each asserts:
+- Hard-fail with `"local-ref cross-references"` reason phrase and `"the local reference"` remediation.
+- The `CallBodyShape` span's `payload.resolved_body` contains the **raw** `{name}` slot (no substitution) — inspected via deterministic-emit-only scaffold inspection.
+- Tier 2 / tier 3 / stdlib-bound never set `has_local_refs = true` (negative assertion: these tiers cannot host local-refs).
+
+### 6.4 New: combined modifier + local_refs (tier-1 only)
+
+One test on a tier-1 Call carrying both. Asserts:
 - One diagnostic per failing Call (not two).
-- The reasons substring is exactly `"with modifier and local-ref cross-references"` — deterministic order, with-first.
-- The remediation hint includes both parts.
+- The reason phrase is exactly `"a with modifier and local-ref cross-references"` — deterministic order, with-first.
+- The remediation is exactly `"the with modifier / rewrite the local reference"`.
 
-### 6.5 New: multiple failing spans
+### 6.5 New: multiple failing spans — deterministic ordering
 
 One test with a skill containing two distinct Calls each requiring LLM fill. Asserts:
 - Two `G::expand::llm-required-for-call` diagnostics emitted.
 - Each names the correct IR node id.
-- Stable ordering (by IR node id ascending).
+- Ordering: the bag sort by `SourceSpan` byte offset places all `llm-required-for-call` diagnostics at the same synthetic offset (0), so the **tiebreaker is IR node id ascending** — emit them in the order the scaffold visits the spans (which is IR order). Test asserts node-id-ascending order.
 
 ### 6.6 New: no output file on failure
 
-Existing CI helpers assert exit non-zero and stderr carries the diagnostic; explicitly assert `compiled.md` is absent on disk after the failing compile (matches `expand.md` §5.6).
+Existing CI helpers assert exit non-zero and stderr carries the diagnostic. Explicitly assert `compiled.md` is absent on disk after the failing compile (matches `expand.md` §5.6). The mechanism: `compile_directory_with_layout`'s `Ok(CompileOutcome::Diagnostics(_))` branch at `lib.rs:1693` never reaches `atomic_write`.
 
 ### 6.7 New: span boundaries — naming and return-fold stay outside span
 
-Two assertions tested via deterministic-emit-only inspection of the scaffold chunks:
-- For a tier-1 top-level Call with a `with` modifier as the final Step with Identifier-form return: the scaffold contains `[Literal("N. "), Span(CallBodyShape), Literal(", and return that as your result.\n")]`. The return-fold literal is **not** inside the span.
-- For a tier-2 top-level Call with a `with` modifier and a `bound_name`: the scaffold contains `[Literal("N. "), Span(CallBodyShape), Literal(" Refer to this result as <n>.\n")]`. The naming sentence is **not** inside the span.
+Deterministic-emit-only inspection of the scaffold chunks (no fill, no merge):
+
+- **Return-fold case.** Tier-1 top-level Call with a `with` modifier as the final Step with Identifier-form return → scaffold contains `[Literal("N. "), Span(CallBodyShape), Literal(", and return that as your result."), Literal("\n")]`. The return-fold literal is a **separate post-span chunk**, not concatenated to the body.
+- **Naming sentence case.** Tier-2 top-level Call with a `with` modifier and a `bound_name` → scaffold contains `[Literal("N. "), Span(CallBodyShape), Literal(" Refer to this result as <n>."), Literal("\n")]`. The naming sentence is a separate post-span chunk.
+- **Combined.** Tier-1 final Step + Identifier-form return + producer naming → both post-span chunks present in order: `[Literal("N. "), Span, Literal(return-fold), Literal(" Refer to this result as <n>."), Literal("\n")]`.
+- **Raw-slot assertion.** For a tier-1 non-trivial Call with a `{name}` slot in `c.resolved_body`, the span's `payload.resolved_body` contains the literal `{name}` token (not substituted).
 
 ### 6.8 IR-node-id stability
 
@@ -351,13 +489,15 @@ Each new test asserts the diagnostic names the failing Call by its stable IR nod
 ### 6.9 Excluded (deferred)
 
 - Scoped-constraint Calls: no test in this spec. The follow-up spec (§7) will add coverage when `IrCall.scoped_constraints` is introduced.
+- Real source-span coordinates: tests assert the synthetic zero-width file-level span shape only. When IrCall gains a source span, a follow-up test row asserts real `line`/`col` values.
 
 ## 7. Follow-up work
 
-- **Scoped constraints.** Lower callee constraints into a new `IrCall.scoped_constraints` field; serialize via `emit_ir.rs` (today hardcoded to `[]`); extend the §3.3 triviality predicate to `|| !c.scoped_constraints.is_empty()`; extend `SpanPayload` and `StubFillError` accordingly; reuse the span-emission machinery this spec introduces. Tracked in `todo/expand-todos.md` per §3.8 item 4.
+- **Scoped constraints.** Lower callee constraints into a new `IrCall.scoped_constraints` field; serialize via `emit_ir.rs` (today hardcoded to `[]`); extend the §3.3 triviality predicate to `|| !c.scoped_constraints.is_empty()`; extend `SpanPayload` and `StubFillError` accordingly; reuse the span-emission machinery this spec introduces. Tracked in `todo/expand-todos.md` per §3.8 item 4a.
+- **Real source spans on `IrCall`.** Thread a `SourceSpan` (or byte-offset pair) through `IrCall` from parser → lower → IR so `G::expand::llm-required-for-call` can carry a real source span instead of the synthetic zero-width file-level span this spec uses. Tracked in `todo/expand-todos.md` per §3.8 item 4b.
 - **LLM filler wiring.** The actual LLM call that fills `CallBodyShape` spans is tracked separately. Once wired, this spec's diagnostic stops firing on well-formed inputs and Phase 6b's existing `modifier-leaked` / `unresolved-local-ref` checks take over enforcement.
 
 ## 8. Open questions
 
 - **Architecture doc owner placement decision** for the new "Step 2 fill-time diagnostics" subsection (§3.8 item 2). I've left placement TBD between a new §3.x and a new §4.x.
-- **Exact wording** of the deterministic reason and remediation phrases (§3.7) can be tightened during implementation; the example matches the reviewer's preferred shape.
+- **Exact wording** of the deterministic reason and remediation phrases (§3.7) can be tightened during implementation; the prebuilt phrase tables are deterministic by construction, but the reviewer or end-user agent corpus may prefer alternate wording.
