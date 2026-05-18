@@ -1,6 +1,6 @@
 # CallBodyShape Span Emission — Closing the `with` Modifier Drop
 
-**Status:** draft (rev 5, post-fourth-pass review)
+**Status:** approved (rev 6, post-fifth-pass review — reviewer sign-off)
 **Date:** 2026-05-18
 **Phase:** 6 / Step 2 (Expand)
 **Related ADRs:** [[docs/adr/0016-llm-reshape-no-deterministic-fallback]], [[docs/adr/0018-phase-6b-structural-only-gate]]
@@ -218,7 +218,7 @@ pub enum ProjectionMode {
     Inline,                 // tier 1: resolved_body is inlined
     SameFileProcedure,      // tier 2: a separate procedure section in the same file
     ExternalFile,           // tier 3: a separate .md file
-    StdlibBound,            // bound_name.is_some() (today: stdlib / Library only)
+    StdlibBound,            // bound_name.is_some() and no projection_tier — stdlib / otherwise unresolved bound calls
 }
 
 #[derive(Clone, Debug, Default)]
@@ -427,7 +427,7 @@ When the LLM filler is eventually wired, this diagnostic stops firing on well-fo
 ```
 crates/glyph-core/src/emit/scaffold.rs
   - Add ProjectionMode enum per §3.5.
-  - Extend SpanPayload (target_name, projection_mode, local_refs: Vec<crate::ir::LocalRef>) per §3.5.
+  - Extend SpanPayload (target_name, projection_mode, local_refs: Vec<crate::ir::LocalRef>, post_merge_return_sentence) per §3.5.
   - Add call_needs_llm_fill helper per §3.3.
   - Replace tier 1/2/3/stdlib literal emission (~L1037–L1091) with span-when-needed.
   - Tier-1 non-trivial path uses RAW c.resolved_body (with {name} slots) per §3.4.
@@ -444,9 +444,12 @@ crates/glyph-core/src/emit/merger.rs
   - No signature change required — merger still receives the OK fill map.
   - New behaviour: when a CallBodyShape span carries
     payload.post_merge_return_sentence == Some(sent), run
-    templates::append_return_sentence(merged_body, sent) before emitting the
-    span's contribution to the final string. Naming-sentence post-span Literal
-    chunks (already in the chunk stream) merge in their existing position.
+    templates::append_return_sentence(span_body_text, sent) on the SPAN's
+    rendered body text only — NOT on the full line. The numbered/lettered
+    prefix Literal chunk runs before the span and is unaffected; the
+    naming-sentence post-span Literal chunk (when present) runs after the
+    return-fold result in its existing chunk-stream position. The final line
+    therefore looks like: prefix + append_return_sentence(body, sent) + naming + "\n".
   - Update internal call sites and test fixtures that assumed an infallible fill.
 
 crates/glyph-core/src/emit/mod.rs
