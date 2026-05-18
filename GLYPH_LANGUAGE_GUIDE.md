@@ -1216,11 +1216,11 @@ const monorepo_layout = "Codebase uses a monorepo layout with per-crate Cargo.to
 const focus_on_public_api = "Focus on changes to publicly exported names."
 
 block review_files(scope)
-    context monorepo_layout
     require focus_on_public_api
+    context monorepo_layout
     flow:
-        scan_changes(scope)
-        flag_breaking_changes(scope)
+        "Scan changes under scope and identify public-API touches."
+        "Flag any breaking changes for review."
 ```
 
 compiles (inside the calling skill's `.md`) to:
@@ -1228,15 +1228,15 @@ compiles (inside the calling skill's `.md`) to:
 ```md
 ### Procedure: review-files
 
-**monorepo-layout:** Codebase uses a monorepo layout with per-crate Cargo.toml files.
-
 **Require:** Focus on changes to publicly exported names.
 
-1. <expanded prose for scan_changes>
-2. <expanded prose for flag_breaking_changes>
+**monorepo-layout:** Codebase uses a monorepo layout with per-crate Cargo.toml files.
+
+1. Scan changes under scope and identify public-API touches.
+2. Flag any breaking changes for review.
 ```
 
-The preamble follows two simple label rules: a `context <ident>` name-ref renders as `**<kebab-name>:** <text>` (preserving the const's identity for traceability), and an inline-string `context "..."` renders as `**Context:** <text>`. Constraint markers reuse the same four-form template as `## Constraints` (§7.2). Each entry is its own paragraph; preamble paragraphs are not counted as Steps.
+The preamble follows two simple label rules: a `context <ident>` name-ref renders as `**<kebab-name>:** <text>` (preserving the const's identity for traceability), and an inline-string `context "..."` renders as `**Context:** <text>`. Constraint markers reuse the same four-form template as `## Constraints` (§7.2). Each entry is its own paragraph; preamble paragraphs are not counted as Steps. The emitter **groups by role**: all constraint entries come first, then all `context` entries — even if the source alternates them — so the rendered preamble order is predictable from the marker set rather than source order.
 
 The presence of body-level markers on a private block is by itself enough to promote the block out of inline projection — the compiler always renders such a block as a `### Procedure:` section so the markers stay attached to the procedure they describe. See `docs/reference/compiled-output.md` §Three-Tier Block Projection and §Procedure Preamble for the full contract.
 

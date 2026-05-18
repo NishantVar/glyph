@@ -79,11 +79,11 @@ Body-level markers stay where the author wrote them in source; the compiler's
 Lower pass (Phase 4) synthesizes a `## Constraints` section at canonical slot
 3 by hoisting body-level constraint AST nodes into the declaration's
 `constraints` list at IR level — concretely, `IrSkill.constraints` for a
-`skill` and `IrExportBlock.constraints` for an `export block` (the two
-declaration kinds that emit peer-level H2 sections). `glyph fmt` preserves
-source order and marker position — it does not rewrite markers into a
-`constraints:` sub-section. Authors may write either form; both produce
-identical IR.
+`skill`. The H2 hoist path applies to skills only; private `block` and
+`export block` declarations follow separate projection paths described in
+the notes below. `glyph fmt` preserves source order and marker position —
+it does not rewrite markers into a `constraints:` sub-section. Authors may
+write either form; both produce identical IR.
 
 **Block projection note.** Private `block` declarations have no peer-level
 H2 sections (only the enclosing skill emits H2s). Body-level constraint
@@ -93,13 +93,17 @@ promoted to Tier 2 (its presence alone is one of the Tier 2 triggers — see
 [[docs/reference/compiled-output]] §Three-Tier Block Projection), those
 constraints render as the procedure preamble described in
 [[docs/reference/compiled-output]] §Procedure Preamble (Tier 2 and Tier 3) —
-**not** as a `## Constraints` H2 inside the block. For `export block`
-declarations, body-level constraints continue to hoist into
-`IrExportBlock.constraints` for the standalone procedure file's
-`## Constraints` H2, **and** the same `body_constraints` AST list is also
-read by the Tier 3 emitter to render the same procedure preamble in the
-standalone `.md` (per the byte-identical Tier 2 / Tier 3 contract in ADR
-0025).
+**not** as a `## Constraints` H2 inside the block.
+
+**Export-block projection note.** `export block` declarations have no
+IR-side `constraints` list — body-level constraint markers stay on the
+parsed AST node (`ExportBlockDecl.body_constraints`). The Tier 3 emitter
+(`emit_library_procedures`) reads that AST field directly and renders the
+procedure preamble described in [[docs/reference/compiled-output]]
+§Procedure Preamble (Tier 2 and Tier 3), using the byte-identical Tier 2 /
+Tier 3 shape contracted in [[0025-context-preamble-format]]. There is
+**no** `## Constraints` H2 in the standalone procedure `.md` for body-level
+markers — the H2 hoist path applies to skills only.
 
 ### Flow-Level Constraint Markers
 
@@ -137,9 +141,10 @@ Body-level `context` markers stay where the author wrote them in source; the
 compiler's Lower pass (Phase 4) synthesizes a `## Context` section at
 canonical slot 4 by hoisting body-level `context` AST nodes into the
 declaration's `context` list at IR level — concretely, `IrSkill.context`
-for a `skill` and `IrExportBlock.context` for an `export block`. `glyph fmt`
-preserves source order and marker position — it does not rewrite markers
-into a `context:` sub-section.
+for a `skill`. The H2 hoist path applies to skills only; private `block`
+and `export block` declarations follow separate projection paths described
+in the notes below. `glyph fmt` preserves source order and marker
+position — it does not rewrite markers into a `context:` sub-section.
 
 **Block projection note.** Private `block` declarations have no peer-level
 H2 sections, so body-level `context` markers on a private block land in
@@ -151,11 +156,16 @@ entries render as part of the procedure preamble described in
 [[docs/reference/compiled-output]] §Procedure Preamble (Tier 2 and Tier 3),
 using the locked label forms (`**<kebab-name>:** <text>` for name-ref
 operands; `**Context:** <text>` for inline-string operands) defined in
-[[0025-context-preamble-format]]. For `export block` declarations,
-body-level `context` markers continue to hoist into `IrExportBlock.context`
-for the standalone procedure file's `## Context` H2, **and** the same
-`body_context` AST list is also read by the Tier 3 emitter to render the
-same procedure preamble in the standalone `.md`.
+[[0025-context-preamble-format]].
+
+**Export-block projection note.** `export block` declarations have no
+IR-side `context` list — body-level `context` markers stay on the parsed
+AST node (`ExportBlockDecl.body_context`). The Tier 3 emitter
+(`emit_library_procedures`) reads that AST field directly and renders the
+procedure preamble using the same locked label forms from
+[[0025-context-preamble-format]]. There is **no** `## Context` H2 in the
+standalone procedure `.md` for body-level markers — the H2 hoist path
+applies to skills only.
 
 `context` markers are also legal as flow statements inside `flow:`. The IR
 represents them as `Context` nodes admissible in the `FlowNode` union

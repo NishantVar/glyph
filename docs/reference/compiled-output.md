@@ -177,6 +177,8 @@ The 150-word threshold is hard-coded; the word counter treats backticked code sp
 
 **Must:** Never modify generated files.
 
+**Require:** Read the diff before commenting.
+
 **monorepo-layout:** This codebase uses a monorepo layout with per-crate Cargo.toml files.
 
 **Context:** Reviewers should prioritize public API changes.
@@ -200,11 +202,11 @@ Load and follow the procedure in `<relative-path>`.
 
 Inside a conditional branch arm, the same template appears as a lettered sub-step.
 
-When the referenced `export block` declares body-level constraint or `context` markers, the standalone procedure `.md` carries the same preamble described in [§Procedure Preamble](#procedure-preamble-tier-2-and-tier-3) immediately under the `## Steps` heading (or under the H2 corresponding to the procedure's first body section).
+When the referenced `export block` declares body-level constraint or `context` markers, the standalone procedure `.md` carries the same preamble described in [§Procedure Preamble](#procedure-preamble-tier-2-and-tier-3), positioned between `## Parameters` (when present) and `## Steps`.
 
 ### Procedure Preamble (Tier 2 and Tier 3)
 
-When a Tier 2 same-file procedure section, or a Tier 3 standalone procedure file, derives from a callee whose body declares body-level constraint markers (`require` / `avoid` / `must` / `must avoid`) or body-level `context` markers, those markers render as a **preamble** of standalone paragraphs between the procedure heading (Tier 2: `### Procedure: <name>`; Tier 3: under `## Steps` in the standalone `.md`) and the numbered step list.
+When a Tier 2 same-file procedure section, or a Tier 3 standalone procedure file, derives from a callee whose body declares body-level constraint markers (`require` / `avoid` / `must` / `must avoid`) or body-level `context` markers, those markers render as a **preamble** of standalone paragraphs immediately before the numbered step list (Tier 2: between `### Procedure: <name>` and the numbered list; Tier 3: between `## Parameters` (when present) and `## Steps` in the standalone `.md`).
 
 **Constraint entries.** Body-level constraint markers reuse the four-form bold-label template defined in [§`## Constraints`](#-constraints) — no separate template:
 
@@ -229,7 +231,7 @@ The kebab-case label on the name-ref form is derived from the `const` identifier
 - Each entry renders as its own paragraph — never as a bullet or a numbered item.
 - Entries are separated from each other by a single blank line, and the entire preamble is separated from the numbered step list by a single blank line.
 - A terminal `.` is appended only when the entry body does not already end in sentence punctuation (same rule as `## Constraints`).
-- The preamble's contents and ordering match the source order of the body-level markers in the callee's declaration.
+- Entries are **grouped by role**: all constraint entries are emitted first (in their source order, using the four-form template above), then all `context` entries (in their source order, using the two label forms above). The emitter never interleaves constraints and `context` entries even if the source order alternates them.
 - The preamble is byte-identical between Tier 2 and Tier 3 — the same callee produces the same paragraphs regardless of which projection the call site selects.
 
 **Validator interaction.** Preamble paragraphs are **not** counted as Steps by the procedure-section step-count validation ([[docs/architecture/expand]] §Procedure section validation). The Step count for a procedure section equals the number of items in the numbered list only.

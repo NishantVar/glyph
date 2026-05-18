@@ -64,8 +64,12 @@ Shape rules:
   blank line.
 - A terminal `.` is appended when the entry body does not already end in
   sentence punctuation (same rule as `## Constraints`).
-- The preamble's contents and ordering match source order of the
-  body-level markers in the callee's declaration.
+- Entries are **grouped by role**: all constraint entries are emitted
+  first (in their source order), then all `context` entries (in their
+  source order). The emitter never interleaves constraints and `context`
+  entries even if the source order alternates them. Grouping is the
+  deliberate stable order — the rendered preamble is therefore predictable
+  from the callee's marker set without re-reading source order.
 - The preamble is byte-identical between Tier 2 and Tier 3 — the same
   callee produces the same paragraphs regardless of which projection the
   call site selects.
