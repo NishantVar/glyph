@@ -240,7 +240,7 @@ For the Markdown returned by Step 2:
   - One `### Procedure: <name>` section per unique callee with `projection_mode: same_file_procedure`.
   - Procedure name in H3 matches the callee name (kebab-case).
   - Numbered items in each procedure section equal the callee's flow node count.
-  - If the callee declares constraints, a preamble paragraph exists before the numbered list.
+  - If the callee declares body-level constraint markers OR body-level `context` markers, a preamble of standalone paragraphs exists between the H3 heading and the numbered step list. Preamble paragraphs are blank-line separated from each other AND from the step list, and **do not** count toward the per-procedure numbered-item count above. The locked preamble shape (4-form constraint template; `**<kebab-name>:** <text>` for name-ref `context`; `**Context:** <text>` for inline-string `context`) is contracted at [[docs/reference/compiled-output]] §Procedure Preamble (Tier 2 and Tier 3); rationale lives in [[0025-context-preamble-format]].
   - Every Step that references a procedure uses the procedure's name in its prose.
   - Reference count: the number of Steps referencing procedure X matches the number of Call nodes targeting X with `same_file_procedure` projection.
   - No duplicate procedure names.

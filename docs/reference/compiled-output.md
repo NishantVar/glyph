@@ -163,8 +163,8 @@ When a `Call` targets a block, the compiler chooses one of three projections:
 
 Tier selection rules:
 
-- 1+ flow statements, no own constraints, called once, < 150 words → Tier 1.
-- 4+ flow statements OR own constraints OR called 2+ times in the same skill → Tier 2.
+- 1+ flow statements, no own constraints, no body-level context, called once, < 150 words → Tier 1.
+- 4+ flow statements OR own constraints OR any body-level constraint markers OR any body-level `context` markers OR called 2+ times in the same skill → Tier 2.
 - Imported `export block` inside a Branch arm, OR shared across multiple skills → Tier 3.
 - Tier promotion is one-directional: Tier 1 → Tier 2 → Tier 3.
 
@@ -175,7 +175,11 @@ The 150-word threshold is hard-coded; the word counter treats backticked code sp
 ```md
 ### Procedure: review-code
 
-<optional preamble: scoped constraints + context as prose>
+**Must:** Never modify generated files.
+
+**monorepo-layout:** This codebase uses a monorepo layout with per-crate Cargo.toml files.
+
+**Context:** Reviewers should prioritize public API changes.
 
 1. <numbered list, expanded from the callee's flow>
 ```
@@ -183,6 +187,8 @@ The 150-word threshold is hard-coded; the word counter treats backticked code sp
 Heading: `### Procedure: <kebab-case-callee-name>`. The kebab-case heading uses the same name as the on-disk procedure filename.
 
 Referencing Steps include a parenthetical cross-reference (e.g., "(follow the review-code procedure below)").
+
+The optional preamble paragraphs between the H3 heading and the numbered step list are governed by [§Procedure Preamble](#procedure-preamble-tier-2-and-tier-3) below.
 
 ### External Procedure Files
 
@@ -193,6 +199,40 @@ Load and follow the procedure in `<relative-path>`.
 ```
 
 Inside a conditional branch arm, the same template appears as a lettered sub-step.
+
+When the referenced `export block` declares body-level constraint or `context` markers, the standalone procedure `.md` carries the same preamble described in [§Procedure Preamble](#procedure-preamble-tier-2-and-tier-3) immediately under the `## Steps` heading (or under the H2 corresponding to the procedure's first body section).
+
+### Procedure Preamble (Tier 2 and Tier 3)
+
+When a Tier 2 same-file procedure section, or a Tier 3 standalone procedure file, derives from a callee whose body declares body-level constraint markers (`require` / `avoid` / `must` / `must avoid`) or body-level `context` markers, those markers render as a **preamble** of standalone paragraphs between the procedure heading (Tier 2: `### Procedure: <name>`; Tier 3: under `## Steps` in the standalone `.md`) and the numbered step list.
+
+**Constraint entries.** Body-level constraint markers reuse the four-form bold-label template defined in [§`## Constraints`](#-constraints) — no separate template:
+
+| Strength × Polarity | Template |
+|---|---|
+| `must` (hard require) | `**Must:** <text>` |
+| `must avoid` (hard avoid) | `**Must avoid:** <text>` |
+| `require` (soft require) | `**Require:** <text>` |
+| `avoid` (soft avoid) | `**Avoid:** <text>` |
+
+**`context` entries.** `context` markers carry one of two label forms depending on the operand:
+
+| Source form | Rendered preamble paragraph |
+|---|---|
+| `context <ident>` where `<ident>` resolves to a string-valued `const` (name-ref form) | `**<kebab-name>:** <resolved-text>` |
+| `context "<text>"` (inline-string form) | `**Context:** <text>` |
+
+The kebab-case label on the name-ref form is derived from the `const` identifier by the same kebab transform used for procedure filenames (e.g., `monorepo_layout` → `monorepo-layout`). The inline-string form always renders under the generic label `**Context:**`.
+
+**Shape and ordering.**
+
+- Each entry renders as its own paragraph — never as a bullet or a numbered item.
+- Entries are separated from each other by a single blank line, and the entire preamble is separated from the numbered step list by a single blank line.
+- A terminal `.` is appended only when the entry body does not already end in sentence punctuation (same rule as `## Constraints`).
+- The preamble's contents and ordering match the source order of the body-level markers in the callee's declaration.
+- The preamble is byte-identical between Tier 2 and Tier 3 — the same callee produces the same paragraphs regardless of which projection the call site selects.
+
+**Validator interaction.** Preamble paragraphs are **not** counted as Steps by the procedure-section step-count validation ([[docs/architecture/expand]] §Procedure section validation). The Step count for a procedure section equals the number of items in the numbered list only.
 
 ## Return Folding
 

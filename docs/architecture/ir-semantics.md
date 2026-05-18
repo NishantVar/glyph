@@ -78,9 +78,28 @@ sections.
 Body-level markers stay where the author wrote them in source; the compiler's
 Lower pass (Phase 4) synthesizes a `## Constraints` section at canonical slot
 3 by hoisting body-level constraint AST nodes into the declaration's
-`constraints` list at IR level. `glyph fmt` preserves source order and marker
-position — it does not rewrite markers into a `constraints:` sub-section.
-Authors may write either form; both produce identical IR.
+`constraints` list at IR level — concretely, `IrSkill.constraints` for a
+`skill` and `IrExportBlock.constraints` for an `export block` (the two
+declaration kinds that emit peer-level H2 sections). `glyph fmt` preserves
+source order and marker position — it does not rewrite markers into a
+`constraints:` sub-section. Authors may write either form; both produce
+identical IR.
+
+**Block projection note.** Private `block` declarations have no peer-level
+H2 sections (only the enclosing skill emits H2s). Body-level constraint
+markers on a private block therefore land in `IrBlock.constraints` rather
+than being hoisted into any H2 list. At emit time, when the block is
+promoted to Tier 2 (its presence alone is one of the Tier 2 triggers — see
+[[docs/reference/compiled-output]] §Three-Tier Block Projection), those
+constraints render as the procedure preamble described in
+[[docs/reference/compiled-output]] §Procedure Preamble (Tier 2 and Tier 3) —
+**not** as a `## Constraints` H2 inside the block. For `export block`
+declarations, body-level constraints continue to hoist into
+`IrExportBlock.constraints` for the standalone procedure file's
+`## Constraints` H2, **and** the same `body_constraints` AST list is also
+read by the Tier 3 emitter to render the same procedure preamble in the
+standalone `.md` (per the byte-identical Tier 2 / Tier 3 contract in ADR
+0025).
 
 ### Flow-Level Constraint Markers
 
@@ -117,9 +136,26 @@ the flow.
 Body-level `context` markers stay where the author wrote them in source; the
 compiler's Lower pass (Phase 4) synthesizes a `## Context` section at
 canonical slot 4 by hoisting body-level `context` AST nodes into the
-declaration's `context` list at IR level. `glyph fmt` preserves source order
-and marker position — it does not rewrite markers into a `context:`
-sub-section.
+declaration's `context` list at IR level — concretely, `IrSkill.context`
+for a `skill` and `IrExportBlock.context` for an `export block`. `glyph fmt`
+preserves source order and marker position — it does not rewrite markers
+into a `context:` sub-section.
+
+**Block projection note.** Private `block` declarations have no peer-level
+H2 sections, so body-level `context` markers on a private block land in
+`IrBlock.context` rather than being hoisted into any H2 list. At emit time,
+when the block is promoted to Tier 2 (the presence of `IrBlock.context`
+entries is itself a Tier 2 trigger — see
+[[docs/reference/compiled-output]] §Three-Tier Block Projection), those
+entries render as part of the procedure preamble described in
+[[docs/reference/compiled-output]] §Procedure Preamble (Tier 2 and Tier 3),
+using the locked label forms (`**<kebab-name>:** <text>` for name-ref
+operands; `**Context:** <text>` for inline-string operands) defined in
+[[0025-context-preamble-format]]. For `export block` declarations,
+body-level `context` markers continue to hoist into `IrExportBlock.context`
+for the standalone procedure file's `## Context` H2, **and** the same
+`body_context` AST list is also read by the Tier 3 emitter to render the
+same procedure preamble in the standalone `.md`.
 
 `context` markers are also legal as flow statements inside `flow:`. The IR
 represents them as `Context` nodes admissible in the `FlowNode` union
