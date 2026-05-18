@@ -1449,6 +1449,11 @@ impl<'a> Parser<'a> {
                                             _ => {}
                                         }
                                     }
+                                    // A body-level `context <name|string>` belongs to neither the
+                                    // `description` nor `flow` section. Terminate the prior section's claim
+                                    // so the body walker's `StringLit` branch doesn't re-assign `description`
+                                    // from the context's inline string.
+                                    current_section = Some("other");
                                 } else {
                                     line_is_section_header = true;
                                     flush_dup_export_block(

@@ -141,6 +141,12 @@ fn tier3_export_block_with_body_constraints_emits_preamble_in_standalone() {
         md.contains("kind: procedure"),
         "Tier 3 standalone must carry `kind: procedure` frontmatter; got:\n{md}"
     );
+    // A body-level `context "..."` must not clobber the authored frontmatter
+    // `description` (regression-lock for a prior parser state-machine bug).
+    assert!(
+        md.contains("description: Perform a thorough code review of files under a given scope."),
+        "expected authored frontmatter `description` to survive body-level context markers; got:\n{md}"
+    );
     assert!(
         md.contains("**Must:** preserving existing behavior across refactors."),
         "expected `**Must:**` preamble in Tier 3 standalone; got:\n{md}"
@@ -401,6 +407,12 @@ fn tier3_export_block_with_inline_string_context_emits_default_label() {
     assert!(
         md.contains("**Context:** background prose for the reviewer."),
         "expected `**Context:** background prose for the reviewer.` preamble in Tier 3 standalone; got:\n{md}"
+    );
+    // A body-level `context "..."` must not clobber the authored frontmatter
+    // `description` (regression-lock for a prior parser state-machine bug).
+    assert!(
+        md.contains("description: Perform a thorough code review of files under a given scope."),
+        "expected authored frontmatter `description` to survive body-level inline context; got:\n{md}"
     );
 
     let ctx = md
