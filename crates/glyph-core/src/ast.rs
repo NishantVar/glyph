@@ -432,6 +432,16 @@ pub struct BlockDecl {
     pub name: String,
     /// Optional `description:` sub-section.
     pub description: Option<String>,
+    /// Body-level constraint markers (e.g., `require accuracy`, `avoid stale_references`).
+    /// Mirrors [`Skill::body_constraints`] (issue #165). `constraints:` sub-section
+    /// bodies populate this field on first occurrence; duplicates land in
+    /// `extra_subsections` as [`DuplicateSubsection::Constraints`].
+    pub body_constraints: Vec<ConstraintMarker>,
+    /// Body-level context markers (e.g., `context project_conventions`,
+    /// `context "..."`). Mirrors [`Skill::body_context`] (issue #165).
+    /// `context:` sub-section bodies populate this field on first occurrence;
+    /// duplicates land in `extra_subsections` as [`DuplicateSubsection::Context`].
+    pub body_context: Vec<ContextEntry>,
     pub params: Vec<Param>,
     /// Inline `effects:` keyword list (same syntax as skill effects).
     pub effects: Vec<String>,

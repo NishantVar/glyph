@@ -18,7 +18,10 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::ast::{self, BlockDecl, ContextEntry, Decl, FlowStmt, ReturnExpr, SourceFile};
+use crate::ast::{
+    self, BlockDecl, ContextEntry, Decl, DuplicateSubsection, FlowStmt, Param, ReturnExpr,
+    SourceFile,
+};
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::kind_infer::TypeTag;
 use crate::output_target::OutputTargetExpr;
@@ -3272,6 +3275,7 @@ pub fn collect_same_file_resolutions(file: &SourceFile, file_path: &PathBuf) -> 
                     &text_defs,
                     &block_defs,
                     &export_block_defs,
+                    &skill_defs,
                     &stdlib_names,
                     &mut out,
                 );
@@ -3305,15 +3309,40 @@ pub fn collect_same_file_resolutions(file: &SourceFile, file_path: &PathBuf) -> 
                 // body_bare_names are plain Strings without span info; skip for resolution.
             }
             Decl::Block(spanned) => {
+                let block = &spanned.node;
                 walk_flow_for_resolutions(
-                    &spanned.node.flow,
+                    &block.flow,
                     file_path,
                     &text_defs,
                     &block_defs,
                     &export_block_defs,
+                    &skill_defs,
                     &stdlib_names,
                     &mut out,
                 );
+                for marker in &block.body_constraints {
+                    record_text_use(
+                        &marker.name.node,
+                        marker.name.span,
+                        &text_defs,
+                        file_path,
+                        &mut out,
+                    );
+                }
+                for entry in &block.body_context {
+                    if let ContextEntry::NameRef(name) = entry {
+                        record_context_name_use(
+                            &name.node,
+                            name.span,
+                            &text_defs,
+                            &block_defs,
+                            &export_block_defs,
+                            &skill_defs,
+                            file_path,
+                            &mut out,
+                        );
+                    }
+                }
             }
             Decl::ExportBlock(_) => {
                 // Slice 4 captured only the header shape for export blocks
@@ -3401,7 +3430,16 @@ pub fn collect_cross_file_resolutions(
                 // body_bare_names are plain Strings without span info; skip for cross-file resolution.
             }
             Decl::Block(spanned) => {
-                walk_flow_for_cross_file(&spanned.node.flow, targets, &mut out);
+                let block = &spanned.node;
+                walk_flow_for_cross_file(&block.flow, targets, &mut out);
+                for marker in &block.body_constraints {
+                    record_cross_file_text_use(&marker.name, targets, &mut out);
+                }
+                for entry in &block.body_context {
+                    if let ContextEntry::NameRef(name) = entry {
+                        record_cross_file_any_use(name, targets, &mut out);
+                    }
+                }
             }
             Decl::ExportBlock(_) | Decl::Const(_) => {}
             Decl::TypeDecl(_) => {} // TODO: handled in Task B.4+
@@ -3502,6 +3540,7 @@ fn walk_flow_for_resolutions(
     text_defs: &HashMap<&str, Span>,
     block_defs: &HashMap<&str, Span>,
     export_block_defs: &HashMap<&str, Span>,
+    skill_defs: &HashMap<&str, Span>,
     stdlib_names: &HashMap<String, Span>,
     out: &mut Vec<Resolution>,
 ) {
@@ -3528,7 +3567,22 @@ fn walk_flow_for_resolutions(
             }
             FlowStmt::ContextMarker(entry) => {
                 if let ContextEntry::NameRef(name) = entry {
-                    record_text_use(&name.node, name.span, text_defs, file_path, out);
+                    // `context X` at flow level must resolve to the same
+                    // target set as body-level / top-level `context: X` —
+                    // text | block | export-block | skill. Calling the
+                    // text-only helper here previously under-resolved local
+                    // blocks (see issue #165 P2). String entries don't
+                    // resolve.
+                    record_context_name_use(
+                        &name.node,
+                        name.span,
+                        text_defs,
+                        block_defs,
+                        export_block_defs,
+                        skill_defs,
+                        file_path,
+                        out,
+                    );
                 }
             }
             FlowStmt::BareName(name) => {
@@ -3583,6 +3637,7 @@ fn walk_flow_for_resolutions(
                     text_defs,
                     block_defs,
                     export_block_defs,
+                    skill_defs,
                     stdlib_names,
                     out,
                 );
@@ -3593,6 +3648,7 @@ fn walk_flow_for_resolutions(
                         text_defs,
                         block_defs,
                         export_block_defs,
+                        skill_defs,
                         stdlib_names,
                         out,
                     );
@@ -3604,6 +3660,7 @@ fn walk_flow_for_resolutions(
                         text_defs,
                         block_defs,
                         export_block_defs,
+                        skill_defs,
                         stdlib_names,
                         out,
                     );
@@ -3666,7 +3723,11 @@ fn walk_flow_for_cross_file(
             }
             FlowStmt::ContextMarker(entry) => {
                 if let ContextEntry::NameRef(name) = entry {
-                    record_cross_file_text_use(name, targets, out);
+                    // Mirror of the same-file fix above: imported `context X`
+                    // must resolve regardless of whether the import target
+                    // is Text / Block / ExportBlock / Skill. The text-only
+                    // helper previously silently dropped block imports.
+                    record_cross_file_any_use(name, targets, out);
                 }
             }
             FlowStmt::BareName(name) => {
@@ -6840,11 +6901,41 @@ fn collect_refs_from_decl(decl: &Decl, out: &mut HashSet<String>) {
             for n in &s.node.body_bare_names {
                 out.insert(n.clone());
             }
+            for m in &s.node.body_constraints {
+                out.insert(m.name.node.clone());
+            }
+            for entry in &s.node.body_context {
+                if let ContextEntry::NameRef(n) = entry {
+                    out.insert(n.node.clone());
+                }
+            }
+            for entry in &s.node.context_section {
+                if let ContextEntry::NameRef(n) = entry {
+                    out.insert(n.node.clone());
+                }
+            }
+            for entry in &s.node.constraints_section {
+                if let ContextEntry::NameRef(n) = entry {
+                    out.insert(n.node.clone());
+                }
+            }
+            collect_refs_from_params(&s.node.params, out);
+            collect_refs_from_extra_subsections(&s.node.extra_subsections, out);
         }
         Decl::Block(b) => {
             for stmt in &b.node.flow {
                 collect_refs_from_flow_stmt(stmt, out);
             }
+            for m in &b.node.body_constraints {
+                out.insert(m.name.node.clone());
+            }
+            for entry in &b.node.body_context {
+                if let ContextEntry::NameRef(n) = entry {
+                    out.insert(n.node.clone());
+                }
+            }
+            collect_refs_from_params(&b.node.params, out);
+            collect_refs_from_extra_subsections(&b.node.extra_subsections, out);
         }
         Decl::ExportBlock(b) => {
             if let Some(expr) = &b.node.terminal_return {
@@ -6885,7 +6976,59 @@ fn collect_refs_from_flow_stmt(stmt: &FlowStmt, out: &mut HashSet<String>) {
         FlowStmt::BareName(n) => {
             out.insert(n.node.clone());
         }
-        FlowStmt::InlineString(_) | FlowStmt::ConstraintMarker(_) | FlowStmt::ContextMarker(_) => {}
+        FlowStmt::ConstraintMarker(m) => {
+            out.insert(m.name.node.clone());
+        }
+        FlowStmt::ContextMarker(ContextEntry::NameRef(n)) => {
+            out.insert(n.node.clone());
+        }
+        FlowStmt::ContextMarker(ContextEntry::InlineString(_)) | FlowStmt::InlineString(_) => {}
+    }
+}
+
+/// Walk parameter defaults and emit any name-ref defaults into `out`.
+/// `Param.default` is a pre-rendered string; `default_is_name_ref = true`
+/// indicates that the string is a bare-name reference that must resolve to
+/// an in-scope `const` at compile time. The import-pruner needs to see these
+/// names so it does not delete the import they refer to (reviewer P1.2).
+fn collect_refs_from_params(params: &[Param], out: &mut HashSet<String>) {
+    for p in params {
+        if p.default_is_name_ref {
+            if let Some(default) = &p.default {
+                out.insert(default.clone());
+            }
+        }
+    }
+}
+
+/// Walk a decl's recovered duplicate sub-sections (issue #109) and emit any
+/// name refs they carry into `out`. Pre-fix, `glyph fmt`'s import-pruner ran
+/// *before* the duplicate-section merge, so any import referenced ONLY from
+/// a duplicate sub-section body was silently dropped (reviewer P1.1).
+fn collect_refs_from_extra_subsections(extras: &[DuplicateSubsection], out: &mut HashSet<String>) {
+    for extra in extras {
+        match extra {
+            DuplicateSubsection::Constraints(markers) => {
+                for m in markers {
+                    out.insert(m.name.node.clone());
+                }
+            }
+            DuplicateSubsection::Context(entries) => {
+                for entry in entries {
+                    if let ContextEntry::NameRef(n) = entry {
+                        out.insert(n.node.clone());
+                    }
+                }
+            }
+            DuplicateSubsection::Flow(stmts) => {
+                for stmt in stmts {
+                    collect_refs_from_flow_stmt(stmt, out);
+                }
+            }
+            // `Description(String)` is a quoted literal; `Effects(Vec<String>)`
+            // is a keyword list. Neither carries a name reference.
+            DuplicateSubsection::Description(_) | DuplicateSubsection::Effects(_) => {}
+        }
     }
 }
 
@@ -7187,6 +7330,8 @@ skill current() -> BranchName
             node: BlockDecl {
                 name: "writer".to_string(),
                 params: Vec::new(),
+                body_constraints: Vec::new(),
+                body_context: Vec::new(),
                 flow: vec![FlowStmt::InlineString("Write files.".to_string())],
                 description: None,
                 effects: vec!["writes_files".to_string()],
@@ -8790,6 +8935,117 @@ skill main()
     }
 
     #[test]
+    fn analyze_with_resolutions_records_flow_context_block() {
+        // P2 regression: `flow: context helper` where `helper` is a local
+        // `block` must resolve as `ResolutionKind::Block`. Body-level
+        // `context helper` (under a top-level `context:` sub-section) already
+        // resolves correctly via `record_context_name_use`; the flow-level
+        // walker must produce the same target set.
+        let src = r#"block helper()
+    "help"
+
+skill main()
+    description: "main."
+    flow:
+        context helper
+"#;
+        let file = parse_for_resolutions(src);
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let path = PathBuf::from("test.glyph");
+        let (_file, res) =
+            analyze_with_resolutions(file, 0, "test.glyph", &path, &line_index, &mut bag, false);
+        let block_res = res.iter().find(|r| r.kind == ResolutionKind::Block);
+        assert!(
+            block_res.is_some(),
+            "expected a Block resolution for flow-level `context helper`, got: {:?}",
+            res
+        );
+        let r = block_res.unwrap();
+        let use_text = &src[r.use_span.start as usize..r.use_span.end as usize];
+        assert_eq!(use_text, "helper");
+        assert_eq!(r.def_file, path);
+    }
+
+    #[test]
+    fn analyze_with_resolutions_records_flow_context_export_block() {
+        // Same shape as `analyze_with_resolutions_records_flow_context_block`
+        // but the local definition is an `export block`; resolution kind must
+        // be `ExportBlock`.
+        let src = r#"export block helper()
+    "help"
+
+skill main()
+    description: "main."
+    flow:
+        context helper
+"#;
+        let file = parse_for_resolutions(src);
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let path = PathBuf::from("test.glyph");
+        let (_file, res) =
+            analyze_with_resolutions(file, 0, "test.glyph", &path, &line_index, &mut bag, false);
+        let xb_res = res.iter().find(|r| r.kind == ResolutionKind::ExportBlock);
+        assert!(
+            xb_res.is_some(),
+            "expected an ExportBlock resolution for flow-level \
+             `context helper`, got: {:?}",
+            res
+        );
+        let r = xb_res.unwrap();
+        let use_text = &src[r.use_span.start as usize..r.use_span.end as usize];
+        assert_eq!(use_text, "helper");
+        assert_eq!(r.def_file, path);
+    }
+
+    #[test]
+    fn collect_cross_file_resolutions_records_flow_context_imported_block() {
+        // Importer references an imported block via flow-level `context`.
+        // The cross-file walker must use `record_cross_file_any_use` (not the
+        // text-only variant) so block/export-block imports resolve here.
+        let src = r#"import "./repo_tools.glyph" { repo_layout }
+
+skill main()
+    description: "main."
+    flow:
+        context repo_layout
+"#;
+        let file = parse_for_resolutions(src);
+
+        let mut targets: HashMap<String, ImportTarget> = HashMap::new();
+        let dep_path = PathBuf::from("/tmp/repo_tools.glyph");
+        targets.insert(
+            "repo_layout".to_string(),
+            ImportTarget {
+                local_name: "repo_layout".to_string(),
+                def_file: dep_path.clone(),
+                def_span: Span::new(0, 0, 64),
+                kind: ResolutionKind::ExportBlock,
+            },
+        );
+
+        let res = collect_cross_file_resolutions(&file, &targets);
+        // Two cross-file resolutions: the import-line name token + the
+        // flow-level `context repo_layout` use.
+        assert_eq!(
+            res.len(),
+            2,
+            "expected 2 cross-file resolutions, got: {:?}",
+            res
+        );
+        let xb_kind_count = res
+            .iter()
+            .filter(|r| r.kind == ResolutionKind::ExportBlock)
+            .count();
+        assert_eq!(
+            xb_kind_count, 1,
+            "expected 1 ExportBlock-kind resolution from `context repo_layout`, got: {:?}",
+            res
+        );
+    }
+
+    #[test]
     fn fmt_signals_extracts_referenced_unresolved_and_effects() {
         let src = r#"import "@glyph/std" { send }
 
@@ -8898,6 +9154,379 @@ skill main()
         assert!(
             signals.referenced_names.contains("inner_b"),
             "inner_b (in else_body) should be in referenced_names, got {:?}",
+            signals.referenced_names
+        );
+    }
+
+    // --- Issue #165: collect_referenced_names must walk body markers ---
+    //
+    // Root-cause regression: even on a Skill, an `import` referenced only by
+    // a body-level `require X` / `context X` (or via a flow-level
+    // `FlowStmt::ConstraintMarker` / `FlowStmt::ContextMarker`) was invisible
+    // to `fmt_signals.referenced_names`, and `remove_unused_imports` deleted
+    // the import. Pin every walk path so `glyph fmt` stops dropping these.
+
+    #[test]
+    fn fmt_signals_walks_skill_body_constraint_markers() {
+        let src = r#"import "./external.glyph" { accuracy }
+
+skill main()
+    description: "Main."
+    require accuracy
+    flow:
+        "do work"
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+        assert!(
+            signals.referenced_names.contains("accuracy"),
+            "body-level `require accuracy` on a Skill must surface in \
+             referenced_names so `glyph fmt` does not drop the import; \
+             got {:?}",
+            signals.referenced_names
+        );
+    }
+
+    #[test]
+    fn fmt_signals_walks_skill_body_context_nameref() {
+        let src = r#"import "./external.glyph" { project_conventions }
+
+skill main()
+    description: "Main."
+    context project_conventions
+    flow:
+        "do work"
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+        assert!(
+            signals.referenced_names.contains("project_conventions"),
+            "body-level `context project_conventions` on a Skill must \
+             surface in referenced_names; got {:?}",
+            signals.referenced_names
+        );
+    }
+
+    #[test]
+    fn fmt_signals_walks_skill_context_section_nameref() {
+        let src = r#"import "./external.glyph" { repo_layout }
+
+skill main()
+    description: "Main."
+    context:
+        repo_layout
+    flow:
+        "do work"
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+        assert!(
+            signals.referenced_names.contains("repo_layout"),
+            "`context:` sub-section name-ref on a Skill must surface in \
+             referenced_names; got {:?}",
+            signals.referenced_names
+        );
+    }
+
+    #[test]
+    fn fmt_signals_walks_skill_flow_constraint_marker() {
+        let src = r#"import "./external.glyph" { accuracy }
+
+skill main()
+    description: "Main."
+    flow:
+        require accuracy
+        "do work"
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+        assert!(
+            signals.referenced_names.contains("accuracy"),
+            "flow-level `FlowStmt::ConstraintMarker` on a Skill must \
+             surface in referenced_names; got {:?}",
+            signals.referenced_names
+        );
+    }
+
+    #[test]
+    fn fmt_signals_walks_skill_flow_context_marker() {
+        let src = r#"import "./external.glyph" { repo_layout }
+
+skill main()
+    description: "Main."
+    flow:
+        context repo_layout
+        "do work"
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+        assert!(
+            signals.referenced_names.contains("repo_layout"),
+            "flow-level `FlowStmt::ContextMarker` on a Skill must \
+             surface in referenced_names; got {:?}",
+            signals.referenced_names
+        );
+    }
+
+    #[test]
+    fn fmt_signals_walks_block_body_constraint_markers() {
+        let src = r#"import "./external.glyph" { accuracy }
+
+block helper()
+    require accuracy
+    flow:
+        "do work"
+
+skill main()
+    flow:
+        helper()
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+        assert!(
+            signals.referenced_names.contains("accuracy"),
+            "body-level `require accuracy` on a Block must surface in \
+             referenced_names; got {:?}",
+            signals.referenced_names
+        );
+    }
+
+    #[test]
+    fn fmt_signals_walks_block_body_context_nameref() {
+        let src = r#"import "./external.glyph" { project_conventions }
+
+block helper()
+    context project_conventions
+    flow:
+        "do work"
+
+skill main()
+    flow:
+        helper()
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+        assert!(
+            signals.referenced_names.contains("project_conventions"),
+            "body-level `context project_conventions` on a Block must \
+             surface in referenced_names; got {:?}",
+            signals.referenced_names
+        );
+    }
+
+    #[test]
+    fn fmt_signals_walks_block_constraints_subsection() {
+        let src = r#"import "./external.glyph" { accuracy }
+
+block helper()
+    constraints:
+        require accuracy
+    flow:
+        "do work"
+
+skill main()
+    flow:
+        helper()
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+        assert!(
+            signals.referenced_names.contains("accuracy"),
+            "`constraints:` sub-section body on a Block must surface in \
+             referenced_names; got {:?}",
+            signals.referenced_names
+        );
+    }
+
+    #[test]
+    fn fmt_signals_walks_block_context_subsection() {
+        let src = r#"import "./external.glyph" { repo_layout }
+
+block helper()
+    context:
+        repo_layout
+    flow:
+        "do work"
+
+skill main()
+    flow:
+        helper()
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+        assert!(
+            signals.referenced_names.contains("repo_layout"),
+            "`context:` sub-section body on a Block must surface in \
+             referenced_names; got {:?}",
+            signals.referenced_names
+        );
+    }
+
+    // Reviewer P1.1: duplicate sub-section bodies recovered into
+    // `extra_subsections` (issue #109) must surface their referenced names in
+    // `fmt_signals.referenced_names`. Pre-fix, `glyph fmt`'s import-pruner ran
+    // *before* the duplicate-section merge, so any import referenced ONLY
+    // from a duplicate sub-section was silently dropped. Pin every variant
+    // that carries name refs: `DuplicateSubsection::Constraints` and
+    // `DuplicateSubsection::Context` for both Skill and Block.
+
+    #[test]
+    fn fmt_signals_walks_skill_extra_subsection_constraints() {
+        let src = r#"import "./external.glyph" { stale_references }
+
+skill main()
+    description: "Main."
+    constraints:
+        require accuracy
+    constraints:
+        avoid stale_references
+    flow:
+        "do work"
+
+const accuracy = "be accurate"
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+        assert!(
+            signals.referenced_names.contains("stale_references"),
+            "name ref inside a duplicate `constraints:` sub-section on a \
+             Skill (recovered into `extra_subsections`) must surface in \
+             referenced_names so `glyph fmt` does not drop the import; \
+             got {:?}",
+            signals.referenced_names
+        );
+    }
+
+    #[test]
+    fn fmt_signals_walks_skill_extra_subsection_context() {
+        let src = r#"import "./external.glyph" { repo_layout }
+
+skill main()
+    description: "Main."
+    context:
+        project_conventions
+    context:
+        repo_layout
+    flow:
+        "do work"
+
+const project_conventions = "conventions"
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+        assert!(
+            signals.referenced_names.contains("repo_layout"),
+            "name ref inside a duplicate `context:` sub-section on a Skill \
+             (recovered into `extra_subsections`) must surface in \
+             referenced_names; got {:?}",
+            signals.referenced_names
+        );
+    }
+
+    #[test]
+    fn fmt_signals_walks_block_extra_subsection_constraints() {
+        let src = r#"import "./external.glyph" { stale_references }
+
+block helper()
+    constraints:
+        require accuracy
+    constraints:
+        avoid stale_references
+    flow:
+        "do work"
+
+const accuracy = "be accurate"
+
+skill main()
+    flow:
+        helper()
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+        assert!(
+            signals.referenced_names.contains("stale_references"),
+            "name ref inside a duplicate `constraints:` sub-section on a \
+             Block (recovered into `extra_subsections`) must surface in \
+             referenced_names; got {:?}",
+            signals.referenced_names
+        );
+    }
+
+    #[test]
+    fn fmt_signals_walks_block_extra_subsection_context() {
+        let src = r#"import "./external.glyph" { repo_layout }
+
+block helper()
+    context:
+        project_conventions
+    context:
+        repo_layout
+    flow:
+        "do work"
+
+const project_conventions = "conventions"
+
+skill main()
+    flow:
+        helper()
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+        assert!(
+            signals.referenced_names.contains("repo_layout"),
+            "name ref inside a duplicate `context:` sub-section on a Block \
+             (recovered into `extra_subsections`) must surface in \
+             referenced_names; got {:?}",
+            signals.referenced_names
+        );
+    }
+
+    // Reviewer P1.2: parameter default-value name refs must surface in
+    // `fmt_signals.referenced_names`. Per issue #165 AC: "the walk covers
+    // parameter default-value name refs, flow-level call targets,
+    // return-expr names, ...". `Param.default` is pre-rendered, but
+    // `Param.default_is_name_ref = true` indicates the `default` string is
+    // a bare-name reference that must resolve to an in-scope `const` at
+    // compile time — so import-pruning must keep that import alive.
+
+    #[test]
+    fn fmt_signals_walks_skill_param_default_nameref() {
+        let src = r#"import "./external.glyph" { default_scope }
+
+skill main(scope = default_scope)
+    description: "Main."
+    flow:
+        "do work"
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+        assert!(
+            signals.referenced_names.contains("default_scope"),
+            "Skill parameter default-value name ref must surface in \
+             referenced_names so `glyph fmt` does not drop the import; \
+             got {:?}",
+            signals.referenced_names
+        );
+    }
+
+    #[test]
+    fn fmt_signals_walks_block_param_default_nameref() {
+        let src = r#"import "./external.glyph" { default_scope }
+
+block helper(scope = default_scope)
+    flow:
+        "do work"
+
+skill main()
+    flow:
+        helper()
+"#;
+        let (file, _) = crate::parse::parse(src, 0).expect("parse");
+        let signals = crate::analyze::fmt_signals(&file);
+        assert!(
+            signals.referenced_names.contains("default_scope"),
+            "Block parameter default-value name ref must surface in \
+             referenced_names; got {:?}",
             signals.referenced_names
         );
     }

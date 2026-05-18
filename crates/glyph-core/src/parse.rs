@@ -1581,17 +1581,23 @@ impl<'a> Parser<'a> {
         let return_type = self.try_parse_return_type()?;
 
         let mut description: Option<String> = None;
+        // Issue #165: `BlockDecl` now mirrors `Skill` for body-level
+        // constraint/context markers AND `constraints:` / `context:`
+        // sub-section bodies. First-occurrence sub-section bodies and
+        // body-level markers both flow into these canonical fields;
+        // duplicate sub-sections recover into `extra_subsections`.
+        let mut body_constraints: Vec<ConstraintMarker> = Vec::new();
+        let mut body_context: Vec<ContextEntry> = Vec::new();
         let mut effects: Vec<String> = Vec::new();
         let mut effects_present = false;
         let mut flow: Vec<FlowStmt> = Vec::new();
         let mut flow_present = false;
-        // Issue #109 codex pass-3 finding 9: `BlockDecl` has no canonical
-        // `context_section` / `body_constraints` AST fields, so the first
-        // occurrence of `context:` / `constraints:` is silently consumed
-        // (the body parses but its content is discarded). Subsequent
-        // occurrences emit `G::parse::duplicate-subsection` (Repairable)
-        // and route the body intact into `extra_subsections` so `glyph
-        // fmt` can splice them back later.
+        // Issue #109 / #165: duplicate-subsection bookkeeping. The first
+        // `context:` / `constraints:` body lands in `body_context` /
+        // `body_constraints`; any subsequent occurrence emits
+        // `G::parse::duplicate-subsection` (Repairable) and routes the body
+        // intact into `extra_subsections` so `glyph fmt` can splice them
+        // back later.
         let mut context_present = false;
         let mut constraints_present = false;
         // Issue #109: track duplicate sub-section bodies so `glyph fmt` can
@@ -1628,6 +1634,40 @@ impl<'a> Parser<'a> {
                             // node (e.g. `FreeformSection.name`) that quotes
                             // what the author wrote.
                             let kw_lower = kw.to_ascii_lowercase();
+                            // Issue #165: body-level constraint markers
+                            // (`require X`, `avoid X`, `must X`, `must avoid X`)
+                            // mirror the Skill body-line parser. Marker
+                            // keywords are case-sensitive (language keywords);
+                            // section-header keywords below are not. Fall
+                            // through to the section dispatch / freeform path
+                            // when not a marker.
+                            if matches!(kw.as_str(), "require" | "avoid" | "must") {
+                                self.pos += 1;
+                                let kind = match kw.as_str() {
+                                    "require" => ConstraintMarkerKind::Require,
+                                    "avoid" => ConstraintMarkerKind::Avoid,
+                                    "must" => {
+                                        // Could be `must avoid <name>`.
+                                        if let TokenKind::Ident(next) = &self.peek().kind {
+                                            if next == "avoid" {
+                                                self.pos += 1;
+                                                ConstraintMarkerKind::MustAvoid
+                                            } else {
+                                                ConstraintMarkerKind::Must
+                                            }
+                                        } else {
+                                            ConstraintMarkerKind::Must
+                                        }
+                                    }
+                                    _ => unreachable!(),
+                                };
+                                let (name, name_span) = self.expect_ident(None)?;
+                                body_constraints.push(ConstraintMarker {
+                                    marker: kind,
+                                    name: Spanned::new(name, name_span),
+                                });
+                                continue;
+                            }
                             match kw_lower.as_str() {
                                 "description" => {
                                     self.pos += 1;
@@ -1762,14 +1802,48 @@ impl<'a> Parser<'a> {
                                     }
                                 }
                                 "context" => {
-                                    // Issue #109 codex pass-3 finding 9:
-                                    // `context:` is a valid sub-section on
-                                    // `block` per `design/language-surface.md`
-                                    // §2.5. `BlockDecl` has no canonical
-                                    // field for it, so the first occurrence
-                                    // is silently absorbed; subsequent
-                                    // occurrences land in `extra_subsections`.
+                                    // Issue #165: `context` at indent 1 has
+                                    // two forms — the `context:` sub-section
+                                    // header, or a body-level marker
+                                    // (`context <name>` / `context "..."`).
+                                    // The sub-section path mirrors `Skill`
+                                    // and routes the first-occurrence body
+                                    // into `body_context`; duplicates land in
+                                    // `extra_subsections`. The body-level
+                                    // marker path accumulates into
+                                    // `body_context` and never fires
+                                    // `G::parse::duplicate-subsection`.
                                     self.pos += 1;
+                                    if !matches!(self.peek().kind, TokenKind::Colon) {
+                                        // Body-level `context <name>` or
+                                        // `context "..."`. No sub-section
+                                        // bookkeeping; just push and
+                                        // continue.
+                                        match &self.peek().kind {
+                                            TokenKind::Ident(name) => {
+                                                let v = name.clone();
+                                                let name_span = self.peek().span;
+                                                self.pos += 1;
+                                                body_context.push(ContextEntry::NameRef(
+                                                    Spanned::new(v, name_span),
+                                                ));
+                                            }
+                                            TokenKind::StringLit(s) => {
+                                                let v = s.clone();
+                                                self.pos += 1;
+                                                body_context.push(ContextEntry::InlineString(v));
+                                            }
+                                            _ => {
+                                                return Err(ParseError::Unexpected {
+                                                    span: self.peek().span,
+                                                    message:
+                                                        "expected name or string after `context`"
+                                                            .into(),
+                                                });
+                                            }
+                                        }
+                                        continue;
+                                    }
                                     self.expect(&TokenKind::Colon)?;
                                     let mut local_entries: Vec<ContextEntry> = Vec::new();
                                     // Short form: `context: "inline"` on the same line.
@@ -1838,13 +1912,12 @@ impl<'a> Parser<'a> {
                                             .push(DuplicateSubsection::Context(local_entries));
                                     } else {
                                         context_present = true;
-                                        // First occurrence: silently
-                                        // discard. `BlockDecl` has no
-                                        // canonical context_section field.
-                                        // Phase 3.B still records the
-                                        // source line so emit's D9 merge can
-                                        // honour author position even when
-                                        // the body is dropped.
+                                        // Issue #165: first `context:` body
+                                        // populates `body_context`, mirroring
+                                        // `Skill`'s `body_context` /
+                                        // `context_section` routing (Block
+                                        // has a single combined field).
+                                        body_context.extend(local_entries);
                                         context_section_span =
                                             Some(self.section_span_for(kw_tok_span));
                                     }
@@ -1929,9 +2002,10 @@ impl<'a> Parser<'a> {
                                             .push(DuplicateSubsection::Constraints(local_markers));
                                     } else {
                                         constraints_present = true;
-                                        // Phase 3.B: capture source line even
-                                        // though `BlockDecl` discards the
-                                        // first occurrence's body.
+                                        // Issue #165: first `constraints:`
+                                        // body populates `body_constraints`,
+                                        // mirroring `Skill`'s contract.
+                                        body_constraints.extend(local_markers);
                                         constraints_section_span =
                                             Some(self.section_span_for(kw_tok_span));
                                     }
@@ -2007,6 +2081,8 @@ impl<'a> Parser<'a> {
                 name,
                 description,
                 params,
+                body_constraints,
+                body_context,
                 effects,
                 flow,
                 return_type,
@@ -6188,6 +6264,304 @@ block foo()
         let dups = duplicate_subsection_diags(&bag);
         assert_eq!(dups.len(), 1);
         assert_eq!(dups[0].classification, Classification::Repairable);
+    }
+
+    // --- Issue #165: BlockDecl body_constraints / body_context parity ---
+    //
+    // The Skill parser already routes body-level constraint/context markers
+    // and `constraints:` / `context:` sub-section bodies into AST fields. The
+    // `parse_block_decl` catch-all previously discarded all of these for
+    // `block` decls. Tests below pin the parity contract:
+    //   - body-level `require X` / `avoid X` / `must X` / `must avoid X`
+    //     populate `BlockDecl.body_constraints`
+    //   - body-level `context X` / `context "..."` populate
+    //     `BlockDecl.body_context`
+    //   - `constraints:` sub-section body populates `body_constraints` (first
+    //     occurrence); duplicate routes into `extra_subsections::Constraints`
+    //   - `context:` sub-section body populates `body_context` (first
+    //     occurrence); duplicate routes into `extra_subsections::Context`
+    //   - Repeated body-level `context X` do NOT fire duplicate-subsection.
+
+    #[test]
+    fn block_body_level_require_populates_body_constraints() {
+        let src = "\
+block helper()
+    require accuracy
+    flow:
+        \"Do work.\"
+";
+        let (block, _bag) = parse_first_block_with_bag(src);
+        assert_eq!(
+            block.body_constraints.len(),
+            1,
+            "body-level `require accuracy` must produce one ConstraintMarker; got {:?}",
+            block.body_constraints
+        );
+        assert_eq!(
+            block.body_constraints[0].marker,
+            ConstraintMarkerKind::Require
+        );
+        assert_eq!(block.body_constraints[0].name.node, "accuracy");
+    }
+
+    #[test]
+    fn block_body_level_avoid_populates_body_constraints() {
+        let src = "\
+block helper()
+    avoid stale_references
+    flow:
+        \"Do work.\"
+";
+        let (block, _bag) = parse_first_block_with_bag(src);
+        assert_eq!(block.body_constraints.len(), 1);
+        assert_eq!(
+            block.body_constraints[0].marker,
+            ConstraintMarkerKind::Avoid
+        );
+        assert_eq!(block.body_constraints[0].name.node, "stale_references");
+    }
+
+    #[test]
+    fn block_body_level_must_and_must_avoid_populate_body_constraints() {
+        let src = "\
+block helper()
+    must clarity
+    must avoid ambiguity
+    flow:
+        \"Do work.\"
+";
+        let (block, _bag) = parse_first_block_with_bag(src);
+        assert_eq!(block.body_constraints.len(), 2);
+        assert_eq!(block.body_constraints[0].marker, ConstraintMarkerKind::Must);
+        assert_eq!(block.body_constraints[0].name.node, "clarity");
+        assert_eq!(
+            block.body_constraints[1].marker,
+            ConstraintMarkerKind::MustAvoid
+        );
+        assert_eq!(block.body_constraints[1].name.node, "ambiguity");
+    }
+
+    #[test]
+    fn block_body_level_context_nameref_populates_body_context() {
+        let src = "\
+block helper()
+    context project_conventions
+    flow:
+        \"Do work.\"
+";
+        let (block, _bag) = parse_first_block_with_bag(src);
+        assert_eq!(
+            block.body_context.len(),
+            1,
+            "body-level `context project_conventions` must produce one ContextEntry; got {:?}",
+            block.body_context
+        );
+        match &block.body_context[0] {
+            ContextEntry::NameRef(n) => assert_eq!(n.node, "project_conventions"),
+            other => panic!("expected ContextEntry::NameRef, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn block_body_level_context_inline_string_populates_body_context() {
+        let src = "\
+block helper()
+    context \"Always check security.\"
+    flow:
+        \"Do work.\"
+";
+        let (block, _bag) = parse_first_block_with_bag(src);
+        assert_eq!(block.body_context.len(), 1);
+        match &block.body_context[0] {
+            ContextEntry::InlineString(s) => assert_eq!(s, "Always check security."),
+            other => panic!("expected ContextEntry::InlineString, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn block_constraints_subsection_populates_body_constraints() {
+        let src = "\
+block helper()
+    constraints:
+        require accuracy
+        avoid stale_references
+    flow:
+        \"Do work.\"
+";
+        let (block, _bag) = parse_first_block_with_bag(src);
+        assert_eq!(
+            block.body_constraints.len(),
+            2,
+            "`constraints:` sub-section body must populate body_constraints; got {:?}",
+            block.body_constraints
+        );
+        assert_eq!(
+            block.body_constraints[0].marker,
+            ConstraintMarkerKind::Require
+        );
+        assert_eq!(block.body_constraints[0].name.node, "accuracy");
+        assert_eq!(
+            block.body_constraints[1].marker,
+            ConstraintMarkerKind::Avoid
+        );
+        assert_eq!(block.body_constraints[1].name.node, "stale_references");
+    }
+
+    #[test]
+    fn block_context_subsection_populates_body_context() {
+        let src = "\
+block helper()
+    context:
+        project_conventions
+        \"Always check.\"
+    flow:
+        \"Do work.\"
+";
+        let (block, _bag) = parse_first_block_with_bag(src);
+        assert_eq!(
+            block.body_context.len(),
+            2,
+            "`context:` sub-section body must populate body_context; got {:?}",
+            block.body_context
+        );
+        match &block.body_context[0] {
+            ContextEntry::NameRef(n) => assert_eq!(n.node, "project_conventions"),
+            other => panic!("expected NameRef, got {:?}", other),
+        }
+        match &block.body_context[1] {
+            ContextEntry::InlineString(s) => assert_eq!(s, "Always check."),
+            other => panic!("expected InlineString, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn block_repeated_body_level_context_does_not_fire_duplicate_subsection() {
+        let src = "\
+block helper()
+    context a
+    context b
+    flow:
+        \"Do work.\"
+";
+        let (block, bag) = parse_first_block_with_bag(src);
+        assert_eq!(
+            block.body_context.len(),
+            2,
+            "repeated body-level `context X` must accumulate, got {:?}",
+            block.body_context
+        );
+        // Specifically: NO duplicate-subsection diagnostic should have fired.
+        let dups = duplicate_subsection_diags(&bag);
+        assert_eq!(
+            dups.len(),
+            0,
+            "repeated body-level `context X` must NOT fire G::parse::duplicate-subsection; got {:?}",
+            dups
+        );
+    }
+
+    #[test]
+    fn block_duplicate_constraints_subsection_recovers_into_extras() {
+        let src = "\
+block helper()
+    constraints:
+        require accuracy
+    constraints:
+        avoid stale_references
+    flow:
+        \"Do work.\"
+";
+        let (block, bag) = parse_first_block_with_bag(src);
+        // First body's markers landed in body_constraints exactly once.
+        assert_eq!(
+            block.body_constraints.len(),
+            1,
+            "first `constraints:` body must populate body_constraints; got {:?}",
+            block.body_constraints
+        );
+        assert_eq!(block.body_constraints[0].name.node, "accuracy");
+        // Second body MUST land in extras as Constraints variant — never Vec::new().
+        assert_eq!(block.extra_subsections.len(), 1);
+        match &block.extra_subsections[0] {
+            DuplicateSubsection::Constraints(markers) => {
+                assert_eq!(markers.len(), 1);
+                assert_eq!(markers[0].marker, ConstraintMarkerKind::Avoid);
+                assert_eq!(markers[0].name.node, "stale_references");
+            }
+            other => panic!("expected DuplicateSubsection::Constraints, got {:?}", other),
+        }
+        let dups = duplicate_subsection_diags(&bag);
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].classification, Classification::Repairable);
+    }
+
+    #[test]
+    fn block_duplicate_context_subsection_recovers_into_extras() {
+        let src = "\
+block helper()
+    context:
+        \"first\"
+    context:
+        \"second\"
+    flow:
+        \"Do work.\"
+";
+        let (block, bag) = parse_first_block_with_bag(src);
+        assert_eq!(
+            block.body_context.len(),
+            1,
+            "first `context:` body must populate body_context; got {:?}",
+            block.body_context
+        );
+        match &block.body_context[0] {
+            ContextEntry::InlineString(s) => assert_eq!(s, "first"),
+            other => panic!("expected InlineString, got {:?}", other),
+        }
+        // Second body MUST land in extras as Context variant — never Vec::new().
+        assert_eq!(block.extra_subsections.len(), 1);
+        match &block.extra_subsections[0] {
+            DuplicateSubsection::Context(entries) => {
+                assert_eq!(entries.len(), 1);
+                match &entries[0] {
+                    ContextEntry::InlineString(s) => assert_eq!(s, "second"),
+                    other => panic!("expected InlineString, got {:?}", other),
+                }
+            }
+            other => panic!("expected DuplicateSubsection::Context, got {:?}", other),
+        }
+        let dups = duplicate_subsection_diags(&bag);
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].classification, Classification::Repairable);
+    }
+
+    #[test]
+    fn block_permissive_ordering_body_level_markers_anywhere() {
+        // US18: body-level markers may appear in any order with other body
+        // content. Here body-level `require` follows `description:` and
+        // precedes `effects:`, with another `context` interleaved.
+        let src = "\
+block helper()
+    description: \"Help.\"
+    require accuracy
+    effects: reads_files
+    context project_conventions
+    avoid stale_references
+    flow:
+        \"Do work.\"
+";
+        let (block, _bag) = parse_first_block_with_bag(src);
+        assert_eq!(
+            block.body_constraints.len(),
+            2,
+            "both body-level constraint markers should be captured regardless of position"
+        );
+        assert_eq!(block.body_constraints[0].name.node, "accuracy");
+        assert_eq!(block.body_constraints[1].name.node, "stale_references");
+        assert_eq!(block.body_context.len(), 1);
+        match &block.body_context[0] {
+            ContextEntry::NameRef(n) => assert_eq!(n.node, "project_conventions"),
+            other => panic!("expected NameRef, got {:?}", other),
+        }
     }
 }
 

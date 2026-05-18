@@ -567,6 +567,8 @@ fn classify_block(
         );
     }
     classify_params(&spanned.node.params, line_index, out);
+    classify_constraints(&spanned.node.body_constraints, line_index, out);
+    classify_context_entries(&spanned.node.body_context, line_index, out);
     for stmt in &spanned.node.flow {
         classify_flow_stmt(
             stmt,
