@@ -601,9 +601,14 @@ fn classify_export_block(
         );
     }
     classify_params(&spanned.node.params, line_index, out);
-    // ExportBlockDecl doesn't carry FlowStmt — `body_refs` is a flat list
-    // of identifier strings without spans, so we don't get call-site
-    // classifications here. Acceptable for the highlight pass.
+    // Issue #166: walk body-level constraints / context markers so they
+    // get the same semantic-token classification as `BlockDecl` and
+    // `Skill`. ExportBlockDecl still doesn't carry FlowStmt — `body_refs`
+    // is a flat list of identifier strings without spans, so call-site
+    // classifications inside flow text remain absent. Acceptable for the
+    // highlight pass.
+    classify_constraints(&spanned.node.body_constraints, line_index, out);
+    classify_context_entries(&spanned.node.body_context, line_index, out);
 }
 
 fn classify_const(

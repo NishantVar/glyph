@@ -6232,19 +6232,28 @@ export block shared_util(x = \"default\")
     fn ac3_no_closure_violation_for_params_and_exported_names() {
         // Export block referencing its own params and exported text should
         // NOT fire closure-violation.
-        let src = "\
-export const greeting = \"Hello.\"
-
-export block shared_util(x = \"default\")
-    flow:
-        \"Use {x}.\"
-        return x
-";
+        let src = "export const greeting = \"Hello.\"\n\nexport block shared_util(x = \"default\")\n    flow:\n        \"Use {x}.\"\n        return x\n";
         let bag = check_source(src, 0, "lib.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             !ids.contains(&"G::analyze::closure-violation"),
             "should not fire closure-violation for params/exported names, got: {:?}",
+            ids
+        );
+    }
+
+    /// Issue #166: body-level `context X` on an `export block` must fire
+    /// `G::analyze::closure-violation` when `X` resolves to a private
+    /// (non-exported) name in the same file. Mirrors the existing
+    /// flow-level coverage above.
+    #[test]
+    fn ac3_closure_violation_on_export_block_body_level_context_marker() {
+        let src = "const codebase_notes = \"Private prose used as a closure capture.\"\n\nexport block shared_util(x = \"default\")\n    context codebase_notes\n    flow:\n        return x\n";
+        let bag = check_source(src, 0, "lib.glyph");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::closure-violation"),
+            "expected closure-violation for body-level `context <private>`, got: {:?}",
             ids
         );
     }

@@ -456,6 +456,8 @@ fn flush_dup_export_block(
     dup_description: &mut Option<String>,
     dup_effects: &mut Vec<String>,
     dup_flow_strings: &mut Vec<String>,
+    dup_constraints: &mut Vec<ConstraintMarker>,
+    dup_context: &mut Vec<ContextEntry>,
 ) {
     match *current_dup_kind {
         Some("description") => {
@@ -478,6 +480,19 @@ fn flush_dup_export_block(
                 .map(FlowStmt::InlineString)
                 .collect();
             extras.push(DuplicateSubsection::Flow(stmts));
+        }
+        // Issue #166: structurally recover duplicate `constraints:` and
+        // `context:` sub-section bodies on `export block`. Pre-#166 these
+        // were silently lost (the duplicate body was committed as an
+        // empty `Vec`); the new path mirrors `BlockDecl` so `glyph fmt`
+        // can splice the body back into the canonical singleton.
+        Some("constraints") => {
+            extras.push(DuplicateSubsection::Constraints(std::mem::take(
+                dup_constraints,
+            )));
+        }
+        Some("context") => {
+            extras.push(DuplicateSubsection::Context(std::mem::take(dup_context)));
         }
         _ => {}
     }
@@ -1093,6 +1108,23 @@ impl<'a> Parser<'a> {
         let mut has_return = false;
         let mut has_meaningful_return = false;
         let mut body_refs: Vec<String> = Vec::new();
+        // Issue #166: structural capture of body-level
+        // `require` / `avoid` / `must` / `must avoid` markers and
+        // `context <name>` / `context "..."` entries. Mirrors the
+        // first-occurrence `constraints:` / `context:` sub-section bodies.
+        // `body_refs` continues to be populated for the closure-violation
+        // check; these fields are the structured counterpart consumed by
+        // `glyph fmt` (via `fmt_signals.referenced_names`) and the LSP.
+        let mut body_constraints: Vec<ConstraintMarker> = Vec::new();
+        let mut body_context: Vec<ContextEntry> = Vec::new();
+        // Duplicate-recovery scratch buffers for the second+ occurrence
+        // of `constraints:` / `context:` sub-sections on an `export block`.
+        // The first occurrence flows into `body_constraints` / `body_context`;
+        // any later occurrence routes its body into one of these buffers
+        // and is committed via `flush_dup_export_block` on section
+        // transition (or end-of-body).
+        let mut dup_constraints: Vec<ConstraintMarker> = Vec::new();
+        let mut dup_context: Vec<ContextEntry> = Vec::new();
         let mut body_word_count: usize = 0;
         let mut description: Option<String> = None;
         let mut effects: Vec<String> = Vec::new();
@@ -1250,6 +1282,8 @@ impl<'a> Parser<'a> {
                                     &mut dup_description,
                                     &mut dup_effects,
                                     &mut dup_flow_strings,
+                                    &mut dup_constraints,
+                                    &mut dup_context,
                                 );
                                 if description_present {
                                     // Duplicate `description:` — route body
@@ -1290,6 +1324,8 @@ impl<'a> Parser<'a> {
                                     &mut dup_description,
                                     &mut dup_effects,
                                     &mut dup_flow_strings,
+                                    &mut dup_constraints,
+                                    &mut dup_context,
                                 );
                                 if effects_present {
                                     current_dup_kind = Some("effects");
@@ -1325,6 +1361,8 @@ impl<'a> Parser<'a> {
                                     &mut dup_description,
                                     &mut dup_effects,
                                     &mut dup_flow_strings,
+                                    &mut dup_constraints,
+                                    &mut dup_context,
                                 );
                                 if flow_present {
                                     current_dup_kind = Some("flow");
@@ -1352,47 +1390,140 @@ impl<'a> Parser<'a> {
                                 current_section = Some("flow");
                             }
                             "context" => {
-                                line_is_section_header = true;
                                 let kw_tok_span = self.peek().span;
-                                flush_dup_export_block(
-                                    &mut extra_subsections,
-                                    &mut current_dup_kind,
-                                    &mut dup_description,
-                                    &mut dup_effects,
-                                    &mut dup_flow_strings,
+                                // Issue #166: `context` at indent 1 has two
+                                // forms — the `context:` sub-section header,
+                                // or a body-level marker (`context <name>`
+                                // / `context "..."`). Peek-for-Colon
+                                // disambiguates. Body-level form captures
+                                // structurally via peek-ahead WITHOUT
+                                // advancing the cursor; the body walker
+                                // below still iterates these tokens so
+                                // body_refs / body_word_count stay accurate.
+                                let next_is_colon = matches!(
+                                    self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                                    Some(TokenKind::Colon)
                                 );
-                                if context_present {
-                                    // Issue #109 codex pass-3 finding 9:
-                                    // duplicate `context:` is repairable.
-                                    // The flat scanner doesn't structurally
-                                    // capture context entries, so push an
-                                    // empty `Vec<ContextEntry>` — fmt's
-                                    // source-text stratum is responsible
-                                    // for the actual merge.
-                                    self.bag.push(
-                                        Diagnostic {
-                                            id: "G::parse::duplicate-subsection".into(),
-                                            classification: Classification::Repairable,
-                                            message: "duplicate `context:` sub-section in export block body".into(),
-                                            span: SourceSpan::from_byte_span(
-                                                self.file_label,
-                                                kw_tok_span,
-                                                self.line_index,
-                                            ),
-                                            related: Vec::new(),
-                                            hints: vec![
-                                                "remove the duplicate or merge contents into one `context:`".into(),
-                                            ],
-                                        },
-                                        kw_tok_span,
-                                    );
-                                    extra_subsections
-                                        .push(DuplicateSubsection::Context(Vec::new()));
+                                if !next_is_colon {
+                                    // Issue #166 reviewer round 1 P2: a body-level `context <name>` /
+                                    // `context "..."` at indent 1 ends any previous duplicate's
+                                    // scratch buffer and starts a fresh canonical entry. Without
+                                    // flushing, the marker would be appended to the just-set
+                                    // `dup_context` instead of `body_context`. At deeper indent
+                                    // (inside a `context:` subsection body), keep the existing
+                                    // dup-aware routing so entries nested in a DUPLICATE
+                                    // `context:` block continue to land in `dup_context` for
+                                    // `DuplicateSubsection` capture.
+                                    if line_indent == 1 {
+                                        flush_dup_export_block(
+                                            &mut extra_subsections,
+                                            &mut current_dup_kind,
+                                            &mut dup_description,
+                                            &mut dup_effects,
+                                            &mut dup_flow_strings,
+                                            &mut dup_constraints,
+                                            &mut dup_context,
+                                        );
+                                    }
+                                    if let Some(next_tok) = self.tokens.get(self.pos + 1) {
+                                        match &next_tok.kind {
+                                            TokenKind::Ident(name) => {
+                                                let entry = ContextEntry::NameRef(Spanned::new(
+                                                    name.clone(),
+                                                    next_tok.span,
+                                                ));
+                                                if current_dup_kind == Some("context") {
+                                                    dup_context.push(entry);
+                                                } else {
+                                                    body_context.push(entry);
+                                                }
+                                            }
+                                            TokenKind::StringLit(s) => {
+                                                let entry = ContextEntry::InlineString(s.clone());
+                                                if current_dup_kind == Some("context") {
+                                                    dup_context.push(entry);
+                                                } else {
+                                                    body_context.push(entry);
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
                                 } else {
-                                    context_present = true;
-                                    context_section_span = Some(self.section_span_for(kw_tok_span));
+                                    line_is_section_header = true;
+                                    flush_dup_export_block(
+                                        &mut extra_subsections,
+                                        &mut current_dup_kind,
+                                        &mut dup_description,
+                                        &mut dup_effects,
+                                        &mut dup_flow_strings,
+                                        &mut dup_constraints,
+                                        &mut dup_context,
+                                    );
+                                    if context_present {
+                                        // Issue #109 codex pass-3 finding 9:
+                                        // duplicate `context:` is repairable.
+                                        // Issue #166: structurally route the
+                                        // duplicate body into `dup_context`;
+                                        // `flush_dup_export_block` commits
+                                        // `DuplicateSubsection::Context` on
+                                        // the next section transition.
+                                        self.bag.push(
+                                                                      Diagnostic {
+                                                                          id: "G::parse::duplicate-subsection".into(),
+                                                                          classification: Classification::Repairable,
+                                                                          message: "duplicate `context:` sub-section in export block body".into(),
+                                                                          span: SourceSpan::from_byte_span(
+                                                                              self.file_label,
+                                                                              kw_tok_span,
+                                                                              self.line_index,
+                                                                          ),
+                                                                          related: Vec::new(),
+                                                                          hints: vec![
+                                                                              "remove the duplicate or merge contents into one `context:`".into(),
+                                                                          ],
+                                                                      },
+                                                                      kw_tok_span,
+                                                                  );
+                                        current_dup_kind = Some("context");
+                                    } else {
+                                        context_present = true;
+                                        context_section_span =
+                                            Some(self.section_span_for(kw_tok_span));
+                                    }
+                                    current_section = Some("context-body");
+                                    // Issue #166 reviewer round 1 P1: short-form `context: "..."` on
+                                    // the same line as the section header was previously dropped — the
+                                    // body walker's `line_indent == 2` guard blocks the same-line
+                                    // body, so capture the inline value here before the walker
+                                    // iterates. Cursor stays at the `context` keyword so the body
+                                    // walker's `body_refs` / `body_word_count` accumulation is
+                                    // unaffected; the indent-1 guard then prevents double-capture.
+                                    if let Some(inline_tok) = self.tokens.get(self.pos + 2) {
+                                        match &inline_tok.kind {
+                                            TokenKind::StringLit(s) => {
+                                                let entry = ContextEntry::InlineString(s.clone());
+                                                if current_dup_kind == Some("context") {
+                                                    dup_context.push(entry);
+                                                } else {
+                                                    body_context.push(entry);
+                                                }
+                                            }
+                                            TokenKind::Ident(name) => {
+                                                let entry = ContextEntry::NameRef(Spanned::new(
+                                                    name.clone(),
+                                                    inline_tok.span,
+                                                ));
+                                                if current_dup_kind == Some("context") {
+                                                    dup_context.push(entry);
+                                                } else {
+                                                    body_context.push(entry);
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
                                 }
-                                current_section = Some("other");
                             }
                             "constraints" => {
                                 line_is_section_header = true;
@@ -1403,6 +1534,8 @@ impl<'a> Parser<'a> {
                                     &mut dup_description,
                                     &mut dup_effects,
                                     &mut dup_flow_strings,
+                                    &mut dup_constraints,
+                                    &mut dup_context,
                                 );
                                 if constraints_present {
                                     // Issue #109 codex pass-3 finding 9:
@@ -1424,14 +1557,78 @@ impl<'a> Parser<'a> {
                                         },
                                         kw_tok_span,
                                     );
-                                    extra_subsections
-                                        .push(DuplicateSubsection::Constraints(Vec::new()));
+                                    current_dup_kind = Some("constraints");
                                 } else {
                                     constraints_present = true;
                                     constraints_section_span =
                                         Some(self.section_span_for(kw_tok_span));
                                 }
-                                current_section = Some("other");
+                                current_section = Some("constraints-body");
+                            }
+                            "require" | "avoid" | "must" => {
+                                // Issue #166: body-level constraint markers (`require X`,
+                                // `avoid X`, `must X`, `must avoid X`) on an `export block`.
+                                // Capture structurally via peek-ahead WITHOUT advancing the
+                                // cursor — the body walker below still iterates these tokens
+                                // so `body_refs` and `body_word_count` stay accurate (the
+                                // closure-violation check still wins on unresolved names).
+                                let kind = match kw.as_str() {
+                                    "require" => ConstraintMarkerKind::Require,
+                                    "avoid" => ConstraintMarkerKind::Avoid,
+                                    "must" => {
+                                        if let Some(TokenKind::Ident(next)) =
+                                            self.tokens.get(self.pos + 1).map(|t| &t.kind)
+                                        {
+                                            if next == "avoid" {
+                                                ConstraintMarkerKind::MustAvoid
+                                            } else {
+                                                ConstraintMarkerKind::Must
+                                            }
+                                        } else {
+                                            ConstraintMarkerKind::Must
+                                        }
+                                    }
+                                    _ => unreachable!(),
+                                };
+                                let name_offset = if matches!(kind, ConstraintMarkerKind::MustAvoid)
+                                {
+                                    2
+                                } else {
+                                    1
+                                };
+                                // Issue #166 reviewer round 1 P2: a body-level
+                                // `require/avoid/must` at indent 1 ends any previous
+                                // duplicate's scratch buffer and starts a fresh canonical
+                                // entry. Without flushing, the marker would be appended to
+                                // the just-set `dup_constraints` instead of `body_constraints`.
+                                // At deeper indent (inside a `constraints:` subsection body),
+                                // keep the existing dup-aware routing so markers nested in a
+                                // DUPLICATE `constraints:` block continue to land in
+                                // `dup_constraints` for `DuplicateSubsection` capture.
+                                if line_indent == 1 {
+                                    flush_dup_export_block(
+                                        &mut extra_subsections,
+                                        &mut current_dup_kind,
+                                        &mut dup_description,
+                                        &mut dup_effects,
+                                        &mut dup_flow_strings,
+                                        &mut dup_constraints,
+                                        &mut dup_context,
+                                    );
+                                }
+                                if let Some(name_tok) = self.tokens.get(self.pos + name_offset) {
+                                    if let TokenKind::Ident(name) = &name_tok.kind {
+                                        let marker = ConstraintMarker {
+                                            marker: kind,
+                                            name: Spanned::new(name.clone(), name_tok.span),
+                                        };
+                                        if current_dup_kind == Some("constraints") {
+                                            dup_constraints.push(marker);
+                                        } else {
+                                            body_constraints.push(marker);
+                                        }
+                                    }
+                                }
                             }
                             _ => {
                                 // Phase 3.B: an unrecognized colon-keyword at
@@ -1490,6 +1687,22 @@ impl<'a> Parser<'a> {
                                             effects.push(ident.clone());
                                         }
                                     }
+                                    // Issue #166: capture `context:` sub-section
+                                    // body entries on `export block`. Restricted
+                                    // to indent-2 lines so a stray non-section
+                                    // ident at indent 1 (after `context:` was
+                                    // last seen) doesn't poison `body_context`.
+                                    if current_section == Some("context-body") && line_indent == 2 {
+                                        let entry = ContextEntry::NameRef(Spanned::new(
+                                            ident.clone(),
+                                            self.peek().span,
+                                        ));
+                                        if current_dup_kind == Some("context") {
+                                            dup_context.push(entry);
+                                        } else {
+                                            body_context.push(entry);
+                                        }
+                                    }
                                 }
                                 body_word_count += 1;
                             }
@@ -1509,6 +1722,19 @@ impl<'a> Parser<'a> {
                                             dup_flow_strings.push(s.clone());
                                         } else {
                                             flow_strings.push(s.clone());
+                                        }
+                                    }
+                                    // Issue #166: capture `context:` sub-section
+                                    // inline-string entries on `export block`.
+                                    // Restricted to indent-2 lines so a stray
+                                    // string at indent 1 doesn't poison
+                                    // `body_context`.
+                                    Some("context-body") if line_indent == 2 => {
+                                        let entry = ContextEntry::InlineString(s.clone());
+                                        if current_dup_kind == Some("context") {
+                                            dup_context.push(entry);
+                                        } else {
+                                            body_context.push(entry);
                                         }
                                     }
                                     _ => {}
@@ -1537,6 +1763,8 @@ impl<'a> Parser<'a> {
             &mut dup_description,
             &mut dup_effects,
             &mut dup_flow_strings,
+            &mut dup_constraints,
+            &mut dup_context,
         );
 
         let end_span = if self.pos > 0 {
@@ -1552,6 +1780,8 @@ impl<'a> Parser<'a> {
                 has_return,
                 has_meaningful_return,
                 body_refs,
+                body_constraints,
+                body_context,
                 body_word_count,
                 description,
                 effects,
@@ -6539,16 +6769,7 @@ block helper()
         // US18: body-level markers may appear in any order with other body
         // content. Here body-level `require` follows `description:` and
         // precedes `effects:`, with another `context` interleaved.
-        let src = "\
-block helper()
-    description: \"Help.\"
-    require accuracy
-    effects: reads_files
-    context project_conventions
-    avoid stale_references
-    flow:
-        \"Do work.\"
-";
+        let src = "block helper()\n    description: \"Help.\"\n    require accuracy\n    effects: reads_files\n    context project_conventions\n    avoid stale_references\n    flow:\n        \"Do work.\"\n";
         let (block, _bag) = parse_first_block_with_bag(src);
         assert_eq!(
             block.body_constraints.len(),
@@ -6561,6 +6782,264 @@ block helper()
         match &block.body_context[0] {
             ContextEntry::NameRef(n) => assert_eq!(n.node, "project_conventions"),
             other => panic!("expected NameRef, got {:?}", other),
+        }
+    }
+
+    // --- Issue #166: ExportBlockDecl body_constraints / body_context parity ---
+    //
+    // Parser-level AST-shape assertions mirroring the `block_*` tests above.
+    // The fmt round-trip tests in glyph-cli prove `referenced_names`
+    // honesty; these tests pin the structural contract.
+
+    #[test]
+    fn export_block_body_level_require_populates_body_constraints() {
+        let src = "export block helper() -> Text\n    require accuracy\n    flow:\n        return \"ok\"\n";
+        let (eb, _bag) = parse_first_export_block_with_bag(src);
+        assert_eq!(eb.body_constraints.len(), 1);
+        assert_eq!(eb.body_constraints[0].marker, ConstraintMarkerKind::Require);
+        assert_eq!(eb.body_constraints[0].name.node, "accuracy");
+    }
+
+    #[test]
+    fn export_block_body_level_avoid_populates_body_constraints() {
+        let src = "export block helper() -> Text\n    avoid stale_references\n    flow:\n        return \"ok\"\n";
+        let (eb, _bag) = parse_first_export_block_with_bag(src);
+        assert_eq!(eb.body_constraints.len(), 1);
+        assert_eq!(eb.body_constraints[0].marker, ConstraintMarkerKind::Avoid);
+        assert_eq!(eb.body_constraints[0].name.node, "stale_references");
+    }
+
+    #[test]
+    fn export_block_body_level_must_and_must_avoid_populate_body_constraints() {
+        let src = "export block helper() -> Text\n    must clarity\n    must avoid ambiguity\n    flow:\n        return \"ok\"\n";
+        let (eb, _bag) = parse_first_export_block_with_bag(src);
+        assert_eq!(eb.body_constraints.len(), 2);
+        assert_eq!(eb.body_constraints[0].marker, ConstraintMarkerKind::Must);
+        assert_eq!(eb.body_constraints[0].name.node, "clarity");
+        assert_eq!(
+            eb.body_constraints[1].marker,
+            ConstraintMarkerKind::MustAvoid
+        );
+        assert_eq!(eb.body_constraints[1].name.node, "ambiguity");
+    }
+
+    #[test]
+    fn export_block_body_level_context_nameref_populates_body_context() {
+        let src = "export block helper() -> Text\n    context project_conventions\n    flow:\n        return \"ok\"\n";
+        let (eb, _bag) = parse_first_export_block_with_bag(src);
+        assert_eq!(eb.body_context.len(), 1);
+        match &eb.body_context[0] {
+            ContextEntry::NameRef(n) => assert_eq!(n.node, "project_conventions"),
+            other => panic!("expected NameRef, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn export_block_body_level_context_inline_string_populates_body_context() {
+        let src = "export block helper() -> Text\n    context \"Always check security.\"\n    flow:\n        return \"ok\"\n";
+        let (eb, _bag) = parse_first_export_block_with_bag(src);
+        assert_eq!(eb.body_context.len(), 1);
+        match &eb.body_context[0] {
+            ContextEntry::InlineString(s) => assert_eq!(s, "Always check security."),
+            other => panic!("expected InlineString, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn export_block_constraints_subsection_long_form_populates_body_constraints() {
+        let src = "export block helper() -> Text\n    constraints:\n        require accuracy\n        avoid stale_references\n    flow:\n        return \"ok\"\n";
+        let (eb, _bag) = parse_first_export_block_with_bag(src);
+        assert_eq!(eb.body_constraints.len(), 2);
+        assert_eq!(eb.body_constraints[0].marker, ConstraintMarkerKind::Require);
+        assert_eq!(eb.body_constraints[0].name.node, "accuracy");
+        assert_eq!(eb.body_constraints[1].marker, ConstraintMarkerKind::Avoid);
+        assert_eq!(eb.body_constraints[1].name.node, "stale_references");
+    }
+
+    #[test]
+    fn export_block_context_subsection_long_form_populates_body_context() {
+        let src = "export block helper() -> Text\n    context:\n        project_conventions\n        \"Always check.\"\n    flow:\n        return \"ok\"\n";
+        let (eb, _bag) = parse_first_export_block_with_bag(src);
+        assert_eq!(eb.body_context.len(), 2);
+        match &eb.body_context[0] {
+            ContextEntry::NameRef(n) => assert_eq!(n.node, "project_conventions"),
+            other => panic!("expected NameRef, got {:?}", other),
+        }
+        match &eb.body_context[1] {
+            ContextEntry::InlineString(s) => assert_eq!(s, "Always check."),
+            other => panic!("expected InlineString, got {:?}", other),
+        }
+    }
+
+    /// Reviewer round 1 P1 — short-form `context: "inline"` (body on the
+    /// same line as the section header) must populate `body_context`.
+    #[test]
+    fn export_block_context_subsection_short_form_inline_populates_body_context() {
+        let src = "export block helper() -> Text\n    context: \"Inline background.\"\n    flow:\n        return \"ok\"\n";
+        let (eb, _bag) = parse_first_export_block_with_bag(src);
+        assert_eq!(
+            eb.body_context.len(),
+            1,
+            "short-form `context: \"...\"` body must populate body_context; got {:?}",
+            eb.body_context
+        );
+        match &eb.body_context[0] {
+            ContextEntry::InlineString(s) => assert_eq!(s, "Inline background."),
+            other => panic!("expected InlineString, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn export_block_repeated_body_level_context_does_not_fire_duplicate_subsection() {
+        let src = "export block helper() -> Text\n    context a\n    context b\n    flow:\n        return \"ok\"\n";
+        let (eb, bag) = parse_first_export_block_with_bag(src);
+        assert_eq!(eb.body_context.len(), 2);
+        let dups = duplicate_subsection_diags(&bag);
+        assert_eq!(
+            dups.len(),
+            0,
+            "repeated body-level `context X` must NOT fire G::parse::duplicate-subsection; got {:?}",
+            dups
+        );
+    }
+
+    #[test]
+    fn export_block_duplicate_constraints_subsection_recovers_into_extras() {
+        let src = "export block helper() -> Text\n    constraints:\n        require accuracy\n    constraints:\n        avoid stale_references\n    flow:\n        return \"ok\"\n";
+        let (eb, bag) = parse_first_export_block_with_bag(src);
+        assert_eq!(eb.body_constraints.len(), 1);
+        assert_eq!(eb.body_constraints[0].name.node, "accuracy");
+        assert_eq!(eb.extra_subsections.len(), 1);
+        match &eb.extra_subsections[0] {
+            DuplicateSubsection::Constraints(markers) => {
+                assert_eq!(markers.len(), 1);
+                assert_eq!(markers[0].marker, ConstraintMarkerKind::Avoid);
+                assert_eq!(markers[0].name.node, "stale_references");
+            }
+            other => panic!("expected DuplicateSubsection::Constraints, got {:?}", other),
+        }
+        let dups = duplicate_subsection_diags(&bag);
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].classification, Classification::Repairable);
+    }
+
+    #[test]
+    fn export_block_duplicate_context_subsection_recovers_into_extras() {
+        let src = "export block helper() -> Text\n    context:\n        \"first\"\n    context:\n        \"second\"\n    flow:\n        return \"ok\"\n";
+        let (eb, bag) = parse_first_export_block_with_bag(src);
+        assert_eq!(eb.body_context.len(), 1);
+        match &eb.body_context[0] {
+            ContextEntry::InlineString(s) => assert_eq!(s, "first"),
+            other => panic!("expected InlineString, got {:?}", other),
+        }
+        assert_eq!(eb.extra_subsections.len(), 1);
+        match &eb.extra_subsections[0] {
+            DuplicateSubsection::Context(entries) => {
+                assert_eq!(entries.len(), 1);
+                match &entries[0] {
+                    ContextEntry::InlineString(s) => assert_eq!(s, "second"),
+                    other => panic!("expected InlineString, got {:?}", other),
+                }
+            }
+            other => panic!("expected DuplicateSubsection::Context, got {:?}", other),
+        }
+        let dups = duplicate_subsection_diags(&bag);
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].classification, Classification::Repairable);
+    }
+
+    /// Reviewer round 1 P1 — duplicate short-form `context: "..."` must
+    /// populate `DuplicateSubsection::Context` with the actual entry, not
+    /// an empty Vec.
+    #[test]
+    fn export_block_duplicate_short_form_context_carries_inline_body() {
+        let src = "export block helper() -> Text\n    context: \"first inline\"\n    context: \"second inline\"\n    flow:\n        return \"ok\"\n";
+        let (eb, bag) = parse_first_export_block_with_bag(src);
+        assert_eq!(eb.body_context.len(), 1);
+        match &eb.body_context[0] {
+            ContextEntry::InlineString(s) => assert_eq!(s, "first inline"),
+            other => panic!("expected InlineString, got {:?}", other),
+        }
+        assert_eq!(eb.extra_subsections.len(), 1);
+        match &eb.extra_subsections[0] {
+            DuplicateSubsection::Context(entries) => {
+                assert_eq!(
+                    entries.len(),
+                    1,
+                    "duplicate short-form `context: \"...\"` MUST carry the entry, not Vec::new(); got {:?}",
+                    entries
+                );
+                match &entries[0] {
+                    ContextEntry::InlineString(s) => assert_eq!(s, "second inline"),
+                    other => panic!("expected InlineString, got {:?}", other),
+                }
+            }
+            other => panic!("expected DuplicateSubsection::Context, got {:?}", other),
+        }
+        let dups = duplicate_subsection_diags(&bag);
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].classification, Classification::Repairable);
+    }
+
+    /// Reviewer round 1 P2 — a body-level `context <name>` AFTER a
+    /// duplicate `context:` subsection must land in the canonical
+    /// `body_context`, NOT be appended to the duplicate-subsection
+    /// scratch buffer.
+    #[test]
+    fn export_block_body_level_context_after_duplicate_subsection_goes_to_canonical() {
+        let src = "export block helper() -> Text\n    context:\n        first\n    context:\n        duplicate\n    context body_level\n    flow:\n        return \"ok\"\n";
+        let (eb, _bag) = parse_first_export_block_with_bag(src);
+        // body_context must contain BOTH the first subsection body AND the body-level marker.
+        assert_eq!(
+            eb.body_context.len(),
+            2,
+            "body-level `context body_level` after duplicate subsection must land in canonical body_context (NOT the dup scratch); got {:?}",
+            eb.body_context
+        );
+        match &eb.body_context[0] {
+            ContextEntry::NameRef(n) => assert_eq!(n.node, "first"),
+            other => panic!("expected NameRef(first), got {:?}", other),
+        }
+        match &eb.body_context[1] {
+            ContextEntry::NameRef(n) => assert_eq!(n.node, "body_level"),
+            other => panic!("expected NameRef(body_level), got {:?}", other),
+        }
+        // The duplicate subsection body should still appear in extras.
+        assert_eq!(eb.extra_subsections.len(), 1);
+        match &eb.extra_subsections[0] {
+            DuplicateSubsection::Context(entries) => {
+                assert_eq!(entries.len(), 1);
+                match &entries[0] {
+                    ContextEntry::NameRef(n) => assert_eq!(n.node, "duplicate"),
+                    other => panic!("expected NameRef(duplicate), got {:?}", other),
+                }
+            }
+            other => panic!("expected DuplicateSubsection::Context, got {:?}", other),
+        }
+    }
+
+    /// Reviewer round 1 P2 (symmetric) — body-level `require` after a
+    /// duplicate `constraints:` subsection lands in canonical
+    /// `body_constraints`.
+    #[test]
+    fn export_block_body_level_require_after_duplicate_constraints_goes_to_canonical() {
+        let src = "export block helper() -> Text\n    constraints:\n        require first\n    constraints:\n        require duplicate\n    require body_level\n    flow:\n        return \"ok\"\n";
+        let (eb, _bag) = parse_first_export_block_with_bag(src);
+        assert_eq!(
+            eb.body_constraints.len(),
+            2,
+            "body-level `require body_level` after duplicate subsection must land in canonical body_constraints; got {:?}",
+            eb.body_constraints
+        );
+        assert_eq!(eb.body_constraints[0].name.node, "first");
+        assert_eq!(eb.body_constraints[1].name.node, "body_level");
+        assert_eq!(eb.extra_subsections.len(), 1);
+        match &eb.extra_subsections[0] {
+            DuplicateSubsection::Constraints(markers) => {
+                assert_eq!(markers.len(), 1);
+                assert_eq!(markers[0].name.node, "duplicate");
+            }
+            other => panic!("expected DuplicateSubsection::Constraints, got {:?}", other),
         }
     }
 }

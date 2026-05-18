@@ -3344,10 +3344,35 @@ pub fn collect_same_file_resolutions(file: &SourceFile, file_path: &PathBuf) -> 
                     }
                 }
             }
-            Decl::ExportBlock(_) => {
-                // Slice 4 captured only the header shape for export blocks
-                // (no flow recorded in the AST). Once §13 ships full
-                // export-block lowering, walk its flow here too.
+            Decl::ExportBlock(spanned) => {
+                // Issue #166: body-level `require/avoid/must` and `context` markers
+                // (and their sub-section bodies) on an `export block` use the same
+                // resolution surface as `BlockDecl`. The flow body itself still
+                // isn't lowered yet — once §13 ships, walk `flow` here too.
+                let block = &spanned.node;
+                for marker in &block.body_constraints {
+                    record_text_use(
+                        &marker.name.node,
+                        marker.name.span,
+                        &text_defs,
+                        file_path,
+                        &mut out,
+                    );
+                }
+                for entry in &block.body_context {
+                    if let ContextEntry::NameRef(name) = entry {
+                        record_context_name_use(
+                            &name.node,
+                            name.span,
+                            &text_defs,
+                            &block_defs,
+                            &export_block_defs,
+                            &skill_defs,
+                            file_path,
+                            &mut out,
+                        );
+                    }
+                }
             }
             Decl::Const(_) => {}
             Decl::Import(imp) => {
@@ -3441,7 +3466,21 @@ pub fn collect_cross_file_resolutions(
                     }
                 }
             }
-            Decl::ExportBlock(_) | Decl::Const(_) => {}
+            Decl::ExportBlock(spanned) => {
+                // Issue #166: cross-file resolution mirrors the same-file walker —
+                // an `export block` body can reference imported names through its
+                // body-level `require/avoid/must` and `context` markers.
+                let block = &spanned.node;
+                for marker in &block.body_constraints {
+                    record_cross_file_text_use(&marker.name, targets, &mut out);
+                }
+                for entry in &block.body_context {
+                    if let ContextEntry::NameRef(name) = entry {
+                        record_cross_file_any_use(name, targets, &mut out);
+                    }
+                }
+            }
+            Decl::Const(_) => {}
             Decl::TypeDecl(_) => {} // TODO: handled in Task B.4+
             Decl::Import(imp) => {
                 // The selective-import name token itself jumps to the
@@ -6941,6 +6980,22 @@ fn collect_refs_from_decl(decl: &Decl, out: &mut HashSet<String>) {
             if let Some(expr) = &b.node.terminal_return {
                 collect_refs_from_return_expr(expr, out);
             }
+            // Issue #166: walk structurally-captured body refs so
+            // `glyph fmt` can preserve imports referenced only by an
+            // `export block` body. Mirrors the Skill / Block arms above.
+            for n in &b.node.body_refs {
+                out.insert(n.clone());
+            }
+            for m in &b.node.body_constraints {
+                out.insert(m.name.node.clone());
+            }
+            for entry in &b.node.body_context {
+                if let ContextEntry::NameRef(n) = entry {
+                    out.insert(n.node.clone());
+                }
+            }
+            collect_refs_from_params(&b.node.params, out);
+            collect_refs_from_extra_subsections(&b.node.extra_subsections, out);
         }
         Decl::Const(_) | Decl::Import(_) => {}
         Decl::TypeDecl(_) => {} // TODO: handled in Task B.4+
@@ -8972,14 +9027,7 @@ skill main()
         // Same shape as `analyze_with_resolutions_records_flow_context_block`
         // but the local definition is an `export block`; resolution kind must
         // be `ExportBlock`.
-        let src = r#"export block helper()
-    "help"
-
-skill main()
-    description: "main."
-    flow:
-        context helper
-"#;
+        let src = "export block helper()\n    \"help\"\n\nskill main()\n    description: \"main.\"\n    flow:\n        context helper\n";
         let file = parse_for_resolutions(src);
         let line_index = LineIndex::new(src);
         let mut bag = DiagBag::new();
@@ -8996,6 +9044,36 @@ skill main()
         let r = xb_res.unwrap();
         let use_text = &src[r.use_span.start as usize..r.use_span.end as usize];
         assert_eq!(use_text, "helper");
+        assert_eq!(r.def_file, path);
+    }
+
+    /// Issue #166 reviewer round 1 #26: LSP-resolution test that an
+    /// `export block` body-level `context X` resolves to a same-file
+    /// `block` target via `record_context_name_use`. Mirrors
+    /// `analyze_with_resolutions_records_flow_context_block` but the
+    /// `context X` lives at indent 1 inside the export block (not in
+    /// a flow statement), exercising the `Decl::ExportBlock` arm of
+    /// `collect_same_file_resolutions`.
+    #[test]
+    fn analyze_with_resolutions_records_export_block_body_context_block() {
+        let src = "block target_helper()\n    \"work\"\n\nexport block consumer() -> Text\n    context target_helper\n    flow:\n        return \"ok\"\n";
+        let file = parse_for_resolutions(src);
+        let line_index = LineIndex::new(src);
+        let mut bag = DiagBag::new();
+        let path = PathBuf::from("test.glyph");
+        let (_file, res) =
+            analyze_with_resolutions(file, 0, "test.glyph", &path, &line_index, &mut bag, false);
+        let block_res = res.iter().find(|r| {
+            r.kind == ResolutionKind::Block
+                && &src[r.use_span.start as usize..r.use_span.end as usize] == "target_helper"
+        });
+        assert!(
+            block_res.is_some(),
+            "expected a Block resolution for export-block body-level \
+             `context target_helper`, got: {:?}",
+            res
+        );
+        let r = block_res.unwrap();
         assert_eq!(r.def_file, path);
     }
 
