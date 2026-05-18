@@ -1,5 +1,0 @@
-skill diagnose()
-    description: "Diagnose an issue."
-    flow:
-        "Inspect the scope."
-        return <"a structured diagnosis">

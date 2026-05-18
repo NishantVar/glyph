@@ -26,4 +26,4 @@ description: 'Review a pull request for correctness, style, and safety.'
    c. Verify no security-sensitive code paths are affected.
    Otherwise:
    a. Spot-check test coverage for changed code.
-3. Summarize findings with actionable feedback Return the result of Produce a structured review with approval status and comments..
+3. Summarize findings with actionable feedback. Return a `Review`: a structured review with approval status and comments.

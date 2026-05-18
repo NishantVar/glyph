@@ -8,15 +8,15 @@
 skill repair(source_path, diagnostics) -> RewrittenSource
     description: "Use during a /glyph:compile run when the compiler has exited 2 with repairable diagnostics on a single Glyph source file. Read the source plus its NDJSON diagnostics, apply each diagnostic's rewrite pattern, and write the rewritten Glyph source file back to source_path."
 
-    require diagnostic_driven_rewrites_only
-    must parseable_glyph_output
-    must avoid regenerating_already_resolved_names
-
     context:
         invocation_shape_is_one_file_with_its_diagnostics
         compound_names_stay_atomic
         invalid_output_is_discarded_without_retry
 
+    constraints:
+        require diagnostic_driven_rewrites_only
+        must parseable_glyph_output
+        must avoid regenerating_already_resolved_names
     flow:
         repair_operator_in_expression()
         repair_param_slot_in_non_instruction_string()
@@ -52,7 +52,7 @@ block append_explicit_return()
     "For each `G::analyze::missing-return` diagnostic, append `return <expr>` as the final statement of the relevant `flow:`. Use `return none` when there is no meaningful value to return."
 
 block infer_and_attach_return_type()
-    "For each `G::analyze::export-missing-return-type` diagnostic, infer a named domain type from the returned value (never a primitive name) and add ` -> DomainType` to the export block's header."
+    "For each `G::analyze::export-missing-return-type` diagnostic, infer a named domain type from the returned value (never a primitive name) and add ` -> DomainType` to the offending declaration's header (skill, block, or export block)."
 
 block extract_nested_branch_into_block()
     "For each `G::analyze::nested-branch` diagnostic, extract the inner branch into a `generated block` and replace it with a call passing captured outer-scope bindings."

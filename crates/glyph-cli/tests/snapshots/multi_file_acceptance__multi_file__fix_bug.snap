@@ -1,5 +1,6 @@
 ---
 source: crates/glyph-cli/tests/multi_file_acceptance.rs
+assertion_line: 116
 expression: md
 ---
 ---
@@ -40,4 +41,4 @@ description: 'Debug and fix a bug in the codebase with minimal, targeted changes
    Otherwise:
    a. Manually verify the fix by inspecting the changed code paths.
 5. Apply the smallest change that fixes the root cause. Preserve existing patterns and avoid unnecessary refactoring.
-6. Verify the fix resolves the original issue. Run related tests to check for regressions Return the result of summarize_changes().
+6. Verify the fix resolves the original issue. Run related tests to check for regressions.

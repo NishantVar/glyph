@@ -1,0 +1,4 @@
+skill produce_diagnosis()
+    description: "Produce a diagnosis of repo scope."
+    flow:
+        return <"a structured diagnosis of repo scope">

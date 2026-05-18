@@ -251,6 +251,7 @@ fn compile_and_read(name: &str) -> String {
 }
 
 #[test]
+#[ignore = "PRD #159: this surface is now Repairable through compile; fixture deleted; relift as expand-pass-level test against IrArena directly. See todo/expand-todos.md."]
 fn return_row1_descriptive_target_produces_x() {
     let md = compile_and_read("return_row1_descriptive.glyph");
     assert!(
@@ -284,6 +285,7 @@ fn return_row3_named_with_type_no_decl_omits_description() {
 }
 
 #[test]
+#[ignore = "PRD #159: this surface is now Repairable through compile; fixture deleted; relift as expand-pass-level test against IrArena directly. See todo/expand-todos.md."]
 fn return_row4_named_no_type_just_produces_name() {
     let md = compile_and_read("return_row4_named_no_type.glyph");
     assert!(

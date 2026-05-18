@@ -2138,6 +2138,127 @@ fn check_block_return_calls(
     );
 }
 
+/// Issue #82 follow-up / PRD #159 (Codex round-1 Issue 1): emit
+/// `G::analyze::return-of-no-value-call` (Error) when a `return <call>`
+/// targets a callee that resolves to a same-file block or imported
+/// export block but declares no `-> Type`. Symmetric to
+/// `G::analyze::assignment-rhs-has-no-value` at analyze.rs:1614.
+///
+/// Suppression: when the callee does not resolve to ANY declared block,
+/// skip this diagnostic so the already-emitted `undefined-call` /
+/// `stdlib-missing-import` surfaces alone (mirror M5 at
+/// analyze.rs:1597-1612). The user sees one root cause, not two.
+fn check_return_call_no_value(
+    expr: &crate::ast::ReturnExpr,
+    local_callee_return_types: &HashMap<&str, &Spanned<String>>,
+    imported_block_return_types: &HashMap<String, Spanned<String>>,
+    block_names: &HashSet<&str>,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    let crate::ast::ReturnExpr::Call { target, .. } = expr else {
+        return;
+    };
+    if resolve_callee_return_for_assign(
+        target.node.as_str(),
+        target.span,
+        local_callee_return_types,
+        imported_block_return_types,
+    )
+    .is_some()
+    {
+        return;
+    }
+    if !block_names.contains(target.node.as_str()) {
+        return;
+    }
+    let span = target.span;
+    let mut diag = Diagnostic::error(
+        "G::analyze::return-of-no-value-call",
+        format!(
+            "the return expression must produce a value (`{}` declares no return type)",
+            target.node
+        ),
+        SourceSpan::from_byte_span(file_label, span, line_index),
+    );
+    diag.hints.push(
+        "this callee declares no return type — drop the `return` or call a different block"
+            .to_string(),
+    );
+    bag.push(diag, span);
+}
+
+/// Issue #82 follow-up / PRD #159: walker that runs
+/// `check_return_call_no_value` on every `FlowStmt::Return` in a flow.
+/// Recurses into branch arms for parity with
+/// `walk_return_calls_nominal_check` even though the parser rejects
+/// `return` inside branches (per design/data-flow.md §Return Semantics).
+fn walk_return_of_no_value_call(
+    flow: &[FlowStmt],
+    local_callee_return_types: &HashMap<&str, &Spanned<String>>,
+    imported_block_return_types: &HashMap<String, Spanned<String>>,
+    block_names: &HashSet<&str>,
+    file_label: &str,
+    line_index: &LineIndex,
+    bag: &mut DiagBag,
+) {
+    for stmt in flow {
+        match stmt {
+            FlowStmt::Return(expr) => {
+                check_return_call_no_value(
+                    expr,
+                    local_callee_return_types,
+                    imported_block_return_types,
+                    block_names,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+            }
+            FlowStmt::Branch {
+                then_body,
+                elif_branches,
+                else_body,
+                ..
+            } => {
+                walk_return_of_no_value_call(
+                    then_body,
+                    local_callee_return_types,
+                    imported_block_return_types,
+                    block_names,
+                    file_label,
+                    line_index,
+                    bag,
+                );
+                for elif in elif_branches {
+                    walk_return_of_no_value_call(
+                        &elif.body,
+                        local_callee_return_types,
+                        imported_block_return_types,
+                        block_names,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                }
+                if let Some(eb) = else_body {
+                    walk_return_of_no_value_call(
+                        eb,
+                        local_callee_return_types,
+                        imported_block_return_types,
+                        block_names,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Issue #84 codex pass 2 — F1: recursive nominal walker.
 ///
 /// Walks `flow` and runs [`check_return_call_nominal`] on every
@@ -2749,6 +2870,22 @@ pub fn analyze_with_diagnostics(
                     &case_bad,
                     &mut explicit_decl_seen,
                 );
+                // PRD #159 / Codex round-1 Issue 1: emit `return-of-no-value-call`
+                // (Error) when an export block's `return <call>` targets a callee
+                // that resolves but declares no `-> Type`. Symmetric to
+                // `assignment-rhs-has-no-value`. Inspects `terminal_return` directly
+                // since `ExportBlockDecl` has no `flow: Vec<FlowStmt>` (see ast.rs).
+                if let Some(expr) = spanned.node.terminal_return.as_ref() {
+                    check_return_call_no_value(
+                        expr,
+                        &local_callee_return_types,
+                        &empty_imported_block_return_types,
+                        &block_names,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                }
                 // Phase 3 / Task 3.12 — block-scope `{param}` slot validation
                 // for freeform colon-keyword sections (`quality:`, `risks:`,
                 // …). Uses the export block's own param scope, not the
@@ -2793,6 +2930,50 @@ pub fn analyze_with_diagnostics(
                     registry,
                     &case_bad,
                     &mut explicit_decl_seen,
+                );
+
+                // G::analyze::export-missing-return-type — issue #161: broadened from
+                // skill + export-block to also fire on private `block` decls whose body
+                // has a meaningful `return <expr>` (where `<expr>` is not the `none`
+                // value-keyword) and whose header lacks a `-> DomainType` annotation.
+                // Same diagnostic ID and Repairable classification as the skill /
+                // export-block fire-sites; message text identifies the decl kind.
+                if flow_has_meaningful_return(&spanned.node.flow)
+                    && spanned.node.return_type.is_none()
+                {
+                    let span = spanned.span;
+                    bag.push(
+                        Diagnostic {
+                            id: "G::analyze::export-missing-return-type".into(),
+                            classification: Classification::Repairable,
+                            message: format!(
+                                "`block {}` returns a meaningful value but its header lacks a `-> DomainType` annotation",
+                                spanned.node.name
+                            ),
+                            span: SourceSpan::from_byte_span(file_label, span, line_index),
+                            related: Vec::new(),
+                            hints: vec![
+                                "add a return-type annotation to the header — e.g. `block name(...) -> DomainType`"
+                                    .into(),
+                            ],
+                        },
+                        span,
+                    );
+                }
+
+                // PRD #159 / Codex round-1 Issue 1: emit `return-of-no-value-call`
+                // (Error) when a private block's `return <call>` targets a callee that
+                // resolves but declares no `-> Type`. Symmetric to
+                // `assignment-rhs-has-no-value`. Suppression + diagnostic shape live
+                // in the helper.
+                walk_return_of_no_value_call(
+                    &spanned.node.flow,
+                    &local_callee_return_types,
+                    &empty_imported_block_return_types,
+                    &block_names,
+                    file_label,
+                    line_index,
+                    bag,
                 );
                 let visible_names = visible_names_for_decl(
                     spanned.node.params.iter().map(|p| p.name.as_str()),
@@ -3976,6 +4157,22 @@ pub fn analyze_with_imports(
                     &case_bad,
                     &mut explicit_decl_seen,
                 );
+                // PRD #159 / Codex round-1 Issue 1: emit `return-of-no-value-call`
+                // (Error) when an export block's `return <call>` targets a callee
+                // that resolves but declares no `-> Type`. Symmetric to
+                // `assignment-rhs-has-no-value`. Inspects `terminal_return` directly
+                // since `ExportBlockDecl` has no `flow: Vec<FlowStmt>` (see ast.rs).
+                if let Some(expr) = spanned.node.terminal_return.as_ref() {
+                    check_return_call_no_value(
+                        expr,
+                        &local_callee_return_types,
+                        imported_block_return_types,
+                        &block_names,
+                        file_label,
+                        line_index,
+                        bag,
+                    );
+                }
                 // Phase 3 / Task 3.12 — block-scope `{param}` slot validation
                 // on the imports path. Mirrors the non-imports arm.
                 check_block_freeform_slots(
@@ -4001,6 +4198,50 @@ pub fn analyze_with_imports(
                     registry,
                     &case_bad,
                     &mut explicit_decl_seen,
+                );
+
+                // G::analyze::export-missing-return-type — issue #161: broadened from
+                // skill + export-block to also fire on private `block` decls whose body
+                // has a meaningful `return <expr>` (where `<expr>` is not the `none`
+                // value-keyword) and whose header lacks a `-> DomainType` annotation.
+                // Same diagnostic ID and Repairable classification as the skill /
+                // export-block fire-sites; message text identifies the decl kind.
+                if flow_has_meaningful_return(&spanned.node.flow)
+                    && spanned.node.return_type.is_none()
+                {
+                    let span = spanned.span;
+                    bag.push(
+                        Diagnostic {
+                            id: "G::analyze::export-missing-return-type".into(),
+                            classification: Classification::Repairable,
+                            message: format!(
+                                "`block {}` returns a meaningful value but its header lacks a `-> DomainType` annotation",
+                                spanned.node.name
+                            ),
+                            span: SourceSpan::from_byte_span(file_label, span, line_index),
+                            related: Vec::new(),
+                            hints: vec![
+                                "add a return-type annotation to the header — e.g. `block name(...) -> DomainType`"
+                                    .into(),
+                            ],
+                        },
+                        span,
+                    );
+                }
+
+                // PRD #159 / Codex round-1 Issue 1: emit `return-of-no-value-call`
+                // (Error) when a private block's `return <call>` targets a callee that
+                // resolves but declares no `-> Type`. Symmetric to
+                // `assignment-rhs-has-no-value`. Suppression + diagnostic shape live
+                // in the helper.
+                walk_return_of_no_value_call(
+                    &spanned.node.flow,
+                    &local_callee_return_types,
+                    imported_block_return_types,
+                    &block_names,
+                    file_label,
+                    line_index,
+                    bag,
                 );
                 let visible_names = visible_names_for_decl(
                     spanned.node.params.iter().map(|p| p.name.as_str()),
@@ -4740,6 +4981,47 @@ fn analyze_skill(
         registry,
         case_bad,
         explicit_decl_seen,
+    );
+
+    // G::analyze::export-missing-return-type — issue #160: broadened from
+    // export-block to also fire on `skill` decls whose body has a meaningful
+    // `return <expr>` (where `<expr>` is not the `none` value-keyword) and
+    // whose header lacks a `-> DomainType` annotation. Same diagnostic ID
+    // and Repairable classification as the export-block fire-site.
+    if flow_has_meaningful_return(&skill.flow) && skill.return_type.is_none() {
+        let span = spanned.span;
+        bag.push(
+            Diagnostic {
+                id: "G::analyze::export-missing-return-type".into(),
+                classification: Classification::Repairable,
+                message: format!(
+                    "`skill {}` returns a meaningful value but its header lacks a `-> DomainType` annotation",
+                    skill.name
+                ),
+                span: SourceSpan::from_byte_span(file_label, span, line_index),
+                related: Vec::new(),
+                hints: vec![
+                    "add a return-type annotation to the header — e.g. `skill name(...) -> DomainType`"
+                        .into(),
+                ],
+            },
+            span,
+        );
+    }
+
+    // PRD #159 / Codex round-1 Issue 1: emit `return-of-no-value-call`
+    // (Error) when `return <call>` targets a same-file callee that resolves
+    // but declares no `-> Type`. Symmetric to `assignment-rhs-has-no-value`.
+    // Walks `skill.flow` and recurses into branch arms; suppression and
+    // diagnostic shape live in the helper.
+    walk_return_of_no_value_call(
+        &skill.flow,
+        local_callee_return_types,
+        imported_block_return_types,
+        block_names,
+        file_label,
+        line_index,
+        bag,
     );
     check_flow_output_target_shadows_binding(
         &skill.flow,
@@ -9531,7 +9813,10 @@ export block helper(x = unknown_const)
 
 #[cfg(test)]
 mod flow_assign_tests {
+    use super::{analyze_with_imports, DiagBag};
     use crate::diagnostic::Classification;
+    use crate::span::{Span, Spanned};
+    use std::collections::{HashMap, HashSet};
 
     fn diag_ids(src: &str) -> Vec<String> {
         crate::check_source(src, 0, "test.glyph")
@@ -9768,24 +10053,291 @@ skill demo()
     #[test]
     fn flow_assign_call_arg_type_match_no_diag() {
         let src = "\
-block produce(scope = \".\") -> RepoContext
-    \"produce\"
-
-block consume(input: RepoContext = \"x\") -> Plan
-    \"consume\"
-
-skill demo() -> Plan
-    description: \"demo\"
-    flow:
-        ctx = produce(\".\")
-        plan = consume(ctx)
-        return plan
-";
+    block produce(scope = \".\") -> RepoContext
+        \"produce\"
+    
+    block consume(input: RepoContext = \"x\") -> Plan
+        \"consume\"
+    
+    skill demo() -> Plan
+        description: \"demo\"
+        flow:
+            ctx = produce(\".\")
+            plan = consume(ctx)
+            return plan
+    ";
         let ids = diag_ids(src);
         assert!(
             !ids.iter()
                 .any(|id| id == "G::analyze::call-arg-type-mismatch"),
             "did not expect G::analyze::call-arg-type-mismatch, got {ids:?}"
+        );
+    }
+
+    // ---- PRD #159 / Codex round-1 Issue 1:
+    //      G::analyze::return-of-no-value-call ----
+
+    /// Positive case: `return <call>` where the callee resolves to a
+    /// same-file block but the callee declares no `-> Type`. The new
+    /// Error-tier diagnostic must fire.
+    #[test]
+    fn return_of_no_value_call_fires_for_void_local_callee() {
+        let src = concat!(
+            "block helper()\n",
+            "    \"do something\"\n",
+            "\n",
+            "skill demo() -> Plan\n",
+            "    description: \"demo\"\n",
+            "    flow:\n",
+            "        return helper()\n",
+        );
+        let bag = crate::check_source(src, 0, "test.glyph");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+                ids.contains(&"G::analyze::return-of-no-value-call"),
+                "expected G::analyze::return-of-no-value-call for `return helper()` against void callee, got: {ids:?}"
+            );
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::return-of-no-value-call")
+            .unwrap();
+        assert_eq!(
+            diag.classification,
+            Classification::Error,
+            "return-of-no-value-call must be Error tier"
+        );
+        assert!(
+            diag.message.contains("helper"),
+            "diagnostic must mention the callee name `helper`, got: {:?}",
+            diag.message
+        );
+    }
+
+    /// Suppression: `return <call>` where the callee does not resolve to
+    /// any declared block. The new diagnostic must be SUPPRESSED so
+    /// `undefined-call` surfaces alone (one root cause).
+    ///
+    /// Mirrors `flow_assign_unknown_callee_emits_only_undefined_call` —
+    /// the analyze.rs:1597-1612 M5 suppression rule extended to
+    /// return position.
+    #[test]
+    fn return_of_no_value_call_suppressed_when_callee_undefined() {
+        let src = concat!(
+            "skill demo() -> Plan\n",
+            "    description: \"demo\"\n",
+            "    flow:\n",
+            "        return missing_block()\n",
+        );
+        let ids = diag_ids(src);
+        assert!(
+            ids.iter().any(|id| id == "G::analyze::undefined-call"),
+            "expected G::analyze::undefined-call to fire alone, got {ids:?}"
+        );
+        assert!(
+                !ids.iter()
+                    .any(|id| id == "G::analyze::return-of-no-value-call"),
+                "must NOT fire return-of-no-value-call when callee is undefined (M5 suppression), got {ids:?}"
+            );
+    }
+
+    /// Negative: typed callee (`-> Type`) must NOT fire the new
+    /// diagnostic. Confirms the resolve-then-check path returns early
+    /// when the callee declares a return type.
+    #[test]
+    fn return_of_no_value_call_does_not_fire_for_typed_callee() {
+        let src = concat!(
+            "block helper() -> Plan\n",
+            "    \"produce\"\n",
+            "\n",
+            "skill demo() -> Plan\n",
+            "    description: \"demo\"\n",
+            "    flow:\n",
+            "        return helper()\n",
+        );
+        let ids = diag_ids(src);
+        assert!(
+            !ids.iter()
+                .any(|id| id == "G::analyze::return-of-no-value-call"),
+            "must NOT fire return-of-no-value-call for typed callee, got {ids:?}"
+        );
+    }
+
+    /// Block-as-caller: a private `block` whose body is `return <call>`
+    /// against a void callee must also fire. Confirms the wiring at the
+    /// private-block fire site (analyze.rs Decl::Block arm).
+    #[test]
+    fn return_of_no_value_call_fires_in_private_block_caller() {
+        let src = concat!(
+            "block void_helper()\n",
+            "    \"do something\"\n",
+            "\n",
+            "block caller() -> Plan\n",
+            "    flow:\n",
+            "        return void_helper()\n",
+            "\n",
+            "skill orchestrate()\n",
+            "    description: \"orchestrate\"\n",
+            "    flow:\n",
+            "        caller()\n",
+        );
+        let ids = diag_ids(src);
+        assert!(
+            ids.iter()
+                .any(|id| id == "G::analyze::return-of-no-value-call"),
+            "expected G::analyze::return-of-no-value-call in private block caller, got {ids:?}"
+        );
+    }
+
+    /// Export-block-as-caller: an `export block` whose `terminal_return`
+    /// is `return <call>` against a void callee must fire. Confirms the
+    /// wiring at the export-block fire site
+    /// (post-`analyze_export_block(...)` in the entry-point arm).
+    #[test]
+    fn return_of_no_value_call_fires_in_export_block_caller() {
+        let src = concat!(
+            "block void_helper()\n",
+            "    \"do something\"\n",
+            "\n",
+            "export block caller() -> Plan\n",
+            "    flow:\n",
+            "        return void_helper()\n",
+        );
+        let ids = diag_ids(src);
+        assert!(
+            ids.iter()
+                .any(|id| id == "G::analyze::return-of-no-value-call"),
+            "expected G::analyze::return-of-no-value-call in export block caller, got {ids:?}"
+        );
+    }
+
+    // PRD #159 / Codex round-2 Issue 1 (imported-callee coverage gap):
+    // the same-file walks above already pin every caller kind (skill,
+    // private block, export block). The two tests below pin the
+    // **imports path** via `analyze_with_imports` directly so a
+    // regression where the new diagnostic stops respecting
+    // `imported_block_return_types` (or where the imported-name union
+    // into `block_names` regresses) shows up in this unit cluster.
+
+    /// Imported VOID callee — the new diagnostic must fire when a
+    /// skill's `return <imported_call>` targets an imported block that
+    /// has no entry in `imported_block_return_types` (i.e. the
+    /// upstream `export block` declares no `-> Type`).
+    #[test]
+    fn return_of_no_value_call_fires_for_imported_void_callee() {
+        let src = concat!(
+            "skill demo() -> Plan\n",
+            "    description: \"demo\"\n",
+            "    flow:\n",
+            "        return helper()\n",
+        );
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let mut used: HashSet<String> = HashSet::new();
+
+        let mut imported_blocks: HashSet<String> = HashSet::new();
+        imported_blocks.insert("helper".to_string());
+
+        // Empty return-type map ⇒ `helper` is an imported VOID block:
+        // it resolves (in `imported_blocks` → unions into `block_names`)
+        // but the chunk-4 lookup against `imported_block_return_types`
+        // returns nothing, so chunk-1 must fire.
+        let imported_block_return_types: HashMap<String, Spanned<String>> = HashMap::new();
+
+        let _ = analyze_with_imports(
+            &file,
+            0,
+            "test.glyph",
+            &line_index,
+            &mut bag,
+            &HashSet::new(),
+            &imported_blocks,
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut used,
+            &HashMap::new(),
+            &mut registry,
+            &imported_block_return_types,
+            &HashMap::new(),
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::return-of-no-value-call"),
+            "expected G::analyze::return-of-no-value-call for `return helper()` against imported void callee, got: {ids:?}"
+        );
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::return-of-no-value-call")
+            .unwrap();
+        assert_eq!(
+            diag.classification,
+            Classification::Error,
+            "return-of-no-value-call must be Error tier on the imports path"
+        );
+        assert!(
+            diag.message.contains("helper"),
+            "diagnostic must mention the callee name `helper`, got: {:?}",
+            diag.message
+        );
+    }
+
+    /// Imported TYPED callee — negative control. Same source as above
+    /// but `imported_block_return_types` carries `helper -> Plan`, so
+    /// the lookup succeeds and the new diagnostic must NOT fire.
+    /// Guards against a regression where the imports path stops
+    /// consulting `imported_block_return_types`.
+    #[test]
+    fn return_of_no_value_call_does_not_fire_for_imported_typed_callee() {
+        let src = concat!(
+            "skill demo() -> Plan\n",
+            "    description: \"demo\"\n",
+            "    flow:\n",
+            "        return helper()\n",
+        );
+        let (file, line_index) = crate::parse::parse(src, 0).expect("parse ok");
+        let mut bag = DiagBag::new();
+        let mut registry = crate::domain_registry::Registry::new();
+        let mut used: HashSet<String> = HashSet::new();
+
+        let mut imported_blocks: HashSet<String> = HashSet::new();
+        imported_blocks.insert("helper".to_string());
+
+        let mut imported_block_return_types: HashMap<String, Spanned<String>> = HashMap::new();
+        imported_block_return_types.insert(
+            "helper".to_string(),
+            Spanned::new("Plan".to_string(), Span::new(0, 0, 0)),
+        );
+
+        let _ = analyze_with_imports(
+            &file,
+            0,
+            "test.glyph",
+            &line_index,
+            &mut bag,
+            &HashSet::new(),
+            &imported_blocks,
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut used,
+            &HashMap::new(),
+            &mut registry,
+            &imported_block_return_types,
+            &HashMap::new(),
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::return-of-no-value-call"),
+            "must NOT fire return-of-no-value-call for imported TYPED callee (helper -> Plan), got {ids:?}"
         );
     }
 }

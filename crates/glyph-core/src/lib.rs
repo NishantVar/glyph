@@ -3471,19 +3471,24 @@ block helper()
     }
 
     #[test]
+    #[ignore = "PRD #159: this surface is now Repairable through compile; relift as expand-pass-level test against IrArena directly. See todo/expand-todos.md."]
     fn return_call_folds_into_final_step() {
         // AC1: `return summarize_changes()` becomes the last sentence of the
         // final numbered step.
-        let src = "\
-block summarize_changes()
-    \"Summarize what was changed and why.\"
-
-skill update_docs()
-    description: \"Update documentation.\"
-    flow:
-        \"Read the repository changes.\"
-        return summarize_changes()
-";
+        //
+        // Ignored under PRD #159 — see todo/expand-todos.md. Relift target:
+        // drive the expand pass directly against an IrArena to bypass the
+        // analyzer (which now flags this surface as Repairable).
+        let src = concat!(
+            "block summarize_changes()\n",
+            "    \"Summarize what was changed and why.\"\n",
+            "\n",
+            "skill update_docs()\n",
+            "    description: \"Update documentation.\"\n",
+            "    flow:\n",
+            "        \"Read the repository changes.\"\n",
+            "        return summarize_changes()\n",
+        );
         let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
@@ -3690,6 +3695,350 @@ export block compute(x = \"default\")
     }
 
     // --- Issue #83: G::analyze::generic-type-name ---
+
+    // ---- issue #160: same rule broadened to `skill` decls ----
+
+    #[test]
+    fn skill_meaningful_return_without_arrow_fires() {
+        // Issue #160: a `skill` whose body has `return <expr>` (where `<expr>`
+        // is not the `none` value-keyword) and whose header lacks
+        // `-> DomainType` must fire `G::analyze::export-missing-return-type`
+        // as Repairable. Same diagnostic ID as the export-block fire-site;
+        // the message text varies per kind.
+        let src = concat!(
+            "skill compute(x = \"default\")\n",
+            "    flow:\n",
+            "        \"Compute something.\"\n",
+            "        return x\n",
+        );
+        let bag = check_source(src, 0, "test.glyph");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::export-missing-return-type"),
+            "expected G::analyze::export-missing-return-type for skill meaningful return without `->`, got: {:?}",
+            ids
+        );
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::export-missing-return-type")
+            .unwrap();
+        assert_eq!(
+            diag.classification,
+            diagnostic::Classification::Repairable,
+            "export-missing-return-type on skill must be Repairable"
+        );
+        assert!(
+            diag.message.contains("skill compute"),
+            "skill flavor of the diagnostic should mention `skill compute`, got: {:?}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn skill_return_none_without_arrow_no_export_missing_return_type() {
+        // Issue #160: `return none` at the end of a skill body is the
+        // value-position `none` keyword (no meaningful return). With no
+        // `-> DomainType` on the header, the new diagnostic must NOT fire.
+        let src = concat!(
+            "skill notify(msg = \"hello\")\n",
+            "    flow:\n",
+            "        \"Send a notification.\"\n",
+            "        return none\n",
+        );
+        let bag = check_source(src, 0, "test.glyph");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::export-missing-return-type"),
+            "must NOT fire export-missing-return-type for skill `return none`, got: {:?}",
+            ids
+        );
+    }
+
+    // Codex round-1 Issue 5 (coverage gap):
+    // `flow_has_meaningful_return` uses `eq_ignore_ascii_case("none")`,
+    // so `return None` and `return NONE` must also be treated as
+    // no-meaningful-return. The export-block parser tests pin this at
+    // the parse layer (parse.rs); these tests pin it end-to-end at the
+    // analyze layer for the broadened skill fire site so a regression
+    // that drops the case-insensitive branch lights up loudly here.
+
+    /// `return None` (PascalCase) at end of a skill body with no `-> Type`
+    /// must NOT fire `G::analyze::export-missing-return-type`.
+    #[test]
+    fn skill_return_none_pascal_case_without_arrow_no_export_missing_return_type() {
+        let src = concat!(
+            "skill notify(msg = \"hello\")\n",
+            "    flow:\n",
+            "        \"Send a notification.\"\n",
+            "        return None\n",
+        );
+        let bag = check_source(src, 0, "test.glyph");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::export-missing-return-type"),
+            "must NOT fire export-missing-return-type for skill `return None` (PascalCase), got: {:?}",
+            ids
+        );
+    }
+
+    /// `return NONE` (all-caps) at end of a skill body with no `-> Type`
+    /// must NOT fire `G::analyze::export-missing-return-type`.
+    #[test]
+    fn skill_return_none_uppercase_without_arrow_no_export_missing_return_type() {
+        let src = concat!(
+            "skill notify(msg = \"hello\")\n",
+            "    flow:\n",
+            "        \"Send a notification.\"\n",
+            "        return NONE\n",
+        );
+        let bag = check_source(src, 0, "test.glyph");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::export-missing-return-type"),
+            "must NOT fire export-missing-return-type for skill `return NONE` (all-caps), got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn skill_meaningful_return_with_arrow_passes_clean() {
+        // Issue #160: a `skill` with `-> DomainType` on the header and a
+        // meaningful return must NOT fire `export-missing-return-type`.
+        let src = concat!(
+            "skill compute(x = \"default\") -> Path\n",
+            "    flow:\n",
+            "        \"Compute something.\"\n",
+            "        return x\n",
+        );
+        let bag = check_source(src, 0, "test.glyph");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::export-missing-return-type"),
+            "must NOT fire export-missing-return-type when `-> Path` is present on skill, got: {:?}",
+            ids
+        );
+        assert!(
+            !ids.contains(&"G::parse::none-as-return-type"),
+            "must NOT fire none-as-return-type for `-> Path` on skill, got: {:?}",
+            ids
+        );
+    }
+
+    // ---- issue #161: private `block` cluster, mirrors the skill cluster above ----
+
+    #[test]
+    fn block_meaningful_return_without_arrow_fires() {
+        // Issue #161: a private `block` whose body has `return <expr>` (where
+        // `<expr>` is not the `none` value-keyword) and whose header lacks
+        // `-> DomainType` must fire `G::analyze::export-missing-return-type`
+        // as Repairable. Same diagnostic ID as the skill / export-block
+        // fire-sites; the message text identifies the decl kind.
+        //
+        // An export skill is included so `G::analyze::no-exports-in-library`
+        // does not fire and the test isolates the block diagnostic.
+        let src = concat!(
+            "skill orchestrate()\n",
+            "    description: \"Orchestrate the helper.\"\n",
+            "    flow:\n",
+            "        \"Use the helper.\"\n",
+            "        helper()\n",
+            "\n",
+            "block helper(x = \"default\")\n",
+            "    description: \"Helper that returns x.\"\n",
+            "    flow:\n",
+            "        return x\n",
+        );
+        let bag = check_source(src, 0, "test.glyph");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::export-missing-return-type"),
+            "expected G::analyze::export-missing-return-type for private block meaningful return without `->`, got: {:?}",
+            ids
+        );
+        let diag = bag
+            .iter()
+            .find(|d| d.id == "G::analyze::export-missing-return-type")
+            .unwrap();
+        assert_eq!(
+            diag.classification,
+            diagnostic::Classification::Repairable,
+            "export-missing-return-type on private block must be Repairable"
+        );
+        assert!(
+            diag.message.contains("block helper"),
+            "block flavor of the diagnostic should mention `block helper`, got: {:?}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn block_return_none_without_arrow_no_export_missing_return_type() {
+        // Issue #161: `return none` at the end of a private block body is the
+        // value-position `none` keyword (no meaningful return). With no
+        // `-> DomainType` on the header, the new diagnostic must NOT fire.
+        //
+        // An export skill is included so `G::analyze::no-exports-in-library`
+        // does not fire.
+        let src = concat!(
+            "skill orchestrate()\n",
+            "    description: \"Orchestrate the helper.\"\n",
+            "    flow:\n",
+            "        \"Use the helper.\"\n",
+            "        helper()\n",
+            "\n",
+            "block helper(msg = \"hello\")\n",
+            "    description: \"Helper that returns nothing.\"\n",
+            "    flow:\n",
+            "        return none\n",
+        );
+        let bag = check_source(src, 0, "test.glyph");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::export-missing-return-type"),
+            "must NOT fire export-missing-return-type for private block `return none`, got: {:?}",
+            ids
+        );
+    }
+
+    // Codex round-1 Issue 5 (coverage gap):
+    // `flow_has_meaningful_return` uses `eq_ignore_ascii_case("none")`,
+    // so `return None` and `return NONE` must also be treated as
+    // no-meaningful-return. The export-block parser tests pin this at
+    // the parse layer (parse.rs); these tests pin it end-to-end at the
+    // analyze layer for the broadened private-block fire site so a
+    // regression that drops the case-insensitive branch lights up here.
+
+    /// `return None` (PascalCase) at end of a private block body with no
+    /// `-> Type` must NOT fire `G::analyze::export-missing-return-type`.
+    #[test]
+    fn block_return_none_pascal_case_without_arrow_no_export_missing_return_type() {
+        let src = concat!(
+            "skill orchestrate()\n",
+            "    description: \"Orchestrate the helper.\"\n",
+            "    flow:\n",
+            "        \"Use the helper.\"\n",
+            "        helper()\n",
+            "\n",
+            "block helper(msg = \"hello\")\n",
+            "    description: \"Helper that returns nothing.\"\n",
+            "    flow:\n",
+            "        return None\n",
+        );
+        let bag = check_source(src, 0, "test.glyph");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::export-missing-return-type"),
+            "must NOT fire export-missing-return-type for private block `return None` (PascalCase), got: {:?}",
+            ids
+        );
+    }
+
+    /// `return NONE` (all-caps) at end of a private block body with no
+    /// `-> Type` must NOT fire `G::analyze::export-missing-return-type`.
+    #[test]
+    fn block_return_none_uppercase_without_arrow_no_export_missing_return_type() {
+        let src = concat!(
+            "skill orchestrate()\n",
+            "    description: \"Orchestrate the helper.\"\n",
+            "    flow:\n",
+            "        \"Use the helper.\"\n",
+            "        helper()\n",
+            "\n",
+            "block helper(msg = \"hello\")\n",
+            "    description: \"Helper that returns nothing.\"\n",
+            "    flow:\n",
+            "        return NONE\n",
+        );
+        let bag = check_source(src, 0, "test.glyph");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::export-missing-return-type"),
+            "must NOT fire export-missing-return-type for private block `return NONE` (all-caps), got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn block_meaningful_return_with_arrow_passes_clean() {
+        // Issue #161: a private `block` with `-> DomainType` on the header and
+        // a meaningful return must NOT fire `export-missing-return-type`.
+        //
+        // An export skill is included so `G::analyze::no-exports-in-library`
+        // does not fire.
+        let src = concat!(
+            "skill orchestrate()\n",
+            "    description: \"Orchestrate the helper.\"\n",
+            "    flow:\n",
+            "        \"Use the helper.\"\n",
+            "        helper()\n",
+            "\n",
+            "block helper(x = \"default\") -> Path\n",
+            "    description: \"Helper that returns a path.\"\n",
+            "    flow:\n",
+            "        return x\n",
+        );
+        let bag = check_source(src, 0, "test.glyph");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::export-missing-return-type"),
+            "must NOT fire export-missing-return-type when `-> Path` is present on private block, got: {:?}",
+            ids
+        );
+        assert!(
+            !ids.contains(&"G::parse::none-as-return-type"),
+            "must NOT fire none-as-return-type for `-> Path` on private block, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn block_no_return_does_not_fire_export_missing_return_type() {
+        // Issue #161 critical negative case: a private `block` with NO `return`
+        // at all must stay silent (preserves the no-meaningful-contract idiom
+        // for internal helpers — many private blocks are pure side-effect
+        // helpers and must not be forced to declare a return type).
+        //
+        // An export skill is included so `G::analyze::no-exports-in-library`
+        // does not fire.
+        let src = concat!(
+            "skill orchestrate()\n",
+            "    description: \"Orchestrate the helper.\"\n",
+            "    flow:\n",
+            "        \"Use the helper.\"\n",
+            "        helper()\n",
+            "\n",
+            "block helper(msg = \"hello\")\n",
+            "    description: \"Helper that performs a side effect and returns nothing.\"\n",
+        );
+        let bag = check_source(src, 0, "test.glyph");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::export-missing-return-type"),
+            "must NOT fire export-missing-return-type for private block with NO return at all, got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn skill_no_return_does_not_fire_export_missing_return_type() {
+        // Issue #160: when the skill body has no `return` at all,
+        // `export-missing-return-type` must NOT fire — there is no
+        // meaningful return value to require a `-> DomainType` annotation.
+        // (Skill has no analog of the export-block `missing-return` rule,
+        // so we only assert about the new diagnostic.)
+        let src = concat!(
+            "skill compute(x = \"default\")\n",
+            "    flow:\n",
+            "        \"Compute something.\"\n",
+        );
+        let bag = check_source(src, 0, "test.glyph");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"G::analyze::export-missing-return-type"),
+            "must NOT fire export-missing-return-type when skill has no return at all, got: {:?}",
+            ids
+        );
+    }
 
     #[test]
     fn return_type_string_on_skill_fires_warning() {
@@ -4140,15 +4489,20 @@ skill main()
     }
 
     #[test]
+    #[ignore = "PRD #159: this surface is now Repairable through compile; relift as expand-pass-level test against IrArena directly. See todo/expand-todos.md."]
     fn return_bare_name_folds_into_final_step() {
         // `return result` with a bare name should fold.
-        let src = "\
-skill main()
-    description: \"Main skill.\"
-    flow:
-        \"Compute the result.\"
-        return result
-";
+        //
+        // Ignored under PRD #159 — see todo/expand-todos.md. Relift target:
+        // drive the expand pass directly against an IrArena to bypass the
+        // analyzer (which now flags this surface as Repairable).
+        let src = concat!(
+            "skill main()\n",
+            "    description: \"Main skill.\"\n",
+            "    flow:\n",
+            "        \"Compute the result.\"\n",
+            "        return result\n",
+        );
         let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {

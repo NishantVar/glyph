@@ -1,0 +1,13 @@
+type Marker = <"a marker value">
+type Diagnosis = <"a structured diagnosis of repo scope">
+
+skill orchestrate() -> Marker
+    description: "Orchestrate diagnosis."
+    flow:
+        produce_diagnosis()
+        return <"a marker value">
+
+block produce_diagnosis() -> Diagnosis
+    description: "Produce a diagnosis of repo scope."
+    flow:
+        return <"a structured diagnosis of repo scope">

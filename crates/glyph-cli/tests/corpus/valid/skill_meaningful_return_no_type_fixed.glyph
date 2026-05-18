@@ -1,0 +1,6 @@
+type Diagnosis = <"a structured diagnosis of repo scope">
+
+skill produce_diagnosis() -> Diagnosis
+    description: "Produce a diagnosis of repo scope."
+    flow:
+        return <"a structured diagnosis of repo scope">

@@ -179,3 +179,165 @@ export block compute_value()
         stdout,
     );
 }
+
+// PRD #159 / Codex round-1 Issue 3 (coverage gap):
+// `G::analyze::export-missing-return-type` was broadened from
+// export-block-only to fire for skills (issue #160) and private blocks
+// (issue #161). The unit-test cluster in `crates/glyph-core/src/lib.rs`
+// covers the analyzer behavior, but no CLI test pinned that the
+// diagnostic flows through `glyph check --format json` for those two
+// shapes with the correct exit code (2 = repairable) and the correct
+// `classification: "repairable"` field on the NDJSON line. The two
+// tests below close that gap, mirroring `ac7_export_block_missing_return_type_end_to_end`
+// but reading the fixtures committed under
+// `tests/corpus/repairable/` so the assertion stays anchored to the
+// canonical sample sources rather than an inline duplicate.
+
+fn repairable_fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("corpus")
+        .join("repairable")
+        .join(name)
+}
+
+/// Skill (issue #160): `skill produce_diagnosis()` body has a
+/// meaningful `return <...>` but the header omits `-> Type`. CLI must
+/// exit 2 and surface `G::analyze::export-missing-return-type` with
+/// `classification: "repairable"`.
+#[test]
+fn skill_meaningful_return_no_type_cli_emits_repairable() {
+    let path = repairable_fixture("skill_meaningful_return_no_type.glyph");
+    let result = run_check(&path, "json");
+    assert_eq!(
+        result.status.code(),
+        Some(2),
+        "expected exit 2 (Repairable) for skill_meaningful_return_no_type.glyph; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&result.stdout).to_string();
+    assert!(
+        ndjson_contains_id(&stdout, "G::analyze::export-missing-return-type"),
+        "skill fixture: stdout must contain G::analyze::export-missing-return-type, got:\n{}",
+        stdout,
+    );
+    assert_eq!(
+        classification_of(&stdout, "G::analyze::export-missing-return-type").as_deref(),
+        Some("repairable"),
+        "skill fixture: G::analyze::export-missing-return-type must be classified repairable, got:\n{}",
+        stdout,
+    );
+}
+
+/// Private block (issue #161): `block produce_diagnosis()` body has a
+/// meaningful `return <...>` but the header omits `-> Type`. CLI must
+/// exit 2 and surface `G::analyze::export-missing-return-type` with
+/// `classification: "repairable"`.
+#[test]
+fn block_meaningful_return_no_type_cli_emits_repairable() {
+    let path = repairable_fixture("block_meaningful_return_no_type.glyph");
+    let result = run_check(&path, "json");
+    assert_eq!(
+        result.status.code(),
+        Some(2),
+        "expected exit 2 (Repairable) for block_meaningful_return_no_type.glyph; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&result.stdout).to_string();
+    assert!(
+        ndjson_contains_id(&stdout, "G::analyze::export-missing-return-type"),
+        "block fixture: stdout must contain G::analyze::export-missing-return-type, got:\n{}",
+        stdout,
+    );
+    assert_eq!(
+        classification_of(&stdout, "G::analyze::export-missing-return-type").as_deref(),
+        Some("repairable"),
+        "block fixture: G::analyze::export-missing-return-type must be classified repairable, got:\n{}",
+        stdout,
+    );
+}
+
+// PRD #159 / Codex round-1 Issue 1 (Error-tier corpus coverage):
+// `G::analyze::return-of-no-value-call` is a hard Error fired when a
+// `return <call>` targets a callee that resolves to a same-file block
+// or imported export block whose header declares no `-> Type`. The
+// unit cluster in `crates/glyph-core/src/analyze.rs` exercises every
+// fire site (skill, private block, export block; same-file +
+// imported); the two tests below pin the CLI surface for the
+// invalid/ corpus fixtures so a regression in either exit-code
+// routing or NDJSON `classification: "error"` shows up here.
+
+fn invalid_fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("corpus")
+        .join("invalid")
+        .join(name)
+}
+
+/// Skill caller (`skill demo() ... return helper()` against a void
+/// `helper()`): CLI must exit 1 (Error) and surface
+/// `G::analyze::return-of-no-value-call` with `classification: "error"`.
+#[test]
+fn return_of_no_value_call_skill_corpus_fires_error() {
+    let path = invalid_fixture("return_of_no_value_call_skill.glyph");
+    let result = run_check(&path, "json");
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "expected exit 1 (Error tier) for return_of_no_value_call_skill.glyph; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&result.stdout).to_string();
+    assert!(
+        ndjson_contains_id(&stdout, "G::analyze::return-of-no-value-call"),
+        "skill fixture: stdout must contain G::analyze::return-of-no-value-call, got:\n{}",
+        stdout,
+    );
+    assert_eq!(
+        classification_of(&stdout, "G::analyze::return-of-no-value-call").as_deref(),
+        Some("error"),
+        "skill fixture: G::analyze::return-of-no-value-call must be classified error, got:\n{}",
+        stdout,
+    );
+    // R2 nit: skill now declares `-> Marker`, so the Repairable
+    // `export-missing-return-type` must NOT fire — the new Error
+    // diagnostic is the only signal on this fixture.
+    assert!(
+        !ndjson_contains_id(&stdout, "G::analyze::export-missing-return-type"),
+        "skill fixture: stdout must NOT contain G::analyze::export-missing-return-type once skill is typed, got:\n{}",
+        stdout,
+    );
+}
+
+/// Private block caller (`block caller() -> Marker ... return
+/// void_helper()` against a void `void_helper()`): CLI must exit 1
+/// (Error) and surface `G::analyze::return-of-no-value-call` with
+/// `classification: "error"`.
+#[test]
+fn return_of_no_value_call_block_corpus_fires_error() {
+    let path = invalid_fixture("return_of_no_value_call_block.glyph");
+    let result = run_check(&path, "json");
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "expected exit 1 (Error tier) for return_of_no_value_call_block.glyph; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&result.stdout).to_string();
+    assert!(
+        ndjson_contains_id(&stdout, "G::analyze::return-of-no-value-call"),
+        "block fixture: stdout must contain G::analyze::return-of-no-value-call, got:\n{}",
+        stdout,
+    );
+    assert_eq!(
+        classification_of(&stdout, "G::analyze::return-of-no-value-call").as_deref(),
+        Some("error"),
+        "block fixture: G::analyze::return-of-no-value-call must be classified error, got:\n{}",
+        stdout,
+    );
+}
