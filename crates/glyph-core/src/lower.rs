@@ -974,25 +974,62 @@ pub fn lower_with_imports(
             let block_freeform_ids =
                 lower_freeform_sections(&block.freeform_sections, &texts, &mut arena)?;
             let next = NodeId(arena.len() as u32);
-            arena.push(IrNode::Block(IrBlock {
-                node_id: next,
-                name: block.name.clone(),
-                description: block.description.clone(),
-                body_text,
-                flow_statements,
-                resolved_word_count: None,
-                outgoing_calls,
-                return_type: block_return_type,
-                output_contract: block_output_contract,
-                return_type_text: block_return_type_text,
-                branch_steps,
-                string_default_params: block_string_default_params,
-                freeform_sections: block_freeform_ids,
-                description_source_line: block.description_span.map(|s| s.line),
-                context_source_line: block.context_section_span.map(|s| s.line),
-                constraints_source_line: block.constraints_section_span.map(|s| s.line),
-                flow_source_line: block.flow_span.map(|s| s.line),
-            }));
+            {
+                let mut block_constraint_ids: Vec<NodeId> = Vec::new();
+                for marker in &block.body_constraints {
+                    let resolved = texts.get(&marker.name.node).cloned().ok_or_else(|| {
+                        LowerError::UndefinedConstraintRef(marker.name.node.clone())
+                    })?;
+                    let (strength, polarity) = match marker.marker {
+                        ConstraintMarkerKind::Require => (Strength::Soft, Polarity::Require),
+                        ConstraintMarkerKind::Avoid => (Strength::Soft, Polarity::Avoid),
+                        ConstraintMarkerKind::Must => (Strength::Hard, Polarity::Require),
+                        ConstraintMarkerKind::MustAvoid => (Strength::Hard, Polarity::Avoid),
+                    };
+                    let next = NodeId(arena.len() as u32);
+                    let id = arena.push(IrNode::Constraint(IrConstraint {
+                        node_id: next,
+                        text: resolved,
+                        strength,
+                        polarity,
+                    }));
+                    block_constraint_ids.push(id);
+                }
+                let mut block_context_ids: Vec<NodeId> = Vec::new();
+                for entry in &block.body_context {
+                    let resolved = resolve_context_entry(entry, &texts)?;
+                    let name = context_entry_name(entry);
+                    let next = NodeId(arena.len() as u32);
+                    let id = arena.push(IrNode::Context(IrContext {
+                        node_id: next,
+                        text: resolved,
+                        name,
+                    }));
+                    block_context_ids.push(id);
+                }
+                let next = NodeId(arena.len() as u32);
+                arena.push(IrNode::Block(IrBlock {
+                    node_id: next,
+                    name: block.name.clone(),
+                    description: block.description.clone(),
+                    body_text,
+                    flow_statements,
+                    resolved_word_count: None,
+                    outgoing_calls,
+                    return_type: block_return_type,
+                    output_contract: block_output_contract,
+                    return_type_text: block_return_type_text,
+                    branch_steps,
+                    string_default_params: block_string_default_params,
+                    freeform_sections: block_freeform_ids,
+                    description_source_line: block.description_span.map(|s| s.line),
+                    context_source_line: block.context_section_span.map(|s| s.line),
+                    constraints_source_line: block.constraints_section_span.map(|s| s.line),
+                    flow_source_line: block.flow_span.map(|s| s.line),
+                    context: block_context_ids,
+                    constraints: block_constraint_ids,
+                }))
+            };
         }
     }
 
@@ -2633,5 +2670,272 @@ skill demo()
         let call = first_ir_call(&arena, skill);
         assert_eq!(call.bound_name.as_deref(), Some("researcher"));
         assert!(call.is_agent, "subagent callee should be agent-shape");
+    }
+}
+
+#[cfg(test)]
+mod block_body_constraints_lower_tests {
+    //! Issue #167 — block-scoped body-level constraints + context lowering.
+    //!
+    //! Pins:
+    //! 1. `BlockDecl.body_constraints` markers lower into `IrConstraint` arena
+    //!    nodes (one per marker), and the resulting `NodeId`s land in
+    //!    `IrBlock.constraints`.
+    //! 2. The `Strength`/`Polarity` mapping mirrors `IrSkill` lowering exactly
+    //!    (Require/Avoid/Must/MustAvoid → Soft/Soft/Hard/Hard × Require/Avoid).
+    //! 3. `BlockDecl.body_context` entries (both `NameRef` and `InlineString`)
+    //!    lower into `IrContext` arena nodes; `NodeId`s land in
+    //!    `IrBlock.context`, and `IrContext.name` is set only for `NameRef`.
+    //! 4. Skill-side lowering is unchanged: body-level Skill constraints
+    //!    continue to land on `IrSkill.constraints`, not on any new field.
+    //! 5. Block-scoped constraints are NOT hoisted up to the parent skill's
+    //!    `IrSkill.constraints` — they stay on the callee `IrBlock`.
+    use super::*;
+    use crate::ir::{IrBlock, IrNode};
+    use crate::parse;
+
+    fn lower_src(src: &str) -> IrArena {
+        let (file, _) = parse::parse(src, 0).expect("source should parse");
+        lower(&file).expect("source should lower")
+    }
+
+    fn find_block<'a>(arena: &'a IrArena, name: &str) -> &'a IrBlock {
+        arena
+            .nodes()
+            .iter()
+            .find_map(|n| match n {
+                IrNode::Block(b) if b.name == name => Some(b),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected IrBlock named `{}`", name))
+    }
+
+    /// AC §IR-shape: `require X` on a private block lowers to a Soft+Require
+    /// `IrConstraint` whose `NodeId` lives on `IrBlock.constraints`.
+    #[test]
+    fn body_require_lowers_to_soft_require_constraint_on_block() {
+        let src = r#"
+const accuracy = "be accurate"
+skill driver()
+    flow:
+        helper()
+
+block helper()
+    require accuracy
+    flow:
+        "do work"
+"#;
+        let arena = lower_src(src);
+        let block = find_block(&arena, "helper");
+        assert_eq!(
+            block.constraints.len(),
+            1,
+            "block.constraints should hold one entry"
+        );
+        let c = match arena.get(block.constraints[0]) {
+            IrNode::Constraint(c) => c,
+            other => panic!("expected Constraint, got {:?}", other),
+        };
+        assert_eq!(c.text, "be accurate");
+        assert_eq!(c.strength, Strength::Soft);
+        assert_eq!(c.polarity, Polarity::Require);
+    }
+
+    /// AC §IR-shape: each marker kind maps to the expected strength/polarity,
+    /// matching the Skill-side table at `lower.rs:1259-1264`.
+    #[test]
+    fn body_marker_kinds_map_strength_polarity_like_skill() {
+        let src = r#"
+const accuracy = "be accurate"
+const stale = "ignore stale references"
+const safety = "do not break things"
+const haste = "do not rush"
+
+skill driver()
+    flow:
+        helper()
+
+block helper()
+    require accuracy
+    avoid stale
+    must safety
+    must avoid haste
+    flow:
+        "do work"
+"#;
+        let arena = lower_src(src);
+        let block = find_block(&arena, "helper");
+        let pairs: Vec<(Strength, Polarity, String)> = block
+            .constraints
+            .iter()
+            .map(|id| match arena.get(*id) {
+                IrNode::Constraint(c) => (c.strength, c.polarity, c.text.clone()),
+                other => panic!("expected Constraint, got {:?}", other),
+            })
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                (Strength::Soft, Polarity::Require, "be accurate".into()),
+                (
+                    Strength::Soft,
+                    Polarity::Avoid,
+                    "ignore stale references".into()
+                ),
+                (
+                    Strength::Hard,
+                    Polarity::Require,
+                    "do not break things".into()
+                ),
+                (Strength::Hard, Polarity::Avoid, "do not rush".into()),
+            ]
+        );
+    }
+
+    /// AC §IR-shape: `context name` and `context "inline"` lower into
+    /// `IrContext` nodes on `IrBlock.context`. `name` field set only for
+    /// the `NameRef` variant.
+    #[test]
+    fn body_context_lowers_to_context_nodes_on_block() {
+        let src = r#"
+const project_conventions = "follow project conventions"
+
+skill driver()
+    flow:
+        helper()
+
+block helper()
+    context project_conventions
+    context "Always check for security vulnerabilities."
+    flow:
+        "do work"
+"#;
+        let arena = lower_src(src);
+        let block = find_block(&arena, "helper");
+        assert_eq!(
+            block.context.len(),
+            2,
+            "block.context should hold two entries"
+        );
+        let first = match arena.get(block.context[0]) {
+            IrNode::Context(c) => c,
+            other => panic!("expected Context, got {:?}", other),
+        };
+        assert_eq!(first.text, "follow project conventions");
+        assert_eq!(first.name.as_deref(), Some("project_conventions"));
+
+        let second = match arena.get(block.context[1]) {
+            IrNode::Context(c) => c,
+            other => panic!("expected Context, got {:?}", other),
+        };
+        assert_eq!(second.text, "Always check for security vulnerabilities.");
+        assert!(
+            second.name.is_none(),
+            "InlineString context should not carry a name"
+        );
+    }
+
+    /// AC §IR-shape: a block with no body-level markers/context has empty
+    /// `constraints` / `context` vectors. Pins the default initialization.
+    #[test]
+    fn block_without_body_markers_has_empty_constraint_and_context_vectors() {
+        let src = r#"
+skill driver()
+    flow:
+        helper()
+
+block helper()
+    flow:
+        "do work"
+"#;
+        let arena = lower_src(src);
+        let block = find_block(&arena, "helper");
+        assert!(
+            block.constraints.is_empty(),
+            "expected empty block.constraints"
+        );
+        assert!(block.context.is_empty(), "expected empty block.context");
+    }
+
+    /// AC §IR-shape: block-scoped constraints must NOT be hoisted to the
+    /// parent skill's `IrSkill.constraints`. The caller skill's list stays
+    /// untouched by the callee's body-level markers.
+    #[test]
+    fn block_constraints_are_not_hoisted_to_skill() {
+        let src = r#"
+const accuracy = "be accurate"
+skill driver()
+    flow:
+        helper()
+
+block helper()
+    require accuracy
+    flow:
+        "do work"
+"#;
+        let arena = lower_src(src);
+        let root = arena.root_skill().expect("arena has a root skill");
+        let skill = match arena.get(root) {
+            IrNode::Skill(s) => s,
+            other => panic!("root_skill was not Skill: {:?}", other),
+        };
+        assert!(
+            skill.constraints.is_empty(),
+            "skill.constraints should not absorb callee body-level constraints"
+        );
+    }
+
+    /// AC §IR-shape: existing Skill-side lowering is unchanged. A
+    /// body-level `require X` on the skill still lands on
+    /// `IrSkill.constraints`, not on any block field. Regression pin.
+    #[test]
+    fn skill_body_constraint_lowering_is_unchanged() {
+        let src = r#"
+const accuracy = "be accurate"
+skill driver()
+    require accuracy
+    flow:
+        "do work"
+"#;
+        let arena = lower_src(src);
+        let root = arena.root_skill().expect("arena has a root skill");
+        let skill = match arena.get(root) {
+            IrNode::Skill(s) => s,
+            other => panic!("root_skill was not Skill: {:?}", other),
+        };
+        assert_eq!(skill.constraints.len(), 1);
+        let c = match arena.get(skill.constraints[0]) {
+            IrNode::Constraint(c) => c,
+            other => panic!("expected Constraint, got {:?}", other),
+        };
+        assert_eq!(c.text, "be accurate");
+        assert_eq!(c.strength, Strength::Soft);
+        assert_eq!(c.polarity, Polarity::Require);
+    }
+
+    /// AC §IR-shape: also pin the parallel for context — a block carries
+    /// its own context list; the skill's `context` is untouched.
+    #[test]
+    fn skill_body_context_lowering_is_unchanged() {
+        let src = r#"
+const project_conventions = "follow project conventions"
+skill driver()
+    context project_conventions
+    flow:
+        "do work"
+"#;
+        let arena = lower_src(src);
+        let root = arena.root_skill().expect("arena has a root skill");
+        let skill = match arena.get(root) {
+            IrNode::Skill(s) => s,
+            other => panic!("root_skill was not Skill: {:?}", other),
+        };
+        assert_eq!(skill.context.len(), 1);
+        let ctx = match arena.get(skill.context[0]) {
+            IrNode::Context(c) => c,
+            other => panic!("expected Context, got {:?}", other),
+        };
+        assert_eq!(ctx.text, "follow project conventions");
+        assert_eq!(ctx.name.as_deref(), Some("project_conventions"));
     }
 }

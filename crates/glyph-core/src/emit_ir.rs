@@ -325,7 +325,27 @@ fn serialize_call(c: &IrCall, arena: &IrArena) -> Value {
     m.insert("role".into(), Value::String("step".into()));
 
     // scoped_constraints: empty for now.
-    m.insert("scoped_constraints".into(), json!([]));
+    // Issue #167: serialize the callee block's body-level constraints (lowered
+    // into `IrBlock.constraints` by `lower::lower`) so callers can read them
+    // off the IR JSON. `find_block_by_name` only returns same-file private
+    // `IrBlock`s; export-block targets, stdlib calls, and unresolved targets
+    // fall through to an empty array (export-block surfacing is #168's job
+    // via the AST-driven Tier 3 emit path).
+    let scoped_constraints: Vec<Value> = find_block_by_name(arena, &c.target)
+        .map(|b| {
+            b.constraints
+                .iter()
+                .filter_map(|id| match arena.get(*id) {
+                    IrNode::Constraint(con) => Some(serialize_constraint(con)),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    m.insert(
+        "scoped_constraints".into(),
+        Value::Array(scoped_constraints),
+    );
 
     // resolved_body_text
     m.insert(
@@ -1304,5 +1324,231 @@ skill foo()
         assert_eq!(elif["predicate_shape"]["has_predicate_token"], true);
         assert_eq!(elif["predicate_shape"]["has_boolean_token"], false);
         assert_eq!(elif["predicate_shape"]["has_compositional_operator"], false);
+    }
+}
+
+// ----- Issue #167 — `call.scoped_constraints` wiring tests ---------------
+//
+// Lives in its own sibling mod so the new tests don't perturb the
+// hand-tuned indentation of `mod output_contract_emit_tests` (which
+// contains raw-string `r#"..."#` test fixtures whose left margin is
+// column 0). Helpers are re-defined locally — they're a few lines and
+// exporting them would only make the parent mod uglier.
+#[cfg(test)]
+mod scoped_constraints_emit_tests {
+    //! Issue #167 — `call.scoped_constraints` emit-side wiring.
+    //!
+    //! Pins:
+    //! 1. Caller of a private `BlockDecl` with body-level `require X`
+    //!    surfaces a non-empty `scoped_constraints` array shaped like a
+    //!    serialized `IrConstraint` (`node_id`, `kind`, `text`, `strength`,
+    //!    `polarity`).
+    //! 2. Marker kinds (`require`/`avoid`/`must`/`must avoid`) map to the
+    //!    same `Strength`/`Polarity` pairs Skill-side lowering uses.
+    //! 3. Callees that resolve to `ExportBlockDecl` (not materialized in
+    //!    Issue #167) emit `scoped_constraints: []`. Tier 3 surfacing is
+    //!    #168's job.
+    //! 4. Unresolved / stdlib targets emit `scoped_constraints: []`.
+    //! 5. Private block without body-level markers emits
+    //!    `scoped_constraints: []`.
+    use super::*;
+    use crate::{lower, parse};
+    use serde_json::Value;
+
+    fn ir_json(src: &str) -> Value {
+        let (file, _) = parse::parse(src, 0).expect("source should parse");
+        let arena = lower::lower(&file).expect("source should lower");
+        let s = serialize_ir_json(&arena, "test.glyph", false)
+            .expect("arena has a root skill so JSON is produced");
+        serde_json::from_str(&s).expect("emitter output is valid JSON")
+    }
+
+    fn find_call<'a>(flow: &'a Value, target: &str) -> &'a Value {
+        flow.as_array()
+            .expect("flow is an array")
+            .iter()
+            .find(|n| {
+                n.get("kind").and_then(|k| k.as_str()) == Some("call")
+                    && n.get("target").and_then(|t| t.as_str()) == Some(target)
+            })
+            .unwrap_or_else(|| panic!("expected a call to `{target}` in flow"))
+    }
+
+    /// AC §IR-JSON: caller of a private block with `require X` body-level
+    /// marker surfaces a non-empty `scoped_constraints` array shaped like
+    /// a serialized `IrConstraint`.
+    #[test]
+    fn call_to_private_block_with_body_require_surfaces_scoped_constraints() {
+        let src = r#"
+const accuracy = "be accurate"
+
+skill driver()
+    flow:
+        helper()
+
+block helper()
+    require accuracy
+    flow:
+        "do work"
+"#;
+        let v = ir_json(src);
+        let flow = v.pointer("/skill/flow").expect("skill flow array present");
+        let call = find_call(flow, "helper");
+        let sc = call
+            .get("scoped_constraints")
+            .expect("call JSON must carry `scoped_constraints`");
+        let arr = sc.as_array().expect("`scoped_constraints` is an array");
+        assert_eq!(arr.len(), 1, "one body-level constraint on `helper`");
+        let entry = &arr[0];
+        assert_eq!(
+            entry.get("kind").and_then(|k| k.as_str()),
+            Some("constraint")
+        );
+        assert_eq!(
+            entry.get("text").and_then(|t| t.as_str()),
+            Some("be accurate")
+        );
+        assert_eq!(entry.get("strength").and_then(|s| s.as_str()), Some("soft"));
+        assert_eq!(
+            entry.get("polarity").and_then(|p| p.as_str()),
+            Some("require")
+        );
+        assert!(
+            entry.get("node_id").and_then(|n| n.as_str()).is_some(),
+            "each `scoped_constraints` entry carries an arena `node_id`"
+        );
+    }
+
+    /// AC §IR-JSON: marker kinds map to `strength`/`polarity` exactly as
+    /// on the Skill side. Pins the full table on the emit boundary.
+    #[test]
+    fn scoped_constraints_marker_kinds_round_trip_strength_polarity() {
+        let src = r#"
+const accuracy = "be accurate"
+const stale = "ignore stale references"
+const safety = "do not break things"
+const haste = "do not rush"
+
+skill driver()
+    flow:
+        helper()
+
+block helper()
+    require accuracy
+    avoid stale
+    must safety
+    must avoid haste
+    flow:
+        "do work"
+"#;
+        let v = ir_json(src);
+        let flow = v.pointer("/skill/flow").expect("skill flow array present");
+        let call = find_call(flow, "helper");
+        let arr = call
+            .get("scoped_constraints")
+            .and_then(|sc| sc.as_array())
+            .expect("`scoped_constraints` is an array");
+        let pairs: Vec<(&str, &str, &str)> = arr
+            .iter()
+            .map(|e| {
+                (
+                    e.get("text").and_then(|t| t.as_str()).unwrap(),
+                    e.get("strength").and_then(|s| s.as_str()).unwrap(),
+                    e.get("polarity").and_then(|p| p.as_str()).unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("be accurate", "soft", "require"),
+                ("ignore stale references", "soft", "avoid"),
+                ("do not break things", "hard", "require"),
+                ("do not rush", "hard", "avoid"),
+            ]
+        );
+    }
+
+    /// AC §IR-JSON: calls whose target resolves to `ExportBlockDecl`
+    /// continue to emit `scoped_constraints: []`. Tier 3 surfacing is
+    /// Issue #168 — the IR-shape pass only materializes private
+    /// `BlockDecl`s into `IrBlock`s, so `find_block_by_name` returns
+    /// `None` for export targets and the emitter falls through to the
+    /// empty default.
+    #[test]
+    fn call_to_export_block_emits_empty_scoped_constraints() {
+        let src = r#"
+const accuracy = "be accurate"
+
+skill driver()
+    flow:
+        helper()
+
+export block helper()
+    require accuracy
+    flow:
+        "do work"
+"#;
+        let v = ir_json(src);
+        let flow = v.pointer("/skill/flow").expect("skill flow array present");
+        let call = find_call(flow, "helper");
+        let arr = call
+            .get("scoped_constraints")
+            .and_then(|sc| sc.as_array())
+            .expect("`scoped_constraints` is an array");
+        assert!(
+            arr.is_empty(),
+            "export-block target must not surface `scoped_constraints` in #167; that's #168's job"
+        );
+    }
+
+    /// AC §IR-JSON: calls whose target does not resolve to any block in
+    /// the arena (stdlib / unresolved name) emit
+    /// `scoped_constraints: []`.
+    #[test]
+    fn call_to_unresolved_target_emits_empty_scoped_constraints() {
+        let src = r#"
+skill driver()
+    flow:
+        mystery_helper()
+"#;
+        let v = ir_json(src);
+        let flow = v.pointer("/skill/flow").expect("skill flow array present");
+        let call = find_call(flow, "mystery_helper");
+        let arr = call
+            .get("scoped_constraints")
+            .and_then(|sc| sc.as_array())
+            .expect("`scoped_constraints` is an array");
+        assert!(
+            arr.is_empty(),
+            "unresolved targets emit empty scoped_constraints"
+        );
+    }
+
+    /// AC §IR-JSON: a private block with no body-level constraints emits
+    /// `scoped_constraints: []` on the caller. Pins the default for the
+    /// common case so we don't accidentally synthesize ghost entries.
+    #[test]
+    fn call_to_private_block_without_body_constraints_emits_empty_scoped_constraints() {
+        let src = r#"
+skill driver()
+    flow:
+        helper()
+
+block helper()
+    flow:
+        "do work"
+"#;
+        let v = ir_json(src);
+        let flow = v.pointer("/skill/flow").expect("skill flow array present");
+        let call = find_call(flow, "helper");
+        let arr = call
+            .get("scoped_constraints")
+            .and_then(|sc| sc.as_array())
+            .expect("`scoped_constraints` is an array");
+        assert!(
+            arr.is_empty(),
+            "private block without body markers must not surface ghost scoped_constraints entries"
+        );
     }
 }
