@@ -396,7 +396,9 @@ fn classifies_as_tier2(
     let stmt_count = b.flow_statements.len();
     let has_branches = !b.branch_steps.is_empty();
     let wc = b.resolved_word_count.unwrap_or(0) as usize;
-    stmt_count >= 4 || has_branches || wc >= 150
+    let has_body_constraints = !b.constraints.is_empty();
+    let has_body_context = !b.context.is_empty();
+    stmt_count >= 4 || has_branches || wc >= 150 || has_body_constraints || has_body_context
 }
 
 /// D9 merge — gather phase. Build the unordered list of `RenderUnit`s for the
@@ -702,7 +704,7 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                     let line = crate::sections::hooks::dispatch_constraints_expand(
                         c.strength, c.polarity, &c.text,
                     );
-                    s.push_literal(format!("{}\n", line));
+                    s.push_literal(format!("{}\n\n", line));
                     had_preamble = true;
                 }
             }
@@ -716,13 +718,13 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                     let needs_period =
                         !matches!(body.chars().last(), Some('.') | Some('!') | Some('?'));
                     let suffix = if needs_period { "." } else { "" };
-                    s.push_literal(format!("**{}:** {}{}\n", label, body, suffix));
+                    s.push_literal(format!("**{}:** {}{}\n\n", label, body, suffix));
                     had_preamble = true;
                 }
             }
-            if had_preamble {
-                s.push_literal("\n");
-            }
+            // Each preamble line already ends with `\n\n`; the final `\n\n`
+            // supplies the blank line separator between preamble and steps.
+            let _ = had_preamble;
             // Codex review Finding 2: Tier 2 procedures must project block-level
             // `if`/elif/else through the same `branch::emit_to_scaffold` path the
             // skill flow uses. Pre-fix, `flow_statements` carried `if {condition}`

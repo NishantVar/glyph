@@ -8,6 +8,7 @@ export block thorough_review(scope = ".") -> Report
     must preserve_behavior
     require log_decisions
     context monorepo_layout
+    context "background prose for the reviewer"
 
     flow:
         "Read the project structure in {scope} by listing all directories, subdirectories, and files in the project root and recursively scanning each nested folder to build a comprehensive understanding of the overall file tree layout and organization of the entire codebase."

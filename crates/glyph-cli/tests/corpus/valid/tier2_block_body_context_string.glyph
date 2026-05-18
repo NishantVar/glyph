@@ -1,0 +1,12 @@
+block briefed_review()
+    context "background prose for the reviewer"
+
+    flow:
+        "Open the diff."
+        "Note any concerns."
+
+skill code_review()
+    description: "Review code with inline background context."
+    flow:
+        "Pick a file."
+        briefed_review()

@@ -145,7 +145,7 @@ pub fn emit_procedure(
     for c in constraints {
         let line =
             crate::sections::hooks::dispatch_constraints_expand(c.strength, c.polarity, c.text);
-        out.push_str(&format!("{}\n", line));
+        out.push_str(&format!("{}\n\n", line));
         had_preamble = true;
     }
     for c in context {
@@ -156,12 +156,12 @@ pub fn emit_procedure(
         let body = c.text.trim();
         let needs_period = !matches!(body.chars().last(), Some('.') | Some('!') | Some('?'));
         let suffix = if needs_period { "." } else { "" };
-        out.push_str(&format!("**{}:** {}{}\n", label, body, suffix));
+        out.push_str(&format!("**{}:** {}{}\n\n", label, body, suffix));
         had_preamble = true;
     }
-    if had_preamble {
-        out.push('\n');
-    }
+    // Each preamble line already ends with `\n\n`; the final `\n\n`
+    // supplies the blank line separator before the `## Steps` heading.
+    let _ = had_preamble;
 
     let return_sentence =
         templates::compute_return_sentence(return_type_text, output_form, type_registry);

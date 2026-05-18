@@ -1,0 +1,20 @@
+const careful_handoff = "leaving a clear note for the next reviewer"
+
+block child_step()
+    require careful_handoff
+
+    flow:
+        "Hand off cleanly."
+
+block parent_review()
+    flow:
+        "Open the diff."
+        "Read the change log."
+        "Note any concerns."
+        child_step()
+
+skill code_review()
+    description: "Parent calls a body-constraint-bearing child block."
+    flow:
+        "Pick a file."
+        parent_review()
