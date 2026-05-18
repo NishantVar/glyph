@@ -1,6 +1,6 @@
 # CallBodyShape Span Emission — Closing the `with` Modifier Drop
 
-**Status:** draft (rev 3, post-second-pass review)
+**Status:** draft (rev 4, post-third-pass review)
 **Date:** 2026-05-18
 **Phase:** 6 / Step 2 (Expand)
 **Related ADRs:** [[docs/adr/0016-llm-reshape-no-deterministic-fallback]], [[docs/adr/0018-phase-6b-structural-only-gate]]
@@ -60,39 +60,66 @@ Non-empty `local_refs` is treated as non-trivial because `llm_expand_pass.md` §
 
 Scoped constraints are not part of the predicate. When that responsibility is added, the predicate gains an `|| !c.scoped_constraints.is_empty()` clause and the follow-up spec re-introduces the corresponding test row.
 
-**`local_refs` invariant.** `IrCall.local_refs` is non-empty only for tier-1 inline Calls — tier 2, tier 3, and stdlib/bound Calls do not carry resolved-body slots and so cannot host local-ref cross-references. The triviality predicate is uniform across all seven sites (cheap to evaluate, no special case), but the `local_refs` reason only ever fires at the two tier-1 sites; tests in §6.3 assert this invariant.
+**`local_refs` is not gated by tier today.** `populate_local_refs_in_steps` walks every `IrCall.resolved_body` and does not gate on `projection_tier`; tier-2 Calls (and any future tier whose lower-time fills in `resolved_body`) can therefore carry non-empty `local_refs`. The triviality predicate is uniform across all seven sites, and the hard-fail path is uniform too — any non-empty `local_refs` at any site fires the diagnostic. Tests in §6.3 cover tier-1 sites primarily (where the pattern is most common in real corpora) plus a tier-2 case to nail down the uniformity. Tightening the IR side (e.g. clearing `local_refs` on non-inline Calls) is a separate piece of work and is not a precondition for this spec.
 
 ### 3.4 Emit-site changes
 
 Each of the seven Call emission sites adopts the same pattern: keep the existing literal path under the triviality predicate, otherwise emit a `CallBodyShape` span. The span owns **only the call-body prose** as one chunk; everything else is a separate `Literal` chunk in the scaffold.
 
-**Span boundaries — chunk layout.** For every site, the scaffold emits an explicit chunk sequence. The literal chunks immediately before and after the span carry the surrounding structure deterministically:
+**Span boundaries — chunk layout.** For every site, the scaffold emits an explicit chunk sequence. The literal chunks around the span carry the surrounding structure deterministically:
 
 ```
 [ Literal("{idx}. ")                     // numbered prefix (top-level) or "   {letter}. " (in-arm)
-, Span(CallBodyShape, payload)            // body prose only
-, Literal(" {return-fold suffix}")?       // §9.3 return-fold (final Step + Identifier-form only)
+, Span(CallBodyShape, payload)            // body prose only (span owns the call body)
 , Literal(" {naming sentence}")?          // §9.1 producer naming (only when naming_sentence_for_call returns Some)
 , Literal("\n")                           // line terminator
 ]
 ```
 
-Concretely, the following remain deterministic literals **outside** the span:
+The following remain deterministic literals **outside** the span:
 
 - Numbered list prefix (`{idx}. ` at top level) and lettered prefix (`   {letter}. ` in arms).
-- The return-fold suffix (`, and return that as your result.` and the §9.3 return-prose paragraph) emitted by `templates::append_return_sentence` for the Identifier-form Output Contract. This is the chunk **immediately after** the span when present.
-- The naming sentence (`Refer to this result as …` / `Refer to this agent as …`) appended via `naming_sentence_for_call` + `append_sentence`. This is the chunk **after** any return-fold chunk when present.
+- The naming sentence (`Refer to this result as …` / `Refer to this agent as …`) appended via `naming_sentence_for_call` + `append_sentence`. This is the chunk **after** the span when present.
 - The trailing `\n`.
 - The procedure-section anchor and ordering side-effect (`procedure_seen.insert(...)`, `procedure_order.push(...)`).
 
-The merger contract therefore needs no new behavior: post-span literal chunks already merge in their existing order. The LLM (when wired) writes only the prose that replaces the literal anchor — *"Follow the X procedure below."*, *"Load and follow the procedure in `path`."*, the resolved inline body, or *"Call `target`."*. The deterministic emitter still owns surrounding structure.
+The LLM (when wired) writes only the prose that replaces the literal anchor — *"Follow the X procedure below."*, *"Load and follow the procedure in `path`."*, the resolved inline body, or *"Call `target`."*. The deterministic emitter still owns surrounding structure.
+
+**Return-fold mechanism (two different cases; do not conflate).**
+
+`IrCall`'s return contract surfaces in two distinct ways today, and the spec treats them differently:
+
+- **§8.4 Output Contract return sentence** (Identifier-form / Description-form Output Contract on the *final Step* of the skill). `templates::append_return_sentence(body, sent)` strips trailing punctuation from `body` then appends `". {return_sentence}"`. Today's `return_sentence` is computed by `templates::compute_return_sentence` and produces values like `"Produce \`current_branch\`."` or `"Return a list of branch names."` — **not** the wording "`, and return that as your result.`" that earlier revs used as an example.
+
+  Because the punctuation-strip is a *function over the rendered body string*, it cannot be expressed as a fixed post-span `Literal` chunk that runs before fill (the LLM may produce any terminal punctuation, or none). Two options were considered:
+
+  - *(rejected)* Filler-contract: require the LLM filler to emit body prose without terminal punctuation when `payload.has_post_return_fold = true`. Pushes the contract into a place that's hard to enforce and easy to silently violate.
+  - *(chosen)* **Post-merge operation.** The scaffold records the computed `return_sentence` on the span payload (new field `post_merge_return_sentence: Option<String>`). The merger, after substituting span-fills back into the chunk stream and producing the final body string for the Call's line, runs `templates::append_return_sentence` against the merged body when this field is `Some`. The naming-sentence post-span Literal chunk, if present, is appended after the return-fold result.
+
+  The chunk layout for a final tier-1 Call with a `with` modifier and an Identifier-form return is therefore:
+
+  ```
+  [ Literal("N. ")
+  , Span(CallBodyShape, payload { post_merge_return_sentence: Some("Produce `<id>`."), ... })
+  , Literal(" Refer to this result as <n>.")?     // naming sentence, only when present
+  , Literal("\n")
+  ]
+  ```
+
+  When the stub filler hard-fails, the merger never runs, so the post-merge return-fold never runs either; the diagnostic alone is the user-facing surface. No `.md` is written. When the LLM filler is later wired, the merger's post-merge step runs against the LLM's prose.
+
+- **§9.3 flow-local return prose** (`Your result is …`). This is emitted **today as a separate numbered Step appended after the flow loop**, not as a suffix on a Call line. It is not touched by this spec, not represented in any span, and not part of any post-span chunk. The chunk-layout description above applies only to per-Call lines.
+
+The merger contract therefore needs **one** small addition: when a `CallBodyShape` span carries `post_merge_return_sentence: Some(sent)`, run `templates::append_return_sentence(merged_body, sent)` to produce the line's body. Everything else is unchanged.
 
 **Tier-1 raw-slot rule (local_refs).** The CallBodyShape span's `payload.resolved_body` for a non-trivial tier-1 Call (both top-level and in-arm) carries the **raw** `c.resolved_body` — `{name}` slots **intact**, not pre-substituted. The LLM filler weaves the cross-reference using `payload.local_refs` (which carries `crate::ir::LocalRef` values, see §3.5) to produce natural-language references like *"the diagnosis from your earlier analysis"* rather than bare names. The trivial tier-1 path retains today's `substitute_local_refs_in` bare-substitution behavior. This is the load-bearing distinction between the trivial and non-trivial tier-1 paths.
 
 **Pseudocode — representative site (tier 2 same_file_procedure, top-level, currently `scaffold.rs:1058–1068`):**
 
+`IrCall` is **not** modified. Match guards continue to switch on the existing `c.projection_tier: Option<u8>` field; the deterministic emitter maps that into a `ProjectionMode` value on the span payload at push time. The IR shape is unchanged (per §2 non-goals).
+
 ```rust
-IrNode::Call(c) if c.projection_mode == Some(ProjectionMode::SameFileProcedure) => {
+IrNode::Call(c) if c.projection_tier == Some(2) => {
     s.push_literal(format!("{}. ", idx + 1));
     let kebab = c.target.replace('_', "-");
     let anchor = format!("Follow the {} procedure below.", kebab);
@@ -103,7 +130,7 @@ IrNode::Call(c) if c.projection_mode == Some(ProjectionMode::SameFileProcedure) 
             ir_node: c.node_id,
             payload: SpanPayload {
                 target_name: Some(c.target.clone()),
-                projection_mode: Some(ProjectionMode::SameFileProcedure),
+                projection_mode: Some(ProjectionMode::SameFileProcedure),  // mapped from c.projection_tier
                 site_modifier: c.site_modifier.clone(),
                 resolved_body: Some(anchor),
                 local_refs: c.local_refs.clone(),  // crate::ir::LocalRef, see §3.5
@@ -113,11 +140,7 @@ IrNode::Call(c) if c.projection_mode == Some(ProjectionMode::SameFileProcedure) 
     } else {
         s.push_literal(anchor);
     }
-    // Return-fold (final-Step + Identifier-form) goes here, BEFORE naming, as a separate Literal chunk.
-    // Naming sentence (when present) is the next separate Literal chunk.
-    if let Some(naming) = naming_sentence_for_call(c) {
-        s.push_literal(format!(" {}", naming));
-    }
+    // Return-fold and naming sentence are handled per §3.4 ("Chunk layout" and "Return-fold mechanism") — not by an inline post-span Literal in this pseudocode.
     s.push_literal("\n");
     if procedure_seen.insert(c.target.clone()) {
         procedure_order.push(c.target.clone());
@@ -125,9 +148,24 @@ IrNode::Call(c) if c.projection_mode == Some(ProjectionMode::SameFileProcedure) 
 }
 ```
 
+A small helper centralises the tier-to-mode mapping so all seven sites use one source of truth:
+
+```rust
+fn projection_mode_from(c: &IrCall) -> Option<ProjectionMode> {
+    if c.bound_name.is_some() { return Some(ProjectionMode::StdlibBound); }
+    match c.projection_tier {
+        Some(1) => Some(ProjectionMode::Inline),
+        Some(2) => Some(ProjectionMode::SameFileProcedure),
+        Some(3) => Some(ProjectionMode::ExternalFile),
+        _ => None,
+    }
+}
+```
+
 **Tier-1 pseudocode sketch (top-level and in-arm, non-trivial case):**
 
 ```rust
+// Match guard: c.projection_tier == Some(1).
 // trivial path: existing substitute_local_refs_in flow, unchanged.
 // non-trivial path:
 s.push_span(SpanRef {
@@ -136,10 +174,10 @@ s.push_span(SpanRef {
     ir_node: c.node_id,
     payload: SpanPayload {
         target_name: Some(c.target.clone()),
-        projection_mode: Some(ProjectionMode::Inline),
+        projection_mode: Some(ProjectionMode::Inline),    // mapped from c.projection_tier
         site_modifier: c.site_modifier.clone(),
-        resolved_body: c.resolved_body.clone(),    // RAW {name} slots, not pre-substituted
-        local_refs: c.local_refs.clone(),          // crate::ir::LocalRef
+        resolved_body: c.resolved_body.clone(),           // RAW {name} slots, not pre-substituted
+        local_refs: c.local_refs.clone(),                 // crate::ir::LocalRef
         ..SpanPayload::default()
     },
 });
@@ -157,7 +195,7 @@ Equivalent changes at the other six sites with site-specific anchors:
 | tier 2 (same_file_procedure) | in-arm | `"Follow the {kebab} procedure."` |
 | tier 3 (external_file) | in-arm | `templates::external_file_step(path)` |
 
-**Tier-1 final-call handling.** Today's top-level tier-1 path (`scaffold.rs:1020–1056`) has specialized handling for: (a) the final Step folding in the Identifier-form return suffix, (b) the producer naming sentence trailing, (c) the empty-body + return-only case. All of this remains deterministic. The span replaces only the body text — the return-fold suffix is appended as a **separate post-span Literal chunk**, never concatenated into the span payload. This means an Identifier-form final tier-1 Call with a `with` modifier yields the chunk sequence `[Literal("N. "), Span(CallBodyShape), Literal(", and return that as your result."), Literal("\n")]` — the return suffix is recoverable from the scaffold by an external consumer even when the LLM filler has not yet run.
+**Tier-1 final-call handling.** Today's top-level tier-1 path (`scaffold.rs:1020–1056`) has specialized handling for: (a) the final Step folding in the §8.4 Output-Contract return sentence via `templates::append_return_sentence`, (b) the producer naming sentence trailing, (c) the empty-body + return-only case. All of this remains deterministic. The span replaces only the body text. The return sentence is carried on `payload.post_merge_return_sentence` and applied by the merger (see "Return-fold mechanism" below) rather than emitted as a fixed post-span `Literal`, because `append_return_sentence` strips terminal body punctuation before appending — a transformation that cannot run before the body is filled.
 
 **Empty body + `with` modifier.** A tier-1 Call whose `resolved_body` is empty but carries a `with` modifier is non-trivial → span emitted → stub hard-fails. (The LLM, when wired, would author the body from the modifier alone.) The span payload's `resolved_body` is `Some("")` rather than `None`, so consumers can distinguish "empty body, has modifier" from "no body field at all."
 
@@ -189,11 +227,13 @@ pub struct SpanPayload {
     pub target_name: Option<String>,
     pub projection_mode: Option<ProjectionMode>,
     pub local_refs: Vec<crate::ir::LocalRef>,   // reuse the existing IR type, no new payload struct
+    pub post_merge_return_sentence: Option<String>,  // §3.4 return-fold post-merge step
 }
 ```
 
 - `target_name` and `projection_mode` let the LLM-side filler (when wired) know the kind of Call being expanded so it can shape prose around the correct anchor and naming convention. They're cheap and `Option`-typed so existing span constructions (`ParamDescription`, `BranchCondition`) stay source-compatible.
 - `local_refs` is the LLM-grade cross-reference vector. **It reuses `crate::ir::LocalRef` directly** — no new `LocalRefPayload` wrapper. The producing pseudocode is simply `c.local_refs.clone()`, with no field translation. If a future change to `LocalRef` needs more fields the span payload picks them up automatically.
+- `post_merge_return_sentence` carries the §8.4 Output-Contract return sentence (e.g. `"Produce \`current_branch\`."`) computed via `templates::compute_return_sentence` at scaffold-build time. The merger runs `templates::append_return_sentence(merged_body, sent)` against the span's final rendered body. Only set on the final-Step Call when an Identifier-form / Description-form Output Contract is present; `None` otherwise. §9.3 flow-local return prose is **not** carried here — it remains a separate post-loop Step (see §3.4).
 
 Scoped constraints intentionally absent — see §7.
 
@@ -255,7 +295,12 @@ pub fn emit(arena: &IrArena, enable_effects: bool) -> Result<String, Vec<StubFil
 // inside e.g. compile_source_with_effects, where emit::emit is currently called:
 let markdown = match emit::emit(&arena, enable_effects) {
     Ok(md) => md,
-    Err(errors) => {
+    Err(mut errors) => {
+        // Item 3 enforcement: DiagBag::sorted() sorts by (file, byte_start, id) and falls
+        // back to insertion order for ties. All llm-required-for-call diagnostics share
+        // the same synthetic offset, so the IR-node-id tiebreaker has to be made real
+        // by sorting BEFORE pushing into the bag.
+        errors.sort_by_key(|e| e.ir_node.0);
         let mut bag = DiagBag::new();
         let li = LineIndex::new("");                          // synthetic; see §3.7
         let label = source_label_for(file_path);              // file path string, no line/col
@@ -287,7 +332,7 @@ Test helpers (`compile_markdown`, `compile_to_md`) absorb the new `Result` shape
 - **Phase:** Step 2 fill-time (pre-6b). Fires in the fill layer before merge; **not** a Phase 6b structural diagnostic. See §3.9 for the relationship.
 - **Classification:** `error`. Not `repairable` — Phase 3 Repair operates on source, and this is a build configuration / filler-wiring issue.
 - **Source span (synthetic).** `IrCall` has no source span field today. Per the existing pattern at `lib.rs:1726–1747`, this spec uses a **synthetic zero-width file-level span** (`Span::new(0, 0, 0)` against an empty `LineIndex`, with the source file path as the `label`). The diagnostic message names the IR node id (`n3`, `n7`, …) so the failing Call is unambiguously identifiable to the user even without precise source coordinates. Surfacing a real source span for `IrCall` is tracked as a follow-up in §7 (it requires threading a span through `IrCall`, parser → lower → IR; out of scope for this spec).
-- **Ordering.** Diagnostics are ordered by the existing `DiagBag` sort (source byte offset). All `G::expand::llm-required-for-call` diagnostics for one compile share the same synthetic offset (0), so the **tiebreaker is IR node id ascending** — emitted in node-id order when the bag is built, which matches both how `compile_source_*` iterates the scaffold and what tests in §6.5 assert.
+- **Ordering.** `DiagBag::sorted()` sorts by `(file, byte_start, id)` and otherwise relies on insertion order. Because all `G::expand::llm-required-for-call` diagnostics share the same file, the same synthetic byte offset (0), and the same ID, the **IR-node-id tiebreaker is enforced by sorting the `Vec<StubFillError>` by `ir_node.0` before pushing into the bag** (see §3.6 pseudocode). Without that explicit sort the order would track scaffold-visit order, which today happens to be node-id ascending but is not contractually so. Tests in §6.5 assert the sorted output.
 - **Registered in:**
   - `docs/reference/diagnostics.md` — the public catalog. This is the contract-bearing location.
   - A new subsection in `docs/architecture/expand.md` (see §3.8) — internal rationale.
@@ -310,12 +355,13 @@ Test helpers (`compile_markdown`, `compile_to_md`) absorb the new `Result` shape
           (false, false) => unreachable!(),
       };
       let target = e.target_name.as_deref().unwrap_or("<unknown>");
+      let node = format!("n{}", e.ir_node.0);   // NodeId does not implement Display today; format the inner u32 directly.
       format!(
           "Call to `{target}` (IR node {node}) requires LLM-grade expansion because it has \
            {reason_phrase}; this compiler build is using the stub filler. \
            Enable the LLM expand filler, or remove {remediation}.",
           target = target,
-          node = e.ir_node,
+          node = node,
           reason_phrase = reason_phrase,
           remediation = remediation,
       )
@@ -387,6 +433,11 @@ crates/glyph-core/src/emit/stub_fill.rs
 
 crates/glyph-core/src/emit/merger.rs
   - No signature change required — merger still receives the OK fill map.
+  - New behaviour: when a CallBodyShape span carries
+    payload.post_merge_return_sentence == Some(sent), run
+    templates::append_return_sentence(merged_body, sent) before emitting the
+    span's contribution to the final string. Naming-sentence post-span Literal
+    chunks (already in the chunk stream) merge in their existing position.
   - Update internal call sites and test fixtures that assumed an infallible fill.
 
 crates/glyph-core/src/emit/mod.rs
@@ -443,17 +494,19 @@ One test per emit site, each:
 
 Seven sites → seven tests. Existing `with`-modifier corpus fixtures (`flow_assign` and any multi-file fixtures) are updated to expect hard-failure (or moved to a dedicated `expected-failure` corpus directory if one exists).
 
-### 6.3 New: hard-fail on `local_refs` (tier-1 sites only)
+### 6.3 New: hard-fail on `local_refs`
 
-Per §3.3, `IrCall.local_refs` is non-empty only on tier-1 inline Calls. Two tests:
+Per §3.3, `IrCall.local_refs` is **not** gated by tier today — `populate_local_refs_in_steps` can populate it on any Call whose `resolved_body` contains a `{name}` slot. The hard-fail path is uniform across tiers. Three tests pin the behaviour:
 
 - Tier-1 top-level inline Call with non-empty `local_refs` and **no** modifier.
 - Tier-1 in-arm inline Call with non-empty `local_refs` and **no** modifier.
+- Tier-2 top-level Call with non-empty `local_refs` and **no** modifier (uniformity case).
 
 Each asserts:
 - Hard-fail with `"local-ref cross-references"` reason phrase and `"the local reference"` remediation.
-- The `CallBodyShape` span's `payload.resolved_body` contains the **raw** `{name}` slot (no substitution) — inspected via deterministic-emit-only scaffold inspection.
-- Tier 2 / tier 3 / stdlib-bound never set `has_local_refs = true` (negative assertion: these tiers cannot host local-refs).
+- For tier-1: the `CallBodyShape` span's `payload.resolved_body` contains the **raw** `{name}` slot (no substitution) — inspected via deterministic-emit-only scaffold inspection.
+
+(No negative assertion that other tiers "cannot host local_refs" — that invariant is not enforced by the IR today, see §3.3.)
 
 ### 6.4 New: combined modifier + local_refs (tier-1 only)
 
@@ -467,19 +520,20 @@ One test on a tier-1 Call carrying both. Asserts:
 One test with a skill containing two distinct Calls each requiring LLM fill. Asserts:
 - Two `G::expand::llm-required-for-call` diagnostics emitted.
 - Each names the correct IR node id.
-- Ordering: the bag sort by `SourceSpan` byte offset places all `llm-required-for-call` diagnostics at the same synthetic offset (0), so the **tiebreaker is IR node id ascending** — emit them in the order the scaffold visits the spans (which is IR order). Test asserts node-id-ascending order.
+- Ordering: IR node id ascending. A companion test arranges for the scaffold to visit spans in descending node-id order (e.g. via Branch arms whose Calls have higher node ids than their Otherwise sibling's earlier Call) and confirms the bag still presents them ascending — i.e. the test pins the explicit `errors.sort_by_key(|e| e.ir_node.0)` in §3.6, not the incidental scaffold-visit order.
 
 ### 6.6 New: no output file on failure
 
 Existing CI helpers assert exit non-zero and stderr carries the diagnostic. Explicitly assert `compiled.md` is absent on disk after the failing compile (matches `expand.md` §5.6). The mechanism: `compile_directory_with_layout`'s `Ok(CompileOutcome::Diagnostics(_))` branch at `lib.rs:1693` never reaches `atomic_write`.
 
-### 6.7 New: span boundaries — naming and return-fold stay outside span
+### 6.7 New: span boundaries, return-fold carrier, and naming sentence
 
-Deterministic-emit-only inspection of the scaffold chunks (no fill, no merge):
+Deterministic-emit-only inspection of the scaffold chunks (no fill, no merge). The §8.4 return-fold is **not** a Literal chunk — it is carried on `payload.post_merge_return_sentence` and applied by the merger (see §3.4 "Return-fold mechanism"). Tests assert the carrier and the post-merge result separately.
 
-- **Return-fold case.** Tier-1 top-level Call with a `with` modifier as the final Step with Identifier-form return → scaffold contains `[Literal("N. "), Span(CallBodyShape), Literal(", and return that as your result."), Literal("\n")]`. The return-fold literal is a **separate post-span chunk**, not concatenated to the body.
-- **Naming sentence case.** Tier-2 top-level Call with a `with` modifier and a `bound_name` → scaffold contains `[Literal("N. "), Span(CallBodyShape), Literal(" Refer to this result as <n>."), Literal("\n")]`. The naming sentence is a separate post-span chunk.
-- **Combined.** Tier-1 final Step + Identifier-form return + producer naming → both post-span chunks present in order: `[Literal("N. "), Span, Literal(return-fold), Literal(" Refer to this result as <n>."), Literal("\n")]`.
+- **Naming sentence case.** Tier-1 top-level Call with a `with` modifier and `bound_name = Some("foo")` → scaffold contains `[Literal("N. "), Span(CallBodyShape), Literal(" Refer to this result as foo."), Literal("\n")]`. The naming sentence is a separate post-span Literal chunk.
+- **Return-fold carrier case.** Tier-1 top-level Call with a `with` modifier as the final Step with Identifier-form return `return id` → scaffold contains `[Literal("N. "), Span(CallBodyShape, payload), Literal("\n")]` and `payload.post_merge_return_sentence == Some(templates::compute_return_sentence(...))`, whose value matches today's template output (e.g. `"Produce \`id\`."`). No `Literal(return-fold)` chunk between Span and `Literal("\n")`.
+- **Combined.** Tier-1 final Step + Identifier-form return + producer naming → scaffold contains `[Literal("N. "), Span(CallBodyShape, payload), Literal(" Refer to this result as <n>."), Literal("\n")]` and `payload.post_merge_return_sentence == Some(...)`. Merger order: append return sentence to the merged body first, then the naming-sentence Literal chunk runs in its existing position.
+- **§9.3 flow-local prose negative assertion.** A skill whose `Your result is …` paragraph is emitted as a separate post-loop Step is unaffected — no `CallBodyShape` span carries the flow-local return prose; it remains its own numbered Step.
 - **Raw-slot assertion.** For a tier-1 non-trivial Call with a `{name}` slot in `c.resolved_body`, the span's `payload.resolved_body` contains the literal `{name}` token (not substituted).
 
 ### 6.8 IR-node-id stability
