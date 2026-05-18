@@ -1,0 +1,18 @@
+const preserve_behavior = "preserving existing behavior"
+const log_decisions = "logging each decision with a rationale"
+const silent_failures = "silently swallowing errors without surfacing them"
+
+block careful_review()
+    must preserve_behavior
+    require log_decisions
+    avoid silent_failures
+
+    flow:
+        "Scan the code."
+        "Note any concerns."
+
+skill code_review()
+    description: "Review code carefully."
+    flow:
+        "Open the diff."
+        careful_review()

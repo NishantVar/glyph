@@ -666,11 +666,13 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
         // Collect the block's flow_statements + contract metadata before emitting.
         // Also collect freeform_sections so we can emit them as `####` children
         // of the procedure heading per design §4.1.5 / D12.
-        let (flow_stmts, proc_oc_form, proc_rt_text, proc_freeform) = {
+        let (flow_stmts, proc_oc_form, proc_rt_text, proc_freeform, proc_constraints, proc_context) = {
             let mut stmts: Option<Vec<String>> = None;
             let mut oc: Option<OutputTargetForm> = None;
             let mut rt: Option<String> = None;
             let mut ff: Vec<NodeId> = Vec::new();
+            let mut cs: Vec<NodeId> = Vec::new();
+            let mut cx: Vec<NodeId> = Vec::new();
             for node in arena.nodes() {
                 if let IrNode::Block(b) = node {
                     if b.name == *target_name {
@@ -678,14 +680,49 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                         oc = block_output_form_owned(arena, target_name);
                         rt = block_return_type_text_owned(arena, target_name);
                         ff = b.freeform_sections.clone();
+                        cs = b.constraints.clone();
+                        cx = b.context.clone();
                         break;
                     }
                 }
             }
-            (stmts, oc, rt, ff)
+            (stmts, oc, rt, ff, cs, cx)
         };
         if let Some(stmts) = flow_stmts {
             s.push_literal(format!("### Procedure: {}\n\n", kebab_name));
+            // #168: Tier 2 procedure preamble — body-level constraints and context
+            // declared on the block render as prose paragraphs (bold-prefix lines,
+            // NOT bullets and NOT numbered) between the heading and the steps.
+            // Matches the four-form constraint template (`emit::constraint::render`)
+            // and the implementer-chosen context format: `**<kebab>:** <text>` when
+            // `IrContext.name` is Some, else `**Context:** <text>`.
+            let mut had_preamble = false;
+            for c_id in &proc_constraints {
+                if let IrNode::Constraint(c) = arena.get(*c_id) {
+                    let line = crate::sections::hooks::dispatch_constraints_expand(
+                        c.strength, c.polarity, &c.text,
+                    );
+                    s.push_literal(format!("{}\n", line));
+                    had_preamble = true;
+                }
+            }
+            for c_id in &proc_context {
+                if let IrNode::Context(c) = arena.get(*c_id) {
+                    let label = match c.name.as_deref() {
+                        Some(n) => n.replace('_', "-"),
+                        None => "Context".to_string(),
+                    };
+                    let body = c.text.trim();
+                    let needs_period =
+                        !matches!(body.chars().last(), Some('.') | Some('!') | Some('?'));
+                    let suffix = if needs_period { "." } else { "" };
+                    s.push_literal(format!("**{}:** {}{}\n", label, body, suffix));
+                    had_preamble = true;
+                }
+            }
+            if had_preamble {
+                s.push_literal("\n");
+            }
             // Codex review Finding 2: Tier 2 procedures must project block-level
             // `if`/elif/else through the same `branch::emit_to_scaffold` path the
             // skill flow uses. Pre-fix, `flow_statements` carried `if {condition}`

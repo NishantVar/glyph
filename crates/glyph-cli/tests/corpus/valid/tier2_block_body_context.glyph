@@ -1,0 +1,16 @@
+const monorepo_layout = "this codebase is a Rust workspace with three crates"
+const workspace_conventions = "follow the workspace's existing conventions"
+
+block scoped_review()
+    context monorepo_layout
+    context workspace_conventions
+
+    flow:
+        "Open the relevant crate."
+        "Audit imports."
+
+skill code_review()
+    description: "Review code with awareness of the workspace."
+    flow:
+        "Pick a file."
+        scoped_review()
