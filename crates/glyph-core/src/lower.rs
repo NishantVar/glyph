@@ -973,7 +973,6 @@ pub fn lower_with_imports(
             // allocations occur.
             let block_freeform_ids =
                 lower_freeform_sections(&block.freeform_sections, &texts, &mut arena)?;
-            let next = NodeId(arena.len() as u32);
             {
                 let mut block_constraint_ids: Vec<NodeId> = Vec::new();
                 for marker in &block.body_constraints {
