@@ -128,12 +128,15 @@ hoisting/branch-scoping rules. Lower (Phase 4) splits them by location:
   not break backwards compatibility."). It does not appear in
   `## Constraints`. See [[docs/reference/compiled-output]] §Constraint Rendering.
 
-By the time Lower completes, all unconditional constraints — whether
-originally in a `constraints:` section, at body level, or at flow top-level —
-reside in the declaration's `constraints` list. Lower's IR-level hoisting is
-the single mechanism that produces this result; `glyph fmt` preserves source
-as written. Branch-scoped markers are the only constraints that remain inside
-the flow.
+By the time Lower completes, for `skill` and private `block` declarations
+all unconditional constraints — whether originally in a `constraints:`
+section, at body level, or at flow top-level — reside in the declaration's
+IR-level `constraints` list (`IrSkill.constraints` / `IrBlock.constraints`).
+Lower's IR-level hoisting is the single mechanism that produces this result;
+`glyph fmt` preserves source as written. Branch-scoped markers are the only
+constraints that remain inside the flow. For `export block` declarations,
+body-level markers follow the parsed-AST path described in the Export-block
+projection note above and are not part of this IR-list summary.
 
 ### Body-Level And Flow-Level Context Markers
 
@@ -183,10 +186,14 @@ represents them as `Context` nodes admissible in the `FlowNode` union
   conditional Step prose so the consuming LLM sees that the context applies
   only when that branch is taken. It does not appear in `## Context`.
 
-By the time Lower completes, all unconditional context — whether originally
-in a `context:` section, at body level, or at flow top-level — resides in the
-declaration's `context` list. Branch-scoped markers are the only context
-entries that remain inside the flow.
+By the time Lower completes, for `skill` and private `block` declarations
+all unconditional context — whether originally in a `context:` section, at
+body level, or at flow top-level — resides in the declaration's IR-level
+`context` list (`IrSkill.context` / `IrBlock.context`). Branch-scoped
+markers are the only context entries that remain inside the flow. For
+`export block` declarations, body-level markers follow the parsed-AST path
+described in the Export-block projection note above and are not part of this
+IR-list summary.
 
 ## 3. Effect Inference And Validation Algorithms
 
