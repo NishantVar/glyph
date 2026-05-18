@@ -217,3 +217,113 @@ fn strict_compile_repairable_does_not_write_md() {
         out_path.display(),
     );
 }
+
+// ---- issue #160: per-fixture coverage for the skill repair pair ----
+
+#[test]
+fn strict_compile_skill_meaningful_return_no_type_exits_one() {
+    let result = run_compile(
+        &repairable("skill_meaningful_return_no_type.glyph"),
+        &["--strict"],
+    );
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "expected exit 1 with --strict on skill_meaningful_return_no_type.glyph, got {:?}\nstderr: {}",
+        result.status.code(),
+        String::from_utf8_lossy(&result.stderr),
+    );
+}
+
+#[test]
+fn strict_compile_skill_meaningful_return_no_type_does_not_write_md() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = repairable("skill_meaningful_return_no_type.glyph");
+    let tmp_src = dir.path().join("skill_meaningful_return_no_type.glyph");
+    std::fs::copy(&src, &tmp_src).unwrap();
+
+    let out_path = dir.path().join("skill_meaningful_return_no_type.md");
+
+    let result = run_compile(&tmp_src, &["--strict"]);
+    assert_eq!(result.status.code(), Some(1));
+    assert!(
+        !out_path.exists(),
+        "expected no .md output with --strict on repairable file, but {} exists",
+        out_path.display(),
+    );
+}
+
+#[test]
+fn strict_compile_skill_meaningful_return_no_type_fixed_exits_zero() {
+    // Copy to tempdir to avoid polluting corpus with .md output.
+    let dir = tempfile::tempdir().unwrap();
+    let src = valid("skill_meaningful_return_no_type_fixed.glyph");
+    let tmp_src = dir
+        .path()
+        .join("skill_meaningful_return_no_type_fixed.glyph");
+    std::fs::copy(&src, &tmp_src).unwrap();
+
+    let result = run_compile(&tmp_src, &["--strict"]);
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "expected exit 0 with --strict on valid file, got {:?}\nstderr: {}",
+        result.status.code(),
+        String::from_utf8_lossy(&result.stderr),
+    );
+}
+
+// ---- issue #161: per-fixture coverage for the block repair pair ----
+
+#[test]
+fn strict_compile_block_meaningful_return_no_type_exits_one() {
+    let result = run_compile(
+        &repairable("block_meaningful_return_no_type.glyph"),
+        &["--strict"],
+    );
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "expected exit 1 with --strict on block_meaningful_return_no_type.glyph, got {:?}\nstderr: {}",
+        result.status.code(),
+        String::from_utf8_lossy(&result.stderr),
+    );
+}
+
+#[test]
+fn strict_compile_block_meaningful_return_no_type_does_not_write_md() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = repairable("block_meaningful_return_no_type.glyph");
+    let tmp_src = dir.path().join("block_meaningful_return_no_type.glyph");
+    std::fs::copy(&src, &tmp_src).unwrap();
+
+    let out_path = dir.path().join("block_meaningful_return_no_type.md");
+
+    let result = run_compile(&tmp_src, &["--strict"]);
+    assert_eq!(result.status.code(), Some(1));
+    assert!(
+        !out_path.exists(),
+        "expected no .md output with --strict on repairable file, but {} exists",
+        out_path.display(),
+    );
+}
+
+#[test]
+fn strict_compile_block_meaningful_return_no_type_fixed_exits_zero() {
+    // Copy to tempdir to avoid polluting corpus with .md output.
+    let dir = tempfile::tempdir().unwrap();
+    let src = valid("block_meaningful_return_no_type_fixed.glyph");
+    let tmp_src = dir
+        .path()
+        .join("block_meaningful_return_no_type_fixed.glyph");
+    std::fs::copy(&src, &tmp_src).unwrap();
+
+    let result = run_compile(&tmp_src, &["--strict"]);
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "expected exit 0 with --strict on valid file, got {:?}\nstderr: {}",
+        result.status.code(),
+        String::from_utf8_lossy(&result.stderr),
+    );
+}

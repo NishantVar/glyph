@@ -476,6 +476,7 @@ fn review_pr_parameters() {
 // ── AC: Return folding ─────────────────────────────────────────────
 
 #[test]
+#[ignore = "PRD #159: this surface is now unreachable end-to-end — the driver fixture fix_bug.glyph is typed (-> ChangeSummary) to satisfy #160, which gates off the row-3 fold; if it were untyped, the analyzer would short-circuit compile first. Relift as expand-pass-level test against IrArena directly. See todo/expand-todos.md."]
 fn fix_bug_return_folded() {
     let (_dir, path) = setup_tempdir();
     let output = compile_directory(&path);

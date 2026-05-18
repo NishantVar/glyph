@@ -1,10 +1,12 @@
 import "./repo_tools.glyph" { inspect_repo, run_tests }
 
-skill review_pr(scope = ".", risk = "medium")
-    description: "Review a pull request for correctness, style, and safety."
-    require thorough_review
-    require check_tests
+type Review = <"a structured review with approval status and comments">
 
+skill review_pr(scope = ".", risk = "medium") -> Review
+    description: "Review a pull request for correctness, style, and safety."
+    constraints:
+        require thorough_review
+        require check_tests
     flow:
         inspect_repo(scope) with "focus on changed files in the PR"
         if risk == "high"

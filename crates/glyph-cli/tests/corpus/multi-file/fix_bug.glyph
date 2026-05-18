@@ -1,14 +1,16 @@
-import "./prefs.glyph" { preserve_existing_patterns }
-import "./repo_tools.glyph" { inspect_repo, has_test_suite }
+import "./repo_tools.glyph" { inspect_repo }
 
-skill fix_bug(scope = ".")
+type ChangeSummary = <"a summary of what was changed and why">
+
+skill fix_bug(scope = ".") -> ChangeSummary
     description: "Debug and fix a bug in the codebase with minimal, targeted changes."
-    require preserve_existing_patterns
-    avoid unrelated_edits
     context:
         codebase_assumptions
         "The bug is assumed to be reproducible locally."
 
+    constraints:
+        require preserve_existing_patterns
+        avoid unrelated_edits
     flow:
         inspect_repo(scope) with "focus on the area where the bug was reported"
         if deep_investigation.applies()
@@ -52,6 +54,7 @@ block validate_fix()
         "Verify the fix resolves the original issue."
         "Run related tests to check for regressions."
 
-block summarize_changes()
+block summarize_changes() -> ChangeSummary
     flow:
         "List what was changed and why."
+        return <"a summary of what was changed and why">

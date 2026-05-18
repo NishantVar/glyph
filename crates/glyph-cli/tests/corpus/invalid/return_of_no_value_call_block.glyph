@@ -1,0 +1,13 @@
+block void_helper()
+    description: "Void helper that records progress."
+    flow:
+        "Record a progress note."
+
+block caller() -> Marker
+    flow:
+        return void_helper()
+
+skill orchestrate()
+    description: "Orchestrate the caller."
+    flow:
+        caller()

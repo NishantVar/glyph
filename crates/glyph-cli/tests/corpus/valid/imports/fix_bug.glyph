@@ -1,9 +1,9 @@
-import "./prefs.glyph" { preserve_existing_patterns }
 import "./repo_tools.glyph" { inspect_repo }
 
-skill fix_bug(scope = ".")
+skill fix_bug(scope = ".") -> Report
     description: "Fix a bug in the codebase."
-    require preserve_existing_patterns
+    constraints:
+        require preserve_existing_patterns
     flow:
         ctx = inspect_repo(scope)
         return ctx

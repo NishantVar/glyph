@@ -1,0 +1,9 @@
+block helper()
+    description: "Void helper that records progress."
+    flow:
+        "Record a progress note."
+
+skill demo() -> Marker
+    description: "Demo skill that incorrectly returns a void call."
+    flow:
+        return helper()

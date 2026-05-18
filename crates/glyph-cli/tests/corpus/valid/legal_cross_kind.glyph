@@ -5,7 +5,7 @@ block ask_skills_link_mode() -> LinkMode
     flow:
         return <"symlink">
 
-skill install()
+skill install() -> LinkMode
     description: "Install."
     flow:
         link_mode = ask_skills_link_mode()
