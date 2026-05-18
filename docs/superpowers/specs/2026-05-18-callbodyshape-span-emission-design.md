@@ -1,6 +1,6 @@
 # CallBodyShape Span Emission — Closing the `with` Modifier Drop
 
-**Status:** draft (rev 4, post-third-pass review)
+**Status:** draft (rev 5, post-fourth-pass review)
 **Date:** 2026-05-18
 **Phase:** 6 / Step 2 (Expand)
 **Related ADRs:** [[docs/adr/0016-llm-reshape-no-deterministic-fallback]], [[docs/adr/0018-phase-6b-structural-only-gate]]
@@ -140,23 +140,32 @@ IrNode::Call(c) if c.projection_tier == Some(2) => {
     } else {
         s.push_literal(anchor);
     }
-    // Return-fold and naming sentence are handled per §3.4 ("Chunk layout" and "Return-fold mechanism") — not by an inline post-span Literal in this pseudocode.
+    if let Some(naming) = naming_sentence_for_call(c) {
+        s.push_literal(format!(" {}", naming));   // §9.1 producer naming as post-span Literal
+    }
     s.push_literal("\n");
     if procedure_seen.insert(c.target.clone()) {
         procedure_order.push(c.target.clone());
     }
 }
+// Return-fold (§8.4 Output Contract) is handled separately and only at the
+// top-level tier-1 final-call site — see "Return-fold mechanism" below. It is
+// NOT emitted from this tier-2 pseudocode (tier-2 anchors have never carried
+// the return-fold in today's emitter; rev 5 does not add it).
 ```
 
 A small helper centralises the tier-to-mode mapping so all seven sites use one source of truth:
 
 ```rust
+// Mirrors the actual emit-site match order: a Call with a bound_name AND a
+// projection_tier of 1/2/3 (e.g. a bound user-block) routes through its tier
+// path, not the stdlib anchor. StdlibBound is reached only when no tier applies.
 fn projection_mode_from(c: &IrCall) -> Option<ProjectionMode> {
-    if c.bound_name.is_some() { return Some(ProjectionMode::StdlibBound); }
     match c.projection_tier {
         Some(1) => Some(ProjectionMode::Inline),
         Some(2) => Some(ProjectionMode::SameFileProcedure),
         Some(3) => Some(ProjectionMode::ExternalFile),
+        _ if c.bound_name.is_some() => Some(ProjectionMode::StdlibBound),
         _ => None,
     }
 }
@@ -233,7 +242,7 @@ pub struct SpanPayload {
 
 - `target_name` and `projection_mode` let the LLM-side filler (when wired) know the kind of Call being expanded so it can shape prose around the correct anchor and naming convention. They're cheap and `Option`-typed so existing span constructions (`ParamDescription`, `BranchCondition`) stay source-compatible.
 - `local_refs` is the LLM-grade cross-reference vector. **It reuses `crate::ir::LocalRef` directly** — no new `LocalRefPayload` wrapper. The producing pseudocode is simply `c.local_refs.clone()`, with no field translation. If a future change to `LocalRef` needs more fields the span payload picks them up automatically.
-- `post_merge_return_sentence` carries the §8.4 Output-Contract return sentence (e.g. `"Produce \`current_branch\`."`) computed via `templates::compute_return_sentence` at scaffold-build time. The merger runs `templates::append_return_sentence(merged_body, sent)` against the span's final rendered body. Only set on the final-Step Call when an Identifier-form / Description-form Output Contract is present; `None` otherwise. §9.3 flow-local return prose is **not** carried here — it remains a separate post-loop Step (see §3.4).
+- `post_merge_return_sentence` carries the §8.4 Output-Contract return sentence (e.g. `"Produce \`current_branch\`."`) computed via `templates::compute_return_sentence` at scaffold-build time. The merger runs `templates::append_return_sentence(merged_body, sent)` against the span's final rendered body. **Scope is intentionally narrow:** set this field only where the current emitter would have called `templates::append_return_sentence` for a Call — i.e. the top-level tier-1 final-call path in `scaffold.rs:1020–1056`. Tier-2, tier-3, and stdlib/bound anchors do **not** carry the return-fold in today's emitter, and this spec does not add it for them. `None` otherwise. §9.3 flow-local return prose is **not** carried here — it remains a separate post-loop Step (see §3.4).
 
 Scoped constraints intentionally absent — see §7.
 
@@ -408,8 +417,8 @@ When the LLM filler is eventually wired, this diagnostic stops firing on well-fo
 |---|---|---|
 | No modifier, no local refs | Deterministic literal | **Unchanged** — same literal, no span |
 | `with "…"`, no local refs | Deterministic literal (modifier silently dropped — **bug**) | `CallBodyShape` span emitted; stub hard-fails with `G::expand::llm-required-for-call` |
-| `local_refs` non-empty, no modifier (tier 1 only) | Bare `substitute_local_refs_in` substitution | Span emitted with raw-slot `resolved_body`; stub hard-fails |
-| `with "…"` + `local_refs` non-empty (tier 1 only) | Both silently degraded | Span emitted with both payloads; stub hard-fails listing both reasons |
+| `local_refs` non-empty, no modifier | Bare `substitute_local_refs_in` substitution where applicable | Span emitted (with raw-slot `resolved_body` on tier-1 sites; other tiers carry whatever anchor that site uses, unchanged); stub hard-fails |
+| `with "…"` + `local_refs` non-empty | Both silently degraded | Span emitted with both payloads; stub hard-fails listing both reasons |
 | Empty body + `with "…"` (tier 1) | Empty step text (modifier dropped) | Span emitted with `resolved_body: Some("")` and modifier; stub hard-fails |
 | Scoped-constraint Call | Constraints silently dropped | **Still silent today** — explicit follow-up (§7). Not regressed by this spec; tracked separately. |
 
@@ -517,10 +526,10 @@ One test on a tier-1 Call carrying both. Asserts:
 
 ### 6.5 New: multiple failing spans — deterministic ordering
 
-One test with a skill containing two distinct Calls each requiring LLM fill. Asserts:
-- Two `G::expand::llm-required-for-call` diagnostics emitted.
-- Each names the correct IR node id.
-- Ordering: IR node id ascending. A companion test arranges for the scaffold to visit spans in descending node-id order (e.g. via Branch arms whose Calls have higher node ids than their Otherwise sibling's earlier Call) and confirms the bag still presents them ascending — i.e. the test pins the explicit `errors.sort_by_key(|e| e.ir_node.0)` in §3.6, not the incidental scaffold-visit order.
+Two complementary tests:
+
+- **End-to-end.** A skill containing two distinct Calls each requiring LLM fill. Asserts two `G::expand::llm-required-for-call` diagnostics emitted, each naming the correct IR node id, in ascending node-id order. This is the realistic-shape integration assertion.
+- **Unit test on the conversion helper.** Construct a deliberately reversed `Vec<StubFillError>` (e.g. `[StubFillError { ir_node: NodeId(7), .. }, StubFillError { ir_node: NodeId(3), .. }]`), pass it through the `Err`-to-`DiagBag` conversion described in §3.6, and assert the resulting bag presents diagnostics in node-id-ascending order. This directly pins the explicit `errors.sort_by_key(|e| e.ir_node.0)` without depending on contrived scaffold traversal (which, since node IDs typically follow source order and scaffold visit follows that same order, is fragile to produce naturally).
 
 ### 6.6 New: no output file on failure
 
