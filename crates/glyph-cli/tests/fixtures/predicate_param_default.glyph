@@ -1,7 +1,7 @@
 block stop_and_review()
     "Stop and request explicit user confirmation."
 
-skill predicate_param_default(needs_review = "the change needs review")
+skill predicate_param_default(needs_review = "the change needs review" <"whether the change needs review">)
     description: "Resolve a string-defaulted param in condition position."
     flow:
         if needs_review:

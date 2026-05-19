@@ -6,7 +6,7 @@ description: 'Resolve a string-defaulted param in condition position.'
 
 ## Parameters
 
-- **needs_review**. Default: "the change needs review".
+- **needs_review**: whether the change needs review. Default: "the change needs review".
 
 ## Steps
 

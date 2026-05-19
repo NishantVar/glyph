@@ -1,16 +1,16 @@
-block inspect_repo(scope = ".") -> Report
+block inspect_repo(scope = "." <"directory to inspect">) -> Report
     description: "Inspect the repository at the given scope."
     flow:
         "Examine the repository at {scope} and produce a report."
         return context
 
-block summarize_fast(input = "x") -> Report
+block summarize_fast(input = "x" <"input to summarize">) -> Report
     description: "Summarize the input quickly."
     flow:
         "Quickly review {input} and emit a brief report."
         return context
 
-skill diagnose(scope = ".", mode = "fast") -> Report
+skill diagnose(scope = "." <"directory to diagnose">, mode = "fast" <"diagnosis mode: fast or slow">) -> Report
     description: "Arm-local binding produced and consumed inside the same arm."
     flow:
         outer_ctx = inspect_repo(scope)

@@ -9,8 +9,8 @@ description: 'Review a pull request for correctness, style, and safety.'
 
 ## Parameters
 
-- **scope**. Default: ".".
-- **risk**. Default: "medium".
+- **scope**: directory containing the PR's checkout. Default: ".".
+- **risk**: risk tier (low|medium|high). Default: "medium".
 
 ## Constraints
 

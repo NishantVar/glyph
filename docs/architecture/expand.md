@@ -203,7 +203,7 @@ The deterministic emitter owns all structure that does not require natural-langu
 
 | `SpanKind` | What the LLM fills | Stub behavior today | Cross-reference |
 |---|---|---|---|
-| `ParamDescription` | A brief description of the parameter from its name, type, default, and usage context. | Empty string — bullet renders as `- **name** (required)` / `(default: …)`. | [[llm_expand_pass]] §1.5 |
+| `ParamDescription` | A brief description of the parameter from its name, type, default, and usage context. | Hard-fail (`G::expand::llm-required-for-param-description`). The span is elided when the author supplies a description or the type-registry has one; the scaffold pushes it only for params with no effective description. | [[llm_expand_pass]] §1.5 |
 | `DescriptionReturnFold` | A Step-shaped paraphrase of the `OutputContract.Description` text, folded into the final Step. | Verbatim description text slotted into the locked Description-suffix wrapper. | [[llm_expand_pass]] §1.3 |
 | `BranchCondition` | Natural-language prose for a mixed-condition `if`/`elif` arm header (e.g., `complex_change_required and not is_dry_run` → `If the requested change requires regenerating multi-line prose and this is not a dry run:`). The span payload includes the condition source string, the `resolved_predicates` map for predicate-token substitution, and the `condition_kinds` classification list so the LLM knows which tokens are predicates and which are booleans. | Verbatim condition expression slotted into `If <expr>:`. | [[llm_expand_pass]] §1.4 |
 | `CallBodyShape` | Step prose that weaves the `with` modifier, scoped constraints, and local-binding cross-references into the resolved body. | Spans are emitted only when `site_modifier` or `local_refs` are non-empty; the stub hard-fails with `G::expand::llm-required-for-call` and the lib-level callers convert that into `CompileOutcome::Diagnostics`, suppressing the `.md` write. Trivial Calls do not emit a span and render via the deterministic literal template. Scoped-constraint weaving is deferred (see [`todo/expand-todos`](../../todo/expand-todos.md)). | [[llm_expand_pass]] §1.1, §1.2 |
@@ -212,11 +212,12 @@ The scaffold-with-spans IR (`Scaffold`, `Chunk`, `SpanRef`, `SpanKind`, `SpanPay
 
 ### Step 2 fill-time diagnostics
 
-The fill layer (`crates/glyph-core/src/emit/stub_fill.rs`) can refuse to fill a span before the merger runs. These diagnostics are distinct from §4.2's Phase 6b structural catalog — they fire **before** any `.md` text is produced. The single ID today:
+The fill layer (`crates/glyph-core/src/emit/stub_fill.rs`) can refuse to fill a span before the merger runs. These diagnostics are distinct from §4.2's Phase 6b structural catalog — they fire **before** any `.md` text is produced. Two IDs today:
 
 | ID | Trigger |
 |---|---|
 | `G::expand::llm-required-for-call` | A `CallBodyShape` span is emitted (because the Call has a `with` modifier or non-empty `local_refs`) and the build is using the stub filler instead of the LLM filler. |
+| `G::expand::llm-required-for-param-description` | A `ParamDescription` span is emitted (skill path: pushed by `scaffold::emit_parameters_section` only when there is no effective description) or a procedure-file parameter lacks an effective description (procedure path: detected by `emit::emit_procedure`'s triviality walk before any bullet is rendered), and the build is using the stub filler instead of the LLM filler. |
 
 Relationship to Phase 6b: this diagnostic catches the *configuration / filler-wiring* failure that would otherwise silently elide modifier intent or LLM-grade local-ref cross-references. Phase 6b's complementary structural checks (`G::expand::modifier-leaked`, `G::expand::unresolved-local-ref`) catch the *content* failure when the LLM filler runs but produces non-conforming prose.
 

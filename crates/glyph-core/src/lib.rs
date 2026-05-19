@@ -1708,7 +1708,14 @@ pub fn compile_directory_with_layout(
                 outcomes.push((file.clone(), FileOutcome::Failed { diagnostics: bag }));
             }
             Err(CompileError::Lower(lower::LowerError::NoSkill)) => {
-                // Library file (no skill declaration) — not a failure.
+                // Library file (no skill declaration) — not a failure unless
+                // procedure emission produces error diagnostics (e.g. a Tier-3
+                // `export block` whose params lack descriptions hard-fails
+                // under stub fill). When emission errors, mark the library
+                // failed so dependents are skipped by the cascade above —
+                // otherwise consumers would resolve imports to the exported
+                // block body and emit dangling `Follow the X procedure below.`
+                // anchors against procedure files that were never written.
                 extract_and_store_exports(
                     file,
                     &mut file_exports,
@@ -1717,19 +1724,29 @@ pub fn compile_directory_with_layout(
                     &mut file_block_bodies,
                     &mut file_block_descriptions,
                 );
-                // Emit procedure files for qualifying export blocks (Tier 3).
                 let (emitted, proc_diags) = emit_library_procedures(file, enable_effects, layout);
                 for (block_name, rel_path) in emitted {
                     procedure_paths.insert((file.clone(), block_name), rel_path);
                 }
                 let mut lib_diags = outside_root_warn.unwrap_or_else(DiagBag::new);
                 lib_diags.merge(proc_diags);
-                outcomes.push((
-                    file.clone(),
-                    FileOutcome::Compiled {
-                        diagnostics: lib_diags,
-                    },
-                ));
+                if lib_diags.has_error() {
+                    failed_files.insert(file.clone());
+                    any_failure = true;
+                    outcomes.push((
+                        file.clone(),
+                        FileOutcome::Failed {
+                            diagnostics: lib_diags,
+                        },
+                    ));
+                } else {
+                    outcomes.push((
+                        file.clone(),
+                        FileOutcome::Compiled {
+                            diagnostics: lib_diags,
+                        },
+                    ));
+                }
             }
             Err(e) => {
                 failed_files.insert(file.clone());
@@ -1802,41 +1819,80 @@ fn llm_required_diagnostics_from_errors(
     mut errors: Vec<emit::StubFillError>,
     file_label: &str,
 ) -> DiagBag {
-    errors.sort_by_key(|e| e.ir_node.0);
+    errors.sort_by_key(|e| e.sort_key());
     let mut bag = DiagBag::new();
     let li = LineIndex::new("");
     let span = Span::new(0, 0, 0);
     for e in errors {
-        let msg = build_llm_required_message(&e);
-        bag.push(
-            Diagnostic::error(
-                "G::expand::llm-required-for-call",
-                msg,
-                SourceSpan::from_byte_span(file_label, span, &li),
-            ),
-            span,
-        );
+        match e {
+            emit::StubFillError::CallBody {
+                ir_node,
+                target_name,
+                has_modifier,
+                has_local_refs,
+            } => {
+                let msg = build_call_body_message(
+                    target_name.as_deref(),
+                    ir_node,
+                    has_modifier,
+                    has_local_refs,
+                );
+                bag.push(
+                    Diagnostic::error(
+                        "G::expand::llm-required-for-call",
+                        msg,
+                        SourceSpan::from_byte_span(file_label, span, &li),
+                    ),
+                    span,
+                );
+            }
+            emit::StubFillError::ParamDescription {
+                origin: _,
+                param_name,
+                param_type,
+                param_default,
+            } => {
+                let msg = build_param_description_message(
+                    param_name.as_deref(),
+                    param_type.as_deref(),
+                    param_default.as_deref(),
+                );
+                bag.push(
+                    Diagnostic::error(
+                        "G::expand::llm-required-for-param-description",
+                        msg,
+                        SourceSpan::from_byte_span(file_label, span, &li),
+                    ),
+                    span,
+                );
+            }
+        }
     }
     bag
 }
 
-fn build_llm_required_message(e: &emit::StubFillError) -> String {
-    let reason_phrase = match (e.has_modifier, e.has_local_refs) {
+fn build_call_body_message(
+    target_name: Option<&str>,
+    ir_node: crate::ir::NodeId,
+    has_modifier: bool,
+    has_local_refs: bool,
+) -> String {
+    let reason_phrase = match (has_modifier, has_local_refs) {
         (true, false) => "a with modifier",
         (false, true) => "local-ref cross-references",
         (true, true) => "a with modifier and local-ref cross-references",
-        (false, false) => unreachable!(
-            "StubFillError is only pushed when site_modifier or local_refs is non-empty"
-        ),
+        (false, false) => {
+            unreachable!("CallBody is only pushed when site_modifier or local_refs is non-empty")
+        }
     };
-    let remediation = match (e.has_modifier, e.has_local_refs) {
+    let remediation = match (has_modifier, has_local_refs) {
         (true, false) => "the with modifier",
         (false, true) => "the local reference",
         (true, true) => "the with modifier / rewrite the local reference",
         (false, false) => unreachable!(),
     };
-    let target = e.target_name.as_deref().unwrap_or("<unknown>");
-    let nid = format!("n{}", e.ir_node.0);
+    let target = target_name.unwrap_or("<unknown>");
+    let nid = format!("n{}", ir_node.0);
     let mut out = String::new();
     out.push_str("Call to `");
     out.push_str(target);
@@ -1848,6 +1904,40 @@ fn build_llm_required_message(e: &emit::StubFillError) -> String {
     out.push_str("Enable the LLM expand filler, or drop ");
     out.push_str(remediation);
     out.push_str(".");
+    out
+}
+
+fn build_param_description_message(
+    param_name: Option<&str>,
+    param_type: Option<&str>,
+    param_default: Option<&str>,
+) -> String {
+    let name = param_name.unwrap_or("<unknown>");
+    let mut out = String::new();
+    out.push_str("Parameter `");
+    out.push_str(name);
+    out.push('`');
+    if let Some(t) = param_type {
+        out.push_str(" (");
+        out.push_str(t);
+        out.push(')');
+    }
+    if let Some(d) = param_default {
+        out.push_str(", default `");
+        out.push_str(d);
+        out.push('`');
+    }
+    out.push_str(", has no description; this compiler build is using the stub filler and cannot synthesize prose. ");
+
+    if param_type.is_some() {
+        out.push_str("Add an inline description `<\"...\">` on the parameter slot, ");
+        out.push_str("add a `type <Type> = <\"...\">` decl so the type registry has one, ");
+        out.push_str("or enable the LLM expand filler.");
+    } else {
+        out.push_str("Add an inline description `<\"...\">` on the parameter slot ");
+        out.push_str("(optionally add a type annotation so a registry description applies), ");
+        out.push_str("or enable the LLM expand filler.");
+    }
     out
 }
 
@@ -3047,13 +3137,13 @@ mod tests {
         // `ir_node.0` ascending so emitted diagnostics are deterministic
         // regardless of which call site the emitter encountered first.
         let errors = vec![
-            emit::StubFillError {
+            emit::StubFillError::CallBody {
                 ir_node: crate::ir::NodeId(7),
                 target_name: Some("late".to_string()),
                 has_modifier: true,
                 has_local_refs: false,
             },
-            emit::StubFillError {
+            emit::StubFillError::CallBody {
                 ir_node: crate::ir::NodeId(3),
                 target_name: Some("early".to_string()),
                 has_modifier: true,
@@ -6509,7 +6599,7 @@ export const middle = \"M.\"
 
         let repo_tools_src = format!(
             "\
-export block inspect_repo(scope = \".\") -> Path
+export block inspect_repo(scope = \".\" <\"directory to inspect\">) -> Path
     description: \"Inspect the repository for issues.\"
     flow:
 {}        return scope
@@ -6576,12 +6666,12 @@ export block inspect_repo(scope = \".\") -> Path
 
         let repo_tools_src = format!(
             "\
-export block inspect_repo(scope = \".\") -> Path
+export block inspect_repo(scope = \".\" <\"directory to inspect\">) -> Path
     description: \"Inspect the repository for issues.\"
     flow:
 {}        return scope
 
-export block run_tests(target = \"all\") -> TestResult
+export block run_tests(target = \"all\" <\"test target\">) -> TestResult
     description: \"Run the project test suite.\"
     flow:
 {}        return target
@@ -6649,7 +6739,7 @@ export block run_tests(target = \"all\") -> TestResult
 
         let lib_src = format!(
             "\
-export block inspect_repo(scope = \".\") -> Path
+export block inspect_repo(scope = \".\" <\"directory to inspect\">) -> Path
     description: \"Inspect the repository for issues.\"
     flow:
 {}        return scope
@@ -6703,7 +6793,7 @@ skill audit_code()
 
         let repo_tools_src = format!(
             "\
-export block inspect_repo(scope = \".\") -> Path
+export block inspect_repo(scope = \".\" <\"directory to inspect\">) -> Path
     description: \"Inspect the repository for issues.\"
     flow:
 {}        return scope
@@ -6811,7 +6901,7 @@ export block inspect_repo(scope: RepoPath = \".\") -> Path
             "\
 const default_scope = \".\"
 
-export block inspect(scope = default_scope) -> Path
+export block inspect(scope = default_scope <\"directory to inspect\">) -> Path
     description: \"Inspect the repository for issues.\"
     flow:
 {}        return scope
@@ -6864,7 +6954,7 @@ export const default_scope = \".\"
             "\
 import \"./prefs.glyph\" {{ default_scope }}
 
-export block inspect(scope = default_scope) -> Path
+export block inspect(scope = default_scope <\"directory to inspect\">) -> Path
     description: \"Inspect the repository for issues.\"
     flow:
 {}        return scope
@@ -6884,6 +6974,84 @@ export block inspect(scope = default_scope) -> Path
             content.contains("Default: \".\"."),
             "expected resolved imported default `.` in procedure ## Parameters; got:\n{}",
             content
+        );
+    }
+
+    /// Regression for the ParamDescription hard-fail cascade: a Tier-3
+    /// library whose `export block` params lack descriptions must surface as
+    /// `FileOutcome::Failed`, and any consumer importing it must be
+    /// `FileOutcome::Skipped` with no `.md` written. Pins the fix for the
+    /// dangling `Follow the X procedure below.` anchor that earlier let
+    /// consumers compile against a procedure file that was never emitted.
+    #[test]
+    fn tier3_library_param_description_failure_cascades_to_consumer() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut long_body = String::new();
+        for i in 0..20 {
+            long_body.push_str(&format!(
+                "        \"Step {} of the inspection: carefully examine the repository structure and contents.\"\n",
+                i + 1
+            ));
+        }
+        let lib_src = format!(
+            "\
+export block inspect_repo(scope = \".\") -> Path
+    description: \"Inspect the repository for issues.\"
+    flow:
+{}        return scope
+",
+            long_body
+        );
+        let lib_path = dir.path().join("repo_tools.glyph");
+        std::fs::write(&lib_path, &lib_src).unwrap();
+
+        let consumer_src = "\
+import \"repo_tools\" { inspect_repo }
+
+skill audit_code()
+    description: \"Audit the codebase.\"
+
+    flow:
+        inspect_repo()
+";
+        let consumer_path = dir.path().join("audit_code.glyph");
+        std::fs::write(&consumer_path, consumer_src).unwrap();
+
+        let result = compile_directory(&[lib_path.clone(), consumer_path.clone()]);
+        assert_eq!(result.exit_code, 1, "directory compile must fail");
+
+        let lib_outcome = result
+            .outcomes
+            .iter()
+            .find(|(p, _)| p.to_string_lossy().contains("repo_tools.glyph"))
+            .map(|(_, o)| o)
+            .expect("library outcome present");
+        assert!(
+            matches!(lib_outcome, FileOutcome::Failed { .. }),
+            "library must surface as Failed; got {:?}",
+            lib_outcome
+        );
+
+        let consumer_outcome = result
+            .outcomes
+            .iter()
+            .find(|(p, _)| p.to_string_lossy().contains("audit_code.glyph"))
+            .map(|(_, o)| o)
+            .expect("consumer outcome present");
+        assert!(
+            matches!(consumer_outcome, FileOutcome::Skipped { .. }),
+            "consumer must be Skipped when its library import fails; got {:?}",
+            consumer_outcome
+        );
+
+        assert!(
+            !dir.path().join("repo_tools/inspect-repo.md").exists(),
+            "procedure file must not be written when emission hard-fails"
+        );
+        assert!(
+            !dir.path().join("audit_code.md").exists(),
+            "consumer .md must not be written when dependency failed"
         );
     }
 

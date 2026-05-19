@@ -1,6 +1,6 @@
 const complex_change = "the requested change spans multiple files"
 
-skill main(risk: String = "low")
+skill main(risk: String = "low" <"risk tier">)
     description: "Branch on risk and complexity."
     flow:
         if risk == "high" and complex_change

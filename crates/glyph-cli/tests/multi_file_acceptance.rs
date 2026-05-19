@@ -223,7 +223,7 @@ fn repo_tools_procedure_files_emitted() {
     // shape as the skill emitter (compiled-output.md §`## Parameters`),
     // not the legacy `(default: …)` / `(required)` form.
     assert!(
-        proc_md.contains("- **scope**. Default: \".\"."),
+        proc_md.contains("- **scope**: directory to inspect. Default: \".\"."),
         "procedure file should render scope with shared bullet shape; got:\n{proc_md}"
     );
     assert!(

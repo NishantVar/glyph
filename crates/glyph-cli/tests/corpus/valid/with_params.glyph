@@ -1,4 +1,4 @@
-skill summarize_dir(scope = ".", target)
+skill summarize_dir(scope = "." <"directory to summarize">, target = <"path where summary will be written">)
     description: "Summarize a directory's contents."
 
     flow:

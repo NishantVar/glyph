@@ -1,4 +1,4 @@
-export block inspect_repo(scope = ".") -> Report
+export block inspect_repo(scope = "." <"directory to inspect">) -> Report
     effects: reads_files
     description: "Inspect the repository structure and codebase."
     flow:

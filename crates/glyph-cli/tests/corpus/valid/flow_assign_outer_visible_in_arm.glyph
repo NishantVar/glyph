@@ -1,10 +1,10 @@
-block inspect_repo(scope = ".") -> Report
+block inspect_repo(scope = "." <"directory to inspect">) -> Report
     description: "Inspect the repository at the given scope."
     flow:
         "Examine the repository at {scope} and produce a report."
         return context
 
-skill diagnose(scope = ".", mode = "fast") -> Report
+skill diagnose(scope = "." <"directory to diagnose">, mode = "fast" <"diagnosis mode: fast or slow">) -> Report
     description: "Conditionally summarize the inspection — exercises outer binding visible inside arms."
     flow:
         ctx = inspect_repo(scope)

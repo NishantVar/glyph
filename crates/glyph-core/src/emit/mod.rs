@@ -13,7 +13,7 @@ pub(crate) mod templates;
 
 use crate::ir::{IrArena, OutputTargetForm, TypeRegistry};
 
-pub use stub_fill::StubFillError;
+pub use stub_fill::{ParamDescriptionOrigin, StubFillError};
 
 pub fn emit(arena: &IrArena, enable_effects: bool) -> Result<String, Vec<StubFillError>> {
     let scaffold = scaffold::build(arena, enable_effects);
@@ -118,6 +118,25 @@ pub fn emit_procedure(
 
     // Parameters — same bullet shape as the skill `## Parameters` emitter.
     if !params.is_empty() {
+        let mut errors: Vec<StubFillError> = Vec::new();
+        for p in params {
+            let desc = templates::effective_param_description(
+                p.description,
+                p.type_annotation,
+                type_registry,
+            );
+            if desc.is_none() {
+                errors.push(StubFillError::ParamDescription {
+                    origin: ParamDescriptionOrigin::Procedure,
+                    param_name: Some(p.name.to_string()),
+                    param_type: p.type_annotation.map(|s| s.to_string()),
+                    param_default: p.default.map(|s| s.to_string()),
+                });
+            }
+        }
+        if !errors.is_empty() {
+            return Err(errors);
+        }
         out.push_str("## Parameters\n\n");
         for p in params {
             let desc = templates::effective_param_description(
