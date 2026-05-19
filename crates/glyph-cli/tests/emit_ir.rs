@@ -341,7 +341,7 @@ skill fix()
 fn emit_ir_role_enum_includes_context_value() {
     // A skill with context: section entries and flow-level context markers
     // should produce context nodes with the right role.
-    let source = r#"skill fix(scope = ".")
+    let source = r#"skill fix(scope = "." <"directory to scan">)
     description: "Fix a bug."
     context:
         "This is project context."
@@ -448,7 +448,7 @@ skill fix()
 
 #[test]
 fn emit_ir_params_serialize_with_correct_default() {
-    let source = r#"skill summarize(scope = ".", target)
+    let source = r#"skill summarize(scope = "." <"directory to summarize">, target = <"output path">)
     description: "Summarize."
     flow:
         "Inspect files under {scope}."
@@ -629,7 +629,7 @@ skill main()
 fn expand_skips_eq_operand_from_resolved_predicates() {
     let source = r#"const complex_change = "the requested change is complex"
 
-skill main(risk: String)
+skill main(risk: String = <"risk level">)
     description: "Test."
     flow:
         if risk == "high" and complex_change
@@ -677,4 +677,47 @@ skill main()
     let rp = &branch["resolved_predicates"];
     assert_eq!(rp["fast_mode"], "Fast processing path.");
     assert_eq!(rp["slow_mode"], "Slow processing path.");
+}
+
+#[test]
+fn param_description_undescribed_hard_fails_under_stub_filler() {
+    // ParamDescription span emission: a `skill` (or procedure) that has at
+    // least one parameter without a description now requires LLM-grade
+    // expansion. The stub filler hard-fails before IR emission, so this test
+    // asserts the diagnostic surfaces and `--emit-ir` exits non-zero. Mirrors
+    // `with_modifier_call_hard_fails_under_stub_filler` above for the
+    // ParamDescription branch.
+    let source = r#"skill foo(scope = ".") -> Report
+    description: "Demo."
+    flow:
+        "Look at {scope}."
+        return context
+"#;
+    let dir = tempfile::tempdir().unwrap();
+    let src_path = dir.path().join("foo.glyph");
+    std::fs::write(&src_path, source).unwrap();
+    let md_path = src_path.with_extension("md");
+    let _ = std::fs::remove_file(&md_path);
+
+    let result = run_compile_emit_ir(&src_path);
+    assert!(
+        !result.status.success(),
+        "expected non-zero exit; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    assert!(
+        combined.contains("G::expand::llm-required-for-param-description"),
+        "expected llm-required-for-param-description diagnostic; got:\n{combined}"
+    );
+    assert!(
+        !md_path.exists(),
+        ".md file must not be written when ParamDescription stub filler hard-fails: found {}",
+        md_path.display()
+    );
 }

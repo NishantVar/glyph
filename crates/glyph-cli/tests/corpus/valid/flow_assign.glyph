@@ -1,10 +1,10 @@
-block inspect_repo(scope = ".") -> Report
+block inspect_repo(scope = "." <"directory to inspect">) -> Report
     description: "Inspect the repository at the given scope."
     flow:
         "Examine the repository at {scope} and produce a report."
         return context
 
-skill diagnose(scope = ".") -> Report
+skill diagnose(scope = "." <"directory to diagnose">) -> Report
     description: "Inspect the scope and return its context."
     flow:
         ctx = inspect_repo(scope)

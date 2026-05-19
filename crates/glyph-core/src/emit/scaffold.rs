@@ -992,9 +992,11 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
 }
 
 /// D9 renderer for `## Parameters`. Mechanical extraction of the prior inline
-/// block in `build()`; output is byte-stable for a given input. Emits one
-/// `SpanKind::ParamDescription` span per param (parameter description bodies
-/// land via `emit::stub_fill`).
+/// block in `build()`; output is byte-stable for a given input. A
+/// `SpanKind::ParamDescription` span is pushed only for params with no
+/// effective description (no inline `<"…">` and no type-registry entry); the
+/// LLM expand pass fills that span, and `emit::stub_fill` hard-fails when it
+/// is not filled.
 fn emit_parameters_section(
     s: &mut Scaffold,
     arena: &IrArena,
@@ -1030,20 +1032,9 @@ fn emit_parameters_section(
             //   - **<name>**[ (<Type>)]:
             //     <description lines>
             //     Default: X. / Required.
+            // Author prose lands via push_literal below; no ParamDescription
+            // span needed (Task 4 will hard-fail that stub-fill arm).
             s.push_literal(format!("- **{}**{}:\n", p.name, type_suffix));
-            let id = SpanId(*next_span_id);
-            *next_span_id += 1;
-            s.push_span(SpanRef {
-                id,
-                kind: SpanKind::ParamDescription,
-                ir_node: skill.node_id,
-                payload: SpanPayload {
-                    param_name: Some(p.name.clone()),
-                    param_type: p.type_annotation.clone(),
-                    param_default: p.default.clone(),
-                    ..SpanPayload::default()
-                },
-            });
             for line in desc_text.lines() {
                 s.push_literal(format!("  {}\n", line));
             }
@@ -1051,25 +1042,16 @@ fn emit_parameters_section(
         } else if has_desc {
             // Single-line description form:
             //   - **<name>**[ (<Type>)]: <description>. Default: X. / Required.
+            // Author prose lands via push_literal below; no ParamDescription
+            // span needed (Task 4 will hard-fail that stub-fill arm).
             let trimmed = desc_text.trim_end_matches('.').trim_end();
             s.push_literal(format!("- **{}**{}: ", p.name, type_suffix));
-            let id = SpanId(*next_span_id);
-            *next_span_id += 1;
-            s.push_span(SpanRef {
-                id,
-                kind: SpanKind::ParamDescription,
-                ir_node: skill.node_id,
-                payload: SpanPayload {
-                    param_name: Some(p.name.clone()),
-                    param_type: p.type_annotation.clone(),
-                    param_default: p.default.clone(),
-                    ..SpanPayload::default()
-                },
-            });
             s.push_literal(format!("{}. {}\n", trimmed, meta_tail));
         } else {
             // No description form:
             //   - **<name>**[ (<Type>)]. Default: X. / Required.
+            // Span pushed only here so stub_fill (Task 4) can hard-fail with
+            // a remediation diagnostic.
             s.push_literal(format!("- **{}**{}. ", p.name, type_suffix));
             let id = SpanId(*next_span_id);
             *next_span_id += 1;
@@ -1467,6 +1449,98 @@ mod tests {
             .filter(|c| matches!(c, Chunk::Span(sp) if sp.kind == SpanKind::ParamDescription))
             .count();
         assert_eq!(span_count, 1, "one ParamDescription span per param");
+    }
+
+    /// Task 2 (ParamDescription hard-fail plan): when a param carries an
+    /// author-provided description, the scaffold must NOT push a
+    /// ParamDescription span (the author's prose lands via push_literal).
+    /// This is a precondition for Task 4 flipping the stub-fill arm to
+    /// hard-fail — existing skills-with-described-params must not regress.
+    #[test]
+    fn param_description_span_elided_when_description_present() {
+        let mut arena = IrArena::new();
+        let s_id = arena.push(IrNode::Skill(IrSkill {
+            node_id: NodeId(0),
+            name: "demo".into(),
+            description: "Demo.".into(),
+            effects: vec![],
+            params: vec![IrParam {
+                name: "branch".into(),
+                default: None,
+                description: Some("the branch to inspect".into()),
+                type_annotation: None,
+            }],
+            steps: vec![],
+            context: vec![],
+            constraints: vec![],
+            return_text: None,
+            return_type: None,
+            output_contract: None,
+            return_type_text: None,
+            return_local_ref: None,
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
+        }));
+        arena.set_root_skill(s_id);
+
+        let scaffold = build(&arena, false);
+        let span_count = scaffold
+            .chunks
+            .iter()
+            .filter(|c| matches!(c, Chunk::Span(sp) if sp.kind == SpanKind::ParamDescription))
+            .count();
+        assert_eq!(
+            span_count, 0,
+            "described params must not emit a ParamDescription span"
+        );
+    }
+
+    /// Task 2 (ParamDescription hard-fail plan): an undescribed, untyped
+    /// param must still emit exactly one ParamDescription span so the
+    /// stub-fill pass (Task 4) can hard-fail with a remediation diagnostic.
+    #[test]
+    fn param_description_span_pushed_when_description_absent() {
+        let mut arena = IrArena::new();
+        let s_id = arena.push(IrNode::Skill(IrSkill {
+            node_id: NodeId(0),
+            name: "demo".into(),
+            description: "Demo.".into(),
+            effects: vec![],
+            params: vec![IrParam {
+                name: "branch".into(),
+                default: None,
+                description: None,
+                type_annotation: None,
+            }],
+            steps: vec![],
+            context: vec![],
+            constraints: vec![],
+            return_text: None,
+            return_type: None,
+            output_contract: None,
+            return_type_text: None,
+            return_local_ref: None,
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
+        }));
+        arena.set_root_skill(s_id);
+
+        let scaffold = build(&arena, false);
+        let span_count = scaffold
+            .chunks
+            .iter()
+            .filter(|c| matches!(c, Chunk::Span(sp) if sp.kind == SpanKind::ParamDescription))
+            .count();
+        assert_eq!(
+            span_count, 1,
+            "undescribed param must emit exactly one ParamDescription span"
+        );
     }
 
     /// Phase 4 Emit prose tests (`.flow-assign-spec.md` §9).

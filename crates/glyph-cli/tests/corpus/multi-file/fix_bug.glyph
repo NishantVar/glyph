@@ -3,7 +3,7 @@ import "./prefs.glyph" { preserve_existing_patterns }
 
 type ChangeSummary = <"a summary of what was changed and why">
 
-skill fix_bug(scope = ".") -> ChangeSummary
+skill fix_bug(scope = "." <"directory to investigate">) -> ChangeSummary
     description: "Debug and fix a bug in the codebase with minimal, targeted changes."
     context:
         codebase_assumptions

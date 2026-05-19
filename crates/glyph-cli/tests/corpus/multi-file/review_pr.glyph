@@ -2,7 +2,7 @@ import "./repo_tools.glyph" { inspect_repo, run_tests }
 
 type Review = <"a structured review with approval status and comments">
 
-skill review_pr(scope = ".", risk = "medium") -> Review
+skill review_pr(scope = "." <"directory containing the PR's checkout">, risk = "medium" <"risk tier (low|medium|high)">) -> Review
     description: "Review a pull request for correctness, style, and safety."
     constraints:
         require thorough_review

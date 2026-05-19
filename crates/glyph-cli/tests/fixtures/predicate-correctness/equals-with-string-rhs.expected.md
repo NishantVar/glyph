@@ -5,7 +5,7 @@ description: 'Branch on risk and complexity.'
 
 ## Parameters
 
-- **risk** (String). Default: "low".
+- **risk** (String): risk tier. Default: "low".
 
 ## Steps
 

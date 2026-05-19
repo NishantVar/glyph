@@ -5,7 +5,7 @@ description: 'Branch on grouped predicates.'
 
 ## Parameters
 
-- **reviewable** (Bool). Default: "true".
+- **reviewable** (Bool): whether the change is reviewable. Default: "true".
 
 ## Steps
 

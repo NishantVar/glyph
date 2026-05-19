@@ -10,7 +10,7 @@ description: 'Debug and fix a bug in the codebase with minimal, targeted changes
 
 ## Parameters
 
-- **scope**. Default: ".".
+- **scope**: directory to investigate. Default: ".".
 
 ## Context
 

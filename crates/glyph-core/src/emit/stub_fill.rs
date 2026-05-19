@@ -5,12 +5,47 @@
 use super::scaffold::{Chunk, Scaffold, SpanId, SpanKind};
 use std::collections::{BTreeMap, HashMap};
 
-#[derive(Clone, Debug)]
-pub struct StubFillError {
-    pub ir_node: crate::ir::NodeId,
-    pub target_name: Option<String>,
-    pub has_modifier: bool,
-    pub has_local_refs: bool,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StubFillError {
+    CallBody {
+        ir_node: crate::ir::NodeId,
+        target_name: Option<String>,
+        has_modifier: bool,
+        has_local_refs: bool,
+    },
+    ParamDescription {
+        origin: ParamDescriptionOrigin,
+        param_name: Option<String>,
+        param_type: Option<String>,
+        param_default: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ParamDescriptionOrigin {
+    /// Skill-path: scaffold pushed a `ParamDescription` span on the
+    /// `## Parameters` block of a skill. Sorts ascending by `ir_node.0`.
+    Skill { ir_node: crate::ir::NodeId },
+    /// Procedure-path: `emit_procedure` walked `params` and found one with
+    /// no `effective_param_description`. No IR-node attached — the caller
+    /// drives the AST with a stub arena. Stable-sort retains insertion order.
+    Procedure,
+}
+
+impl StubFillError {
+    pub(crate) fn sort_key(&self) -> (u8, u64) {
+        match self {
+            StubFillError::CallBody { ir_node, .. } => (0, ir_node.0 as u64),
+            StubFillError::ParamDescription {
+                origin: ParamDescriptionOrigin::Skill { ir_node },
+                ..
+            } => (0, ir_node.0 as u64),
+            StubFillError::ParamDescription {
+                origin: ParamDescriptionOrigin::Procedure,
+                ..
+            } => (1, 0),
+        }
+    }
 }
 
 pub fn fill(scaffold: &Scaffold) -> Result<HashMap<SpanId, String>, Vec<StubFillError>> {
@@ -20,7 +55,14 @@ pub fn fill(scaffold: &Scaffold) -> Result<HashMap<SpanId, String>, Vec<StubFill
         if let Chunk::Span(span) = chunk {
             match span.kind {
                 SpanKind::ParamDescription => {
-                    out.insert(span.id, String::new());
+                    errors.push(StubFillError::ParamDescription {
+                        origin: ParamDescriptionOrigin::Skill {
+                            ir_node: span.ir_node,
+                        },
+                        param_name: span.payload.param_name.clone(),
+                        param_type: span.payload.param_type.clone(),
+                        param_default: span.payload.param_default.clone(),
+                    });
                 }
                 SpanKind::BranchCondition => {
                     let raw = span
@@ -35,7 +77,7 @@ pub fn fill(scaffold: &Scaffold) -> Result<HashMap<SpanId, String>, Vec<StubFill
                     out.insert(span.id, s);
                 }
                 SpanKind::CallBodyShape => {
-                    errors.push(StubFillError {
+                    errors.push(StubFillError::CallBody {
                         ir_node: span.ir_node,
                         target_name: span.payload.target_name.clone(),
                         has_modifier: span.payload.site_modifier.is_some(),
@@ -168,10 +210,20 @@ mod tests {
         let r = fill(&s);
         let errors = r.expect_err("CallBodyShape span must hard-fail in stub filler");
         assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].target_name.as_deref(), Some("inspect_failure"));
-        assert!(errors[0].has_modifier);
-        assert!(!errors[0].has_local_refs);
-        assert_eq!(errors[0].ir_node, NodeId(3));
+        match &errors[0] {
+            StubFillError::CallBody {
+                ir_node,
+                target_name,
+                has_modifier,
+                has_local_refs,
+            } => {
+                assert_eq!(target_name.as_deref(), Some("inspect_failure"));
+                assert!(*has_modifier);
+                assert!(!*has_local_refs);
+                assert_eq!(*ir_node, NodeId(3));
+            }
+            _ => panic!("expected CallBody variant"),
+        }
     }
 
     #[test]
@@ -205,8 +257,20 @@ mod tests {
         assert_eq!(errs.len(), 2);
         // Order at this layer is chunk-stream order, not sorted; the lib-level
         // helper sorts before pushing into the bag.
-        assert_eq!(errs[0].ir_node, NodeId(5));
-        assert_eq!(errs[1].ir_node, NodeId(2));
-        assert!(errs[1].has_local_refs);
+        match &errs[0] {
+            StubFillError::CallBody { ir_node, .. } => assert_eq!(*ir_node, NodeId(5)),
+            _ => panic!("expected CallBody variant"),
+        }
+        match &errs[1] {
+            StubFillError::CallBody {
+                ir_node,
+                has_local_refs,
+                ..
+            } => {
+                assert_eq!(*ir_node, NodeId(2));
+                assert!(*has_local_refs);
+            }
+            _ => panic!("expected CallBody variant"),
+        }
     }
 }

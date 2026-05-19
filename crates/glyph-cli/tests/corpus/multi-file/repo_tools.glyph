@@ -1,4 +1,4 @@
-export block inspect_repo(scope = ".") -> Report
+export block inspect_repo(scope = "." <"directory to inspect">) -> Report
     description: "Inspect the repository structure and identify key files."
 
     flow:
@@ -10,7 +10,7 @@ export block inspect_repo(scope = ".") -> Report
         "Analyze the project structure for adherence to established conventions, standard directory layouts, separation of concerns between modules, appropriate use of namespacing, and consistent organization patterns throughout all layers of the codebase."
         return "Produce a comprehensive summary report detailing the repository layout, key files, dependency relationships, test infrastructure, documentation coverage, and structural patterns observed across the entire project."
 
-export block run_tests(scope = ".") -> TestResult
+export block run_tests(scope = "." <"directory containing the test suite">) -> TestResult
     description: "Run the project test suite and collect results."
 
     flow:

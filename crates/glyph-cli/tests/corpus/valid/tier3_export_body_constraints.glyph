@@ -2,7 +2,7 @@ export const preserve_behavior = "preserving existing behavior across refactors"
 export const log_decisions = "logging each decision with a clear rationale"
 export const monorepo_layout = "this codebase is a Rust workspace with multiple crates"
 
-export block thorough_review(scope = ".") -> Report
+export block thorough_review(scope = "." <"directory to review">) -> Report
     description: "Perform a thorough code review of files under a given scope."
 
     must preserve_behavior

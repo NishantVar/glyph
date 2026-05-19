@@ -398,7 +398,7 @@ skill main()
 fn stub_fill_eq_with_string_rhs_preserves_quotes_and_substitutes() {
     let source = r#"const complex_change = "the requested change is complex"
 
-skill main(risk: String)
+skill main(risk: String = <"risk level">)
     description: "Test."
     flow:
         if risk == "high" and complex_change
@@ -419,7 +419,7 @@ skill main(risk: String)
 
 #[test]
 fn stub_fill_numeric_eq_no_substitution() {
-    let source = r#"skill main(max_attempts: Int)
+    let source = r#"skill main(max_attempts: Int = <"maximum attempts">)
     description: "Test."
     flow:
         if max_attempts == 3
@@ -439,7 +439,7 @@ fn stub_fill_paren_grouped_predicates_preserves_parens_and_substitutes() {
     let source = r#"const big = "the change is big"
 const small = "the change is small"
 
-skill main(reviewable: Bool)
+skill main(reviewable: Bool = <"whether reviewable">)
     description: "Test."
     flow:
         if (big or small) and reviewable

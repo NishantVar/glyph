@@ -1,4 +1,4 @@
-skill bugfix(scope = ".")
+skill bugfix(scope = "." <"directory to investigate">)
     description: "Fix a bug."
     context: "Check the {scope} directory first."
     flow:

@@ -1,4 +1,4 @@
-skill audit(scope = ".")
+skill audit(scope = "." <"directory to audit">)
     description: "Audit code under the given scope."
     quality:
         "Inspect every file under {scope} before reporting issues."

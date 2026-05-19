@@ -65,11 +65,11 @@ Each parameter is one bullet. The full shape grid:
 ```
 - **<name>** (<Type>): <description>. Default: <literal>.
 - **<name>** (<Type>): <description>. Required.
-- **<name>** (<Type>). Default: <literal>.
-- **<name>** (<Type>). Required.
+- **<name>**: <description>. Default: <literal>.
 - **<name>**: <description>. Required.
-- **<name>**. Required.
 ```
+
+Every parameter bullet carries a description. A parameter that resolves to no effective description (no inline `<"…">`, no type-registry entry, and the LLM expand pass did not fill the span) causes `G::expand::llm-required-for-param-description` at fill time and the file fails to compile. See [[docs/architecture/expand]] §3.5.
 
 Rules:
 

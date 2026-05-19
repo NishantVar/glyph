@@ -232,13 +232,13 @@ fn compile_to_arena(src: &str) -> glyph_core::ir::IrArena {
 
 #[test]
 fn trivial_tier1_toplevel_renders_inline_body() {
-    let src = r#"block inspect(scope = ".") -> Report
+    let src = r#"block inspect(scope = "." <"directory to inspect">) -> Report
     description: "Inspect."
     flow:
         "Look at {scope}."
         return context
 
-skill diagnose(scope = ".") -> Report
+skill diagnose(scope = "." <"directory to diagnose">) -> Report
     description: "Demo."
     flow:
         inspect(scope)
@@ -286,9 +286,9 @@ fn trivial_tier3_toplevel_renders_follow_procedure() {
     let dir = tempfile::tempdir().unwrap();
     let helper_path = dir.path().join("helper.glyph");
     let main_path = dir.path().join("main.glyph");
-    let helper_src = "export block shared_inspect(scope = \".\") -> Report\n    description: \"Shared inspection routine that walks the repository at the given scope and reports notable findings to the orchestrator skill, suitable for downstream triage workflows.\"\n    flow:\n        \"Open the repository at {scope} and enumerate every tracked file, paying particular attention to top-level configuration, dependency manifests, build scripts, and CI workflow definitions.\"\n        \"Read the contents of each manifest and configuration file in turn, taking careful notes about declared dependencies, environment variables, feature flags, language toolchain versions, and any other facts that downstream auditors will want to inspect.\"\n        \"Group the collected notes by topic — runtime dependencies, build tooling, deployment configuration, observability instrumentation, security posture — and within each topic sort entries by severity so the most important findings appear first.\"\n        \"Cross-reference the grouped notes with any historical lint, security-scan, or test-failure reports already present in the repository to flag regressions, recurrent themes, and items the team has previously chosen to defer.\"\n        \"Highlight items needing follow-up by tagging each one with a clear owner, an estimated effort level, and a short rationale explaining why the team should prioritise resolving it before the next release.\"\n        return context\n";
+    let helper_src = "export block shared_inspect(scope = \".\" <\"directory to inspect\">) -> Report\n    description: \"Shared inspection routine that walks the repository at the given scope and reports notable findings to the orchestrator skill, suitable for downstream triage workflows.\"\n    flow:\n        \"Open the repository at {scope} and enumerate every tracked file, paying particular attention to top-level configuration, dependency manifests, build scripts, and CI workflow definitions.\"\n        \"Read the contents of each manifest and configuration file in turn, taking careful notes about declared dependencies, environment variables, feature flags, language toolchain versions, and any other facts that downstream auditors will want to inspect.\"\n        \"Group the collected notes by topic — runtime dependencies, build tooling, deployment configuration, observability instrumentation, security posture — and within each topic sort entries by severity so the most important findings appear first.\"\n        \"Cross-reference the grouped notes with any historical lint, security-scan, or test-failure reports already present in the repository to flag regressions, recurrent themes, and items the team has previously chosen to defer.\"\n        \"Highlight items needing follow-up by tagging each one with a clear owner, an estimated effort level, and a short rationale explaining why the team should prioritise resolving it before the next release.\"\n        return context\n";
     std::fs::write(&helper_path, helper_src).unwrap();
-    let main_src = "import \"./helper.glyph\" { shared_inspect }\n\nskill diagnose(scope = \".\") -> Report\n    description: \"Demo.\"\n    flow:\n        shared_inspect(scope)\n        return context\n";
+    let main_src = "import \"./helper.glyph\" { shared_inspect }\n\nskill diagnose(scope = \".\" <\"directory to diagnose\">) -> Report\n    description: \"Demo.\"\n    flow:\n        shared_inspect(scope)\n        return context\n";
     std::fs::write(&main_path, main_src).unwrap();
     let result = glyph_core::compile_directory_with_options(
         &[helper_path.clone(), main_path.clone()],
@@ -358,13 +358,13 @@ fn trivial_stdlib_toplevel_renders_follow_procedure() {
 
 #[test]
 fn trivial_tier1_in_arm_renders_inline_body() {
-    let src = r#"block inspect(scope = ".") -> Report
+    let src = r#"block inspect(scope = "." <"directory to inspect">) -> Report
     description: "Inspect."
     flow:
         "Look at {scope}."
         return context
 
-skill diagnose(scope = ".") -> Report
+skill diagnose(scope = "." <"directory to diagnose">) -> Report
     description: "Demo."
     flow:
         if scope == ".":
@@ -385,13 +385,13 @@ skill diagnose(scope = ".") -> Report
 /// rendering the callee's inline body.
 #[test]
 fn procedure_body_tier1_trivial_call_renders_inline_body() {
-    let src = r#"block inspect(scope = ".") -> Report
+    let src = r#"block inspect(scope = "." <"directory to inspect">) -> Report
     description: "Inspect."
     flow:
         "Look at {scope}."
         return context
 
-block run(scope = ".") -> Report
+block run(scope = "." <"directory to run">) -> Report
     description: "Run inspection then summarize."
     flow:
         inspect(scope)
@@ -400,7 +400,7 @@ block run(scope = ".") -> Report
         "Then finalize."
         return context
 
-skill diagnose(scope = ".") -> Report
+skill diagnose(scope = "." <"directory to diagnose">) -> Report
     description: "Demo."
     flow:
         run(scope)
@@ -448,7 +448,7 @@ fn trivial_tier2_in_arm_renders_follow_procedure() {
         "Do thing three."
         "Do thing four."
 
-skill demo(scope = ".")
+skill demo(scope = "." <"directory to demo">)
     description: "Demo."
     flow:
         if scope == ".":
@@ -509,7 +509,7 @@ fn procedure_body_tier3_with_modifier_hard_fails() {
     let dir = tempfile::tempdir().unwrap();
     let helper_path = dir.path().join("helper.glyph");
     let main_path = dir.path().join("main.glyph");
-    let helper_src = "export block shared_inspect(scope = \".\") -> Report\n    description: \"Shared inspection routine that walks the repository at the given scope and reports notable findings to the orchestrator skill, suitable for downstream triage workflows.\"\n    flow:\n        \"Open the repository at {scope} and enumerate every tracked file, paying particular attention to top-level configuration, dependency manifests, build scripts, and CI workflow definitions.\"\n        \"Read the contents of each manifest and configuration file in turn, taking careful notes about declared dependencies, environment variables, feature flags, language toolchain versions, and any other facts that downstream auditors will want to inspect.\"\n        \"Group the collected notes by topic — runtime dependencies, build tooling, deployment configuration, observability instrumentation, security posture — and within each topic sort entries by severity so the most important findings appear first.\"\n        \"Cross-reference the grouped notes with any historical lint, security-scan, or test-failure reports already present in the repository to flag regressions, recurrent themes, and items the team has previously chosen to defer.\"\n        \"Highlight items needing follow-up by tagging each one with a clear owner, an estimated effort level, and a short rationale explaining why the team should prioritise resolving it before the next release.\"\n        return context\n";
+    let helper_src = "export block shared_inspect(scope = \".\" <\"directory to inspect\">) -> Report\n    description: \"Shared inspection routine that walks the repository at the given scope and reports notable findings to the orchestrator skill, suitable for downstream triage workflows.\"\n    flow:\n        \"Open the repository at {scope} and enumerate every tracked file, paying particular attention to top-level configuration, dependency manifests, build scripts, and CI workflow definitions.\"\n        \"Read the contents of each manifest and configuration file in turn, taking careful notes about declared dependencies, environment variables, feature flags, language toolchain versions, and any other facts that downstream auditors will want to inspect.\"\n        \"Group the collected notes by topic — runtime dependencies, build tooling, deployment configuration, observability instrumentation, security posture — and within each topic sort entries by severity so the most important findings appear first.\"\n        \"Cross-reference the grouped notes with any historical lint, security-scan, or test-failure reports already present in the repository to flag regressions, recurrent themes, and items the team has previously chosen to defer.\"\n        \"Highlight items needing follow-up by tagging each one with a clear owner, an estimated effort level, and a short rationale explaining why the team should prioritise resolving it before the next release.\"\n        return context\n";
     std::fs::write(&helper_path, helper_src).unwrap();
     let main_src = "import \"./helper.glyph\" { shared_inspect }\n\nblock run(scope = \".\") -> Report\n    description: \"Run shared inspect then finalize.\"\n    flow:\n        shared_inspect(scope) with \"focus on lint failures\"\n        \"Then finalize step one.\"\n        \"Then finalize step two.\"\n        \"Then finalize step three.\"\n        return context\n\nskill diagnose(scope = \".\") -> Report\n    description: \"Demo.\"\n    flow:\n        run(scope)\n        return context\n";
     std::fs::write(&main_path, main_src).unwrap();
@@ -558,9 +558,9 @@ fn trivial_tier3_in_arm_renders_follow_procedure() {
     let dir = tempfile::tempdir().unwrap();
     let helper_path = dir.path().join("helper.glyph");
     let main_path = dir.path().join("main.glyph");
-    let helper_src = "export block shared_inspect(scope = \".\") -> Report\n    description: \"Shared inspection routine that walks the repository at the given scope and reports notable findings to the orchestrator skill, suitable for downstream triage workflows.\"\n    flow:\n        \"Open the repository at {scope} and enumerate every tracked file, paying particular attention to top-level configuration, dependency manifests, build scripts, and CI workflow definitions.\"\n        \"Read the contents of each manifest and configuration file in turn, taking careful notes about declared dependencies, environment variables, feature flags, language toolchain versions, and any other facts that downstream auditors will want to inspect.\"\n        \"Group the collected notes by topic — runtime dependencies, build tooling, deployment configuration, observability instrumentation, security posture — and within each topic sort entries by severity so the most important findings appear first.\"\n        \"Cross-reference the grouped notes with any historical lint, security-scan, or test-failure reports already present in the repository to flag regressions, recurrent themes, and items the team has previously chosen to defer.\"\n        \"Highlight items needing follow-up by tagging each one with a clear owner, an estimated effort level, and a short rationale explaining why the team should prioritise resolving it before the next release.\"\n        return context\n";
+    let helper_src = "export block shared_inspect(scope = \".\" <\"directory to inspect\">) -> Report\n    description: \"Shared inspection routine that walks the repository at the given scope and reports notable findings to the orchestrator skill, suitable for downstream triage workflows.\"\n    flow:\n        \"Open the repository at {scope} and enumerate every tracked file, paying particular attention to top-level configuration, dependency manifests, build scripts, and CI workflow definitions.\"\n        \"Read the contents of each manifest and configuration file in turn, taking careful notes about declared dependencies, environment variables, feature flags, language toolchain versions, and any other facts that downstream auditors will want to inspect.\"\n        \"Group the collected notes by topic — runtime dependencies, build tooling, deployment configuration, observability instrumentation, security posture — and within each topic sort entries by severity so the most important findings appear first.\"\n        \"Cross-reference the grouped notes with any historical lint, security-scan, or test-failure reports already present in the repository to flag regressions, recurrent themes, and items the team has previously chosen to defer.\"\n        \"Highlight items needing follow-up by tagging each one with a clear owner, an estimated effort level, and a short rationale explaining why the team should prioritise resolving it before the next release.\"\n        return context\n";
     std::fs::write(&helper_path, helper_src).unwrap();
-    let main_src = "import \"./helper.glyph\" { shared_inspect }\n\nskill diagnose(scope = \".\") -> Report\n    description: \"Demo.\"\n    flow:\n        if scope == \".\":\n            shared_inspect(scope)\n        return context\n";
+    let main_src = "import \"./helper.glyph\" { shared_inspect }\n\nskill diagnose(scope = \".\" <\"directory to diagnose\">) -> Report\n    description: \"Demo.\"\n    flow:\n        if scope == \".\":\n            shared_inspect(scope)\n        return context\n";
     std::fs::write(&main_path, main_src).unwrap();
     let result = glyph_core::compile_directory_with_options(
         &[helper_path.clone(), main_path.clone()],

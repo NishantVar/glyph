@@ -104,12 +104,12 @@ fn skill_with_params_compiles_and_emits_parameters_section() {
     // Defaulted parameter renders with `. Default: <X>.`; required parameter
     // renders with `. Required.`.
     assert!(
-        md.contains("- **scope**. Default: \".\"."),
+        md.contains("- **scope**: directory to summarize. Default: \".\"."),
         "expected defaulted scope parameter; got md=\n{}",
         md
     );
     assert!(
-        md.contains("- **target**. Required."),
+        md.contains("- **target**: path where summary will be written. Required."),
         "expected required target parameter; got md=\n{}",
         md
     );
