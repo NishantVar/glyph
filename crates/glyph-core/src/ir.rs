@@ -299,6 +299,20 @@ pub struct IrBlock {
     pub constraints_source_line: Option<u32>,
     #[serde(skip)]
     pub flow_source_line: Option<u32>,
+    /// Top-level context nodes lowered from `BlockDecl.body_context`.
+    /// Mirrors [`IrSkill::context`]. Field name + type match `IrSkill`
+    /// exactly so decl-kind-generic passes can walk both via the same
+    /// projection. `NodeId`s point at [`IrNode::Context`] arena entries.
+    /// Empty when the block declared no body-level context.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context: Vec<NodeId>,
+    /// Top-level constraint nodes lowered from `BlockDecl.body_constraints`.
+    /// Mirrors [`IrSkill::constraints`]. Field name + type match `IrSkill`
+    /// exactly so decl-kind-generic passes can walk both via the same
+    /// projection. `NodeId`s point at [`IrNode::Constraint`] arena entries.
+    /// Empty when the block declared no body-level constraints.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<NodeId>,
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -78,9 +78,32 @@ sections.
 Body-level markers stay where the author wrote them in source; the compiler's
 Lower pass (Phase 4) synthesizes a `## Constraints` section at canonical slot
 3 by hoisting body-level constraint AST nodes into the declaration's
-`constraints` list at IR level. `glyph fmt` preserves source order and marker
-position — it does not rewrite markers into a `constraints:` sub-section.
-Authors may write either form; both produce identical IR.
+`constraints` list at IR level — concretely, `IrSkill.constraints` for a
+`skill`. The H2 hoist path applies to skills only; private `block` and
+`export block` declarations follow separate projection paths described in
+the notes below. `glyph fmt` preserves source order and marker position —
+it does not rewrite markers into a `constraints:` sub-section. Authors may
+write either form; both produce identical IR.
+
+**Block projection note.** Private `block` declarations have no peer-level
+H2 sections (only the enclosing skill emits H2s). Body-level constraint
+markers on a private block therefore land in `IrBlock.constraints` rather
+than being hoisted into any H2 list. At emit time, when the block is
+promoted to Tier 2 (its presence alone is one of the Tier 2 triggers — see
+[[docs/reference/compiled-output]] §Three-Tier Block Projection), those
+constraints render as the procedure preamble described in
+[[docs/reference/compiled-output]] §Procedure Preamble (Tier 2 and Tier 3) —
+**not** as a `## Constraints` H2 inside the block.
+
+**Export-block projection note.** `export block` declarations have no
+IR-side `constraints` list — body-level constraint markers stay on the
+parsed AST node (`ExportBlockDecl.body_constraints`). The Tier 3 emitter
+(`emit_library_procedures`) reads that AST field directly and renders the
+procedure preamble described in [[docs/reference/compiled-output]]
+§Procedure Preamble (Tier 2 and Tier 3), using the byte-identical Tier 2 /
+Tier 3 shape contracted in [[0025-context-preamble-format]]. There is
+**no** `## Constraints` H2 in the standalone procedure `.md` for body-level
+markers — the H2 hoist path applies to skills only.
 
 ### Flow-Level Constraint Markers
 
@@ -105,21 +128,47 @@ hoisting/branch-scoping rules. Lower (Phase 4) splits them by location:
   not break backwards compatibility."). It does not appear in
   `## Constraints`. See [[docs/reference/compiled-output]] §Constraint Rendering.
 
-By the time Lower completes, all unconditional constraints — whether
-originally in a `constraints:` section, at body level, or at flow top-level —
-reside in the declaration's `constraints` list. Lower's IR-level hoisting is
-the single mechanism that produces this result; `glyph fmt` preserves source
-as written. Branch-scoped markers are the only constraints that remain inside
-the flow.
+By the time Lower completes, for `skill` and private `block` declarations
+all unconditional constraints — whether originally in a `constraints:`
+section, at body level, or at flow top-level — reside in the declaration's
+IR-level `constraints` list (`IrSkill.constraints` / `IrBlock.constraints`).
+Lower's IR-level hoisting is the single mechanism that produces this result;
+`glyph fmt` preserves source as written. Branch-scoped markers are the only
+constraints that remain inside the flow. For `export block` declarations,
+body-level markers follow the parsed-AST path described in the Export-block
+projection note above and are not part of this IR-list summary.
 
 ### Body-Level And Flow-Level Context Markers
 
 Body-level `context` markers stay where the author wrote them in source; the
 compiler's Lower pass (Phase 4) synthesizes a `## Context` section at
 canonical slot 4 by hoisting body-level `context` AST nodes into the
-declaration's `context` list at IR level. `glyph fmt` preserves source order
-and marker position — it does not rewrite markers into a `context:`
-sub-section.
+declaration's `context` list at IR level — concretely, `IrSkill.context`
+for a `skill`. The H2 hoist path applies to skills only; private `block`
+and `export block` declarations follow separate projection paths described
+in the notes below. `glyph fmt` preserves source order and marker
+position — it does not rewrite markers into a `context:` sub-section.
+
+**Block projection note.** Private `block` declarations have no peer-level
+H2 sections, so body-level `context` markers on a private block land in
+`IrBlock.context` rather than being hoisted into any H2 list. At emit time,
+when the block is promoted to Tier 2 (the presence of `IrBlock.context`
+entries is itself a Tier 2 trigger — see
+[[docs/reference/compiled-output]] §Three-Tier Block Projection), those
+entries render as part of the procedure preamble described in
+[[docs/reference/compiled-output]] §Procedure Preamble (Tier 2 and Tier 3),
+using the locked label forms (`**<kebab-name>:** <text>` for name-ref
+operands; `**Context:** <text>` for inline-string operands) defined in
+[[0025-context-preamble-format]].
+
+**Export-block projection note.** `export block` declarations have no
+IR-side `context` list — body-level `context` markers stay on the parsed
+AST node (`ExportBlockDecl.body_context`). The Tier 3 emitter
+(`emit_library_procedures`) reads that AST field directly and renders the
+procedure preamble using the same locked label forms from
+[[0025-context-preamble-format]]. There is **no** `## Context` H2 in the
+standalone procedure `.md` for body-level markers — the H2 hoist path
+applies to skills only.
 
 `context` markers are also legal as flow statements inside `flow:`. The IR
 represents them as `Context` nodes admissible in the `FlowNode` union
@@ -137,10 +186,14 @@ represents them as `Context` nodes admissible in the `FlowNode` union
   conditional Step prose so the consuming LLM sees that the context applies
   only when that branch is taken. It does not appear in `## Context`.
 
-By the time Lower completes, all unconditional context — whether originally
-in a `context:` section, at body level, or at flow top-level — resides in the
-declaration's `context` list. Branch-scoped markers are the only context
-entries that remain inside the flow.
+By the time Lower completes, for `skill` and private `block` declarations
+all unconditional context — whether originally in a `context:` section, at
+body level, or at flow top-level — resides in the declaration's IR-level
+`context` list (`IrSkill.context` / `IrBlock.context`). Branch-scoped
+markers are the only context entries that remain inside the flow. For
+`export block` declarations, body-level markers follow the parsed-AST path
+described in the Export-block projection note above and are not part of this
+IR-list summary.
 
 ## 3. Effect Inference And Validation Algorithms
 

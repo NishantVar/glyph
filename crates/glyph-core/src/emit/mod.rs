@@ -61,6 +61,25 @@ pub struct ProcedureFreeformSection {
     pub items: Vec<ProcedureFreeformItem>,
 }
 
+/// #168: Tier 3 procedure preamble — body-level constraint marker
+/// resolved to its (strength, polarity, text) triple. Mirrors `IrConstraint`
+/// but flat (no `NodeId`), so it can be threaded through the AST-driven
+/// `emit_library_procedures` caller without exposing IR types here.
+pub struct ProcedureConstraint<'a> {
+    pub strength: crate::ir::Strength,
+    pub polarity: crate::ir::Polarity,
+    pub text: &'a str,
+}
+
+/// #168: Tier 3 procedure preamble — body-level context entry resolved
+/// to its `(name, text)` pair. `name` is the source identifier (used to
+/// render the bold `**<kebab>:**` label); `None` means the entry was an
+/// inline string and renders under the generic `**Context:**` label.
+pub struct ProcedureContext<'a> {
+    pub name: Option<&'a str>,
+    pub text: &'a str,
+}
+
 pub struct ProcedureFreeformItem {
     pub text: String,
 }
@@ -76,6 +95,8 @@ pub fn emit_procedure(
     type_registry: &TypeRegistry,
     enable_effects: bool,
     freeform_sections: &[ProcedureFreeformSection],
+    constraints: &[ProcedureConstraint<'_>],
+    context: &[ProcedureContext<'_>],
 ) -> String {
     let kebab_name = name.replace('_', "-");
     let mut out = String::new();
@@ -115,6 +136,33 @@ pub fn emit_procedure(
     }
 
     // Steps
+    // #168: Tier 3 procedure preamble — body-level constraints and context
+    // declared on the export block render between `## Parameters` and `## Steps`,
+    // mirroring the Tier 2 (same-file) layout. Format matches the Tier 2 path
+    // emitter in `scaffold.rs::build`: four-form constraint template +
+    // `**<kebab>:** <text>.` for named context, `**Context:** <text>.` otherwise.
+    let mut had_preamble = false;
+    for c in constraints {
+        let line =
+            crate::sections::hooks::dispatch_constraints_expand(c.strength, c.polarity, c.text);
+        out.push_str(&format!("{}\n\n", line));
+        had_preamble = true;
+    }
+    for c in context {
+        let label = match c.name {
+            Some(n) => n.replace('_', "-"),
+            None => "Context".to_string(),
+        };
+        let body = c.text.trim();
+        let needs_period = !matches!(body.chars().last(), Some('.') | Some('!') | Some('?'));
+        let suffix = if needs_period { "." } else { "" };
+        out.push_str(&format!("**{}:** {}{}\n\n", label, body, suffix));
+        had_preamble = true;
+    }
+    // Each preamble line already ends with `\n\n`; the final `\n\n`
+    // supplies the blank line separator before the `## Steps` heading.
+    let _ = had_preamble;
+
     let return_sentence =
         templates::compute_return_sentence(return_type_text, output_form, type_registry);
     let last_step_idx = flow_strings.len().checked_sub(1);
@@ -262,6 +310,8 @@ mod tests {
             &TypeRegistry::default(),
             false,
             &[],
+            &[],
+            &[],
         );
         assert!(
             !output.contains("effects:"),
@@ -286,6 +336,8 @@ mod tests {
             &TypeRegistry::default(),
             true,
             &[],
+            &[],
+            &[],
         );
         assert!(
             output.contains("effects: [fs:read]"),
@@ -307,6 +359,8 @@ mod tests {
             None,
             &TypeRegistry::default(),
             false,
+            &[],
+            &[],
             &[],
         );
         assert!(
@@ -330,6 +384,8 @@ mod tests {
             &TypeRegistry::default(),
             false,
             &[],
+            &[],
+            &[],
         );
         assert!(
             output.contains("1. Examine the working tree. Produce: the branch name.\n"),
@@ -350,6 +406,8 @@ mod tests {
             None,
             &TypeRegistry::default(),
             false,
+            &[],
+            &[],
             &[],
         );
         assert!(
@@ -385,6 +443,8 @@ mod tests {
             &TypeRegistry::default(),
             false,
             &freeform,
+            &[],
+            &[],
         );
         assert!(
             output.contains("## Quality\n\n- Accuracy.\n- Completeness.\n"),
@@ -413,6 +473,8 @@ mod tests {
             &TypeRegistry::default(),
             false,
             &freeform,
+            &[],
+            &[],
         );
         assert!(
             output.contains("## Quality\n\nAccuracy in every step.\n"),

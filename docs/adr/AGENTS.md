@@ -34,3 +34,4 @@ ADRs are numbered sequentially (`NNNN-<slug>.md`). Numbers are stable once assig
 | 0022 | [[0022-tree-sitter-external-scanner\|Tree-sitter external scanner for indentation]]         | Tooling      |
 | 0023 | [[0023-tower-lsp-over-lsp-server\|`tower-lsp` over `lsp-server` for the Glyph LSP]]         | Tooling      |
 | 0024 | [[0024-lsp-shares-glyph-core\|LSP depends on `glyph-core`, not `glyph-cli`]]                | Tooling      |
+| 0025 | [[0025-context-preamble-format\|Locked context preamble format for procedure-tier blocks]]  | Output       |

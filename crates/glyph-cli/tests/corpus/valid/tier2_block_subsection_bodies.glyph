@@ -1,0 +1,18 @@
+block subsectioned_review()
+    constraints:
+        require log_decisions
+        avoid silent_failures
+    context:
+        "subsection inline context"
+    flow:
+        "Open the diff."
+        "Note any concerns."
+
+const log_decisions = "logging each decision with a rationale"
+const silent_failures = "silently swallowing errors without surfacing them"
+
+skill code_review()
+    description: "Review code with subsection-body markers on the block."
+    flow:
+        "Pick a file."
+        subsectioned_review()

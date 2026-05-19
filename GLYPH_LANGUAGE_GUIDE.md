@@ -1207,6 +1207,39 @@ Notes:
 
 You don't need to know the exact projection to write a skill — but knowing the shape helps you anticipate what the agent will read.
 
+### 14.1 Private block with body-level markers → `### Procedure:` section
+
+A private `block` that carries body-level `require` / `avoid` / `must` / `must avoid` markers, **or** a body-level `context` marker, is automatically promoted at its call site to a same-file `### Procedure: <kebab-name>` section. The body-level markers render as a **preamble** of standalone paragraphs between the procedure heading and the numbered step list:
+
+```glyph
+const monorepo_layout = "Codebase uses a monorepo layout with per-crate Cargo.toml files."
+const focus_on_public_api = "Focus on changes to publicly exported names."
+
+block review_files(scope)
+    require focus_on_public_api
+    context monorepo_layout
+    flow:
+        "Scan changes under scope and identify public-API touches."
+        "Flag any breaking changes for review."
+```
+
+compiles (inside the calling skill's `.md`) to:
+
+```md
+### Procedure: review-files
+
+**Require:** Focus on changes to publicly exported names.
+
+**monorepo-layout:** Codebase uses a monorepo layout with per-crate Cargo.toml files.
+
+1. Scan changes under scope and identify public-API touches.
+2. Flag any breaking changes for review.
+```
+
+The preamble follows two simple label rules: a `context <ident>` name-ref renders as `**<kebab-name>:** <text>` (preserving the const's identity for traceability), and an inline-string `context "..."` renders as `**Context:** <text>`. Constraint markers reuse the same four-form template as `## Constraints` (§7.2). Each entry is its own paragraph; preamble paragraphs are not counted as Steps. The emitter **groups by role**: all constraint entries come first, then all `context` entries — even if the source alternates them — so the rendered preamble order is predictable from the marker set rather than source order.
+
+The presence of body-level markers on a private block is by itself enough to promote the block out of inline projection — the compiler always renders such a block as a `### Procedure:` section so the markers stay attached to the procedure they describe. See `docs/reference/compiled-output.md` §Three-Tier Block Projection and §Procedure Preamble for the full contract.
+
 ---
 
 ## 15. The Authoring Loop

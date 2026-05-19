@@ -92,11 +92,15 @@ pub fn expand_step1_with_imported_descriptions(
     // section would silently vanish. Force Tier 2 promotion when the callee
     // carries any freeform sections (design D12 / §4.1.5).
     let mut block_has_freeform: HashMap<String, bool> = HashMap::new();
+    let mut block_has_body_constraints: HashMap<String, bool> = HashMap::new();
+    let mut block_has_body_context: HashMap<String, bool> = HashMap::new();
     for n in arena.nodes() {
         if let IrNode::Block(b) = n {
             block_flow_counts.insert(b.name.clone(), b.flow_statements.len());
             block_has_branches.insert(b.name.clone(), !b.branch_steps.is_empty());
             block_has_freeform.insert(b.name.clone(), !b.freeform_sections.is_empty());
+            block_has_body_constraints.insert(b.name.clone(), !b.constraints.is_empty());
+            block_has_body_context.insert(b.name.clone(), !b.context.is_empty());
         }
     }
 
@@ -123,6 +127,11 @@ pub fn expand_step1_with_imported_descriptions(
             let freq = call_frequency.get(target).copied().unwrap_or(1);
             let has_branches = block_has_branches.get(target).copied().unwrap_or(false);
             let has_freeform = block_has_freeform.get(target).copied().unwrap_or(false);
+            let has_body_constraints = block_has_body_constraints
+                .get(target)
+                .copied()
+                .unwrap_or(false);
+            let has_body_context = block_has_body_context.get(target).copied().unwrap_or(false);
 
             // Tier 2 conditions: >= 4 flow statements, called 2+ times,
             // OR the block's flow contains a branch (forced Tier 2 — Tier 1
@@ -130,7 +139,12 @@ pub fn expand_step1_with_imported_descriptions(
             // OR the block declares any freeform colon-keyword sections
             // (Phase 3.C / D12 — Tier 1 inline has no sub-heading mechanism
             // and would silently drop them).
-            let is_tier2 = stmt_count >= 4 || freq >= 2 || has_branches || has_freeform;
+            let is_tier2 = stmt_count >= 4
+                || freq >= 2
+                || has_branches
+                || has_freeform
+                || has_body_constraints
+                || has_body_context;
 
             if is_tier2 {
                 // Mark as Tier 2 — leave the Call node in place.

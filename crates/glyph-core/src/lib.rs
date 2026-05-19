@@ -2164,6 +2164,72 @@ fn emit_library_procedures(
                     }
                 })
                 .collect();
+            // #168: resolve body-level constraints + context to their flat
+            // (strength, polarity, text) / (name, text) forms before passing
+            // to `emit_procedure`. Resolution order mirrors the rest of this
+            // function: `same_file_consts` first, then `imported_texts`. Markers
+            // that don't resolve are silently skipped — analyze fires
+            // `G::analyze::closure-violation` and `G::analyze::unresolved-name`
+            // for those cases at the front of the pipeline, so they cannot
+            // reach this point in a green build.
+            let resolved_constraints: Vec<(ir::Strength, ir::Polarity, String)> = eb
+                .node
+                .body_constraints
+                .iter()
+                .filter_map(|m| {
+                    let (strength, polarity) = match m.marker {
+                        ast::ConstraintMarkerKind::Require => {
+                            (ir::Strength::Soft, ir::Polarity::Require)
+                        }
+                        ast::ConstraintMarkerKind::Avoid => {
+                            (ir::Strength::Soft, ir::Polarity::Avoid)
+                        }
+                        ast::ConstraintMarkerKind::Must => {
+                            (ir::Strength::Hard, ir::Polarity::Require)
+                        }
+                        ast::ConstraintMarkerKind::MustAvoid => {
+                            (ir::Strength::Hard, ir::Polarity::Avoid)
+                        }
+                    };
+                    let name = m.name.node.as_str();
+                    let text = same_file_consts
+                        .get(name)
+                        .map(|(s, _)| s.clone())
+                        .or_else(|| imported_texts.get(name).cloned())?;
+                    Some((strength, polarity, text))
+                })
+                .collect();
+            let resolved_context: Vec<(Option<String>, String)> = eb
+                .node
+                .body_context
+                .iter()
+                .filter_map(|c| match c {
+                    ast::ContextEntry::NameRef(spanned) => {
+                        let name = spanned.node.as_str();
+                        same_file_consts
+                            .get(name)
+                            .map(|(s, _)| s.clone())
+                            .or_else(|| imported_texts.get(name).cloned())
+                            .map(|text| (Some(name.to_string()), text))
+                    }
+                    ast::ContextEntry::InlineString(s) => Some((None, s.clone())),
+                })
+                .collect();
+            let constraints_view: Vec<emit::ProcedureConstraint<'_>> = resolved_constraints
+                .iter()
+                .map(|(strength, polarity, text)| emit::ProcedureConstraint {
+                    strength: *strength,
+                    polarity: *polarity,
+                    text: text.as_str(),
+                })
+                .collect();
+            let context_view: Vec<emit::ProcedureContext<'_>> = resolved_context
+                .iter()
+                .map(|(name, text)| emit::ProcedureContext {
+                    name: name.as_deref(),
+                    text: text.as_str(),
+                })
+                .collect();
             let markdown = emit::emit_procedure(
                 &eb.node.name,
                 desc,
@@ -2175,6 +2241,8 @@ fn emit_library_procedures(
                 &local_type_registry,
                 enable_effects,
                 &freeform_sections,
+                &constraints_view,
+                &context_view,
             );
 
             let out_path = resolve_output_path(
@@ -6232,19 +6300,28 @@ export block shared_util(x = \"default\")
     fn ac3_no_closure_violation_for_params_and_exported_names() {
         // Export block referencing its own params and exported text should
         // NOT fire closure-violation.
-        let src = "\
-export const greeting = \"Hello.\"
-
-export block shared_util(x = \"default\")
-    flow:
-        \"Use {x}.\"
-        return x
-";
+        let src = "export const greeting = \"Hello.\"\n\nexport block shared_util(x = \"default\")\n    flow:\n        \"Use {x}.\"\n        return x\n";
         let bag = check_source(src, 0, "lib.glyph");
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
             !ids.contains(&"G::analyze::closure-violation"),
             "should not fire closure-violation for params/exported names, got: {:?}",
+            ids
+        );
+    }
+
+    /// Issue #166: body-level `context X` on an `export block` must fire
+    /// `G::analyze::closure-violation` when `X` resolves to a private
+    /// (non-exported) name in the same file. Mirrors the existing
+    /// flow-level coverage above.
+    #[test]
+    fn ac3_closure_violation_on_export_block_body_level_context_marker() {
+        let src = "const codebase_notes = \"Private prose used as a closure capture.\"\n\nexport block shared_util(x = \"default\")\n    context codebase_notes\n    flow:\n        return x\n";
+        let bag = check_source(src, 0, "lib.glyph");
+        let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
+        assert!(
+            ids.contains(&"G::analyze::closure-violation"),
+            "expected closure-violation for body-level `context <private>`, got: {:?}",
             ids
         );
     }

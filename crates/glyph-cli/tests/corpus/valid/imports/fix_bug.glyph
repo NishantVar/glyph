@@ -1,4 +1,5 @@
 import "./repo_tools.glyph" { inspect_repo }
+import "./prefs.glyph" { preserve_existing_patterns }
 
 skill fix_bug(scope = ".") -> Report
     description: "Fix a bug in the codebase."

@@ -654,3 +654,310 @@ fn fmt_does_not_synthesize_constraints_section_for_body_marker() {
         md
     );
 }
+
+/// Issue #165 — Skill side regression. An import referenced *only* by a
+/// body-level `require` marker must NOT be pruned by `glyph fmt`. Pre-fix
+/// the `fmt_signals.referenced_names` walker did not visit
+/// `Skill::body_constraints`, so the import was incorrectly treated as
+/// unused and dropped on the next round-trip.
+#[test]
+fn fmt_keeps_import_referenced_only_by_skill_body_constraint() {
+    let src = "import \"./prefs.glyph\" { accuracy }\n\nskill demo()\n    description: \"Demo.\"\n    require accuracy\n    flow:\n        \"Do.\"\n";
+    let result = glyph_core::fmt::fmt_source(src, false);
+    assert!(
+        result
+            .output
+            .contains("import \"./prefs.glyph\" { accuracy }"),
+        "fmt must preserve an import referenced only by a body-level `require`; got:\n{}",
+        result.output
+    );
+    assert!(
+        result.output.contains("    require accuracy\n"),
+        "body-level `require` should remain at body level; got:\n{}",
+        result.output
+    );
+}
+
+/// Issue #165 — Block side regression. An import referenced *only* by a
+/// body-level `require` marker on a `block` must NOT be pruned by
+/// `glyph fmt`. Mirrors the Skill-side regression above; requires the
+/// `fmt_signals.referenced_names` walker to visit
+/// `BlockDecl::body_constraints`.
+#[test]
+fn fmt_keeps_import_referenced_only_by_block_body_constraint() {
+    let src = "import \"./prefs.glyph\" { accuracy }\n\nblock helper() -> Text\n    require accuracy\n    flow:\n        return \"ok\"\n";
+    let result = glyph_core::fmt::fmt_source(src, false);
+    assert!(
+        result
+            .output
+            .contains("import \"./prefs.glyph\" { accuracy }"),
+        "fmt must preserve an import referenced only by a Block body-level `require`; got:\n{}",
+        result.output
+    );
+    assert!(
+        result.output.contains("    require accuracy\n"),
+        "Block body-level `require` should remain at body level; got:\n{}",
+        result.output
+    );
+}
+
+/// Issue #165 — Block body-level `context` name-ref must keep an import
+/// alive through `glyph fmt`. Requires the `fmt_signals.referenced_names`
+/// walker to visit `BlockDecl::body_context` as a NameRef.
+#[test]
+fn fmt_keeps_import_referenced_only_by_block_body_context() {
+    let src = "import \"./prefs.glyph\" { project_conventions }\n\nblock helper() -> Text\n    context project_conventions\n    flow:\n        return \"ok\"\n";
+    let result = glyph_core::fmt::fmt_source(src, false);
+    assert!(
+        result
+            .output
+            .contains("import \"./prefs.glyph\" { project_conventions }"),
+        "fmt must preserve an import referenced only by a Block body-level `context`; got:\n{}",
+        result.output
+    );
+    assert!(
+        result.output.contains("    context project_conventions\n"),
+        "Block body-level `context` should remain at body level; got:\n{}",
+        result.output
+    );
+}
+
+/// Issue #165 — Block `constraints:` sub-section body markers must keep
+/// the import alive through `glyph fmt`. The parser routes the sub-section
+/// body into `BlockDecl::body_constraints` (issue #165 §4); this test
+/// pins that the analyze walker treats those entries the same as body-
+/// level markers for import-pruning purposes.
+#[test]
+fn fmt_keeps_import_referenced_only_by_block_constraints_subsection() {
+    let src = "import \"./prefs.glyph\" { accuracy }\n\nblock helper() -> Text\n    constraints:\n        require accuracy\n    flow:\n        return \"ok\"\n";
+    let result = glyph_core::fmt::fmt_source(src, false);
+    assert!(
+        result
+            .output
+            .contains("import \"./prefs.glyph\" { accuracy }"),
+        "fmt must preserve an import referenced only by a Block `constraints:` sub-section body; got:\n{}",
+        result.output
+    );
+}
+
+/// Issue #165 — Block `context:` sub-section name-refs must keep the
+/// import alive through `glyph fmt`. Mirrors the constraints-subsection
+/// test above but for the `context:` sub-section on a Block.
+#[test]
+fn fmt_keeps_import_referenced_only_by_block_context_subsection() {
+    let src = "import \"./prefs.glyph\" { project_conventions }\n\nblock helper() -> Text\n    context:\n        project_conventions\n    flow:\n        return \"ok\"\n";
+    let result = glyph_core::fmt::fmt_source(src, false);
+    assert!(
+        result
+            .output
+            .contains("import \"./prefs.glyph\" { project_conventions }"),
+        "fmt must preserve an import referenced only by a Block `context:` sub-section name-ref; got:\n{}",
+        result.output
+    );
+}
+
+/// Reviewer P1.1 — Skill side. An import referenced ONLY from a duplicate
+/// `constraints:` sub-section body (recovered into `extra_subsections`
+/// per issue #109) must survive `glyph fmt`. Pre-fix the unused-import
+/// pruner ran before the duplicate-section merge and `collect_refs_from_decl`
+/// did not visit `extra_subsections`, so the import was silently dropped.
+#[test]
+fn fmt_keeps_import_referenced_only_by_skill_duplicate_constraints_subsection() {
+    let src = "import \"./prefs.glyph\" { stale_references }\n\nskill demo()\n    description: \"Demo.\"\n    constraints:\n        require accuracy\n    constraints:\n        avoid stale_references\n    flow:\n        \"Do.\"\n\nconst accuracy = \"be accurate\"\n";
+    let result = glyph_core::fmt::fmt_source(src, false);
+    assert!(
+        result
+            .output
+            .contains("import \"./prefs.glyph\" { stale_references }"),
+        "fmt must preserve an import referenced only by a duplicate `constraints:` body on a Skill (in `extra_subsections`); got:\n{}",
+        result.output
+    );
+}
+
+/// Reviewer P1.1 — Skill side. Same as above but for the duplicate
+/// `context:` sub-section recovery path.
+#[test]
+fn fmt_keeps_import_referenced_only_by_skill_duplicate_context_subsection() {
+    let src = "import \"./prefs.glyph\" { repo_layout }\n\nskill demo()\n    description: \"Demo.\"\n    context:\n        project_conventions\n    context:\n        repo_layout\n    flow:\n        \"Do.\"\n\nconst project_conventions = \"conventions\"\n";
+    let result = glyph_core::fmt::fmt_source(src, false);
+    assert!(
+        result
+            .output
+            .contains("import \"./prefs.glyph\" { repo_layout }"),
+        "fmt must preserve an import referenced only by a duplicate `context:` body on a Skill (in `extra_subsections`); got:\n{}",
+        result.output
+    );
+}
+
+/// Reviewer P1.1 — Block side. An import referenced ONLY from a duplicate
+/// `constraints:` sub-section body on a Block must survive `glyph fmt`.
+#[test]
+fn fmt_keeps_import_referenced_only_by_block_duplicate_constraints_subsection() {
+    let src = "import \"./prefs.glyph\" { stale_references }\n\nblock helper() -> Text\n    constraints:\n        require accuracy\n    constraints:\n        avoid stale_references\n    flow:\n        return \"ok\"\n\nconst accuracy = \"be accurate\"\n";
+    let result = glyph_core::fmt::fmt_source(src, false);
+    assert!(
+        result
+            .output
+            .contains("import \"./prefs.glyph\" { stale_references }"),
+        "fmt must preserve an import referenced only by a duplicate `constraints:` body on a Block (in `extra_subsections`); got:\n{}",
+        result.output
+    );
+}
+
+/// Reviewer P1.1 — Block side. Same as above but for the duplicate
+/// `context:` sub-section recovery path on a Block.
+#[test]
+fn fmt_keeps_import_referenced_only_by_block_duplicate_context_subsection() {
+    let src = "import \"./prefs.glyph\" { repo_layout }\n\nblock helper() -> Text\n    context:\n        project_conventions\n    context:\n        repo_layout\n    flow:\n        return \"ok\"\n\nconst project_conventions = \"conventions\"\n";
+    let result = glyph_core::fmt::fmt_source(src, false);
+    assert!(
+        result
+            .output
+            .contains("import \"./prefs.glyph\" { repo_layout }"),
+        "fmt must preserve an import referenced only by a duplicate `context:` body on a Block (in `extra_subsections`); got:\n{}",
+        result.output
+    );
+}
+
+/// Reviewer P1.2 — Skill side. An import referenced ONLY by a parameter
+/// default-value name ref (`scope = default_scope`) must survive
+/// `glyph fmt`. Pre-fix `collect_refs_from_decl` did not walk
+/// `Param.default`, so the import was silently dropped.
+#[test]
+fn fmt_keeps_import_referenced_only_by_skill_param_default() {
+    let src = "import \"./prefs.glyph\" { default_scope }\n\nskill demo(scope = default_scope)\n    description: \"Demo.\"\n    flow:\n        \"Do.\"\n";
+    let result = glyph_core::fmt::fmt_source(src, false);
+    assert!(
+        result
+            .output
+            .contains("import \"./prefs.glyph\" { default_scope }"),
+        "fmt must preserve an import referenced only by a Skill parameter default name ref; got:\n{}",
+        result.output
+    );
+}
+
+/// Reviewer P1.2 — Block side. Same as above but for a Block parameter
+/// default-value name ref.
+#[test]
+fn fmt_keeps_import_referenced_only_by_block_param_default() {
+    let src = "import \"./prefs.glyph\" { default_scope }\n\nblock helper(scope = default_scope) -> Text\n    flow:\n        return \"ok\"\n";
+    let result = glyph_core::fmt::fmt_source(src, false);
+    assert!(
+        result
+            .output
+            .contains("import \"./prefs.glyph\" { default_scope }"),
+        "fmt must preserve an import referenced only by a Block parameter default name ref; got:\n{}",
+        result.output
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #166 — ExportBlockDecl body-constraint / body-context parity
+// ---------------------------------------------------------------------------
+
+/// Issue #166 — Export-block side regression. An import referenced *only* by
+/// a body-level `require` marker on an `export block` must NOT be pruned by
+/// `glyph fmt`. Pre-fix `ExportBlockDecl` had no structured `body_constraints`
+/// field; `collect_refs_from_decl` saw nothing and the import was dropped.
+#[test]
+fn fmt_keeps_import_referenced_only_by_export_block_body_constraint() {
+    let src = "import \"./prefs.glyph\" { accuracy }\n\nexport block helper() -> Text\n    require accuracy\n    flow:\n        return \"ok\"\n";
+    let result = glyph_core::fmt::fmt_source(src, false);
+    assert!(
+        result
+            .output
+            .contains("import \"./prefs.glyph\" { accuracy }"),
+        "fmt must preserve an import referenced only by an ExportBlock body-level `require`; got:\n{}",
+        result.output
+    );
+    assert!(
+        result.output.contains("    require accuracy\n"),
+        "ExportBlock body-level `require` should remain at body level; got:\n{}",
+        result.output
+    );
+}
+
+/// Issue #166 — Export-block body-level `context` name-ref must keep an
+/// import alive through `glyph fmt`. Requires the `fmt_signals.referenced_names`
+/// walker to visit `ExportBlockDecl::body_context` as a NameRef.
+#[test]
+fn fmt_keeps_import_referenced_only_by_export_block_body_context() {
+    let src = "import \"./prefs.glyph\" { project_conventions }\n\nexport block helper() -> Text\n    context project_conventions\n    flow:\n        return \"ok\"\n";
+    let result = glyph_core::fmt::fmt_source(src, false);
+    assert!(
+        result
+            .output
+            .contains("import \"./prefs.glyph\" { project_conventions }"),
+        "fmt must preserve an import referenced only by an ExportBlock body-level `context`; got:\n{}",
+        result.output
+    );
+    assert!(
+        result.output.contains("    context project_conventions\n"),
+        "ExportBlock body-level `context` should remain at body level; got:\n{}",
+        result.output
+    );
+}
+
+/// Issue #166 — Export-block `constraints:` sub-section body markers must
+/// keep the import alive through `glyph fmt`. Mirrors the Block-side test
+/// (issue #165) but for `export block`.
+#[test]
+fn fmt_keeps_import_referenced_only_by_export_block_constraints_subsection() {
+    let src = "import \"./prefs.glyph\" { accuracy }\n\nexport block helper() -> Text\n    constraints:\n        require accuracy\n    flow:\n        return \"ok\"\n";
+    let result = glyph_core::fmt::fmt_source(src, false);
+    assert!(
+        result
+            .output
+            .contains("import \"./prefs.glyph\" { accuracy }"),
+        "fmt must preserve an import referenced only by an ExportBlock `constraints:` sub-section body; got:\n{}",
+        result.output
+    );
+}
+
+/// Issue #166 — Export-block `context:` sub-section name-refs must keep the
+/// import alive through `glyph fmt`. Mirrors the Block-side test for the
+/// `context:` sub-section but on an `export block`.
+#[test]
+fn fmt_keeps_import_referenced_only_by_export_block_context_subsection() {
+    let src = "import \"./prefs.glyph\" { project_conventions }\n\nexport block helper() -> Text\n    context:\n        project_conventions\n    flow:\n        return \"ok\"\n";
+    let result = glyph_core::fmt::fmt_source(src, false);
+    assert!(
+        result
+            .output
+            .contains("import \"./prefs.glyph\" { project_conventions }"),
+        "fmt must preserve an import referenced only by an ExportBlock `context:` sub-section name-ref; got:\n{}",
+        result.output
+    );
+}
+
+/// Issue #166 — An import referenced ONLY from a duplicate `constraints:`
+/// sub-section body on an ExportBlock (recovered into `extra_subsections`
+/// per issue #109) must survive `glyph fmt`. Mirrors the Block-side P1.1
+/// regression for the export-block flat scanner.
+#[test]
+fn fmt_keeps_import_referenced_only_by_export_block_duplicate_constraints_subsection() {
+    let src = "import \"./prefs.glyph\" { stale_references }\n\nexport block helper() -> Text\n    constraints:\n        require accuracy\n    constraints:\n        avoid stale_references\n    flow:\n        return \"ok\"\n\nconst accuracy = \"be accurate\"\n";
+    let result = glyph_core::fmt::fmt_source(src, false);
+    assert!(
+        result
+            .output
+            .contains("import \"./prefs.glyph\" { stale_references }"),
+        "fmt must preserve an import referenced only by a duplicate `constraints:` body on an ExportBlock (in `extra_subsections`); got:\n{}",
+        result.output
+    );
+}
+
+/// Issue #166 — Same as above but for the duplicate `context:` sub-section
+/// recovery path on an ExportBlock.
+#[test]
+fn fmt_keeps_import_referenced_only_by_export_block_duplicate_context_subsection() {
+    let src = "import \"./prefs.glyph\" { repo_layout }\n\nexport block helper() -> Text\n    context:\n        project_conventions\n    context:\n        repo_layout\n    flow:\n        return \"ok\"\n\nconst project_conventions = \"conventions\"\n";
+    let result = glyph_core::fmt::fmt_source(src, false);
+    assert!(
+        result
+            .output
+            .contains("import \"./prefs.glyph\" { repo_layout }"),
+        "fmt must preserve an import referenced only by a duplicate `context:` body on an ExportBlock (in `extra_subsections`); got:\n{}",
+        result.output
+    );
+}

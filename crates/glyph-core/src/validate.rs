@@ -341,6 +341,8 @@ mod tests {
             context_source_line: None,
             constraints_source_line: None,
             flow_source_line: None,
+            context: Vec::new(),
+            constraints: Vec::new(),
         }));
         arena.set_root_skill(NodeId(0));
 
@@ -446,6 +448,8 @@ mod tests {
             context_source_line: None,
             constraints_source_line: None,
             flow_source_line: None,
+            context: Vec::new(),
+            constraints: Vec::new(),
         }));
         // Block "bar" calls "foo" — completing the cycle.
         arena.push(IrNode::Block(IrBlock {
@@ -466,6 +470,8 @@ mod tests {
             context_source_line: None,
             constraints_source_line: None,
             flow_source_line: None,
+            context: Vec::new(),
+            constraints: Vec::new(),
         }));
         arena.set_root_skill(NodeId(0));
 

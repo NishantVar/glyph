@@ -12,11 +12,6 @@ description: 'Debug and fix a bug in the codebase with minimal, targeted changes
 
 - **scope**. Default: ".".
 
-## Constraints
-
-- **Require:** prefer the repository's existing patterns, helper APIs, naming, and file organization before introducing a new abstraction or style.
-- **Avoid:** making changes outside the requested scope or fixing unrelated issues.
-
 ## Context
 
 - **codebase-assumptions**
@@ -24,6 +19,11 @@ description: 'Debug and fix a bug in the codebase with minimal, targeted changes
   This codebase follows standard project conventions and has a test suite.
 
 - The bug is assumed to be reproducible locally.
+
+## Constraints
+
+- **Require:** prefer the repository's existing patterns, helper APIs, naming, and file organization before introducing a new abstraction or style.
+- **Avoid:** making changes outside the requested scope or fixing unrelated issues.
 
 ## Steps
 

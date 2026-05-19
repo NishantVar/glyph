@@ -36,6 +36,25 @@ the symptom, the impact, and the proposed fix.
     `crates/glyph-cli/tests/corpus/multi-file/fix_bug.glyph` instead, which
     is structurally identical but doesn't include the binding.
 
+- **`parse_export_block` flat-token-walk may overwrite earlier sections from
+  body-level marker string operands.** `crates/glyph-core/src/parse.rs` uses a
+  flat token-walk in `parse_export_block` where `current_section` persists
+  across tokens. The body-level `context <name|string>` branch was previously
+  re-assigning `description` when the inline `StringLit` token was scanned
+  while `current_section == Some("description")` (fixed in #168 round-3 by
+  setting `current_section = Some("other")` after the capture). The same
+  shape may apply to body-level `must "..."` / `must avoid "..."` /
+  `require "..."` / `avoid "..."` markers with string-literal operands when
+  they follow a `description: "..."` section header — there is no fixture in
+  the corpus that exercises this, and the existing constraint-rendering tests
+  use const refs rather than inline strings, so the latent bug (if it exists)
+  is unobserved. Fix: audit each body-level constraint-marker branch in
+  `parse_export_block` and apply the same `current_section` transition as
+  the `context` branch. Add a corpus fixture that combines `description: "..."`
+  with body-level `must "literal text"` (and the other three forms) on an
+  export block, asserting both the preamble line and the authored description
+  survive in the Tier 3 standalone output.
+
 ## Formatter (issue #109 follow-ups, codex pass-4 P2)
 
 - **Inline-form `description:` merge separator may not match design intent.**
@@ -103,3 +122,35 @@ the symptom, the impact, and the proposed fix.
   `never`, `no`) still produces a double-negative bullet
   (`**Avoid:** do not touch …`) and is now caught by the
   `negation_in_avoid_const_text` constraint in the teach/decompile skills.
+
+- **Nested Tier 2 procedure call renders as a literal `call <name>` step.**
+  When a Tier 2 procedure's flow calls another procedure (`call child_step`),
+  the emitted Tier 2 output renders the call as a literal step like
+  `4. call child_step` rather than inlining the callee's steps or rendering a
+  cross-reference to the child procedure's section. Reviewer of issue #168
+  treated this as pre-existing broader Tier 2 procedure-call rendering
+  behavior and not a #168 blocker. Surfaced by the fixture
+  `crates/glyph-cli/tests/corpus/valid/tier2_nested_block_promotion.glyph`
+  which was added as the Finding 1 regression-lock for #168. The desired
+  rendering is unspecified — needs a design call between (a) inlining the
+  callee's steps into the parent's step list, (b) emitting a cross-reference
+  to the child procedure's section, or (c) keeping the literal `call <name>`
+  but with a section anchor link. Cites: `crates/glyph-core/src/emit/scaffold.rs`
+  step-rendering path.
+
+## Testing
+
+- **`multi_file_acceptance.rs::setup_tempdir` cannot copy subdirectories from
+  corpus fixtures.** `crates/glyph-cli/tests/multi_file_acceptance.rs`'s
+  `setup_tempdir` walks corpus fixture directories with `read_dir` and
+  `std::fs::copy()`, which fails when the source directory contains
+  subdirectories. The test silently breaks when a fixture happens to contain
+  a nested directory — e.g. a Tier 3 standalone-procedure subdir created by
+  an earlier `glyph compile` run if the run was invoked without `--out-dir`
+  and pointed at the corpus root. Symptom: `cargo nextest run --workspace`
+  drops from a healthy count to N-24 with a `setup_tempdir` panic.
+  Workaround: keep the multi-file corpus directories free of subdirectories
+  (e.g. always pass `--out-dir <tempdir>` when running `glyph compile`
+  against any multi-file fixture). Fix: replace the flat `read_dir + copy()`
+  loop with a recursive `copy_dir_all` helper, or have it skip non-file
+  entries explicitly.
