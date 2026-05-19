@@ -1,5 +1,7 @@
 # LLM Expand Pass — Responsibilities
 
+> **Refusal semantics (2026-05-18):** the deterministic stub filler no longer silently elides `with` modifiers or LLM-grade local-ref cross-references. When a `CallBodyShape` span requires LLM judgment, the stub hard-fails with `G::expand::llm-required-for-call` and no `.md` is written. See `docs/superpowers/specs/2026-05-18-callbodyshape-span-emission-design.md`.
+
 > **Architecture context:** The deterministic emitter (per `design/expand.md` §3 and `design/compiled-output.md`) produces a Markdown *scaffold* with typed spans. This document specifies what the LLM does **inside those spans**. The LLM never produces deterministic structure — it only fills span content. Span kinds (`ParamDescription`, `DescriptionReturnFold`, `BranchCondition`, `CallBodyShape`) and the per-kind contract are summarized in `design/expand.md` §3.5; the IR fields the LLM consumes are tracked in `design/todo.md` §Expand — LLM Span Fill.
 
 This file enumerates **only** what the LLM is responsible for in Glyph's Expand pass (Step 2). Everything else in the compiled output is produced by the deterministic emitter and the LLM must not regenerate, paraphrase, or restructure it. The LLM's role is to fill specific text spans inside an already-scaffolded Markdown document.

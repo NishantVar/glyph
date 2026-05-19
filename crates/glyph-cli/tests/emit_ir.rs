@@ -107,7 +107,13 @@ fn compile_and_read_ir(filename: &str, source: &str) -> serde_json::Value {
 }
 
 #[test]
-fn emit_ir_includes_site_modifier_for_with_calls() {
+fn with_modifier_call_hard_fails_under_stub_filler() {
+    // CallBodyShape span emission (§6.2): `with`-modifier Calls now require
+    // LLM-grade expansion. The stub filler hard-fails before IR emission,
+    // so this test asserts the diagnostic surfaces and `--emit-ir` exits
+    // non-zero. Coverage of `projection_mode` and `site_modifier` survival
+    // through IR lives in `emit_ir_inline_calls_have_inline_projection_mode`
+    // and `emit_ir_includes_projection_mode_for_calls`.
     let source = r#"block inspect()
     flow:
         "Inspect the thing."
@@ -117,12 +123,25 @@ skill fix()
     flow:
         inspect() with "focus on auth"
 "#;
-    let v = compile_and_read_ir("with_mod.glyph", source);
-    let flow = v["skill"]["flow"].as_array().unwrap();
-    let call = &flow[0];
-    assert_eq!(call["kind"], "call");
-    assert_eq!(call["projection_mode"], "inline");
-    assert_eq!(call["site_modifier"], "focus on auth");
+    let dir = tempfile::tempdir().unwrap();
+    let src_path = dir.path().join("with_mod.glyph");
+    std::fs::write(&src_path, source).unwrap();
+    let result = run_compile_emit_ir(&src_path);
+    assert!(
+        !result.status.success(),
+        "expected non-zero exit; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    assert!(
+        combined.contains("G::expand::llm-required-for-call"),
+        "expected llm-required-for-call diagnostic; got:\n{combined}"
+    );
 }
 
 #[test]

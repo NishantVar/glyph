@@ -5,12 +5,23 @@
 use super::scaffold::{Chunk, Scaffold, SpanId, SpanKind};
 use std::collections::{BTreeMap, HashMap};
 
-pub fn fill(scaffold: &Scaffold) -> HashMap<SpanId, String> {
+#[derive(Clone, Debug)]
+pub struct StubFillError {
+    pub ir_node: crate::ir::NodeId,
+    pub target_name: Option<String>,
+    pub has_modifier: bool,
+    pub has_local_refs: bool,
+}
+
+pub fn fill(scaffold: &Scaffold) -> Result<HashMap<SpanId, String>, Vec<StubFillError>> {
     let mut out = HashMap::new();
+    let mut errors: Vec<StubFillError> = Vec::new();
     for chunk in &scaffold.chunks {
         if let Chunk::Span(span) = chunk {
-            let s = match span.kind {
-                SpanKind::ParamDescription => String::new(),
+            match span.kind {
+                SpanKind::ParamDescription => {
+                    out.insert(span.id, String::new());
+                }
                 SpanKind::BranchCondition => {
                     let raw = span
                         .payload
@@ -19,14 +30,26 @@ pub fn fill(scaffold: &Scaffold) -> HashMap<SpanId, String> {
                         .unwrap_or_default();
                     let empty = BTreeMap::new();
                     let rp = span.payload.resolved_predicates.as_ref().unwrap_or(&empty);
-                    substitute_predicate_tokens(&raw, rp, span.payload.classification.as_ref())
+                    let s =
+                        substitute_predicate_tokens(&raw, rp, span.payload.classification.as_ref());
+                    out.insert(span.id, s);
                 }
-                SpanKind::CallBodyShape => span.payload.resolved_body.clone().unwrap_or_default(),
-            };
-            out.insert(span.id, s);
+                SpanKind::CallBodyShape => {
+                    errors.push(StubFillError {
+                        ir_node: span.ir_node,
+                        target_name: span.payload.target_name.clone(),
+                        has_modifier: span.payload.site_modifier.is_some(),
+                        has_local_refs: !span.payload.local_refs.is_empty(),
+                    });
+                }
+            }
         }
     }
-    out
+    if errors.is_empty() {
+        Ok(out)
+    } else {
+        Err(errors)
+    }
 }
 
 /// Substitute recognised predicate tokens in a mixed condition string.
@@ -105,4 +128,85 @@ fn render_substitution_from_retokenize(raw: &str, rp: &BTreeMap<String, String>)
         parts.push(tok);
     }
     parts.join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::emit::scaffold::{Scaffold, SpanId, SpanKind, SpanPayload, SpanRef};
+    use crate::ir::NodeId;
+
+    fn span(id: u32, kind: SpanKind, payload: SpanPayload) -> SpanRef {
+        SpanRef {
+            id: SpanId(id),
+            kind,
+            ir_node: NodeId(3),
+            payload,
+        }
+    }
+
+    #[test]
+    fn fill_returns_ok_when_no_call_body_shape_spans() {
+        let s = Scaffold::default();
+        let r = fill(&s);
+        assert!(r.is_ok());
+        assert!(r.unwrap().is_empty());
+    }
+
+    #[test]
+    fn fill_hard_fails_on_call_body_shape_with_modifier() {
+        let mut s = Scaffold::default();
+        s.push_span(span(
+            0,
+            SpanKind::CallBodyShape,
+            SpanPayload {
+                target_name: Some("inspect_failure".into()),
+                site_modifier: Some("focus on lint".into()),
+                ..SpanPayload::default()
+            },
+        ));
+        let r = fill(&s);
+        let errors = r.expect_err("CallBodyShape span must hard-fail in stub filler");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].target_name.as_deref(), Some("inspect_failure"));
+        assert!(errors[0].has_modifier);
+        assert!(!errors[0].has_local_refs);
+        assert_eq!(errors[0].ir_node, NodeId(3));
+    }
+
+    #[test]
+    fn fill_collects_multiple_errors_in_chunk_order() {
+        let mut s = Scaffold::default();
+        s.push_span(SpanRef {
+            id: SpanId(0),
+            kind: SpanKind::CallBodyShape,
+            ir_node: NodeId(5),
+            payload: SpanPayload {
+                target_name: Some("a".into()),
+                site_modifier: Some("m".into()),
+                ..Default::default()
+            },
+        });
+        s.push_literal("between\n");
+        s.push_span(SpanRef {
+            id: SpanId(1),
+            kind: SpanKind::CallBodyShape,
+            ir_node: NodeId(2),
+            payload: SpanPayload {
+                target_name: Some("b".into()),
+                local_refs: vec![crate::ir::LocalRef {
+                    name: "x".into(),
+                    node_id: NodeId(99),
+                }],
+                ..Default::default()
+            },
+        });
+        let errs = fill(&s).expect_err("two CallBodyShape spans must yield two errors");
+        assert_eq!(errs.len(), 2);
+        // Order at this layer is chunk-stream order, not sorted; the lib-level
+        // helper sorts before pushing into the bag.
+        assert_eq!(errs[0].ir_node, NodeId(5));
+        assert_eq!(errs[1].ir_node, NodeId(2));
+        assert!(errs[1].has_local_refs);
+    }
 }

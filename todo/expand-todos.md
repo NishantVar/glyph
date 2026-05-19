@@ -45,3 +45,8 @@ The fold behaviour itself is still correct and still wanted as defence-in-depth 
 The two deleted `.glyph` fixtures do not need to be restored; the IR-level reconstruction supersedes them. The kept-but-typed `fix_bug.glyph` stays as the multi-file project's driver fixture for its other assertions; the relifted row-3 IR shape is an in-memory mirror of the pre-edit untyped form. Once relifted, delete the `#[ignore]` attributes (or delete the tests entirely and replace them with the IR-level versions in `glyph-core`), and remove this entry.
 
 **Links.** PRD #159, issue #160, `expand.rs::compute_return_sentence` defence-in-depth note.
+
+---
+
+- **Scoped constraints on `IrCall`.** Lower callee constraints into a new `IrCall.scoped_constraints` field; serialize via `emit_ir.rs` (today hardcoded to `[]`); extend the §3.3 triviality predicate in `crates/glyph-core/src/emit/scaffold.rs::call_needs_llm_fill` with `|| !c.scoped_constraints.is_empty()`; extend `SpanPayload` and `StubFillError` accordingly; reuse the span-emission machinery from the 2026-05-18 CallBodyShape spec.
+- **Real source spans on `IrCall`.** Thread a `SourceSpan` (or byte-offset pair) through `IrCall` from parser → lower → IR so `G::expand::llm-required-for-call` can carry a real source span instead of the synthetic zero-width file-level span the CallBodyShape spec ships with.

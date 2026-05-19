@@ -142,35 +142,35 @@ fn flow_assign_compiles_and_substitutes_inline_slot() {
     );
 }
 
-/// §11 valid: `<name> = <call>(scope) with "..."` parses through the
-/// modifier-aware path. The site-modifier survives lowering even though
-/// Tier 1 inline projection does not currently render it inline (covered
-/// by separate render coverage); the test asserts the producer naming
-/// sentence and bound-name return prose, which prove the binding was
-/// captured by parse + analyze + lower.
+/// §11: `<name> = <call>(scope) with "..."` now requires LLM-grade
+/// expansion. The deterministic stub filler refuses, so compile exits
+/// non-zero with `G::expand::llm-required-for-call` and writes no `.md`.
+/// See docs/superpowers/specs/2026-05-18-callbodyshape-span-emission-design.md.
 #[test]
-fn flow_assign_with_modifier_compiles() {
+fn flow_assign_with_modifier_hard_fails_under_stub_filler() {
     let src = fixture("valid", "flow_assign_with_modifier.glyph");
     let out = src.with_file_name("flow_assign_with_modifier.md");
     let _ = std::fs::remove_file(&out);
 
     let result = run_compile(src, "json");
-    assert_eq!(
+    assert_ne!(
         result.status.code(),
         Some(0),
-        "expected exit 0; stdout={:?} stderr={:?}",
+        "expected non-zero exit; stdout={:?} stderr={:?}",
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr),
     );
-
-    let md = std::fs::read_to_string(&out).expect(".md file is missing after compile");
+    let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+    let stdout = String::from_utf8_lossy(&result.stdout).to_string();
+    let combined = format!("{stdout}\n{stderr}");
     assert!(
-        md.contains("Refer to this result as ctx."),
-        "expected naming sentence; got md=\n{md}"
+        combined.contains("G::expand::llm-required-for-call"),
+        "expected llm-required-for-call diagnostic; got combined output:\n{combined}"
     );
     assert!(
-        md.contains("Your result is ctx"),
-        "expected bound-name return prose; got md=\n{md}"
+        !out.exists(),
+        ".md file must not be written when CallBodyShape stub filler hard-fails: found {}",
+        out.display()
     );
 }
 

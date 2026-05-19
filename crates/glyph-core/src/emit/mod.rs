@@ -13,10 +13,12 @@ pub(crate) mod templates;
 
 use crate::ir::{IrArena, OutputTargetForm, TypeRegistry};
 
-pub fn emit(arena: &IrArena, enable_effects: bool) -> String {
+pub use stub_fill::StubFillError;
+
+pub fn emit(arena: &IrArena, enable_effects: bool) -> Result<String, Vec<StubFillError>> {
     let scaffold = scaffold::build(arena, enable_effects);
-    let fills = stub_fill::fill(&scaffold);
-    merger::merge(scaffold, fills).expect("scaffold/fill mismatch is a bug")
+    let fills = stub_fill::fill(&scaffold)?;
+    Ok(merger::merge(scaffold, fills).expect("scaffold/fill mismatch is a bug"))
 }
 
 /// Emit a standalone procedure `.md` file for a Tier 3 external-file export block.
@@ -276,7 +278,7 @@ mod tests {
     #[test]
     fn emit_skips_effects_when_disabled() {
         let arena = arena_with_effects();
-        let output = emit(&arena, false);
+        let output = emit(&arena, false).expect("trivial skill must compile");
         assert!(
             !output.contains("effects:"),
             "effects line should be omitted when enable_effects is false"
@@ -290,7 +292,7 @@ mod tests {
     #[test]
     fn emit_includes_effects_when_enabled() {
         let arena = arena_with_effects();
-        let output = emit(&arena, true);
+        let output = emit(&arena, true).expect("trivial skill must compile");
         assert!(
             output.contains("effects: [fs:write, net:http]"),
             "effects line should be present when enable_effects is true"

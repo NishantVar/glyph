@@ -201,7 +201,14 @@ pub fn compile_source_with_effects(
     let arena = lower::lower(&file).map_err(CompileError::Lower)?;
     validate::validate(&arena).map_err(CompileError::Validate)?;
     let arena = expand::expand_step1(arena);
-    let markdown = emit::emit(&arena, enable_effects);
+    let markdown = match emit::emit(&arena, enable_effects) {
+        Ok(md) => md,
+        Err(errors) => {
+            let mut diag_bag = llm_required_diagnostics_from_errors(errors, file_label);
+            diag_bag.merge(bag);
+            return Ok(CompileOutcome::Diagnostics(diag_bag));
+        }
+    };
     Ok(CompileOutcome::Compiled {
         markdown,
         diagnostics: bag,
@@ -1783,11 +1790,64 @@ pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Return the `.tmp` sibling path for a given output path.
+// Return the `.tmp` sibling path for a given output path.
 fn tmp_path_for(path: &Path) -> PathBuf {
     let mut s = path.as_os_str().to_os_string();
     s.push(".tmp");
     PathBuf::from(s)
+}
+
+fn llm_required_diagnostics_from_errors(
+    mut errors: Vec<emit::StubFillError>,
+    file_label: &str,
+) -> DiagBag {
+    errors.sort_by_key(|e| e.ir_node.0);
+    let mut bag = DiagBag::new();
+    let li = LineIndex::new("");
+    let span = Span::new(0, 0, 0);
+    for e in errors {
+        let msg = build_llm_required_message(&e);
+        bag.push(
+            Diagnostic::error(
+                "G::expand::llm-required-for-call",
+                msg,
+                SourceSpan::from_byte_span(file_label, span, &li),
+            ),
+            span,
+        );
+    }
+    bag
+}
+
+fn build_llm_required_message(e: &emit::StubFillError) -> String {
+    let reason_phrase = match (e.has_modifier, e.has_local_refs) {
+        (true, false) => "a with modifier",
+        (false, true) => "local-ref cross-references",
+        (true, true) => "a with modifier and local-ref cross-references",
+        (false, false) => unreachable!(
+            "StubFillError is only pushed when site_modifier or local_refs is non-empty"
+        ),
+    };
+    let remediation = match (e.has_modifier, e.has_local_refs) {
+        (true, false) => "the with modifier",
+        (false, true) => "the local reference",
+        (true, true) => "the with modifier / rewrite the local reference",
+        (false, false) => unreachable!(),
+    };
+    let target = e.target_name.as_deref().unwrap_or("<unknown>");
+    let nid = format!("n{}", e.ir_node.0);
+    let mut out = String::new();
+    out.push_str("Call to `");
+    out.push_str(target);
+    out.push_str("` (IR ");
+    out.push_str(&nid);
+    out.push_str(") requires LLM-grade expansion because it has ");
+    out.push_str(reason_phrase);
+    out.push_str("; this compiler build is using the stub filler. ");
+    out.push_str("Enable the LLM expand filler, or drop ");
+    out.push_str(remediation);
+    out.push_str(".");
+    out
 }
 
 /// Map `foo.glyph` → `foo.ir.json` next to the source file.
@@ -2934,7 +2994,14 @@ fn compile_source_with_resolved_imports(
         arena,
         &resolved_imports.block_descriptions,
     );
-    let markdown = emit::emit(&arena, enable_effects);
+    let markdown = match emit::emit(&arena, enable_effects) {
+        Ok(md) => md,
+        Err(errors) => {
+            let mut diag_bag = llm_required_diagnostics_from_errors(errors, file_label);
+            diag_bag.merge(bag);
+            return Ok(CompileOutcome::Diagnostics(diag_bag));
+        }
+    };
     Ok(CompileOutcome::Compiled {
         markdown,
         diagnostics: bag,
@@ -2950,6 +3017,41 @@ mod tests {
     fn output_path_strips_glyph_md() {
         let p = compiled_output_path(Path::new("tests/corpus/valid/update_docs.glyph"));
         assert_eq!(p, Path::new("tests/corpus/valid/update_docs.md"));
+    }
+
+    #[test]
+    fn llm_required_diagnostics_sort_by_ir_node_id_ascending() {
+        // Errors arrive in arbitrary order; the helper must sort by
+        // `ir_node.0` ascending so emitted diagnostics are deterministic
+        // regardless of which call site the emitter encountered first.
+        let errors = vec![
+            emit::StubFillError {
+                ir_node: crate::ir::NodeId(7),
+                target_name: Some("late".to_string()),
+                has_modifier: true,
+                has_local_refs: false,
+            },
+            emit::StubFillError {
+                ir_node: crate::ir::NodeId(3),
+                target_name: Some("early".to_string()),
+                has_modifier: true,
+                has_local_refs: false,
+            },
+        ];
+        let bag = llm_required_diagnostics_from_errors(errors, "delegate.glyph");
+        let sorted = bag.sorted();
+        let messages: Vec<String> = sorted.iter().map(|d| d.message.clone()).collect();
+        assert_eq!(messages.len(), 2, "got {messages:?}");
+        assert!(
+            messages[0].contains("(IR n3)"),
+            "first message should be the n3 site, got {:?}",
+            messages[0]
+        );
+        assert!(
+            messages[1].contains("(IR n7)"),
+            "second message should be the n7 site, got {:?}",
+            messages[1]
+        );
     }
 
     #[test]
@@ -5184,36 +5286,28 @@ skill main()
 
     #[test]
     fn with_modifier_not_applied_in_compiled_output() {
-        // AC2: Compiled `.md` from Step 1 does NOT apply the modifier — the
-        // modifier is for the agent's Step 2, not the mechanical output.
-        let src = "\
-block inspect_repo(scope)
-    \"Inspect the repo for issues.\"
-
-skill main()
-    description: \"Main skill.\"
-    flow:
-        inspect_repo(scope) with \"focus on auth\"
-";
+        // Post-Task-7: a top-level Tier-1 Call with a `with` modifier now
+        // hard-fails under the deterministic stub filler with
+        // `G::expand::llm-required-for-call` (spec §6.2). The legacy
+        // "modifier is silently dropped from compiled output" contract is
+        // gone — the modifier is now a load-bearing input that the agent's
+        // Step 2 must consume, so Step 1 refuses to emit a `.md` at all.
+        let src = "block inspect_repo(scope)\n    \"Inspect the repo for issues.\"\n\nskill main()\n    description: \"Main skill.\"\n    flow:\n        inspect_repo(scope) with \"focus on auth\"\n";
         let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
         match outcome {
             CompileOutcome::Compiled { markdown, .. } => {
-                // The modifier text should NOT appear in the compiled output.
-                assert!(
-                    !markdown.contains("focus on auth"),
-                    "modifier text should not appear in compiled .md:\n{}",
-                    markdown
-                );
-                // The call's resolved body should still inline normally.
-                assert!(
-                    markdown.contains("Inspect the repo for issues."),
-                    "block body should still inline:\n{}",
+                panic!(
+                    "expected llm-required-for-call diagnostic; got compiled markdown:\n{}",
                     markdown
                 );
             }
             CompileOutcome::Diagnostics(bag) => {
                 let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
-                panic!("expected compiled output, got diagnostics: {:?}", ids);
+                assert!(
+                    ids.contains(&"G::expand::llm-required-for-call"),
+                    "expected G::expand::llm-required-for-call; got {:?}",
+                    ids
+                );
             }
         }
     }

@@ -28,10 +28,17 @@ pub fn merge(scaffold: Scaffold, fills: HashMap<SpanId, String>) -> Result<Strin
     for chunk in scaffold.chunks {
         match chunk {
             Chunk::Literal(s) => out.push_str(&s),
-            Chunk::Span(span) => match fills.get(&span.id) {
-                Some(s) => out.push_str(s),
-                None => return Err(MergeError::MissingSpan(span.id)),
-            },
+            Chunk::Span(span) => {
+                let filled = match fills.get(&span.id) {
+                    Some(s) => s.clone(),
+                    None => return Err(MergeError::MissingSpan(span.id)),
+                };
+                let body = match span.payload.post_merge_return_sentence.as_deref() {
+                    Some(sent) => crate::emit::templates::append_return_sentence(&filled, sent),
+                    None => filled,
+                };
+                out.push_str(&body);
+            }
         }
     }
     Ok(out)
