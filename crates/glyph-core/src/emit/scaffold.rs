@@ -69,16 +69,30 @@ pub(super) fn naming_sentence_for_call(c: &IrCall) -> Option<String> {
     }
 }
 
-/// Append a sentence to a Step body, separated by `". "` and stripping any
-/// trailing period from the body so the transition reads naturally. Mirrors
-/// `templates::append_return_sentence` but exposed locally for the
-/// flow-assignment naming sentence.
-pub(super) fn append_sentence(body: &str, sentence: &str) -> String {
-    let trimmed = body.trim_end().trim_end_matches('.').trim_end();
-    if trimmed.is_empty() {
-        sentence.to_string()
-    } else {
-        format!("{trimmed}. {sentence}")
+/// Does this Call need LLM-grade body shaping? When this returns true the
+/// emit site must push a `CallBodyShape` span; the stub filler hard-fails
+/// (see `stub_fill.rs`) producing `G::expand::llm-required-for-call`.
+///
+/// Per spec §3.3: a non-empty `site_modifier` (the `with "…"` clause) or
+/// a non-empty `local_refs` (LLM-grade cross-references like
+/// "the diagnosis from your earlier analysis", which the deterministic
+/// `substitute_local_refs_in` bare-substitution cannot produce).
+pub(crate) fn call_needs_llm_fill(c: &crate::ir::IrCall) -> bool {
+    c.site_modifier.is_some() || !c.local_refs.is_empty()
+}
+
+/// Map `IrCall.projection_tier` + `bound_name` into the payload-side
+/// `ProjectionMode`. Mirrors the actual emit-site match order: a Call
+/// carrying both a `projection_tier` and a `bound_name` routes through
+/// its tier path, not the stdlib anchor. `StdlibBound` is reached only
+/// when no tier applies.
+pub(crate) fn projection_mode_from(c: &crate::ir::IrCall) -> Option<ProjectionMode> {
+    match c.projection_tier {
+        Some(1) => Some(ProjectionMode::Inline),
+        Some(2) => Some(ProjectionMode::SameFileProcedure),
+        Some(3) => Some(ProjectionMode::ExternalFile),
+        _ if c.bound_name.is_some() => Some(ProjectionMode::StdlibBound),
+        _ => None,
     }
 }
 
@@ -91,6 +105,109 @@ pub(super) fn substitute_local_refs_in(text: &str, local_refs: &[LocalRef]) -> S
         return text.to_string();
     }
     slot::substitute_local_refs(text, |name| local_refs.iter().any(|l| l.name == name))
+}
+
+/// Tier-1 last-step folding context for [`push_call_body`].
+///
+/// Set by top-level scaffold callers; in-arm callers always pass `None`.
+pub(crate) struct Tier1FoldCtx {
+    /// True only for the final flow step at the top level.
+    pub is_last: bool,
+    /// The §8.4 return sentence to fold into / over the call body when present.
+    pub return_sentence: Option<String>,
+}
+
+/// Shared Call-rendering helper used by every CallBodyShape emit site.
+///
+/// Owns: [`call_needs_llm_fill`] dispatch, [`projection_mode_from`] lookup,
+/// CallBodyShape `SpanPayload` construction, raw-body-vs-anchor selection,
+/// Tier-1 last-step return-sentence folding (`post_merge_return_sentence`
+/// for spans; in-line fold via [`templates::append_return_sentence`] for
+/// literals), and the trailing §9.1 naming sentence + line break.
+///
+/// Callers handle their own step-numbering prefix (e.g. `"1. "` or
+/// `"   a. "`) and any site-specific bookkeeping (e.g. Tier-2
+/// `procedure_seen` tracking).
+///
+/// `anchor_or_body` is the *raw* call body for Tier-1 (slots intact when
+/// LLM-fill is needed) or the pre-formatted anchor sentence for
+/// Tier-2/3/Stdlib. `tier1` carries last-step folding context and is
+/// `None` for non-Tier-1 callers.
+pub(crate) fn push_call_body(
+    s: &mut Scaffold,
+    c: &crate::ir::IrCall,
+    anchor_or_body: &str,
+    tier1: Option<Tier1FoldCtx>,
+    next_span_id: &mut u32,
+) {
+    let needs_fill = call_needs_llm_fill(c);
+    let projection = projection_mode_from(c);
+    match tier1 {
+        Some(t1) => {
+            let body_is_empty = anchor_or_body.trim().is_empty();
+            if needs_fill {
+                let id = SpanId(*next_span_id);
+                *next_span_id += 1;
+                let resolved = if t1.is_last && body_is_empty && t1.return_sentence.is_some() {
+                    String::new()
+                } else {
+                    anchor_or_body.to_string()
+                };
+                s.push_span(SpanRef {
+                    id,
+                    kind: SpanKind::CallBodyShape,
+                    ir_node: c.node_id,
+                    payload: SpanPayload {
+                        target_name: Some(c.target.clone()),
+                        projection_mode: projection,
+                        site_modifier: c.site_modifier.clone(),
+                        resolved_body: Some(resolved),
+                        local_refs: c.local_refs.clone(),
+                        post_merge_return_sentence: t1.return_sentence,
+                        ..SpanPayload::default()
+                    },
+                });
+            } else {
+                let body_owned = substitute_local_refs_in(anchor_or_body, &c.local_refs);
+                let body = body_owned.as_str();
+                let rendered = if t1.is_last {
+                    match (t1.return_sentence.as_deref(), body_is_empty) {
+                        (Some(sent), true) => sent.to_string(),
+                        (Some(sent), false) => templates::append_return_sentence(body, sent),
+                        (None, _) => body.to_string(),
+                    }
+                } else {
+                    body.to_string()
+                };
+                s.push_literal(rendered);
+            }
+        }
+        None => {
+            if needs_fill {
+                let id = SpanId(*next_span_id);
+                *next_span_id += 1;
+                s.push_span(SpanRef {
+                    id,
+                    kind: SpanKind::CallBodyShape,
+                    ir_node: c.node_id,
+                    payload: SpanPayload {
+                        target_name: Some(c.target.clone()),
+                        projection_mode: projection,
+                        site_modifier: c.site_modifier.clone(),
+                        resolved_body: Some(anchor_or_body.to_string()),
+                        local_refs: c.local_refs.clone(),
+                        ..SpanPayload::default()
+                    },
+                });
+            } else {
+                s.push_literal(anchor_or_body.to_string());
+            }
+        }
+    }
+    if let Some(naming) = naming_sentence_for_call(c) {
+        s.push_literal(format!(" {}", naming));
+    }
+    s.push_literal("\n");
 }
 
 /// Flow-position-assignments §9.3 noun-phrase priority chain. Given a producer
@@ -299,6 +416,14 @@ pub enum SpanKind {
     CallBodyShape,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProjectionMode {
+    Inline,
+    SameFileProcedure,
+    ExternalFile,
+    StdlibBound,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct SpanPayload {
     pub site_modifier: Option<String>,
@@ -310,6 +435,11 @@ pub struct SpanPayload {
     pub param_name: Option<String>,
     pub param_type: Option<String>,
     pub param_default: Option<String>,
+    // New for CallBodyShape (see docs/superpowers/specs/2026-05-18-callbodyshape-span-emission-design.md §3.5):
+    pub target_name: Option<String>,
+    pub projection_mode: Option<ProjectionMode>,
+    pub local_refs: Vec<crate::ir::LocalRef>,
+    pub post_merge_return_sentence: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -393,7 +523,7 @@ fn classifies_as_tier2(
     let Some(b) = blocks_by_name.get(name) else {
         return false;
     };
-    let stmt_count = b.flow_statements.len();
+    let stmt_count = b.flow_items.len();
     let has_branches = !b.branch_steps.is_empty();
     let wc = b.resolved_word_count.unwrap_or(0) as usize;
     let has_body_constraints = !b.constraints.is_empty();
@@ -665,11 +795,11 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
     // ### Procedure: <name> sections
     for target_name in &procedure_order {
         let kebab_name = target_name.replace('_', "-");
-        // Collect the block's flow_statements + contract metadata before emitting.
+        // Collect the block's flow_items + contract metadata before emitting.
         // Also collect freeform_sections so we can emit them as `####` children
         // of the procedure heading per design §4.1.5 / D12.
-        let (flow_stmts, proc_oc_form, proc_rt_text, proc_freeform, proc_constraints, proc_context) = {
-            let mut stmts: Option<Vec<String>> = None;
+        let (flow_items, proc_oc_form, proc_rt_text, proc_freeform, proc_constraints, proc_context) = {
+            let mut items: Option<Vec<crate::ir::IrBlockFlowItem>> = None;
             let mut oc: Option<OutputTargetForm> = None;
             let mut rt: Option<String> = None;
             let mut ff: Vec<NodeId> = Vec::new();
@@ -678,7 +808,7 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
             for node in arena.nodes() {
                 if let IrNode::Block(b) = node {
                     if b.name == *target_name {
-                        stmts = Some(b.flow_statements.clone());
+                        items = Some(b.flow_items.clone());
                         oc = block_output_form_owned(arena, target_name);
                         rt = block_return_type_text_owned(arena, target_name);
                         ff = b.freeform_sections.clone();
@@ -688,9 +818,9 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                     }
                 }
             }
-            (stmts, oc, rt, ff, cs, cx)
+            (items, oc, rt, ff, cs, cx)
         };
-        if let Some(stmts) = flow_stmts {
+        if let Some(items) = flow_items {
             s.push_literal(format!("### Procedure: {}\n\n", kebab_name));
             // #168: Tier 2 procedure preamble — body-level constraints and context
             // declared on the block render as prose paragraphs (bold-prefix lines,
@@ -725,26 +855,17 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
             // Each preamble line already ends with `\n\n`; the final `\n\n`
             // supplies the blank line separator between preamble and steps.
             let _ = had_preamble;
-            // Codex review Finding 2: Tier 2 procedures must project block-level
-            // `if`/elif/else through the same `branch::emit_to_scaffold` path the
-            // skill flow uses. Pre-fix, `flow_statements` carried `if {condition}`
-            // verbatim and the body was dropped entirely. The block's
-            // `branch_steps` map (idx -> IrBranch NodeId) lets us swap the raw
-            // string in for the structured node at the matching original index.
-            let branch_steps: std::collections::HashMap<usize, NodeId> = arena
-                .nodes()
+            // §3.10: drive procedure-body emission off the structured
+            // `flow_items` (tagged enum) instead of the legacy lossy
+            // `flow_statements: Vec<String>`. Each Call variant carries its
+            // pre-allocated IrCall NodeId, so the shared `push_call_body`
+            // helper handles tier-1/2/3/stdlib rendering uniformly. Branch
+            // variants carry their NodeId directly — no side-channel
+            // `branch_steps` map needed.
+            let visible_count = items
                 .iter()
-                .find_map(|node| {
-                    if let IrNode::Block(b) = node {
-                        if b.name == *target_name {
-                            return Some(b.branch_steps.clone());
-                        }
-                    }
-                    None
-                })
-                .unwrap_or_default();
-            // Filter out raw "return" markers; they are replaced by the §8.4 sentence.
-            let visible_count = stmts.iter().filter(|st| st.as_str() != "return").count();
+                .filter(|it| !matches!(it, crate::ir::IrBlockFlowItem::Return))
+                .count();
             let proc_sentence = templates::compute_return_sentence(
                 proc_rt_text.as_deref(),
                 proc_oc_form.as_ref(),
@@ -756,50 +877,101 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                 s.push_literal(format!("1. {}\n", proc_sentence.unwrap()));
             } else {
                 let mut visible_idx: usize = 0;
-                for (orig_idx, stmt) in stmts.iter().enumerate() {
-                    if stmt == "return" {
+                for item in &items {
+                    if matches!(item, crate::ir::IrBlockFlowItem::Return) {
                         continue;
                     }
                     visible_idx += 1;
                     let step_num = visible_idx;
                     let is_last = visible_idx == visible_count;
-                    if let Some(branch_id) = branch_steps.get(&orig_idx) {
-                        if let IrNode::Branch(br) = arena.get(*branch_id) {
-                            super::branch::emit_to_scaffold(
-                                &mut s,
-                                arena,
-                                br,
-                                step_num,
-                                &mut next_span_id,
-                            );
-                            // Codex review Finding (medium): when the
-                            // last visible step is a branch, the
-                            // §8.4 sentence still has to render. The
-                            // branch emitter has no place to fold the
-                            // sentence in (its arms are sub-steps),
-                            // so we emit it as a trailing standalone
-                            // step — same shape as the return-only
-                            // procedure path above.
-                            if is_last {
-                                if let Some(sent) = proc_sentence.as_deref() {
-                                    s.push_literal(format!("{}. {}\n", step_num + 1, sent));
+                    match item {
+                        crate::ir::IrBlockFlowItem::Branch { node_id } => {
+                            if let IrNode::Branch(br) = arena.get(*node_id) {
+                                super::branch::emit_to_scaffold(
+                                    &mut s,
+                                    arena,
+                                    br,
+                                    step_num,
+                                    &mut next_span_id,
+                                );
+                                // Trailing §8.4 sentence when the final visible
+                                // step is a branch (mirrors the in-skill flow
+                                // emitter's matching path).
+                                if is_last {
+                                    if let Some(sent) = proc_sentence.as_deref() {
+                                        s.push_literal(format!("{}. {}\n", step_num + 1, sent));
+                                    }
                                 }
                             }
-                            continue;
                         }
-                    }
-                    if is_last {
-                        match proc_sentence.as_deref() {
-                            Some(sent) => {
-                                let body = templates::append_return_sentence(stmt, sent);
-                                s.push_literal(format!("{}. {}\n", step_num, body));
-                            }
-                            None => {
-                                s.push_literal(format!("{}. {}\n", step_num, stmt));
+                        crate::ir::IrBlockFlowItem::Call { node_id } => {
+                            if let IrNode::Call(c) = arena.get(*node_id) {
+                                s.push_literal(format!("{}. ", step_num));
+                                match c.projection_tier {
+                                    Some(1) => {
+                                        let raw_body =
+                                            c.resolved_body.as_deref().unwrap_or_default();
+                                        let return_sentence =
+                                            if is_last { proc_sentence.clone() } else { None };
+                                        push_call_body(
+                                            &mut s,
+                                            c,
+                                            raw_body,
+                                            Some(Tier1FoldCtx {
+                                                is_last,
+                                                return_sentence,
+                                            }),
+                                            &mut next_span_id,
+                                        );
+                                    }
+                                    Some(2) => {
+                                        let callee_kebab = c.target.replace('_', "-");
+                                        let anchor =
+                                            format!("Follow the {callee_kebab} procedure below.");
+                                        push_call_body(&mut s, c, &anchor, None, &mut next_span_id);
+                                    }
+                                    Some(3) => {
+                                        let proc_path =
+                                            c.procedure_path.as_deref().unwrap_or("unknown");
+                                        let anchor = templates::external_file_step(proc_path);
+                                        push_call_body(&mut s, c, &anchor, None, &mut next_span_id);
+                                    }
+                                    _ if c.bound_name.is_some() => {
+                                        let anchor = format!("Call `{}`.", c.target);
+                                        push_call_body(&mut s, c, &anchor, None, &mut next_span_id);
+                                    }
+                                    _ => {
+                                        panic!(
+                                            "IrCall to `{}` survived past expand without tier assignment",
+                                            c.target
+                                        );
+                                    }
+                                }
                             }
                         }
-                    } else {
-                        s.push_literal(format!("{}. {}\n", step_num, stmt));
+                        crate::ir::IrBlockFlowItem::Inline { text } => {
+                            if is_last {
+                                match proc_sentence.as_deref() {
+                                    Some(sent) => {
+                                        let body = templates::append_return_sentence(text, sent);
+                                        s.push_literal(format!("{}. {}\n", step_num, body));
+                                    }
+                                    None => {
+                                        s.push_literal(format!("{}. {}\n", step_num, text));
+                                    }
+                                }
+                            } else {
+                                s.push_literal(format!("{}. {}\n", step_num, text));
+                            }
+                        }
+                        crate::ir::IrBlockFlowItem::Constraint { rendered }
+                        | crate::ir::IrBlockFlowItem::Context { rendered } => {
+                            s.push_literal(format!("{}. {}\n", step_num, rendered));
+                        }
+                        crate::ir::IrBlockFlowItem::BareName { name } => {
+                            s.push_literal(format!("{}. {}\n", step_num, name));
+                        }
+                        crate::ir::IrBlockFlowItem::Return => unreachable!(),
                     }
                 }
             }
@@ -807,9 +979,6 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
 
             // Freeform colon-keyword sections at depth 4 (children of the
             // `### Procedure: <name>` heading), per design §4.1.5 / D12.
-            // Phase 3.C scope: a procedure block's `freeform_sections` is the
-            // only authoring channel for sub-headings — there is no D9 merge
-            // here because procedures do not project built-in body sections.
             for ff_id in &proc_freeform {
                 emit_freeform_section(&mut s, arena, *ff_id, 4);
             }
@@ -1019,99 +1188,58 @@ fn emit_flow_section(
                     super::branch::emit_to_scaffold(s, arena, br, idx + 1, next_span_id);
                 }
                 IrNode::Call(c) if c.projection_tier == Some(1) => {
-                    // §9.2: substitute `{n}` → bare `n` for flow-locals in
-                    // the inlined body. Parameter slots pass through and
-                    // are filled by the existing stub-fill machinery.
-                    let raw_body = c.resolved_body.as_deref().unwrap_or_default();
-                    let body_owned = substitute_local_refs_in(raw_body, &c.local_refs);
-                    let body = body_owned.as_str();
-                    if is_last {
-                        // Codex M4: when this final call IS the producer
-                        // whose result the skill returns (`skill.return_local_ref`
-                        // points at this `c.node_id`), the §9.3 return-prose
-                        // step ("Your result is <name> …") will be emitted
-                        // immediately below. Suppress the §8.4 generic
-                        // "Return a `<T>`." suffix here so the two prose
-                        // forms don't both render and duplicate the return
-                        // statement.
-                        let is_returned_producer = skill
-                            .return_local_ref
-                            .as_ref()
-                            .is_some_and(|lr| lr.node_id == c.node_id);
-                        // For tier-1 calls, the enclosing skill's output_contract
-                        // wins when both exist: the skill's `return <…>` is the
-                        // author's stated final return, so its template must take
-                        // precedence over the inlined callee's contract.
-                        // (`design/expand.md` §3.5;
-                        // `design/compiled-output.md` §OutputContract Rendering.)
-                        // The callee's OC is read directly off the Call node —
-                        // populated at lower time for same-file callees and at
-                        // the cross-file import fix-up for imported callees.
-                        let (effective_form, effective_rt) = match skill_oc_form.as_ref() {
-                            Some(form) => (Some(form), skill_rt_text.as_deref()),
-                            None => (
-                                c.callee_output_contract.as_ref(),
-                                c.callee_return_type_text.as_deref(),
-                            ),
-                        };
-                        let sentence = if is_returned_producer {
-                            None
-                        } else {
-                            templates::compute_return_sentence(
-                                effective_rt,
-                                effective_form,
-                                &arena.type_registry,
-                            )
-                        };
-                        // A return-only callee (e.g. `block helper: do { return <x> }`)
-                        // inlines with an empty resolved_body. Suffixing onto an
-                        // empty body would yield a malformed leading-comma line;
-                        // emit the §8.4 sentence as a standalone step instead.
-                        let body_is_empty = body.trim().is_empty();
-                        // Pre-fold the §8.4 sentence (if any) onto the
-                        // body first; the §9.1 naming sentence — when
-                        // applicable — then trails the whole thing so the
-                        // step renders `<body>. <return-sentence>. Refer
-                        // to this … as <n>.`
-                        let mut step_text = match (sentence, body_is_empty) {
-                            (Some(sent), true) => sent,
-                            (Some(sent), false) => templates::append_return_sentence(body, &sent),
-                            (None, _) => body.to_string(),
-                        };
-                        if let Some(naming) = naming_sentence_for_call(c) {
-                            step_text = append_sentence(&step_text, &naming);
-                        }
-                        s.push_literal(format!("{}. {}\n", idx + 1, step_text));
+                    s.push_literal(format!("{}. ", idx + 1));
+                    let is_returned_producer = skill
+                        .return_local_ref
+                        .as_ref()
+                        .is_some_and(|lr| lr.node_id == c.node_id);
+                    let (effective_form, effective_rt) = match skill_oc_form.as_ref() {
+                        Some(form) => (Some(form), skill_rt_text.as_deref()),
+                        None => (
+                            c.callee_output_contract.as_ref(),
+                            c.callee_return_type_text.as_deref(),
+                        ),
+                    };
+                    let return_sentence = if is_last && !is_returned_producer {
+                        templates::compute_return_sentence(
+                            effective_rt,
+                            effective_form,
+                            &arena.type_registry,
+                        )
                     } else {
-                        // Producer step in a non-last position. Append the
-                        // §9.1 naming sentence directly to the inlined
-                        // body — this is the "action sentence + naming
-                        // sentence in the same Step" rule from §9.1.
-                        let mut step_text = body.to_string();
-                        if let Some(naming) = naming_sentence_for_call(c) {
-                            step_text = append_sentence(&step_text, &naming);
-                        }
-                        s.push_literal(format!("{}. {}\n", idx + 1, step_text));
-                    }
+                        None
+                    };
+
+                    let raw_body = c.resolved_body.as_deref().unwrap_or_default();
+
+                    // §9.1 producer naming sentence — Post-span Literal chunk when emitted.
+
+                    push_call_body(
+                        s,
+                        c,
+                        raw_body,
+                        Some(Tier1FoldCtx {
+                            is_last,
+                            return_sentence,
+                        }),
+                        next_span_id,
+                    );
                 }
                 IrNode::Call(c) if c.projection_tier == Some(2) => {
+                    s.push_literal(format!("{}. ", idx + 1));
                     let kebab_name = c.target.replace('_', "-");
-                    let mut step_text = format!("Follow the {} procedure below.", kebab_name);
-                    if let Some(naming) = naming_sentence_for_call(c) {
-                        step_text = append_sentence(&step_text, &naming);
-                    }
-                    s.push_literal(format!("{}. {}\n", idx + 1, step_text));
+                    let anchor = format!("Follow the {kebab_name} procedure below.");
+                    push_call_body(s, c, &anchor, None, next_span_id);
+
                     if procedure_seen.insert(c.target.clone()) {
                         procedure_order.push(c.target.clone());
                     }
                 }
                 IrNode::Call(c) if c.projection_tier == Some(3) => {
+                    s.push_literal(format!("{}. ", idx + 1));
                     let proc_path = c.procedure_path.as_deref().unwrap_or("unknown");
-                    let mut step_text = templates::external_file_step(proc_path);
-                    if let Some(naming) = naming_sentence_for_call(c) {
-                        step_text = append_sentence(&step_text, &naming);
-                    }
-                    s.push_literal(format!("{}. {}\n", idx + 1, step_text));
+                    let anchor = templates::external_file_step(proc_path);
+                    push_call_body(s, c, &anchor, None, next_span_id);
                 }
                 IrNode::Call(c) if c.bound_name.is_some() => {
                     // Flow-position-assignments §9.1: a stdlib or otherwise
@@ -1122,11 +1250,9 @@ fn emit_flow_section(
                     // generic `Call <target>.` action; Step 2 (LLM) is
                     // free to weave it more fluently when a `with`
                     // modifier is present.
-                    let mut step_text = format!("Call `{}`.", c.target);
-                    if let Some(naming) = naming_sentence_for_call(c) {
-                        step_text = append_sentence(&step_text, &naming);
-                    }
-                    s.push_literal(format!("{}. {}\n", idx + 1, step_text));
+                    s.push_literal(format!("{}. ", idx + 1));
+                    let anchor = format!("Call `{}`.", c.target);
+                    push_call_body(s, c, &anchor, None, next_span_id);
                 }
                 IrNode::Call(c) => {
                     panic!(
@@ -1363,7 +1489,7 @@ mod tests {
             analyze_with_diagnostics(file, 0, "test.glyph", &line_index, &mut bag, &mut registry);
         let arena = crate::lower::lower(&analyzed).expect("source should lower");
         let arena = crate::expand::expand_step1(arena);
-        crate::emit::emit(&arena, false)
+        crate::emit::emit(&arena, false).expect("trivial fixture must compile")
     }
 
     /// §9.1 (value shape): producer step appends `Refer to this result as <n>.`
@@ -1489,6 +1615,655 @@ skill demo() -> RepoContext
         assert!(
             md.contains("produced above"),
             "expected `produced above` parenthetical in return prose:\n{md}"
+        );
+    }
+
+    #[test]
+    fn span_payload_default_carries_new_call_body_shape_fields() {
+        let p = SpanPayload::default();
+        assert!(p.target_name.is_none());
+        assert!(p.projection_mode.is_none());
+        assert!(p.local_refs.is_empty());
+        assert!(p.post_merge_return_sentence.is_none());
+    }
+
+    #[test]
+    fn projection_mode_variants_exist() {
+        let modes = [
+            ProjectionMode::Inline,
+            ProjectionMode::SameFileProcedure,
+            ProjectionMode::ExternalFile,
+            ProjectionMode::StdlibBound,
+        ];
+        assert_eq!(modes.len(), 4);
+    }
+
+    #[test]
+    fn call_needs_llm_fill_recognises_modifier_and_local_refs() {
+        use crate::ir::{IrCall, LocalRef};
+        let mut c = IrCall {
+            node_id: NodeId(0),
+            target: "x".into(),
+            args: Vec::new(),
+            resolved_body: None,
+            site_modifier: None,
+            projection_tier: Some(1),
+            procedure_path: None,
+            return_type: None,
+            callee_output_contract: None,
+            callee_return_type_text: None,
+            bound_name: None,
+            local_refs: Vec::new(),
+            is_agent: false,
+        };
+        assert!(
+            !call_needs_llm_fill(&c),
+            "trivial Call must not need LLM fill"
+        );
+        c.site_modifier = Some("focus on lint".into());
+        assert!(call_needs_llm_fill(&c), "with-modifier triggers LLM fill");
+        c.site_modifier = None;
+        c.local_refs.push(LocalRef {
+            name: "ctx".into(),
+            node_id: NodeId(7),
+        });
+        assert!(
+            call_needs_llm_fill(&c),
+            "non-empty local_refs triggers LLM fill"
+        );
+    }
+
+    #[test]
+    fn projection_mode_from_maps_tier_and_bound_name() {
+        use crate::ir::IrCall;
+        let mk = |tier: Option<u8>, bound: Option<&str>| IrCall {
+            node_id: NodeId(0),
+            target: "x".into(),
+            args: Vec::new(),
+            resolved_body: None,
+            site_modifier: None,
+            projection_tier: tier,
+            procedure_path: None,
+            return_type: None,
+            callee_output_contract: None,
+            callee_return_type_text: None,
+            bound_name: bound.map(str::to_string),
+            local_refs: Vec::new(),
+            is_agent: false,
+        };
+        assert_eq!(
+            projection_mode_from(&mk(Some(1), None)),
+            Some(ProjectionMode::Inline)
+        );
+        assert_eq!(
+            projection_mode_from(&mk(Some(2), None)),
+            Some(ProjectionMode::SameFileProcedure)
+        );
+        assert_eq!(
+            projection_mode_from(&mk(Some(3), None)),
+            Some(ProjectionMode::ExternalFile)
+        );
+        assert_eq!(
+            projection_mode_from(&mk(None, Some("subagent"))),
+            Some(ProjectionMode::StdlibBound)
+        );
+        assert_eq!(
+            projection_mode_from(&mk(Some(1), Some("subagent"))),
+            Some(ProjectionMode::Inline)
+        );
+        assert_eq!(projection_mode_from(&mk(None, None)), None);
+    }
+
+    #[test]
+    fn top_level_tier2_call_with_modifier_emits_span() {
+        use crate::ir::{IrCall, IrNode, IrSkill};
+        let mut arena = IrArena::new();
+        let call_id = arena.push(IrNode::Call(IrCall {
+            node_id: NodeId(0),
+            target: "do_steps".into(),
+            args: Vec::new(),
+            resolved_body: None,
+            site_modifier: Some("focus on errors".into()),
+            projection_tier: Some(2),
+            procedure_path: None,
+            return_type: None,
+            callee_output_contract: None,
+            callee_return_type_text: None,
+            bound_name: None,
+            local_refs: Vec::new(),
+            is_agent: false,
+        }));
+        let skill_id = arena.push(IrNode::Skill(IrSkill {
+            node_id: NodeId(1),
+            name: "demo".into(),
+            description: "Demo.".into(),
+            effects: vec![],
+            params: vec![],
+            steps: vec![call_id],
+            context: vec![],
+            constraints: vec![],
+            return_text: None,
+            return_type: None,
+            output_contract: None,
+            return_type_text: None,
+            return_local_ref: None,
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
+        }));
+        arena.set_root_skill(skill_id);
+        let scaffold = build(&arena, false);
+        let spans: Vec<_> = scaffold
+            .chunks
+            .iter()
+            .filter_map(|c| match c {
+                Chunk::Span(sp) if sp.kind == SpanKind::CallBodyShape => Some(sp),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            spans.len(),
+            1,
+            "tier-2 top-level Call with modifier must emit a CallBodyShape span"
+        );
+        assert_eq!(
+            spans[0].payload.projection_mode,
+            Some(ProjectionMode::SameFileProcedure),
+            "tier-2 projection_mode should be SameFileProcedure"
+        );
+    }
+
+    #[test]
+    fn top_level_tier2_call_without_modifier_stays_literal() {
+        use crate::ir::{IrCall, IrNode, IrSkill};
+        let mut arena = IrArena::new();
+        let call_id = arena.push(IrNode::Call(IrCall {
+            node_id: NodeId(0),
+            target: "do_steps".into(),
+            args: Vec::new(),
+            resolved_body: None,
+            site_modifier: None,
+            projection_tier: Some(2),
+            procedure_path: None,
+            return_type: None,
+            callee_output_contract: None,
+            callee_return_type_text: None,
+            bound_name: None,
+            local_refs: Vec::new(),
+            is_agent: false,
+        }));
+        let skill_id = arena.push(IrNode::Skill(IrSkill {
+            node_id: NodeId(1),
+            name: "demo".into(),
+            description: "Demo.".into(),
+            effects: vec![],
+            params: vec![],
+            steps: vec![call_id],
+            context: vec![],
+            constraints: vec![],
+            return_text: None,
+            return_type: None,
+            output_contract: None,
+            return_type_text: None,
+            return_local_ref: None,
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
+        }));
+        arena.set_root_skill(skill_id);
+        let scaffold = build(&arena, false);
+        let span_count = scaffold
+            .chunks
+            .iter()
+            .filter(|c| matches!(c, Chunk::Span(sp) if sp.kind == SpanKind::CallBodyShape))
+            .count();
+        assert_eq!(span_count, 0, "trivial tier-2 Call must NOT emit a span");
+    }
+
+    #[test]
+    fn top_level_stdlib_bound_with_modifier_emits_span() {
+        use crate::ir::{IrCall, IrNode, IrSkill};
+        let mut arena = IrArena::new();
+        let call_id = arena.push(IrNode::Call(IrCall {
+            node_id: NodeId(0),
+            target: "subagent".into(),
+            args: Vec::new(),
+            resolved_body: None,
+            site_modifier: Some("brief response".into()),
+            projection_tier: None,
+            procedure_path: None,
+            return_type: None,
+            callee_output_contract: None,
+            callee_return_type_text: None,
+            bound_name: Some("foo".into()),
+            local_refs: Vec::new(),
+            is_agent: false,
+        }));
+        let skill_id = arena.push(IrNode::Skill(IrSkill {
+            node_id: NodeId(1),
+            name: "demo".into(),
+            description: "Demo.".into(),
+            effects: vec![],
+            params: vec![],
+            steps: vec![call_id],
+            context: vec![],
+            constraints: vec![],
+            return_text: None,
+            return_type: None,
+            output_contract: None,
+            return_type_text: None,
+            return_local_ref: None,
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
+        }));
+        arena.set_root_skill(skill_id);
+        let scaffold = build(&arena, false);
+        let spans: Vec<_> = scaffold
+            .chunks
+            .iter()
+            .filter_map(|c| match c {
+                Chunk::Span(sp) if sp.kind == SpanKind::CallBodyShape => Some(sp),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(
+            spans[0].payload.projection_mode,
+            Some(ProjectionMode::StdlibBound)
+        );
+    }
+
+    #[test]
+    fn top_level_tier1_call_with_modifier_emits_span_with_raw_resolved_body() {
+        use crate::ir::{IrCall, IrNode, IrSkill, LocalRef};
+        let mut arena = IrArena::new();
+        let call_id = arena.push(IrNode::Call(IrCall {
+            node_id: NodeId(0),
+            target: "inspect".into(),
+            args: Vec::new(),
+            resolved_body: Some("Look at {ctx}.".into()),
+            site_modifier: Some("focus on lint".into()),
+            projection_tier: Some(1),
+            procedure_path: None,
+            return_type: None,
+            callee_output_contract: None,
+            callee_return_type_text: None,
+            bound_name: None,
+            local_refs: vec![LocalRef {
+                name: "ctx".into(),
+                node_id: NodeId(99),
+            }],
+            is_agent: false,
+        }));
+        let skill_id = arena.push(IrNode::Skill(IrSkill {
+            node_id: NodeId(1),
+            name: "demo".into(),
+            description: "Demo.".into(),
+            effects: vec![],
+            params: vec![],
+            steps: vec![call_id],
+            context: vec![],
+            constraints: vec![],
+            return_text: None,
+            return_type: None,
+            output_contract: None,
+            return_type_text: None,
+            return_local_ref: None,
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
+        }));
+        arena.set_root_skill(skill_id);
+        let scaffold = build(&arena, false);
+        let spans: Vec<_> = scaffold
+            .chunks
+            .iter()
+            .filter_map(|c| match c {
+                Chunk::Span(sp) if sp.kind == SpanKind::CallBodyShape => Some(sp),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            spans.len(),
+            1,
+            "tier-1 top-level Call with modifier+local_refs must emit a span"
+        );
+        assert_eq!(
+                spans[0].payload.resolved_body.as_deref(),
+                Some("Look at {ctx}."),
+                "tier-1 non-trivial path must keep the raw {{name}} slot intact (no substitute_local_refs_in)"
+            );
+    }
+
+    #[test]
+    fn top_level_tier1_final_call_with_modifier_carries_post_merge_return_sentence() {
+        use crate::ir::{
+            IrCall, IrNode, IrOutputContract, IrSkill, OutputSource, OutputTargetForm,
+        };
+        let mut arena = IrArena::new();
+        let call_id = arena.push(IrNode::Call(IrCall {
+            node_id: NodeId(0),
+            target: "produce".into(),
+            args: Vec::new(),
+            resolved_body: Some("Inspect the working tree.".into()),
+            site_modifier: Some("focus on lint".into()),
+            projection_tier: Some(1),
+            procedure_path: None,
+            return_type: None,
+            callee_output_contract: None,
+            callee_return_type_text: None,
+            bound_name: None,
+            local_refs: Vec::new(),
+            is_agent: false,
+        }));
+        let oc_id = arena.push(IrNode::OutputContract(IrOutputContract {
+            node_id: NodeId(0),
+            form: OutputTargetForm::Identifier("current_branch".into()),
+            ty: None,
+            source: OutputSource::SynthesizedByAgent,
+        }));
+        let skill_id = arena.push(IrNode::Skill(IrSkill {
+            node_id: NodeId(1),
+            name: "demo".into(),
+            description: "Demo.".into(),
+            effects: vec![],
+            params: vec![],
+            steps: vec![call_id],
+            context: vec![],
+            constraints: vec![],
+            return_text: None,
+            return_type: None,
+            output_contract: Some(oc_id),
+            return_type_text: None,
+            return_local_ref: None,
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
+        }));
+        arena.set_root_skill(skill_id);
+        let scaffold = build(&arena, false);
+        let spans: Vec<_> = scaffold
+            .chunks
+            .iter()
+            .filter_map(|c| match c {
+                Chunk::Span(sp) if sp.kind == SpanKind::CallBodyShape => Some(sp.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(
+                    spans[0].payload.post_merge_return_sentence.as_deref(),
+                    Some("Produce `current_branch`."),
+                    "final-step tier-1 Call with output_contract must carry the §8.4 return sentence on the payload"
+                );
+    }
+
+    /// Task 10 / spec §6.7: when a tier-1 Call carries a `bound_name`, the
+    /// scaffold must emit the `naming_sentence_for_call` text as a Literal
+    /// chunk immediately AFTER the CallBodyShape span (so the merger renders
+    /// it after the span body verbatim, with no LLM rewrite of the naming
+    /// sentence itself).
+    #[test]
+    fn naming_sentence_emitted_as_post_span_literal_chunk() {
+        use crate::ir::{IrCall, IrNode, IrSkill};
+        let mut arena = IrArena::new();
+        let call_id = arena.push(IrNode::Call(IrCall {
+            node_id: NodeId(0),
+            target: "inspect".into(),
+            args: Vec::new(),
+            resolved_body: Some("Inspect.".into()),
+            site_modifier: Some("focus".into()),
+            projection_tier: Some(1),
+            procedure_path: None,
+            return_type: None,
+            callee_output_contract: None,
+            callee_return_type_text: None,
+            bound_name: Some("foo".into()),
+            local_refs: Vec::new(),
+            is_agent: false,
+        }));
+        let skill_id = arena.push(IrNode::Skill(IrSkill {
+            node_id: NodeId(1),
+            name: "demo".into(),
+            description: "Demo.".into(),
+            effects: vec![],
+            params: vec![],
+            steps: vec![call_id],
+            context: vec![],
+            constraints: vec![],
+            return_text: None,
+            return_type: None,
+            output_contract: None,
+            return_type_text: None,
+            return_local_ref: None,
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
+        }));
+        arena.set_root_skill(skill_id);
+        let scaffold = build(&arena, false);
+        let mut iter = scaffold.chunks.iter().peekable();
+        let mut found = false;
+        while let Some(chunk) = iter.next() {
+            if let Chunk::Span(sp) = chunk {
+                if sp.kind == SpanKind::CallBodyShape {
+                    let next = iter.next().expect("expected literal after span");
+                    match next {
+                        Chunk::Literal(l) => {
+                            assert!(
+                                l.contains("Refer to this") && l.contains("foo"),
+                                "expected naming sentence as post-span literal; got: {l:?}"
+                            );
+                        }
+                        _ => panic!("expected Literal after CallBodyShape span"),
+                    }
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found, "expected a CallBodyShape span in chunk stream");
+    }
+
+    /// Task 10 / spec §6.7: the §8.4 return-fold sentence rides on the span
+    /// `payload.post_merge_return_sentence` (merged into the LLM-filled body
+    /// at merge time), NOT as a separate Literal chunk between the span and
+    /// the trailing newline.
+    #[test]
+    fn return_fold_is_carrier_not_literal_chunk_between_span_and_newline() {
+        use crate::ir::{
+            IrCall, IrNode, IrOutputContract, IrSkill, OutputSource, OutputTargetForm,
+        };
+        let mut arena = IrArena::new();
+        let call_id = arena.push(IrNode::Call(IrCall {
+            node_id: NodeId(0),
+            target: "inspect".into(),
+            args: Vec::new(),
+            resolved_body: Some("Inspect.".into()),
+            site_modifier: Some("focus".into()),
+            projection_tier: Some(1),
+            procedure_path: None,
+            return_type: None,
+            callee_output_contract: None,
+            callee_return_type_text: None,
+            bound_name: None,
+            local_refs: Vec::new(),
+            is_agent: false,
+        }));
+        let oc_id = arena.push(IrNode::OutputContract(IrOutputContract {
+            node_id: NodeId(0),
+            form: OutputTargetForm::Identifier("id".into()),
+            ty: None,
+            source: OutputSource::SynthesizedByAgent,
+        }));
+        let skill_id = arena.push(IrNode::Skill(IrSkill {
+            node_id: NodeId(1),
+            name: "demo".into(),
+            description: "Demo.".into(),
+            effects: vec![],
+            params: vec![],
+            steps: vec![call_id],
+            context: vec![],
+            constraints: vec![],
+            return_text: None,
+            return_type: None,
+            output_contract: Some(oc_id),
+            return_type_text: None,
+            return_local_ref: None,
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
+        }));
+        arena.set_root_skill(skill_id);
+        let scaffold = build(&arena, false);
+        let chunks = &scaffold.chunks;
+        let mut found = false;
+        for (i, chunk) in chunks.iter().enumerate() {
+            if let Chunk::Span(sp) = chunk {
+                if sp.kind == SpanKind::CallBodyShape {
+                    assert_eq!(
+                        sp.payload.post_merge_return_sentence.as_deref(),
+                        Some("Produce `id`."),
+                        "payload must carry the §8.4 return sentence (not a separate Literal chunk)"
+                    );
+                    let next = chunks.get(i + 1).expect("expected a chunk after the span");
+                    match next {
+                        Chunk::Literal(l) => assert_eq!(
+                            l, "\n",
+                            "expected newline literal immediately after span; got: {l:?}"
+                        ),
+                        _ => panic!(
+                            "expected Literal('\\n') after span; no return-fold literal between them"
+                        ),
+                    }
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found, "expected a CallBodyShape span in the chunk stream");
+    }
+
+    /// Task 10 / spec §6.7 — regression for the modifier-drop bug surfaced
+    /// 2026-05-18: an if/else where both arms call the same procedure with
+    /// only the then-arm carrying a `site_modifier`. Assert that the then-arm
+    /// emits exactly one CallBodyShape span (so the expand pass weaves the
+    /// modifier into prose), while the otherwise-arm stays as the
+    /// deterministic `Follow the {kebab} procedure.` literal (no span).
+    #[test]
+    fn if_arms_with_same_target_only_modifier_arm_emits_call_body_shape_span() {
+        use crate::ir::{BranchPredicateShape, IrBranch, IrCall, IrNode, IrSkill};
+        let mut arena = IrArena::new();
+        let then_call_id = arena.push(IrNode::Call(IrCall {
+            node_id: NodeId(0),
+            target: "build_walkthrough".into(),
+            args: Vec::new(),
+            resolved_body: None,
+            site_modifier: Some("name each construct".into()),
+            projection_tier: Some(2),
+            procedure_path: None,
+            return_type: None,
+            callee_output_contract: None,
+            callee_return_type_text: None,
+            bound_name: None,
+            local_refs: Vec::new(),
+            is_agent: false,
+        }));
+        let else_call_id = arena.push(IrNode::Call(IrCall {
+            node_id: NodeId(1),
+            target: "build_walkthrough".into(),
+            args: Vec::new(),
+            resolved_body: None,
+            site_modifier: None,
+            projection_tier: Some(2),
+            procedure_path: None,
+            return_type: None,
+            callee_output_contract: None,
+            callee_return_type_text: None,
+            bound_name: None,
+            local_refs: Vec::new(),
+            is_agent: false,
+        }));
+        let if_id = arena.push(IrNode::Branch(IrBranch {
+            node_id: NodeId(2),
+            condition: "x == 1".into(),
+            then_body: vec![then_call_id],
+            elif_branches: vec![],
+            else_body: Some(vec![else_call_id]),
+            resolved_predicates: None,
+            predicate_shape: BranchPredicateShape::default(),
+            classification: None,
+        }));
+        let skill_id = arena.push(IrNode::Skill(IrSkill {
+            node_id: NodeId(3),
+            name: "demo".into(),
+            description: "Demo.".into(),
+            effects: vec![],
+            params: vec![],
+            steps: vec![if_id],
+            context: vec![],
+            constraints: vec![],
+            return_text: None,
+            return_type: None,
+            output_contract: None,
+            return_type_text: None,
+            return_local_ref: None,
+            freeform_sections: Vec::new(),
+            description_source_line: None,
+            context_source_line: None,
+            constraints_source_line: None,
+            flow_source_line: None,
+        }));
+        arena.set_root_skill(skill_id);
+        let scaffold = build(&arena, false);
+
+        let span_count = scaffold
+            .chunks
+            .iter()
+            .filter(|c| matches!(c, Chunk::Span(sp) if sp.kind == SpanKind::CallBodyShape))
+            .count();
+        assert_eq!(
+            span_count, 1,
+            "exactly one CallBodyShape span expected (the modifier-bearing then-arm); got {span_count}"
+        );
+        let modifier_span = scaffold
+            .chunks
+            .iter()
+            .find_map(|c| match c {
+                Chunk::Span(sp) if sp.kind == SpanKind::CallBodyShape => Some(sp),
+                _ => None,
+            })
+            .expect("modifier-bearing CallBodyShape span must be present");
+        assert_eq!(
+            modifier_span.ir_node, then_call_id,
+            "CallBodyShape span must reference the then-arm Call, not the otherwise-arm"
+        );
+        assert!(
+            modifier_span.payload.site_modifier.is_some(),
+            "CallBodyShape span must carry the with-modifier in its payload"
+        );
+
+        let any_literal_has_kebab = scaffold.chunks.iter().any(|c| {
+            matches!(c, Chunk::Literal(l) if l.contains("Follow the build-walkthrough procedure."))
+        });
+        assert!(
+            any_literal_has_kebab,
+            "expected otherwise-arm to stay as deterministic 'Follow the build-walkthrough procedure.' literal"
         );
     }
 }

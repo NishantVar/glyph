@@ -8,7 +8,7 @@ skill review_pr(scope = ".", risk = "medium") -> Review
         require thorough_review
         require check_tests
     flow:
-        inspect_repo(scope) with "focus on changed files in the PR"
+        inspect_repo(scope)
         if risk == "high"
             context security_note
             run_tests(scope)

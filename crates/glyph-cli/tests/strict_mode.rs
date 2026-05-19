@@ -146,6 +146,17 @@ fn strict_compile_all_valid_files_exit_zero() {
         .filter_map(|e| {
             let p = e.unwrap().path();
             if p.is_file() && p.to_string_lossy().ends_with(".glyph") {
+                // CallBodyShape span emission (§6.2): `with`-modifier Calls now
+                // require LLM-grade expansion. The deterministic stub filler
+                // hard-fails on this fixture, so it cannot participate in the
+                // blanket "all valid → exit 0" sweep. Per-fixture coverage
+                // lives in `flow_assign_with_modifier_hard_fails_under_stub_filler`.
+                if p.file_name()
+                    .map(|n| n == "flow_assign_with_modifier.glyph")
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
                 Some(p)
             } else {
                 None

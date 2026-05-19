@@ -235,6 +235,26 @@ pub struct IrContext {
     pub name: Option<String>,
 }
 
+/// §3.10 procedure-body invariant: structured flow items for an
+/// `IrBlock` body. Each variant maps a `FlowStmt::*` arm: `Call` and
+/// `Branch` carry `NodeId` references to arena entries (so
+/// `site_modifier`, `local_refs`, `resolved_body`, `projection_tier`,
+/// and `bound_name` are preserved); the remaining arms carry their
+/// rendered string forms (matching today's `flow_statements` shapes).
+/// Replaces the legacy `flow_statements: Vec<String>` that stringified
+/// Calls at lower time and dropped every payload they carried.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum IrBlockFlowItem {
+    Inline { text: String },
+    Call { node_id: NodeId },
+    Branch { node_id: NodeId },
+    Constraint { rendered: String },
+    Context { rendered: String },
+    Return,
+    BareName { name: String },
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct IrBlock {
     pub node_id: NodeId,
@@ -242,9 +262,15 @@ pub struct IrBlock {
     pub description: Option<String>,
     /// Resolved body text (concatenated flow inline strings).
     pub body_text: String,
-    /// Individual flow statement strings, preserved for Tier 2 procedure emission.
+    /// §3.10 procedure-body invariant: structured flow items. Each
+    /// `IrBlockFlowItem::Call { node_id }` points at an `IrNode::Call` arena
+    /// entry. Replaces the legacy `flow_statements: Vec<String>` that dropped
+    /// `site_modifier`, `local_refs`, `resolved_body`, `projection_tier`, and
+    /// `bound_name`. Source of truth for procedure-body ordering;
+    /// `branch_steps` (below) remains for fast lookup of `IrBranch` ids by
+    /// position but `flow_items` is authoritative.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub flow_statements: Vec<String>,
+    pub flow_items: Vec<IrBlockFlowItem>,
     /// Word count of the resolved body text, computed in Expand Step 1.
     #[serde(default)]
     pub resolved_word_count: Option<u32>,
@@ -267,10 +293,11 @@ pub struct IrBlock {
     /// field's doc for why the canonicalized `return_type` is insufficient.
     #[serde(skip)]
     pub return_type_text: Option<String>,
-    /// Codex review Finding 2: per-flow-statement override pointing at the
+    /// Codex review Finding 2: per-flow-item override pointing at the
     /// `IrBranch` node lowered for a `FlowStmt::Branch` inside the block's
-    /// flow. Keyed by the index in `flow_statements`. The Tier 2 procedure
-    /// emitter consults this map and, when present, renders the branch via
+    /// flow. Keyed by the index in `flow_items` of the corresponding
+    /// `IrBlockFlowItem::Branch` entry. The Tier 2 procedure emitter
+    /// consults this map and, when present, renders the branch via
     /// the same `branch::emit_to_scaffold` path as skill steps — instead of
     /// printing the raw `if {condition}` placeholder string and silently
     /// dropping the branch body. Empty when the block contains no branches

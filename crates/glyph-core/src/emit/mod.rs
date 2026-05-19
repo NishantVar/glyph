@@ -13,10 +13,12 @@ pub(crate) mod templates;
 
 use crate::ir::{IrArena, OutputTargetForm, TypeRegistry};
 
-pub fn emit(arena: &IrArena, enable_effects: bool) -> String {
+pub use stub_fill::StubFillError;
+
+pub fn emit(arena: &IrArena, enable_effects: bool) -> Result<String, Vec<StubFillError>> {
     let scaffold = scaffold::build(arena, enable_effects);
-    let fills = stub_fill::fill(&scaffold);
-    merger::merge(scaffold, fills).expect("scaffold/fill mismatch is a bug")
+    let fills = stub_fill::fill(&scaffold)?;
+    Ok(merger::merge(scaffold, fills).expect("scaffold/fill mismatch is a bug"))
 }
 
 /// Emit a standalone procedure `.md` file for a Tier 3 external-file export block.
@@ -61,6 +63,10 @@ pub struct ProcedureFreeformSection {
     pub items: Vec<ProcedureFreeformItem>,
 }
 
+pub struct ProcedureFreeformItem {
+    pub text: String,
+}
+
 /// #168: Tier 3 procedure preamble — body-level constraint marker
 /// resolved to its (strength, polarity, text) triple. Mirrors `IrConstraint`
 /// but flat (no `NodeId`), so it can be threaded through the AST-driven
@@ -80,16 +86,13 @@ pub struct ProcedureContext<'a> {
     pub text: &'a str,
 }
 
-pub struct ProcedureFreeformItem {
-    pub text: String,
-}
-
 pub fn emit_procedure(
     name: &str,
     description: &str,
     effects: &[String],
     params: &[ProcedureParam<'_>],
-    flow_strings: &[String],
+    flow_items: &[crate::ir::IrBlockFlowItem],
+    arena: &IrArena,
     output_form: Option<&OutputTargetForm>,
     return_type_text: Option<&str>,
     type_registry: &TypeRegistry,
@@ -97,7 +100,7 @@ pub fn emit_procedure(
     freeform_sections: &[ProcedureFreeformSection],
     constraints: &[ProcedureConstraint<'_>],
     context: &[ProcedureContext<'_>],
-) -> String {
+) -> Result<String, Vec<StubFillError>> {
     let kebab_name = name.replace('_', "-");
     let mut out = String::new();
 
@@ -114,9 +117,6 @@ pub fn emit_procedure(
     out.push_str("---\n\n");
 
     // Parameters — same bullet shape as the skill `## Parameters` emitter.
-    // Picks per-param description first, falling back to the type-level
-    // `type Foo = <"…">` lookup so Tier 3 procedure files mirror the skill
-    // output (compiled-output.md §`## Parameters`).
     if !params.is_empty() {
         out.push_str("## Parameters\n\n");
         for p in params {
@@ -135,7 +135,6 @@ pub fn emit_procedure(
         out.push('\n');
     }
 
-    // Steps
     // #168: Tier 3 procedure preamble — body-level constraints and context
     // declared on the export block render between `## Parameters` and `## Steps`,
     // mirroring the Tier 2 (same-file) layout. Format matches the Tier 2 path
@@ -163,22 +162,134 @@ pub fn emit_procedure(
     // supplies the blank line separator before the `## Steps` heading.
     let _ = had_preamble;
 
+    // Steps — drive emission through the same shared Scaffold/Span/
+    // stub_fill/merger pipeline the in-skill emitter uses, so procedure-
+    // body Calls route through the `push_call_body` helper alongside
+    // the seven other emit sites (Task 14: 8th call-emit surface).
     let return_sentence =
         templates::compute_return_sentence(return_type_text, output_form, type_registry);
-    let last_step_idx = flow_strings.len().checked_sub(1);
-    if !flow_strings.is_empty() {
-        out.push_str("## Steps\n\n");
-        for (i, step) in flow_strings.iter().enumerate() {
-            let body = if Some(i) == last_step_idx {
-                match return_sentence.as_deref() {
-                    Some(sent) => templates::append_return_sentence(step, sent),
-                    None => step.clone(),
+    let visible_count = flow_items
+        .iter()
+        .filter(|it| !matches!(it, crate::ir::IrBlockFlowItem::Return))
+        .count();
+
+    if visible_count > 0 {
+        let mut scaffold = scaffold::Scaffold::default();
+        let mut next_span_id: u32 = 0;
+        scaffold.push_literal("## Steps\n\n".to_string());
+
+        let mut visible_idx: usize = 0;
+        for item in flow_items {
+            if matches!(item, crate::ir::IrBlockFlowItem::Return) {
+                continue;
+            }
+            visible_idx += 1;
+            let step_num = visible_idx;
+            let is_last = visible_idx == visible_count;
+            match item {
+                crate::ir::IrBlockFlowItem::Inline { text } => {
+                    let body = if is_last {
+                        match return_sentence.as_deref() {
+                            Some(sent) => templates::append_return_sentence(text, sent),
+                            None => text.clone(),
+                        }
+                    } else {
+                        text.clone()
+                    };
+                    scaffold.push_literal(format!("{}. {}\n", step_num, body));
                 }
-            } else {
-                step.clone()
-            };
-            out.push_str(&format!("{}. {}\n", i + 1, body));
+                crate::ir::IrBlockFlowItem::Call { node_id } => {
+                    if let crate::ir::IrNode::Call(c) = arena.get(*node_id) {
+                        scaffold.push_literal(format!("{}. ", step_num));
+                        match c.projection_tier {
+                            Some(1) => {
+                                let raw_body = c.resolved_body.as_deref().unwrap_or_default();
+                                let rs = if is_last {
+                                    return_sentence.clone()
+                                } else {
+                                    None
+                                };
+                                scaffold::push_call_body(
+                                    &mut scaffold,
+                                    c,
+                                    raw_body,
+                                    Some(scaffold::Tier1FoldCtx {
+                                        is_last,
+                                        return_sentence: rs,
+                                    }),
+                                    &mut next_span_id,
+                                );
+                            }
+                            Some(2) => {
+                                let callee_kebab = c.target.replace('_', "-");
+                                let anchor = format!("Follow the {callee_kebab} procedure below.");
+                                scaffold::push_call_body(
+                                    &mut scaffold,
+                                    c,
+                                    &anchor,
+                                    None,
+                                    &mut next_span_id,
+                                );
+                            }
+                            Some(3) => {
+                                let proc_path = c.procedure_path.as_deref().unwrap_or("unknown");
+                                let anchor = templates::external_file_step(proc_path);
+                                scaffold::push_call_body(
+                                    &mut scaffold,
+                                    c,
+                                    &anchor,
+                                    None,
+                                    &mut next_span_id,
+                                );
+                            }
+                            _ if c.bound_name.is_some() => {
+                                let anchor = format!("Call `{}`.", c.target);
+                                scaffold::push_call_body(
+                                    &mut scaffold,
+                                    c,
+                                    &anchor,
+                                    None,
+                                    &mut next_span_id,
+                                );
+                            }
+                            _ => {
+                                panic!(
+                                    "IrCall to `{}` survived past expand without tier assignment",
+                                    c.target
+                                );
+                            }
+                        }
+                    }
+                }
+                crate::ir::IrBlockFlowItem::Branch { node_id } => {
+                    if let crate::ir::IrNode::Branch(br) = arena.get(*node_id) {
+                        branch::emit_to_scaffold(
+                            &mut scaffold,
+                            arena,
+                            br,
+                            step_num,
+                            &mut next_span_id,
+                        );
+                    }
+                }
+                crate::ir::IrBlockFlowItem::Constraint { rendered }
+                | crate::ir::IrBlockFlowItem::Context { rendered } => {
+                    scaffold.push_literal(format!("{}. {}\n", step_num, rendered));
+                }
+                crate::ir::IrBlockFlowItem::BareName { name } => {
+                    scaffold.push_literal(format!("{}. {}\n", step_num, name));
+                }
+                crate::ir::IrBlockFlowItem::Return => unreachable!(),
+            }
         }
+
+        // Local-pipeline: stub_fill + merger. CallBodyShape spans here
+        // surface as `Vec<StubFillError>` returned to the caller, who
+        // maps them into `G::expand::llm-required-for-call` diagnostics.
+        let fills = stub_fill::fill(&scaffold)?;
+        let steps_md = merger::merge(scaffold, fills)
+            .expect("local pipeline scaffold has no unknown/missing spans");
+        out.push_str(&steps_md);
     } else if let Some(sent) = return_sentence.as_deref() {
         // No steps but the export block still yields a §8.4 sentence —
         // surface it as the sole step so the contract isn't silently dropped.
@@ -187,18 +298,12 @@ pub fn emit_procedure(
     }
 
     // Freeform colon-keyword sections at peer-level H2 (depth 2) per design
-    // §4.1.5 / D12: Tier 3 external file freeform sits at `##`, the top of
-    // that document's body. Phase 3.C scope keeps the layout simple — these
-    // trail the `## Steps` section. A future cluster can thread author source
-    // lines through `emit_procedure` to feed the same D9 merge the skill path
-    // uses; the current Tier 3 callers don't carry that metadata.
+    // §4.1.5 / D12.
     if !freeform_sections.is_empty() && !out.ends_with("\n\n") {
         out.push('\n');
     }
     for section in freeform_sections {
-        // H2 heading.
         out.push_str(&format!("## {}\n\n", section.heading));
-        // Render items: §4.1.5 — one entry → paragraph, multiple → bulleted list.
         let rendered: Vec<String> = section
             .items
             .iter()
@@ -223,7 +328,7 @@ pub fn emit_procedure(
     while out.ends_with("\n\n") {
         out.pop();
     }
-    out
+    Ok(out)
 }
 
 /// Render one Tier 3 freeform item to its body string. Items arrive
@@ -273,10 +378,28 @@ mod tests {
         arena
     }
 
+    /// Task 14 — local helper: turn a slice of `&str` into the structured
+    /// `IrBlockFlowItem::Inline` vector the new `emit_procedure` signature
+    /// expects. All test fixtures use plain inline text.
+    fn flow_items_from_strs(items: &[&str]) -> Vec<crate::ir::IrBlockFlowItem> {
+        items
+            .iter()
+            .map(|s| crate::ir::IrBlockFlowItem::Inline {
+                text: (*s).to_string(),
+            })
+            .collect()
+    }
+
+    /// Task 14 — local helper: empty arena stub for tests that pass only
+    /// `IrBlockFlowItem::Inline` items (no Call/Branch references).
+    fn empty_arena() -> IrArena {
+        IrArena::new()
+    }
+
     #[test]
     fn emit_skips_effects_when_disabled() {
         let arena = arena_with_effects();
-        let output = emit(&arena, false);
+        let output = emit(&arena, false).expect("trivial skill must compile");
         assert!(
             !output.contains("effects:"),
             "effects line should be omitted when enable_effects is false"
@@ -290,7 +413,7 @@ mod tests {
     #[test]
     fn emit_includes_effects_when_enabled() {
         let arena = arena_with_effects();
-        let output = emit(&arena, true);
+        let output = emit(&arena, true).expect("trivial skill must compile");
         assert!(
             output.contains("effects: [fs:write, net:http]"),
             "effects line should be present when enable_effects is true"
@@ -304,7 +427,8 @@ mod tests {
             "A procedure.",
             &["fs:read".to_string()],
             &[],
-            &["Step one.".into()],
+            &flow_items_from_strs(&["Step one."]),
+            &empty_arena(),
             None,
             None,
             &TypeRegistry::default(),
@@ -312,7 +436,8 @@ mod tests {
             &[],
             &[],
             &[],
-        );
+        )
+        .expect("test fixture: emit_procedure should not surface CallBodyShape errors");
         assert!(
             !output.contains("effects:"),
             "effects line should be omitted when enable_effects is false"
@@ -330,7 +455,8 @@ mod tests {
             "A procedure.",
             &["fs:read".to_string()],
             &[],
-            &["Step one.".into()],
+            &flow_items_from_strs(&["Step one."]),
+            &empty_arena(),
             None,
             None,
             &TypeRegistry::default(),
@@ -338,7 +464,8 @@ mod tests {
             &[],
             &[],
             &[],
-        );
+        )
+        .expect("test fixture: emit_procedure should not surface CallBodyShape errors");
         assert!(
             output.contains("effects: [fs:read]"),
             "effects line should be present when enable_effects is true"
@@ -354,7 +481,8 @@ mod tests {
             "Returns the branch.",
             &[],
             &[],
-            &["Examine the working tree.".into()],
+            &flow_items_from_strs(&["Examine the working tree."]),
+            &empty_arena(),
             Some(&form),
             None,
             &TypeRegistry::default(),
@@ -362,7 +490,8 @@ mod tests {
             &[],
             &[],
             &[],
-        );
+        )
+        .expect("test fixture: emit_procedure should not surface CallBodyShape errors");
         assert!(
             output.contains("1. Examine the working tree. Produce `current_branch`.\n"),
             "identifier-only output_form should append the §8.4 sentence to the final step:\n{output}"
@@ -378,7 +507,8 @@ mod tests {
             "Returns the branch.",
             &[],
             &[],
-            &["Examine the working tree.".into()],
+            &flow_items_from_strs(&["Examine the working tree."]),
+            &empty_arena(),
             Some(&form),
             None,
             &TypeRegistry::default(),
@@ -386,7 +516,8 @@ mod tests {
             &[],
             &[],
             &[],
-        );
+        )
+        .expect("test fixture: emit_procedure should not surface CallBodyShape errors");
         assert!(
             output.contains("1. Examine the working tree. Produce: the branch name.\n"),
             "descriptive output_form should append the §8.4 sentence to the final step:\n{output}"
@@ -401,7 +532,8 @@ mod tests {
             "Returns the branch.",
             &[],
             &[],
-            &[],
+            &flow_items_from_strs(&[]),
+            &empty_arena(),
             Some(&form),
             None,
             &TypeRegistry::default(),
@@ -409,7 +541,8 @@ mod tests {
             &[],
             &[],
             &[],
-        );
+        )
+        .expect("test fixture: emit_procedure should not surface CallBodyShape errors");
         assert!(
             output.contains("1. Produce `current_branch`.\n"),
             "with no steps, identifier-only output_form should produce a standalone §8.4 sentence:\n{output}"
@@ -437,7 +570,8 @@ mod tests {
             "Run the workflow.",
             &[],
             &[],
-            &["Examine the working tree.".into()],
+            &flow_items_from_strs(&["Examine the working tree."]),
+            &empty_arena(),
             None,
             None,
             &TypeRegistry::default(),
@@ -445,7 +579,8 @@ mod tests {
             &freeform,
             &[],
             &[],
-        );
+        )
+        .expect("test fixture: emit_procedure should not surface CallBodyShape errors");
         assert!(
             output.contains("## Quality\n\n- Accuracy.\n- Completeness.\n"),
             "freeform section should render at H2 with bulleted list for multiple items:\n{output}"
@@ -467,7 +602,8 @@ mod tests {
             "Run the workflow.",
             &[],
             &[],
-            &["Examine the working tree.".into()],
+            &flow_items_from_strs(&["Examine the working tree."]),
+            &empty_arena(),
             None,
             None,
             &TypeRegistry::default(),
@@ -475,7 +611,8 @@ mod tests {
             &freeform,
             &[],
             &[],
-        );
+        )
+        .expect("test fixture: emit_procedure should not surface CallBodyShape errors");
         assert!(
             output.contains("## Quality\n\nAccuracy in every step.\n"),
             "single-item freeform should render as paragraph (no bullet):\n{output}"

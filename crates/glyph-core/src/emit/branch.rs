@@ -128,13 +128,19 @@ pub fn emit_to_scaffold(
     next_span_id: &mut u32,
 ) {
     if is_pure_predicate(br) {
-        emit_pure_predicate(s, arena, br, step_num);
+        emit_pure_predicate(s, arena, br, step_num, next_span_id);
     } else {
         emit_mixed_condition(s, arena, br, step_num, next_span_id);
     }
 }
 
-fn emit_pure_predicate(s: &mut Scaffold, arena: &IrArena, br: &IrBranch, step_num: usize) {
+fn emit_pure_predicate(
+    s: &mut Scaffold,
+    arena: &IrArena,
+    br: &IrBranch,
+    step_num: usize,
+    next_span_id: &mut u32,
+) {
     let single_arm = br.elif_branches.is_empty() && br.else_body.is_none();
     if single_arm {
         let desc_owned = render_condition_for_arm(
@@ -146,7 +152,7 @@ fn emit_pure_predicate(s: &mut Scaffold, arena: &IrArena, br: &IrBranch, step_nu
         s.push_literal(format!(
             "{step_num}. {SINGLE_ARM_OPENER_PREFIX}{desc}{SINGLE_ARM_OPENER_TAIL}\n"
         ));
-        emit_lettered_substeps(s, arena, &br.then_body);
+        emit_lettered_substeps(s, arena, &br.then_body, next_span_id);
     } else {
         s.push_literal(format!("{step_num}. {MULTI_ARM_OPENER}\n"));
         emit_predicate_arm_header_and_body(
@@ -156,6 +162,7 @@ fn emit_pure_predicate(s: &mut Scaffold, arena: &IrArena, br: &IrBranch, step_nu
             &br.condition,
             br.classification.as_ref(),
             &br.then_body,
+            next_span_id,
         );
         for elif in &br.elif_branches {
             emit_predicate_arm_header_and_body(
@@ -165,11 +172,12 @@ fn emit_pure_predicate(s: &mut Scaffold, arena: &IrArena, br: &IrBranch, step_nu
                 &elif.condition,
                 elif.classification.as_ref(),
                 &elif.body,
+                next_span_id,
             );
         }
         if let Some(else_body) = &br.else_body {
             s.push_literal("   Otherwise:\n");
-            emit_lettered_substeps(s, arena, else_body);
+            emit_lettered_substeps(s, arena, else_body, next_span_id);
         }
     }
 }
@@ -230,12 +238,13 @@ fn emit_predicate_arm_header_and_body(
     condition: &str,
     classification: Option<&crate::condition::ConditionClassification>,
     body: &[NodeId],
+    next_span_id: &mut u32,
 ) {
     let desc_owned =
         render_condition_for_arm(condition, classification, br.resolved_predicates.as_ref());
     let desc = strip_trailing_period(&desc_owned);
     s.push_literal(format!("   If {desc}:\n"));
-    emit_lettered_substeps(s, arena, body);
+    emit_lettered_substeps(s, arena, body, next_span_id);
 }
 
 fn emit_mixed_condition(
@@ -261,7 +270,7 @@ fn emit_mixed_condition(
         },
     });
     s.push_literal(":\n");
-    emit_lettered_substeps(s, arena, &br.then_body);
+    emit_lettered_substeps(s, arena, &br.then_body, next_span_id);
     for elif in &br.elif_branches {
         s.push_literal("   If ");
         let id = SpanId(*next_span_id);
@@ -279,66 +288,67 @@ fn emit_mixed_condition(
             },
         });
         s.push_literal(":\n");
-        emit_lettered_substeps(s, arena, &elif.body);
+        emit_lettered_substeps(s, arena, &elif.body, next_span_id);
     }
     if let Some(else_body) = &br.else_body {
         s.push_literal("   Otherwise:\n");
-        emit_lettered_substeps(s, arena, else_body);
+        emit_lettered_substeps(s, arena, else_body, next_span_id);
     }
 }
 
-fn emit_lettered_substeps(s: &mut Scaffold, arena: &IrArena, body: &[NodeId]) {
+pub(super) fn emit_lettered_substeps(
+    s: &mut Scaffold,
+    arena: &IrArena,
+    body: &[NodeId],
+    next_span_id: &mut u32,
+) {
     let mut letter = b'a';
     for node_id in body {
-        let text = match arena.get(*node_id) {
+        match arena.get(*node_id) {
             // Flow-position-assignments §9.2: rewrite `{name}` → bare `name`
-            // for any slot whose name is a flow-local in scope. Mirrors the
-            // top-level `IrInlineInstruction` emission path in scaffold.rs.
+            // for any slot whose name is a flow-local in scope.
             IrNode::InlineInstruction(i) => {
-                crate::emit::scaffold::substitute_local_refs_in(&i.text, &i.local_refs)
+                let text = crate::emit::scaffold::substitute_local_refs_in(&i.text, &i.local_refs);
+                s.push_literal(format!("   {}. {}\n", letter as char, text));
             }
             IrNode::Call(c) if c.projection_tier == Some(1) => {
-                // Flow-position-assignments §9.1: when an arm-local
-                // `<name> = <call>(...)` lives inside a branch body, the
-                // producer naming sentence ("Refer to this result as
-                // `<n>`." / "Refer to this agent as '<n>'.") must trail
-                // the inlined body — same convention as the skill flow
-                // root in `scaffold.rs`. Without this, downstream
-                // substeps that reference `{<n>}` can render as bare
-                // `<n>` (the §9.2 substitution still runs) but the
-                // reader has no introduction tying that bare name to
-                // the producer above.
+                // Flow-position-assignments §9.1: in-arm Tier-1 producer
+                // naming sentence still trails the body. When the call
+                // needs LLM fill (site modifier present or unresolved
+                // `{name}` slots remain), the body chunk is a
+                // CallBodyShape span carrying the *raw* resolved_body
+                // (slots intact) so stub_fill can weave the modifier in.
+                s.push_literal(format!("   {}. ", letter as char));
                 let raw = c.resolved_body.as_deref().unwrap_or_default();
-                let body = crate::emit::scaffold::substitute_local_refs_in(raw, &c.local_refs);
-                if let Some(naming) = crate::emit::scaffold::naming_sentence_for_call(c) {
-                    crate::emit::scaffold::append_sentence(&body, &naming)
-                } else {
-                    body
-                }
+                crate::emit::scaffold::push_call_body(
+                    s,
+                    c,
+                    raw,
+                    Some(crate::emit::scaffold::Tier1FoldCtx {
+                        is_last: false,
+                        return_sentence: None,
+                    }),
+                    next_span_id,
+                );
             }
             IrNode::Call(c) if c.projection_tier == Some(2) => {
+                s.push_literal(format!("   {}. ", letter as char));
                 let kebab = crate::emit::templates::kebab_case(&c.target);
-                let body = format!("Follow the {kebab} procedure.");
-                if let Some(naming) = crate::emit::scaffold::naming_sentence_for_call(c) {
-                    crate::emit::scaffold::append_sentence(&body, &naming)
-                } else {
-                    body
-                }
+                let anchor = format!("Follow the {kebab} procedure.");
+                crate::emit::scaffold::push_call_body(s, c, &anchor, None, next_span_id);
             }
             IrNode::Call(c) if c.projection_tier == Some(3) => {
+                s.push_literal(format!("   {}. ", letter as char));
                 let path = c.procedure_path.as_deref().unwrap_or("unknown");
-                let body = crate::emit::templates::external_file_step(path);
-                if let Some(naming) = crate::emit::scaffold::naming_sentence_for_call(c) {
-                    crate::emit::scaffold::append_sentence(&body, &naming)
-                } else {
-                    body
-                }
+                let anchor = crate::emit::templates::external_file_step(path);
+                crate::emit::scaffold::push_call_body(s, c, &anchor, None, next_span_id);
             }
             IrNode::Call(c) => panic!("Call to `{}` survived past expand", c.target),
-            IrNode::Branch(_) => "(nested branch)".into(),
+            IrNode::Branch(_) => {
+                s.push_literal(format!("   {}. (nested branch)\n", letter as char));
+            }
             _ => panic!("Unexpected node type in branch body"),
-        };
-        s.push_literal(format!("   {}. {}\n", letter as char, text));
+        }
         letter += 1;
     }
 }
@@ -522,5 +532,118 @@ mod tests {
             classification: None,
         };
         assert!(!is_pure_predicate(&br));
+    }
+
+    #[test]
+    fn in_arm_tier1_call_with_modifier_emits_call_body_shape_span() {
+        use crate::emit::scaffold::{Chunk, ProjectionMode, Scaffold, SpanKind};
+        use crate::ir::{IrCall, IrNode};
+        let mut arena = IrArena::new();
+        let call_id = arena.push(IrNode::Call(IrCall {
+            node_id: NodeId(7),
+            target: "inspect_failure".into(),
+            args: Vec::new(),
+            resolved_body: Some("Inspect the failing run.".into()),
+            site_modifier: Some("focus on stack traces".into()),
+            projection_tier: Some(1),
+            procedure_path: None,
+            return_type: None,
+            callee_output_contract: None,
+            callee_return_type_text: None,
+            bound_name: None,
+            local_refs: Vec::new(),
+            is_agent: false,
+        }));
+        let mut s = Scaffold::default();
+        let mut next = 0u32;
+        let next_id = &mut next;
+        let body = vec![call_id];
+        super::emit_lettered_substeps(&mut s, &arena, &body, next_id);
+        let spans: Vec<_> = s
+            .chunks
+            .iter()
+            .filter_map(|c| match c {
+                Chunk::Span(sp) if sp.kind == SpanKind::CallBodyShape => Some(sp),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            spans.len(),
+            1,
+            "tier-1 in-arm Call with modifier must emit a CallBodyShape span; got chunks={:?}",
+            s.chunks
+        );
+        let sp = spans[0];
+        assert_eq!(
+            sp.payload.projection_mode,
+            Some(ProjectionMode::Inline),
+            "tier-1 projection_mode should be Inline"
+        );
+        assert_eq!(
+            sp.ir_node,
+            NodeId(7),
+            "span ir_node must echo the IrCall NodeId so diagnostics can sort deterministically"
+        );
+        assert_eq!(
+            sp.payload.target_name.as_deref(),
+            Some("inspect_failure"),
+            "target_name must echo the call target"
+        );
+        assert_eq!(
+            sp.payload.site_modifier.as_deref(),
+            Some("focus on stack traces"),
+            "site_modifier must propagate to the span payload"
+        );
+        let lits: Vec<_> = s
+            .chunks
+            .iter()
+            .filter_map(|c| match c {
+                Chunk::Literal(l) => Some(l.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            lits.iter().any(|l| l.starts_with("   a. ")),
+            "lettered prefix must be a Literal: {lits:?}"
+        );
+        assert!(
+            lits.iter().any(|l| l == "\n"),
+            "newline must be a Literal: {lits:?}"
+        );
+    }
+
+    #[test]
+    fn in_arm_tier1_call_without_modifier_stays_literal() {
+        use crate::emit::scaffold::{Chunk, Scaffold, SpanKind};
+        use crate::ir::{IrCall, IrNode};
+        let mut arena = IrArena::new();
+        let call_id = arena.push(IrNode::Call(IrCall {
+            node_id: NodeId(2),
+            target: "do_thing".into(),
+            args: Vec::new(),
+            resolved_body: Some("Inspect the working tree.".into()),
+            site_modifier: None,
+            projection_tier: Some(1),
+            procedure_path: None,
+            return_type: None,
+            callee_output_contract: None,
+            callee_return_type_text: None,
+            bound_name: None,
+            local_refs: Vec::new(),
+            is_agent: false,
+        }));
+        let mut s = Scaffold::default();
+        let mut next = 0u32;
+        super::emit_lettered_substeps(&mut s, &arena, &[call_id], &mut next);
+        let span_count = s
+            .chunks
+            .iter()
+            .filter(|c| matches!(c, Chunk::Span(sp) if sp.kind == SpanKind::CallBodyShape))
+            .count();
+        assert_eq!(
+            span_count, 0,
+            "trivial tier-1 in-arm Call must NOT emit a span; got chunks={:?}",
+            s.chunks
+        );
     }
 }

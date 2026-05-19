@@ -186,6 +186,7 @@ Structural validation is implemented in the `glyph validate-output` subcommand. 
 | `G::expand::unresolved-local-ref` | error | A `local_ref` slot survived as a literal `{name}` token — Step 2 failed to resolve it into prose |
 | `G::expand::output-target-leak` | error | A literal output-target token survived in compiled Markdown instead of being folded into natural prose. Covers both forms: `<name>` (identifier form) and `<"…">` / its bare quoted description text (descriptive form). |
 | `G::expand::modifier-leaked` | error | `with` modifier string appears verbatim in output |
+| `G::expand::llm-required-for-call` | error | A `Call` site has a `with` modifier or non-empty `local_refs` that requires LLM-grade prose, but the current compiler build is using the deterministic stub filler. Fires per failing `IrCall` at Step 2 fill time (pre-6b). Remediation: wire the LLM expand filler, or remove the `with` modifier / rewrite the local reference. |
 | `G::expand::params-section-mismatch` | error | `## Parameters` item count does not match `InputContract` parameter count |
 | `G::expand::params-section-missing` | error | Skill has parameters but `## Parameters` section is absent |
 | `G::expand::params-section-spurious` | error | Skill has no parameters but `## Parameters` section is present |

@@ -10,8 +10,8 @@ use crate::ast::{
 };
 use crate::domain_registry::canonicalize_identifier;
 use crate::ir::{
-    BranchPredicateShape, IrArena, IrBlock, IrBranch, IrCall, IrConstraint, IrContext,
-    IrElifBranch, IrFreeformContent, IrFreeformSection, IrInlineInstruction, IrNode,
+    BranchPredicateShape, IrArena, IrBlock, IrBlockFlowItem, IrBranch, IrCall, IrConstraint,
+    IrContext, IrElifBranch, IrFreeformContent, IrFreeformSection, IrInlineInstruction, IrNode,
     IrOutputContract, IrParam, IrSkill, NodeId, OutputSource, OutputTargetForm, Polarity, Role,
     Strength,
 };
@@ -32,6 +32,40 @@ fn predicate_shape_from(
         has_boolean_token: c.has_boolean_token,
         has_predicate_token: c.has_predicate_token,
         has_compositional_operator: c.has_compositional_operator,
+    }
+}
+
+/// Construct an `IrCall` with the field shape required by the spec invariant
+/// (§3.10: all three lowering paths must emit structurally-identical Call IR).
+/// All three `lower::*` Call sites route through this helper so a structural
+/// drift on one site is impossible.
+#[allow(clippy::too_many_arguments)]
+fn build_call_ir_node(
+    next: NodeId,
+    target_node: String,
+    args: Vec<String>,
+    resolved_body: Option<String>,
+    site_modifier: Option<String>,
+    return_type: Option<TypeTag>,
+    callee_output_contract: Option<OutputTargetForm>,
+    callee_return_type_text: Option<String>,
+    bound_name: Option<String>,
+    is_agent: bool,
+) -> IrCall {
+    IrCall {
+        node_id: next,
+        target: target_node,
+        args,
+        resolved_body,
+        site_modifier,
+        projection_tier: None,
+        procedure_path: None,
+        return_type,
+        callee_output_contract,
+        callee_return_type_text,
+        bound_name,
+        local_refs: Vec::new(),
+        is_agent,
     }
 }
 
@@ -541,21 +575,18 @@ fn lower_flow_body(
                 let is_agent = bound_name_lowered.is_some()
                     && callee_is_agent(target.node.as_str(), blocks, export_blocks);
                 let next = NodeId(arena.len() as u32);
-                let id = arena.push(IrNode::Call(IrCall {
-                    node_id: next,
-                    target: target.node.clone(),
-                    args: args.clone(),
+                let id = arena.push(IrNode::Call(build_call_ir_node(
+                    next,
+                    target.node.clone(),
+                    args.clone(),
                     resolved_body,
-                    site_modifier: site_modifier.clone(),
-                    projection_tier: None,
-                    procedure_path: None,
+                    site_modifier.clone(),
                     return_type,
                     callee_output_contract,
                     callee_return_type_text,
-                    bound_name: bound_name_lowered,
-                    local_refs: Vec::new(),
+                    bound_name_lowered,
                     is_agent,
-                }));
+                )));
                 ids.push(id);
             }
             FlowStmt::Branch {
@@ -842,19 +873,90 @@ pub fn lower_with_imports(
                 })
                 .collect();
             // Collect individual flow statement strings for Tier 2 procedure emission.
-            let flow_statements: Vec<String> = block
-                .flow
-                .iter()
-                .filter_map(|stmt| match stmt {
-                    FlowStmt::InlineString(s) => Some(s.clone()),
-                    FlowStmt::Call { target, .. } => Some(format!("call {}", target.node)),
-                    FlowStmt::Branch { condition, .. } => Some(format!("if {}", condition)),
-                    FlowStmt::ConstraintMarker(m) => Some(format!("constraint {}", m.name.node)),
-                    FlowStmt::ContextMarker(_) => Some("context".to_string()),
-                    FlowStmt::Return(_) => Some("return".to_string()),
-                    FlowStmt::BareName(n) => Some(n.node.clone()),
-                })
-                .collect();
+            // §3.10 procedure-body invariant: build `flow_items` (structured) by
+            // walking the block's flow in source order. Call arms allocate
+            // `IrNode::Call` arena entries that mirror skill-flow Call lowering
+            // (preserving `site_modifier`, `bound_name`, `resolved_body`,
+            // return-type, callee_output_contract, agent shape) so emit can
+            // route procedure-body Calls through the same scaffold/span pipeline
+            // as skill-flow Calls. Branch arms are linked by NodeId (allocated
+            // in the subsequent branch_steps loop). Replaces the lossy
+            // stringifier that dropped every payload (`call <target>`,
+            // `if <cond>`, `constraint <name>`, ...).
+            let mut flow_items: Vec<IrBlockFlowItem> = Vec::with_capacity(block.flow.len());
+            for stmt in &block.flow {
+                let item = match stmt {
+                    FlowStmt::InlineString(s) => IrBlockFlowItem::Inline { text: s.clone() },
+                    FlowStmt::Call {
+                        target,
+                        args,
+                        site_modifier,
+                        bound_name,
+                    } => {
+                        let resolved_body = if let Some(callee) = blocks.get(target.node.as_str()) {
+                            Some(resolve_block_body_text(callee, &texts)?)
+                        } else if let Some(eb) = export_blocks.get(target.node.as_str()) {
+                            Some(resolve_export_block_body_text(eb))
+                        } else {
+                            None
+                        };
+                        let callee_rt_spanned = blocks
+                            .get(target.node.as_str())
+                            .and_then(|b| b.return_type.as_ref())
+                            .or_else(|| {
+                                export_blocks
+                                    .get(target.node.as_str())
+                                    .and_then(|b| b.return_type.as_ref())
+                            });
+                        let return_type =
+                            callee_rt_spanned.map(|s| name_to_typetag(s.node.as_str()));
+                        let callee_return_type_text = callee_rt_spanned.map(|s| s.node.clone());
+                        let callee_output_contract = blocks
+                            .get(target.node.as_str())
+                            .and_then(|b| block_callee_output_form(b))
+                            .or_else(|| {
+                                export_blocks
+                                    .get(target.node.as_str())
+                                    .and_then(|eb| export_block_callee_output_form(eb))
+                            });
+                        let bound_name_lowered = bound_name.as_ref().map(|s| s.node.clone());
+                        let is_agent = bound_name_lowered.is_some()
+                            && callee_is_agent(target.node.as_str(), &blocks, &export_blocks);
+                        let next = NodeId(arena.len() as u32);
+                        let call_id = arena.push(IrNode::Call(build_call_ir_node(
+                            next,
+                            target.node.clone(),
+                            args.clone(),
+                            resolved_body,
+                            site_modifier.clone(),
+                            return_type,
+                            callee_output_contract,
+                            callee_return_type_text,
+                            bound_name_lowered,
+                            is_agent,
+                        )));
+                        IrBlockFlowItem::Call { node_id: call_id }
+                    }
+                    FlowStmt::Branch { condition, .. } => {
+                        // Placeholder NodeId(0) — patched in the branch_steps loop
+                        // below once the IrBranch is allocated. Keeping
+                        // `flow_items` indices aligned with `block.flow` indices.
+                        let _ = condition;
+                        IrBlockFlowItem::Branch { node_id: NodeId(0) }
+                    }
+                    FlowStmt::ConstraintMarker(m) => IrBlockFlowItem::Constraint {
+                        rendered: format!("constraint {}", m.name.node),
+                    },
+                    FlowStmt::ContextMarker(_) => IrBlockFlowItem::Context {
+                        rendered: "context".to_string(),
+                    },
+                    FlowStmt::Return(_) => IrBlockFlowItem::Return,
+                    FlowStmt::BareName(n) => IrBlockFlowItem::BareName {
+                        name: n.node.clone(),
+                    },
+                };
+                flow_items.push(item);
+            }
             let block_return_type: Option<TypeTag> = block
                 .return_type
                 .as_ref()
@@ -872,8 +974,8 @@ pub fn lower_with_imports(
             // block's flow into a structured `IrBranch` node so the Tier 2
             // procedure emitter can dispatch to `branch::emit_to_scaffold`
             // instead of printing the raw `if {condition}` placeholder
-            // produced for `flow_statements`. Indexed by the position in
-            // `flow_statements` so emit can override per-step. The bodies
+            // produced for `flow_items`. Indexed by the position in
+            // `flow_items` so emit can override per-step. The bodies
             // re-use `lower_flow_body` so nested `if`/elif/else arms get the
             // same InlineInstruction/Call/Branch treatment as skill arms.
             let mut branch_steps: std::collections::HashMap<usize, NodeId> =
@@ -940,6 +1042,14 @@ pub fn lower_with_imports(
                         classification: condition_classification.clone(),
                     });
                     branch_steps.insert(idx, branch_id);
+                    // §3.10: patch the corresponding `IrBlockFlowItem::Branch`
+                    // placeholder (allocated above with NodeId(0)) to point at
+                    // the freshly-allocated IrBranch arena entry.
+                    if let Some(item) = flow_items.get_mut(idx) {
+                        if matches!(item, IrBlockFlowItem::Branch { .. }) {
+                            *item = IrBlockFlowItem::Branch { node_id: branch_id };
+                        }
+                    }
                 }
             }
             // Codex review Finding (medium): collect string-default params
@@ -973,62 +1083,66 @@ pub fn lower_with_imports(
             // allocations occur.
             let block_freeform_ids =
                 lower_freeform_sections(&block.freeform_sections, &texts, &mut arena)?;
-            {
-                let mut block_constraint_ids: Vec<NodeId> = Vec::new();
-                for marker in &block.body_constraints {
-                    let resolved = texts.get(&marker.name.node).cloned().ok_or_else(|| {
-                        LowerError::UndefinedConstraintRef(marker.name.node.clone())
-                    })?;
-                    let (strength, polarity) = match marker.marker {
-                        ConstraintMarkerKind::Require => (Strength::Soft, Polarity::Require),
-                        ConstraintMarkerKind::Avoid => (Strength::Soft, Polarity::Avoid),
-                        ConstraintMarkerKind::Must => (Strength::Hard, Polarity::Require),
-                        ConstraintMarkerKind::MustAvoid => (Strength::Hard, Polarity::Avoid),
-                    };
-                    let next = NodeId(arena.len() as u32);
-                    let id = arena.push(IrNode::Constraint(IrConstraint {
-                        node_id: next,
-                        text: resolved,
-                        strength,
-                        polarity,
-                    }));
-                    block_constraint_ids.push(id);
-                }
-                let mut block_context_ids: Vec<NodeId> = Vec::new();
-                for entry in &block.body_context {
-                    let resolved = resolve_context_entry(entry, &texts)?;
-                    let name = context_entry_name(entry);
-                    let next = NodeId(arena.len() as u32);
-                    let id = arena.push(IrNode::Context(IrContext {
-                        node_id: next,
-                        text: resolved,
-                        name,
-                    }));
-                    block_context_ids.push(id);
-                }
+            // #167/#168: lower per-block `body_constraints` and `body_context`
+            // markers into IrConstraint / IrContext arena nodes, mirroring the
+            // skill-side declaration-level lowering below. The resulting
+            // NodeIds populate `IrBlock.constraints` / `IrBlock.context` so
+            // emit can render them on each procedure section.
+            let mut block_constraint_ids: Vec<NodeId> = Vec::new();
+            for marker in &block.body_constraints {
+                let resolved = texts
+                    .get(&marker.name.node)
+                    .cloned()
+                    .ok_or_else(|| LowerError::UndefinedConstraintRef(marker.name.node.clone()))?;
+                let (strength, polarity) = match marker.marker {
+                    ConstraintMarkerKind::Require => (Strength::Soft, Polarity::Require),
+                    ConstraintMarkerKind::Avoid => (Strength::Soft, Polarity::Avoid),
+                    ConstraintMarkerKind::Must => (Strength::Hard, Polarity::Require),
+                    ConstraintMarkerKind::MustAvoid => (Strength::Hard, Polarity::Avoid),
+                };
                 let next = NodeId(arena.len() as u32);
-                arena.push(IrNode::Block(IrBlock {
+                let id = arena.push(IrNode::Constraint(IrConstraint {
                     node_id: next,
-                    name: block.name.clone(),
-                    description: block.description.clone(),
-                    body_text,
-                    flow_statements,
-                    resolved_word_count: None,
-                    outgoing_calls,
-                    return_type: block_return_type,
-                    output_contract: block_output_contract,
-                    return_type_text: block_return_type_text,
-                    branch_steps,
-                    string_default_params: block_string_default_params,
-                    freeform_sections: block_freeform_ids,
-                    description_source_line: block.description_span.map(|s| s.line),
-                    context_source_line: block.context_section_span.map(|s| s.line),
-                    constraints_source_line: block.constraints_section_span.map(|s| s.line),
-                    flow_source_line: block.flow_span.map(|s| s.line),
-                    context: block_context_ids,
-                    constraints: block_constraint_ids,
-                }))
-            };
+                    text: resolved,
+                    strength,
+                    polarity,
+                }));
+                block_constraint_ids.push(id);
+            }
+            let mut block_context_ids: Vec<NodeId> = Vec::new();
+            for entry in &block.body_context {
+                let resolved = resolve_context_entry(entry, &texts)?;
+                let name = context_entry_name(entry);
+                let next = NodeId(arena.len() as u32);
+                let id = arena.push(IrNode::Context(IrContext {
+                    node_id: next,
+                    text: resolved,
+                    name,
+                }));
+                block_context_ids.push(id);
+            }
+            let next = NodeId(arena.len() as u32);
+            arena.push(IrNode::Block(IrBlock {
+                node_id: next,
+                name: block.name.clone(),
+                description: block.description.clone(),
+                body_text,
+                flow_items,
+                resolved_word_count: None,
+                outgoing_calls,
+                return_type: block_return_type,
+                output_contract: block_output_contract,
+                return_type_text: block_return_type_text,
+                branch_steps,
+                string_default_params: block_string_default_params,
+                freeform_sections: block_freeform_ids,
+                description_source_line: block.description_span.map(|s| s.line),
+                context_source_line: block.context_section_span.map(|s| s.line),
+                constraints_source_line: block.constraints_section_span.map(|s| s.line),
+                flow_source_line: block.flow_span.map(|s| s.line),
+                context: block_context_ids,
+                constraints: block_constraint_ids,
+            }));
         }
     }
 
@@ -1134,21 +1248,18 @@ pub fn lower_with_imports(
                 let is_agent = bound_name_lowered.is_some()
                     && callee_is_agent(target.node.as_str(), &blocks, &export_blocks);
                 let next = NodeId(arena.len() as u32);
-                let id = arena.push(IrNode::Call(IrCall {
-                    node_id: next,
-                    target: target.node.clone(),
-                    args: args.clone(),
+                let id = arena.push(IrNode::Call(build_call_ir_node(
+                    next,
+                    target.node.clone(),
+                    args.clone(),
                     resolved_body,
-                    site_modifier: site_modifier.clone(),
-                    projection_tier: None,
-                    procedure_path: None,
+                    site_modifier.clone(),
                     return_type,
                     callee_output_contract,
                     callee_return_type_text,
-                    bound_name: bound_name_lowered.clone(),
-                    local_refs: Vec::new(),
+                    bound_name_lowered.clone(),
                     is_agent,
-                }));
+                )));
                 // §8.2 producer table for return_local_ref resolution. Top-level
                 // skill-flow calls are visible to a top-level `return <name>`.
                 // Branch-arm bindings do NOT leak (§6.1 lexical scoping mirror)

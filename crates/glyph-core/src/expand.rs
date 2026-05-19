@@ -96,7 +96,7 @@ pub fn expand_step1_with_imported_descriptions(
     let mut block_has_body_context: HashMap<String, bool> = HashMap::new();
     for n in arena.nodes() {
         if let IrNode::Block(b) = n {
-            block_flow_counts.insert(b.name.clone(), b.flow_statements.len());
+            block_flow_counts.insert(b.name.clone(), b.flow_items.len());
             block_has_branches.insert(b.name.clone(), !b.branch_steps.is_empty());
             block_has_freeform.insert(b.name.clone(), !b.freeform_sections.is_empty());
             block_has_body_constraints.insert(b.name.clone(), !b.constraints.is_empty());
@@ -594,7 +594,7 @@ mod tests {
         let (file, _) = parse::parse(src, 0).expect("source should parse");
         let arena = lower::lower(&file).expect("source should lower");
         let arena = expand_step1(arena);
-        emit::emit(&arena, false)
+        emit::emit(&arena, false).expect("trivial fixture must compile")
     }
 
     #[test]

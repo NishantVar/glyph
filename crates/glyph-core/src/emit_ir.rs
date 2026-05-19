@@ -405,15 +405,37 @@ fn serialize_call(c: &IrCall, arena: &IrArena) -> Value {
             }
 
             // callee_flow: serialize the block's flow statements as inline instructions.
+            // callee_flow: serialize the block's structured flow items as
+            // inline-instruction JSON nodes. Each `IrBlockFlowItem` variant is
+            // flattened to a single `text` string so the JSON contract stays
+            // compatible with the legacy `flow_statements: Vec<String>` shape
+            // consumed by ir_dump fixtures.
             let flow: Vec<Value> = block
-                .flow_statements
+                .flow_items
                 .iter()
                 .enumerate()
-                .map(|(i, stmt)| {
+                .map(|(i, item)| {
+                    let text = match item {
+                        crate::ir::IrBlockFlowItem::Inline { text } => text.clone(),
+                        crate::ir::IrBlockFlowItem::Call { node_id } => match arena.get(*node_id) {
+                            crate::ir::IrNode::Call(c) => format!("call {}", c.target),
+                            _ => String::new(),
+                        },
+                        crate::ir::IrBlockFlowItem::Branch { node_id } => {
+                            match arena.get(*node_id) {
+                                crate::ir::IrNode::Branch(br) => format!("if {}", br.condition),
+                                _ => String::new(),
+                            }
+                        }
+                        crate::ir::IrBlockFlowItem::Constraint { rendered }
+                        | crate::ir::IrBlockFlowItem::Context { rendered } => rendered.clone(),
+                        crate::ir::IrBlockFlowItem::Return => "return".to_string(),
+                        crate::ir::IrBlockFlowItem::BareName { name } => name.clone(),
+                    };
                     json!({
                         "node_id": format!("n{}_{}", block.node_id.0, i),
                         "kind": "inline_instruction",
-                        "text": stmt,
+                        "text": text,
                         "role": "step"
                     })
                 })
