@@ -1718,11 +1718,12 @@ pub fn compile_directory_with_layout(
                     &mut file_block_descriptions,
                 );
                 // Emit procedure files for qualifying export blocks (Tier 3).
-                let emitted = emit_library_procedures(file, enable_effects, layout);
+                let (emitted, proc_diags) = emit_library_procedures(file, enable_effects, layout);
                 for (block_name, rel_path) in emitted {
                     procedure_paths.insert((file.clone(), block_name), rel_path);
                 }
-                let lib_diags = outside_root_warn.unwrap_or_else(DiagBag::new);
+                let mut lib_diags = outside_root_warn.unwrap_or_else(DiagBag::new);
+                lib_diags.merge(proc_diags);
                 outcomes.push((
                     file.clone(),
                     FileOutcome::Compiled {
@@ -2048,18 +2049,19 @@ fn emit_library_procedures(
     path: &Path,
     enable_effects: bool,
     layout: &CompileOutputLayout,
-) -> Vec<(String, PathBuf)> {
+) -> (Vec<(String, PathBuf)>, DiagBag) {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
-        Err(_) => return Vec::new(),
+        Err(_) => return (Vec::new(), DiagBag::new()),
     };
     let parsed = match parse::parse(&source, 0) {
         Ok((file, _)) => file,
-        Err(_) => return Vec::new(),
+        Err(_) => return (Vec::new(), DiagBag::new()),
     };
 
     let stem = library_stem(path);
     let mut emitted = Vec::new();
+    let mut diags = DiagBag::new();
 
     // Build a local TypeRegistry from same-file `type` decls so the §8.4
     // templates can resolve type-level descriptions when `-> Foo` matches a
@@ -2290,12 +2292,24 @@ fn emit_library_procedures(
                     text: text.as_str(),
                 })
                 .collect();
-            let markdown = emit::emit_procedure(
+            // Synthesize structured `flow_items` from the export block's
+            // parse-collected `flow_strings`. The library emit path does not
+            // currently lower flow into the arena, so all items project as
+            // `IrBlockFlowItem::Inline` and the arena is an empty stub.
+            let synthesized_flow: Vec<crate::ir::IrBlockFlowItem> = eb
+                .node
+                .flow_strings
+                .iter()
+                .map(|s| crate::ir::IrBlockFlowItem::Inline { text: s.clone() })
+                .collect();
+            let stub_arena = crate::ir::IrArena::new();
+            let markdown_res = emit::emit_procedure(
                 &eb.node.name,
                 desc,
                 &eb.node.effects,
                 &params,
-                &eb.node.flow_strings,
+                &synthesized_flow,
+                &stub_arena,
                 output_form.as_ref(),
                 return_type_text.as_deref(),
                 &local_type_registry,
@@ -2304,6 +2318,14 @@ fn emit_library_procedures(
                 &constraints_view,
                 &context_view,
             );
+            let markdown = match markdown_res {
+                Ok(md) => md,
+                Err(errors) => {
+                    let label = path.display().to_string();
+                    diags.merge(llm_required_diagnostics_from_errors(errors, &label));
+                    continue;
+                }
+            };
 
             let out_path = resolve_output_path(
                 path,
@@ -2321,7 +2343,7 @@ fn emit_library_procedures(
             emitted.push((eb.node.name.clone(), out_path));
         }
     }
-    emitted
+    (emitted, diags)
 }
 
 /// Resolve one AST `FreeformItem` into a pre-rendered `ProcedureFreeformItem`

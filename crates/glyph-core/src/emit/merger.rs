@@ -103,4 +103,25 @@ mod tests {
             other => panic!("expected UnknownSpan(99), got {other:?}"),
         }
     }
+
+    /// Task 14 reviewer nit: when a Span's payload carries
+    /// `post_merge_return_sentence`, the merger must fold the §8.4 sentence
+    /// onto the filled body via `append_return_sentence`. The fold is the
+    /// last-step return-folding mechanism for the shared `push_call_body`
+    /// helper — it lets the helper stash the sentence on the span at
+    /// scaffold time and have it land after stub_fill/merger completes.
+    #[test]
+    fn merge_applies_post_merge_return_sentence() {
+        let mut s = Scaffold::default();
+        let mut span = span(0, SpanKind::CallBodyShape);
+        span.payload.post_merge_return_sentence = Some("Return a `Report`.".to_string());
+        s.push_span(span);
+        let mut fills = HashMap::new();
+        fills.insert(SpanId(0), "Examine the working tree.".to_string());
+        let out = merge(s, fills).expect("merge with post-merge sentence succeeds");
+        assert_eq!(
+            out, "Examine the working tree. Return a `Report`.",
+            "post_merge_return_sentence must be folded onto the filled body via append_return_sentence"
+        );
+    }
 }

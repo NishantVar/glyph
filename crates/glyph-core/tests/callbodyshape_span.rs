@@ -217,6 +217,19 @@ fn compile_to_md(src: &str) -> String {
     }
 }
 
+/// §6.3: parallel helper exposing the lowered `IrArena` so procedure-body
+/// tests can assert on IR shape (e.g. `IrBlock.flow_items`) in addition to
+/// the emitted Markdown.
+fn compile_to_arena(src: &str) -> glyph_core::ir::IrArena {
+    match compile_source_with_effects(src, 0, "test.glyph", false).unwrap() {
+        CompileOutcome::Compiled { arena, .. } => arena,
+        CompileOutcome::Diagnostics(bag) => panic!(
+            "trivial Call must compile cleanly; got diagnostics:\n{:?}",
+            bag.sorted()
+        ),
+    }
+}
+
 #[test]
 fn trivial_tier1_toplevel_renders_inline_body() {
     let src = r#"block inspect(scope = ".") -> Report
@@ -365,6 +378,66 @@ skill diagnose(scope = ".") -> Report
     );
 }
 
+/// Task 14 / §3.10: the 8th emit site — a Tier-1 trivial Call sitting at
+/// the top-level of a procedure-body (Tier 2 callee). Before the fix this
+/// Call was stringified to `call <target>` in `flow_statements: Vec<String>`
+/// and re-emitted by `emit_procedure` as a literal placeholder, never
+/// rendering the callee's inline body.
+#[test]
+fn procedure_body_tier1_trivial_call_renders_inline_body() {
+    let src = r#"block inspect(scope = ".") -> Report
+    description: "Inspect."
+    flow:
+        "Look at {scope}."
+        return context
+
+block run(scope = ".") -> Report
+    description: "Run inspection then summarize."
+    flow:
+        inspect(scope)
+        "Now summarize the inspection above."
+        "Then double-check the summary against the source."
+        "Then finalize."
+        return context
+
+skill diagnose(scope = ".") -> Report
+    description: "Demo."
+    flow:
+        run(scope)
+        return context
+"#;
+    let md = compile_to_md(src);
+    assert!(
+        md.contains("Look at"),
+        "procedure-body Tier-1 inline body must render in md:\n{md}"
+    );
+
+    // §6.3 IR-shape assertion: the lowered `run` procedure block must lower
+    // its `inspect(scope)` call to an `IrBlockFlowItem::Call { node_id }` whose
+    // arena entry is an `IrNode::Call`. Guards against future regressions where
+    // procedure-body Calls fall back to the legacy `Inline { text }` form.
+    let arena = compile_to_arena(src);
+    let run_block = arena
+        .nodes()
+        .iter()
+        .find_map(|n| match n {
+            glyph_core::ir::IrNode::Block(b) if b.name == "run" => Some(b),
+            _ => None,
+        })
+        .expect("run block must be present in arena");
+    let has_call_item = run_block.flow_items.iter().any(|item| match item {
+        glyph_core::ir::IrBlockFlowItem::Call { node_id } => {
+            matches!(arena.get(*node_id), glyph_core::ir::IrNode::Call(_))
+        }
+        _ => false,
+    });
+    assert!(
+        has_call_item,
+        "procedure body must lower its inspect(scope) call to IrBlockFlowItem::Call pointing at an IrNode::Call arena entry; flow_items = {:?}",
+        run_block.flow_items
+    );
+}
+
 #[test]
 fn trivial_tier2_in_arm_renders_follow_procedure() {
     let src = r#"block do_steps()
@@ -385,6 +458,98 @@ skill demo(scope = ".")
     assert!(
         md.contains("Follow the do-steps procedure"),
         "trivial tier-2 in-arm anchor must render in md:\n{md}"
+    );
+}
+
+// ----- Task 14: Procedure-body Call hard-fail (8th emit surface) -----
+// The shared `push_call_body` helper enforces CallBodyShape span emission
+// when a Call inside a procedure body carries a `with`-modifier. These
+// three tests exercise tier-1 (inline), tier-2 (same-file), and tier-3
+// (external) projection modes from a *procedure-body* (Tier-2 same-file)
+// call site — the 8th emit surface refactored in Task 14.
+
+#[test]
+fn procedure_body_tier1_with_modifier_hard_fails() {
+    let src = "block inspect(scope = \".\") -> Report\n    description: \"Inspect.\"\n    flow:\n        \"Look at {scope}.\"\n        return context\n\nblock run(scope = \".\") -> Report\n    description: \"Run inspection then summarize.\"\n    flow:\n        inspect(scope) with \"focus on lint failures\"\n        \"Now summarize the inspection above.\"\n        \"Then double-check the summary against the source.\"\n        \"Then finalize.\"\n        return context\n\nskill diagnose(scope = \".\") -> Report\n    description: \"Demo.\"\n    flow:\n        run(scope)\n        return context\n";
+    let (n, msgs) = count_llm_required(src);
+    assert_eq!(
+        n, 1,
+        "expected one llm-required diagnostic; got msgs={msgs:?}"
+    );
+    assert!(
+        msgs[0].contains("inspect"),
+        "diagnostic must name the tier-1 callee `inspect`: {msgs:?}"
+    );
+    assert!(
+        msgs[0].contains("with modifier"),
+        "diagnostic must mention the modifier reason: {msgs:?}"
+    );
+}
+
+#[test]
+fn procedure_body_tier2_with_modifier_hard_fails() {
+    let src = "block summarize_findings(scope = \".\") -> Report\n    description: \"Summarize the recent findings about the repository structure and surface anything notable for follow-up.\"\n    flow:\n        \"Read recent notes about {scope}.\"\n        \"Group them by topic.\"\n        \"Highlight items needing follow-up.\"\n        return context\n\nblock run(scope = \".\") -> Report\n    description: \"Run summary then finalize.\"\n    flow:\n        summarize_findings(scope) with \"focus on lint failures\"\n        \"Then finalize step one.\"\n        \"Then finalize step two.\"\n        \"Then finalize step three.\"\n        return context\n\nskill diagnose(scope = \".\") -> Report\n    description: \"Demo.\"\n    flow:\n        run(scope)\n        return context\n";
+    let (n, msgs) = count_llm_required(src);
+    assert_eq!(
+        n, 1,
+        "expected one llm-required diagnostic; got msgs={msgs:?}"
+    );
+    assert!(
+        msgs[0].contains("summarize_findings"),
+        "diagnostic must name the tier-2 callee `summarize_findings`: {msgs:?}"
+    );
+    assert!(
+        msgs[0].contains("with modifier"),
+        "diagnostic must mention the modifier reason: {msgs:?}"
+    );
+}
+
+#[test]
+fn procedure_body_tier3_with_modifier_hard_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let helper_path = dir.path().join("helper.glyph");
+    let main_path = dir.path().join("main.glyph");
+    let helper_src = "export block shared_inspect(scope = \".\") -> Report\n    description: \"Shared inspection routine that walks the repository at the given scope and reports notable findings to the orchestrator skill, suitable for downstream triage workflows.\"\n    flow:\n        \"Open the repository at {scope} and enumerate every tracked file, paying particular attention to top-level configuration, dependency manifests, build scripts, and CI workflow definitions.\"\n        \"Read the contents of each manifest and configuration file in turn, taking careful notes about declared dependencies, environment variables, feature flags, language toolchain versions, and any other facts that downstream auditors will want to inspect.\"\n        \"Group the collected notes by topic — runtime dependencies, build tooling, deployment configuration, observability instrumentation, security posture — and within each topic sort entries by severity so the most important findings appear first.\"\n        \"Cross-reference the grouped notes with any historical lint, security-scan, or test-failure reports already present in the repository to flag regressions, recurrent themes, and items the team has previously chosen to defer.\"\n        \"Highlight items needing follow-up by tagging each one with a clear owner, an estimated effort level, and a short rationale explaining why the team should prioritise resolving it before the next release.\"\n        return context\n";
+    std::fs::write(&helper_path, helper_src).unwrap();
+    let main_src = "import \"./helper.glyph\" { shared_inspect }\n\nblock run(scope = \".\") -> Report\n    description: \"Run shared inspect then finalize.\"\n    flow:\n        shared_inspect(scope) with \"focus on lint failures\"\n        \"Then finalize step one.\"\n        \"Then finalize step two.\"\n        \"Then finalize step three.\"\n        return context\n\nskill diagnose(scope = \".\") -> Report\n    description: \"Demo.\"\n    flow:\n        run(scope)\n        return context\n";
+    std::fs::write(&main_path, main_src).unwrap();
+    let result = glyph_core::compile_directory_with_options(
+        &[helper_path.clone(), main_path.clone()],
+        false,
+        false,
+    );
+    let outcome = result
+        .outcomes
+        .into_iter()
+        .find(|(p, _)| p.file_name() == main_path.file_name())
+        .map(|(_, o)| o)
+        .expect("main.glyph outcome present");
+    let diags = match outcome {
+        glyph_core::FileOutcome::Failed { diagnostics } => diagnostics,
+        glyph_core::FileOutcome::Compiled { .. } => {
+            panic!("main.glyph must hard-fail when a procedure body has llm-required-for-call");
+        }
+        glyph_core::FileOutcome::Skipped { .. } => panic!("main.glyph should not be skipped"),
+    };
+    let sorted = diags.sorted();
+    let llms: Vec<_> = sorted
+        .iter()
+        .filter(|d| d.id == "G::expand::llm-required-for-call")
+        .collect();
+    assert_eq!(
+        llms.len(),
+        1,
+        "expected one llm-required diagnostic; got {sorted:?}"
+    );
+    assert!(
+        llms[0].message.contains("shared_inspect"),
+        "diagnostic must name the tier-3 callee: {:?}",
+        llms[0].message
+    );
+    assert!(
+        llms[0].message.contains("with modifier"),
+        "diagnostic must mention the modifier reason: {:?}",
+        llms[0].message
     );
 }
 

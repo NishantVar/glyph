@@ -319,89 +319,29 @@ pub(super) fn emit_lettered_substeps(
                 // CallBodyShape span carrying the *raw* resolved_body
                 // (slots intact) so stub_fill can weave the modifier in.
                 s.push_literal(format!("   {}. ", letter as char));
-                if crate::emit::scaffold::call_needs_llm_fill(c) {
-                    let raw = c.resolved_body.clone().unwrap_or_default();
-                    let id = SpanId(*next_span_id);
-                    *next_span_id += 1;
-                    s.push_span(SpanRef {
-                        id,
-                        kind: SpanKind::CallBodyShape,
-                        ir_node: c.node_id,
-                        payload: SpanPayload {
-                            target_name: Some(c.target.clone()),
-                            projection_mode: crate::emit::scaffold::projection_mode_from(c),
-                            site_modifier: c.site_modifier.clone(),
-                            resolved_body: Some(raw),
-                            local_refs: c.local_refs.clone(),
-                            ..SpanPayload::default()
-                        },
-                    });
-                } else {
-                    let raw = c.resolved_body.as_deref().unwrap_or_default();
-                    let body_text =
-                        crate::emit::scaffold::substitute_local_refs_in(raw, &c.local_refs);
-                    s.push_literal(body_text);
-                }
-                if let Some(naming) = crate::emit::scaffold::naming_sentence_for_call(c) {
-                    s.push_literal(format!(" {}", naming));
-                }
-                s.push_literal("\n");
+                let raw = c.resolved_body.as_deref().unwrap_or_default();
+                crate::emit::scaffold::push_call_body(
+                    s,
+                    c,
+                    raw,
+                    Some(crate::emit::scaffold::Tier1FoldCtx {
+                        is_last: false,
+                        return_sentence: None,
+                    }),
+                    next_span_id,
+                );
             }
             IrNode::Call(c) if c.projection_tier == Some(2) => {
                 s.push_literal(format!("   {}. ", letter as char));
                 let kebab = crate::emit::templates::kebab_case(&c.target);
                 let anchor = format!("Follow the {kebab} procedure.");
-                if crate::emit::scaffold::call_needs_llm_fill(c) {
-                    let id = SpanId(*next_span_id);
-                    *next_span_id += 1;
-                    s.push_span(SpanRef {
-                        id,
-                        kind: SpanKind::CallBodyShape,
-                        ir_node: c.node_id,
-                        payload: SpanPayload {
-                            target_name: Some(c.target.clone()),
-                            projection_mode: crate::emit::scaffold::projection_mode_from(c),
-                            site_modifier: c.site_modifier.clone(),
-                            resolved_body: Some(anchor),
-                            local_refs: c.local_refs.clone(),
-                            ..SpanPayload::default()
-                        },
-                    });
-                } else {
-                    s.push_literal(anchor);
-                }
-                if let Some(naming) = crate::emit::scaffold::naming_sentence_for_call(c) {
-                    s.push_literal(format!(" {}", naming));
-                }
-                s.push_literal("\n");
+                crate::emit::scaffold::push_call_body(s, c, &anchor, None, next_span_id);
             }
             IrNode::Call(c) if c.projection_tier == Some(3) => {
                 s.push_literal(format!("   {}. ", letter as char));
                 let path = c.procedure_path.as_deref().unwrap_or("unknown");
                 let anchor = crate::emit::templates::external_file_step(path);
-                if crate::emit::scaffold::call_needs_llm_fill(c) {
-                    let id = SpanId(*next_span_id);
-                    *next_span_id += 1;
-                    s.push_span(SpanRef {
-                        id,
-                        kind: SpanKind::CallBodyShape,
-                        ir_node: c.node_id,
-                        payload: SpanPayload {
-                            target_name: Some(c.target.clone()),
-                            projection_mode: crate::emit::scaffold::projection_mode_from(c),
-                            site_modifier: c.site_modifier.clone(),
-                            resolved_body: Some(anchor),
-                            local_refs: c.local_refs.clone(),
-                            ..SpanPayload::default()
-                        },
-                    });
-                } else {
-                    s.push_literal(anchor);
-                }
-                if let Some(naming) = crate::emit::scaffold::naming_sentence_for_call(c) {
-                    s.push_literal(format!(" {}", naming));
-                }
-                s.push_literal("\n");
+                crate::emit::scaffold::push_call_body(s, c, &anchor, None, next_span_id);
             }
             IrNode::Call(c) => panic!("Call to `{}` survived past expand", c.target),
             IrNode::Branch(_) => {
@@ -638,6 +578,11 @@ mod tests {
             sp.payload.projection_mode,
             Some(ProjectionMode::Inline),
             "tier-1 projection_mode should be Inline"
+        );
+        assert_eq!(
+            sp.ir_node,
+            NodeId(7),
+            "span ir_node must echo the IrCall NodeId so diagnostics can sort deterministically"
         );
         assert_eq!(
             sp.payload.target_name.as_deref(),
