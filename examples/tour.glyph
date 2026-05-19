@@ -1,0 +1,9 @@
+export type Audience = <"technical background of the person reading the tour">
+
+export const real_walkthrough = "Use a real source-to-output walkthrough instead of a feature list."
+export const syntax_dump = "turning the tour into a disconnected syntax checklist."
+
+export block walkthrough(audience: Audience = "engineer")
+    flow:
+        "Show {audience} one import, constraint, block, branch, with modifier, and return."
+        return none

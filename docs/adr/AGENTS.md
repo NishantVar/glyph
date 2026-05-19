@@ -35,3 +35,4 @@ ADRs are numbered sequentially (`NNNN-<slug>.md`). Numbers are stable once assig
 | 0023 | [[0023-tower-lsp-over-lsp-server\|`tower-lsp` over `lsp-server` for the Glyph LSP]]         | Tooling      |
 | 0024 | [[0024-lsp-shares-glyph-core\|LSP depends on `glyph-core`, not `glyph-cli`]]                | Tooling      |
 | 0025 | [[0025-context-preamble-format\|Locked context preamble format for procedure-tier blocks]]  | Output       |
+| 0026 | [[0026-return-as-flow-node\|Return as a flow node, rendered deterministically as `Output:`]] | Semantics    |

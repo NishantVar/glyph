@@ -1,0 +1,14 @@
+import "./tour.glyph" { real_walkthrough, syntax_dump, walkthrough }
+
+skill minimal_glyph_tour(audience: Audience = "engineer" <"technical background">) -> Tour
+    description: "Explain Glyph with the smallest useful tour"
+
+    require real_walkthrough
+    must avoid syntax_dump
+
+    flow:
+        if audience == "beginner":
+            walkthrough(audience) with "naming each construct"
+        else:
+            walkthrough(audience)
+        return <"a concise source-to-output walkthrough">
