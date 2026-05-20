@@ -687,6 +687,67 @@ export block runner() -> Report
     );
 }
 
+/// B03 GAP 10 — Codex round-7 repro: whole-module-alias `.applies()`
+/// receiver resolves to an imported block that lacks a `description:`
+/// sub-section. Pre-fix, `check_applies_in_condition`'s dotted-receiver
+/// branch only consulted `imported_block_descriptions` — so an undescribed
+/// imported block (NOT in the description map) fell through to the same
+/// `applies-on-non-block` diagnostic the validator emits for genuinely
+/// unresolved receivers. The correct ID is
+/// `applies-on-undescribed-block` (matching the selective-import branch).
+///
+/// Post-fix, the dotted-receiver branch does a three-way check:
+///   - `imported_block_descriptions` hit → OK
+///   - `imported_blocks` hit (no description)
+///       → `G::analyze::applies-on-undescribed-block` (Error,
+///         imported-no-repair — repair is single-file)
+///   - neither → existing `G::analyze::applies-on-non-block`
+#[test]
+fn b03_repro24_whole_module_undescribed_block_undescribed_diagnostic() {
+    let dep_src = "\
+export block ready() -> Report
+    flow:
+        return \"yes\"
+";
+    let main_src = "\
+import \"./dep.glyph\" as dep
+
+export block runner() -> Report
+    flow:
+        if dep.ready.applies():
+            \"branch-noop\"
+        return \"idle\"
+";
+    let (output, _dir) = run_check_on_two_files(dep_src, main_src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "whole-module-alias `.applies()` on undescribed imported block must exit 1;\nstdout={stdout}\nstderr={stderr}",
+    );
+    let mut found = false;
+    let mut wrong_ids: Vec<String> = Vec::new();
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value =
+            serde_json::from_str(line).expect("each NDJSON line must parse as JSON");
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+        if id == "G::analyze::applies-on-undescribed-block" {
+            found = true;
+        } else if id == "G::analyze::applies-on-non-block" {
+            wrong_ids.push(id.to_string());
+        }
+    }
+    assert!(
+        wrong_ids.is_empty(),
+        "undescribed imported block must NOT emit `applies-on-non-block` (that's the unresolved-receiver shape); saw {wrong_ids:?}\nstdout={stdout}\nstderr={stderr}",
+    );
+    assert!(
+        found,
+        "expected G::analyze::applies-on-undescribed-block diagnostic;\nstdout={stdout}\nstderr={stderr}",
+    );
+}
+
 /// B03 GAP 9 — Codex round-6 repro: malformed `.applies` in an
 /// export-block `if` condition. `.applies` without parens
 /// (e.g. `if x.applies:`) is invalid per `parse_branch_condition`'s

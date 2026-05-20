@@ -2853,6 +2853,7 @@ pub fn analyze_with_diagnostics(
                 &block_decls,
                 &export_block_decls,
                 &empty_imported_block_params,
+                &HashSet::new(),
                 &HashMap::new(),
                 &local_callee_return_types,
                 &empty_imported_block_return_types,
@@ -4391,6 +4392,7 @@ pub fn analyze_with_imports(
                             &text_names,
                             &block_names,
                             &block_decls,
+                            imported_blocks,
                             imported_block_descriptions,
                             &std::collections::HashMap::new(),
                         );
@@ -4695,6 +4697,7 @@ fn analyze_skill_with_usage_tracking(
         block_decls,
         export_block_decls,
         imported_block_params,
+        imported_blocks,
         imported_block_descriptions,
         local_callee_return_types,
         imported_block_return_types,
@@ -5194,6 +5197,13 @@ fn analyze_skill(
     block_decls: &HashMap<&str, &BlockDecl>,
     export_block_decls: &HashMap<&str, &crate::ast::ExportBlockDecl>,
     imported_block_params: &HashMap<String, Vec<crate::ast::Param>>,
+    // B03 GAP 10: full imported-block name set, needed by
+    // `check_applies_in_condition` to distinguish whole-module-alias
+    // receivers that resolve to undescribed imported blocks
+    // (`applies-on-undescribed-block`) from ones that don't resolve at all
+    // (`applies-on-non-block`). `imported_block_descriptions` is the
+    // description-restricted subset of the same map.
+    imported_blocks: &HashSet<String>,
     imported_block_descriptions: &HashMap<String, String>,
     local_callee_return_types: &HashMap<&str, &Spanned<String>>,
     imported_block_return_types: &HashMap<String, Spanned<String>>,
@@ -5593,6 +5603,7 @@ fn analyze_skill(
                     &text_names,
                     &block_names,
                     &block_decls,
+                    imported_blocks,
                     imported_block_descriptions,
                     &flow_scope.flow_local_types,
                 );
@@ -5608,6 +5619,7 @@ fn analyze_skill(
                         &text_names,
                         &block_names,
                         &block_decls,
+                        imported_blocks,
                         imported_block_descriptions,
                         &flow_scope.flow_local_types,
                     );
@@ -6545,6 +6557,14 @@ fn check_applies_in_condition(
     text_names: &HashSet<&str>,
     block_names: &HashSet<&str>,
     block_decls: &HashMap<&str, &BlockDecl>,
+    // B03 GAP 10: full set of imported block names (selective + whole-module
+    // alias compound keys per GLYPH_LANGUAGE_GUIDE §8.7), re-keyed under
+    // consumer-local spellings. Used to distinguish whole-module-alias
+    // receivers that DO resolve to an imported block (no description →
+    // `applies-on-undescribed-block`) from ones that don't resolve at all
+    // (`applies-on-non-block`). `imported_block_descriptions` is the same
+    // re-keying restricted to blocks that have a `description:` sub-section.
+    imported_blocks: &HashSet<String>,
     imported_block_descriptions: &HashMap<String, String>,
     flow_local_types: &HashMap<String, FlowLocalType>,
 ) {
@@ -6570,10 +6590,29 @@ fn check_applies_in_condition(
         }
 
         // Dotted receivers (`dep.ready`) are only meaningful as whole-module
-        // alias references to imported described blocks — they cannot
-        // resolve to same-file text/block decls or flow-local bindings.
+        // alias references to imported blocks — they cannot resolve to
+        // same-file text/block decls or flow-local bindings.
         if receiver.contains('.') {
-            if !imported_block_descriptions.contains_key(receiver) {
+            if imported_block_descriptions.contains_key(receiver) {
+                // Described whole-module-alias block — OK.
+            } else if imported_blocks.contains(receiver) {
+                // B03 GAP 10: whole-module-alias receiver resolves to an
+                // imported block, but the source file's block has no
+                // `description:` sub-section. Mirror the selective-import
+                // branch shape (`applies-on-undescribed-block` Error, no
+                // repair — single-file repair can't reach into the dep).
+                bag.push(
+                    Diagnostic::error(
+                        "G::analyze::applies-on-undescribed-block",
+                        format!(
+                            "`{}.applies()` but imported block `{}` has no accessible `description:`; add `description:` in the source file",
+                            receiver, receiver
+                        ),
+                        SourceSpan::from_byte_span(file_label, span, line_index),
+                    ),
+                    span,
+                );
+            } else {
                 bag.push(
                     Diagnostic::error(
                         "G::analyze::applies-on-non-block",
@@ -7621,6 +7660,7 @@ skill current() -> BranchName
             &text_names,
             &block_names,
             &block_decls,
+            &HashSet::new(),
             &HashMap::new(),
             &HashMap::new(),
         );
