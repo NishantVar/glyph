@@ -72,6 +72,11 @@ export block caller() -> Report
 // -- Repro 2 --------------------------------------------------------------
 // `return foo()` against a callee that requires arg `x`. Should surface
 // `G::analyze::missing-required-arg` (error -> exit 1).
+//
+// Codex GAP 2 follow-up: the diagnostic span must pin the callee
+// identifier (`foo`, 3 chars), not the entire export-block decl. The
+// skill/block path already passes `target.span`; the export-block
+// terminal-return path must match.
 #[test]
 fn b03_repro2_return_call_missing_required_arg() {
     let src = "\
@@ -85,6 +90,39 @@ export block caller() -> Report
 ";
     let (output, _dir) = run_check_on_source(src);
     assert_diagnostic(&output, 1, "G::analyze::missing-required-arg");
+
+    // Assert the span pins the callee identifier — `foo`, length 3.
+    // SourceSpan serializes as `{file, start: {line, col}, end: {line, col}}`,
+    // so we check that start.line == end.line (single-line span) and
+    // end.col - start.col == 3 (callee identifier width).
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut saw_callee_pinned = false;
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value = serde_json::from_str(line).expect("ndjson");
+        if v.get("id").and_then(|x| x.as_str()) != Some("G::analyze::missing-required-arg") {
+            continue;
+        }
+        let span = v.get("span").expect("diagnostic must carry a span");
+        let start_line = span["start"]["line"].as_u64().expect("span.start.line");
+        let end_line = span["end"]["line"].as_u64().expect("span.end.line");
+        let start_col = span["start"]["col"].as_u64().expect("span.start.col");
+        let end_col = span["end"]["col"].as_u64().expect("span.end.col");
+        assert_eq!(
+            start_line, end_line,
+            "callee-pinned span must be single-line; got start_line={start_line} end_line={end_line};\nstdout={stdout}",
+        );
+        let width = end_col - start_col + 1;
+        assert_eq!(
+            width, 3,
+            "expected missing-required-arg span width 3 (callee `foo`); got start_col={start_col} end_col={end_col} width={width};\nstdout={stdout}",
+        );
+        saw_callee_pinned = true;
+        break;
+    }
+    assert!(
+        saw_callee_pinned,
+        "no missing-required-arg diagnostic with a span; stdout={stdout}"
+    );
 }
 
 // -- Repro 3 --------------------------------------------------------------
@@ -164,6 +202,62 @@ export block caller() -> Report
 ";
     let (output, _dir) = run_check_on_source(src);
     assert_diagnostic(&output, 1, "G::parse::return-in-branch");
+}
+
+// -- Repro 8 (Codex GAP 1) -----------------------------------------------
+// A standalone (non-return) flow-call at the flow root that targets an
+// undeclared block. Should surface `G::analyze::undefined-call`
+// (repairable -> exit 2). Pre-fix the export-block path only validated
+// the terminal return; standalone calls passed silently.
+#[test]
+fn b03_repro8_root_nonreturn_undefined_call() {
+    let src = "\
+export block caller() -> Report
+    flow:
+        missing()
+        return \"ok\"
+";
+    let (output, _dir) = run_check_on_source(src);
+    assert_diagnostic(&output, 2, "G::analyze::undefined-call");
+}
+
+// -- Repro 9 (Codex GAP 1) -----------------------------------------------
+// A standalone (non-return) flow-call at the flow root that targets a
+// known callee but omits a required positional argument. Should surface
+// `G::analyze::missing-required-arg` (error -> exit 1).
+#[test]
+fn b03_repro9_root_nonreturn_missing_required_arg() {
+    let src = "\
+export block foo(x: Input) -> Report
+    flow:
+        return \"ok\"
+
+export block caller() -> Report
+    flow:
+        foo()
+        return \"ok\"
+";
+    let (output, _dir) = run_check_on_source(src);
+    assert_diagnostic(&output, 1, "G::analyze::missing-required-arg");
+}
+
+// -- Repro 10 (Codex GAP 1) ----------------------------------------------
+// A non-return flow-call inside an `if` branch body that targets an
+// undeclared block. Should surface `G::analyze::undefined-call`
+// (repairable -> exit 2). Symmetric to repro 8 but exercises branch-
+// body collection — the scanner must include calls nested inside
+// `if`/`elif`/`else` bodies.
+#[test]
+fn b03_repro10_branch_body_nonreturn_undefined_call() {
+    let src = "\
+export block caller() -> Report
+    flow:
+        if \"x\":
+            missing()
+        return \"ok\"
+";
+    let (output, _dir) = run_check_on_source(src);
+    assert_diagnostic(&output, 2, "G::analyze::undefined-call");
 }
 
 // -- Negative control ----------------------------------------------------

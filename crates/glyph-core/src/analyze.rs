@@ -6834,15 +6834,19 @@ fn analyze_export_block(
                         .map(|v| v.as_slice())
                 });
             if let Some(params) = callee_params {
+                // B03 GAP 2: pin missing-required-arg diagnostic span to the callee
+                // identifier (`target.span`) so the squiggle covers `foo`, not the
+                // entire export-block declaration. Matches the FlowStmt::Call
+                // resolver convention used by skill/block callers.
                 let diags = validate_call_args(
                     target.node.as_str(),
                     params,
                     args,
-                    spanned.span,
+                    target.span,
                     file_label,
                     line_index,
                 );
-                let sp = spanned.span;
+                let sp = target.span;
                 for d in diags {
                     bag.push(d, sp);
                 }
@@ -6864,6 +6868,59 @@ fn analyze_export_block(
             line_index,
             bag,
         );
+    }
+
+    // B03 GAP 1: validate non-return flow-position calls collected from the
+    // export block's `flow:` section. Each `FlowCallRef` represents a call
+    // that is NOT the terminal `return foo(...)` — either a standalone
+    // root-level call or a call inside an `if`/`elif`/`else` branch body.
+    // Mirrors the FlowStmt::Call resolver's validation suite used elsewhere:
+    // `G::analyze::undefined-call` and `G::analyze::missing-required-arg`.
+    // Diagnostic spans pin to `target.span` (the callee identifier), not the
+    // surrounding export block, so the squiggle covers `foo`, not the whole
+    // declaration. Nominal-mismatch is intentionally skipped — these are not
+    // the export block's return value; only the terminal-return path runs the
+    // nominal check.
+    for call in &decl.flow_calls {
+        let synthetic = ReturnExpr::Call {
+            target: call.target.clone(),
+            args: call.args.clone(),
+        };
+        check_return_call_undefined(
+            &synthetic,
+            call.target.span,
+            block_names,
+            file_label,
+            line_index,
+            bag,
+        );
+        let callee_params: Option<&[Param]> = block_decls
+            .get(call.target.node.as_str())
+            .map(|b| b.params.as_slice())
+            .or_else(|| {
+                export_block_decls
+                    .get(call.target.node.as_str())
+                    .map(|eb| eb.params.as_slice())
+            })
+            .or_else(|| {
+                imported_block_params
+                    .get(call.target.node.as_str())
+                    .map(|v| v.as_slice())
+            });
+        if let Some(params) = callee_params {
+            let diags = validate_call_args(
+                call.target.node.as_str(),
+                params,
+                &call.args,
+                call.target.span,
+                file_label,
+                line_index,
+            );
+            let sp = call.target.span;
+            for d in diags {
+                bag.push(d, sp);
+            }
+        }
     }
 
     // PRD #103 / Slice 2 (#105): the previous `G::analyze::missing-param-default`

@@ -257,6 +257,13 @@ pub struct ExportBlockDecl {
     /// follow-up `IrExportBlock` work lands; it is dormant downstream until
     /// that issue ships.
     pub terminal_return: Option<ReturnExpr>,
+    /// B03 GAP 1: non-return call sites collected from the `flow:` section —
+    /// standalone root-level calls and calls inside `if`/`elif`/`else` branch
+    /// bodies. The terminal `return foo(...)` lives in `terminal_return`.
+    /// `analyze_export_block` iterates this vector to fire
+    /// `G::analyze::undefined-call` and `G::analyze::missing-required-arg`
+    /// on the export-block path, mirroring the FlowStmt::Call resolver.
+    pub flow_calls: Vec<FlowCallRef>,
     /// Recovered duplicate sub-sections (issue #109). See
     /// [`Skill::extra_subsections`] for semantics.
     pub extra_subsections: Vec<DuplicateSubsection>,
@@ -420,6 +427,21 @@ pub enum ReturnExpr {
     Inline(String),
     /// `return <IDENT>` — output-target identifier form (issue #85).
     OutputTarget(OutputTargetExpr),
+}
+
+/// B03 GAP 1: a non-return call site collected from an export block's
+/// `flow:` section — standalone root-level call or call inside an `if` /
+/// `elif` / `else` branch body. Terminal `return foo(...)` calls land in
+/// [`ExportBlockDecl::terminal_return`] instead and are NOT mirrored here.
+/// Mirrors the (`target`, `args`) shape of [`ReturnExpr::Call`].
+#[derive(Debug, Clone)]
+pub struct FlowCallRef {
+    /// Callee name (`foo` in `foo(x, y)`). Spanned for go-to-def parity.
+    pub target: Spanned<String>,
+    /// Positional arguments by name or inline string. Mirrors
+    /// [`ReturnExpr::Call`]'s `args`; argument-count validation runs
+    /// against the callee's `Param` list via `validate_call_args`.
+    pub args: Vec<String>,
 }
 
 /// An entry inside the `context:` sub-section or a body-level `context` marker.

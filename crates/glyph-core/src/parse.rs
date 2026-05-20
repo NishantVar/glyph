@@ -5,9 +5,9 @@
 
 use crate::ast::{
     BlockDecl, ConstDecl, ConstValue, ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl,
-    DuplicateSubsection, ElifBranch, ExportBlockDecl, FlowStmt, FreeformItem, FreeformSection,
-    ImportDecl, ImportKind, ImportName, Param, ReservedMarker, ReturnExpr, SectionSpan, Skill,
-    SourceFile, TypeDecl,
+    DuplicateSubsection, ElifBranch, ExportBlockDecl, FlowCallRef, FlowStmt, FreeformItem,
+    FreeformSection, ImportDecl, ImportKind, ImportName, Param, ReservedMarker, ReturnExpr,
+    SectionSpan, Skill, SourceFile, TypeDecl,
 };
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::output_target::{OutputTargetExpr, OutputTargetParseError};
@@ -1141,6 +1141,12 @@ impl<'a> Parser<'a> {
         let mut has_return = false;
         let mut has_meaningful_return = false;
         let mut body_refs: Vec<String> = Vec::new();
+        // B03 GAP 1: non-return flow-position call sites — `foo(args)` at flow-root
+        // or inside an `if`/`elif`/`else` branch body. Terminal `return foo(args)`
+        // is captured separately in `terminal_return`. The body walker harvests
+        // these when the current logical line did NOT start with `return` (the
+        // `line_kw_was_return` gate).
+        let mut flow_calls: Vec<FlowCallRef> = Vec::new();
         // Issue #166: structural capture of body-level
         // `require` / `avoid` / `must` / `must avoid` markers and
         // `context <name>` / `context "..."` entries. Mirrors the
@@ -1751,6 +1757,52 @@ impl<'a> Parser<'a> {
                             TokenKind::Ident(ident) => {
                                 if !body_keywords.contains(&ident.as_str()) {
                                     body_refs.push(ident.clone());
+                                    // B03 GAP 1: harvest non-return flow-position calls. Gated on
+                                    // `current_section == flow` (don't pick up effect/description idents)
+                                    // and `!line_kw_was_return` (terminal `return foo(...)` is captured by
+                                    // `terminal_return` via `parse_return_expr`; the body walker re-iterates
+                                    // those tokens for body_refs accounting, so without the gate the same
+                                    // call would be double-collected). The next token must be `(`. The
+                                    // walker's `self.pos` is left unchanged — a separate `probe` cursor
+                                    // scans the argument list.
+                                    if current_section == Some("flow") && !line_kw_was_return {
+                                        if let Some(next) = self.tokens.get(self.pos + 1) {
+                                            if matches!(next.kind, TokenKind::Lparen) {
+                                                let target =
+                                                    Spanned::new(ident.clone(), self.peek().span);
+                                                let mut args: Vec<String> = Vec::new();
+                                                let mut depth: usize = 0;
+                                                let mut probe = self.pos + 1;
+                                                while let Some(tok) = self.tokens.get(probe) {
+                                                    if matches!(
+                                                        tok.kind,
+                                                        TokenKind::LineStart { .. }
+                                                            | TokenKind::Eof
+                                                    ) {
+                                                        break;
+                                                    }
+                                                    match &tok.kind {
+                                                        TokenKind::Lparen => depth += 1,
+                                                        TokenKind::Rparen => {
+                                                            depth -= 1;
+                                                            if depth == 0 {
+                                                                break;
+                                                            }
+                                                        }
+                                                        TokenKind::Ident(a) if depth == 1 => {
+                                                            args.push(a.clone())
+                                                        }
+                                                        TokenKind::StringLit(a) if depth == 1 => {
+                                                            args.push(a.clone())
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                    probe += 1;
+                                                }
+                                                flow_calls.push(FlowCallRef { target, args });
+                                            }
+                                        }
+                                    }
                                     // Capture effect names
                                     if current_section == Some("effects") {
                                         if current_dup_kind == Some("effects") {
@@ -1916,6 +1968,7 @@ impl<'a> Parser<'a> {
                 flow_strings,
                 return_type,
                 terminal_return,
+                flow_calls,
                 extra_subsections,
                 description_span,
                 context_section_span,
