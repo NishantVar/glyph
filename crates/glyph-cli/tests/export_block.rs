@@ -455,3 +455,89 @@ export block runner() -> Report
         }
     }
 }
+
+/// Repro 15 — B03 GAP 5, applies-on-non-block (unknown receiver).
+///
+/// An `if missing.applies():` condition in an export-block flow must run
+/// the same semantic check as Skill/Block flow conditions. Pre-fix,
+/// `analyze_export_block` did not iterate condition expressions, so the
+/// `.applies()` validator (`check_applies_in_condition`) never ran and
+/// `G::analyze::applies-on-non-block` (Error) was NOT emitted. Post-fix,
+/// the export-block analyzer walks `decl.condition_refs` and invokes the
+/// validator with an empty flow-local-type map.
+#[test]
+fn b03_repro15_condition_applies_on_unknown_receiver() {
+    let src = "\
+export block caller() -> Report
+    flow:
+        if missing.applies():
+            \"branch-noop\"
+        return \"ok\"
+";
+    let (output, _dir) = run_check_on_source(src);
+    assert_diagnostic(&output, 1, "G::analyze::applies-on-non-block");
+}
+
+/// Repro 16 — B03 GAP 5, applies-on-non-block (text-const receiver).
+///
+/// `if greeting.applies():` where `greeting` is an `export const` (a text
+/// declaration, not a block) must fire `G::analyze::applies-on-non-block`.
+/// Same diagnostic gap as repro 15 — closed by the same condition_refs
+/// sweep through `check_applies_in_condition`.
+#[test]
+fn b03_repro16_condition_applies_on_text_const_receiver() {
+    let src = "\
+export const greeting = \"Hello\"
+
+export block caller() -> Report
+    flow:
+        if greeting.applies():
+            \"branch-noop\"
+        return \"ok\"
+";
+    let (output, _dir) = run_check_on_source(src);
+    assert_diagnostic(&output, 1, "G::analyze::applies-on-non-block");
+}
+
+/// Repro 17 — B03 GAP 5, imported-block usage in condition.
+///
+/// An imported block consumed ONLY in an export-block's if/elif
+/// condition (`if ready.applies():`) must mark the import as used.
+/// Pre-fix, the GAP-4 sweep walked terminal_return / flow_calls /
+/// body_constraints / body_context but NOT condition expressions, so
+/// `G::analyze::unused-import` (Repairable, exit 2) fired on `ready`.
+/// Post-fix, the GAP-5 extension to the sweep walks condition_refs and
+/// inserts every imported block/text referenced in a condition into
+/// `used_import_names`.
+#[test]
+fn b03_repro17_imported_block_used_in_condition_not_unused() {
+    let dep_src = "\
+export block ready() -> Report
+    description: \"always ready\"
+    flow:
+        return \"yes\"
+";
+    let main_src = "\
+import \"./dep.glyph\" { ready }
+
+export block runner() -> Report
+    flow:
+        if ready.applies():
+            \"branch-noop\"
+        return \"idle\"
+";
+    let (output, _dir) = run_check_on_two_files(dep_src, main_src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value =
+            serde_json::from_str(line).expect("each NDJSON line must parse as JSON");
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+        let msg = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
+        if id == "G::analyze::unused-import" && msg.contains("ready") {
+            panic!(
+                "post-fix must not emit unused-import for `ready` (used in if-condition);\nstdout={stdout}\nstderr={stderr}",
+            );
+        }
+    }
+}

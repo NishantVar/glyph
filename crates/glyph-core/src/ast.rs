@@ -264,6 +264,16 @@ pub struct ExportBlockDecl {
     /// `G::analyze::undefined-call` and `G::analyze::missing-required-arg`
     /// on the export-block path, mirroring the FlowStmt::Call resolver.
     pub flow_calls: Vec<FlowCallRef>,
+    /// B03 GAP 5 — captured `if`/`elif` condition expressions in this
+    /// export block's `flow:` section. Parallel to `flow_calls`, but
+    /// each entry is the raw expression text + span (not a call).
+    /// `analyze_export_block` walks this list and invokes
+    /// `check_applies_in_condition` so `.applies()`-on-non-block
+    /// fires in export blocks the same way it fires in skill/block
+    /// flow. The import-usage sweep also walks this list, so an
+    /// imported block referenced only inside a condition is marked
+    /// as used (not flagged `G::analyze::unused-import`).
+    pub condition_refs: Vec<ConditionRef>,
     /// Recovered duplicate sub-sections (issue #109). See
     /// [`Skill::extra_subsections`] for semantics.
     pub extra_subsections: Vec<DuplicateSubsection>,
@@ -442,6 +452,28 @@ pub struct FlowCallRef {
     /// [`ReturnExpr::Call`]'s `args`; argument-count validation runs
     /// against the callee's `Param` list via `validate_call_args`.
     pub args: Vec<String>,
+}
+
+/// B03 GAP 5 — capture an `if`/`elif` condition expression in an
+/// export block's `flow:` section, so the export-block analyzer can
+/// run the same `.applies()` validator the skill/block flow walker
+/// runs (and so the import-usage sweep can mark imported names
+/// referenced in conditions as used).
+///
+/// `raw` is the reconstructed condition text — every token between
+/// `if`/`elif` and the trailing `:`, joined with single spaces.
+/// `check_applies_in_condition` substring-scans for `.applies()` in
+/// `raw`, so exact whitespace fidelity is not required.
+#[derive(Debug, Clone)]
+pub struct ConditionRef {
+    /// Reconstructed condition expression text (between `if`/`elif`
+    /// and `:`). Joined with single spaces — the validator only
+    /// substring-scans for `.applies()` and identifier-name extraction.
+    pub raw: String,
+    /// Byte-span covering the condition expression. Used as the
+    /// diagnostic anchor when `applies-on-non-block` /
+    /// `applies-on-undescribed-block` fire.
+    pub span: Span,
 }
 
 /// An entry inside the `context:` sub-section or a body-level `context` marker.

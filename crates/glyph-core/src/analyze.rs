@@ -4325,6 +4325,58 @@ pub fn analyze_with_imports(
                             }
                         }
                     }
+                    // B03 GAP 5: condition_refs — `if`/`elif` condition expressions.
+                    // Two responsibilities run in this sweep so we stay inside the
+                    // single scope where `imported_block_descriptions`, `text_names`,
+                    // `block_names`, and `block_decls` are all in scope:
+                    //
+                    // 1. Import-usage tracking: any imported name (block, text,
+                    //    constraint-skill, context-skill) that appears as an identifier
+                    //    inside a condition expression counts as a use. Without this,
+                    //    an `import { ready } ... if ready.applies():` would leave
+                    //    `used_import_names` empty and lib.rs would fire
+                    //    `G::analyze::unused-import` (Repairable, exit 2) on `ready`.
+                    //
+                    // 2. `.applies()` validation: invoke `check_applies_in_condition`
+                    //    on each captured condition string so receiver checks
+                    //    (`G::analyze::applies-on-non-block`,
+                    //    `G::analyze::applies-on-undescribed-block`) fire on the
+                    //    export-block path. Skill / private-block flows already
+                    //    invoke this validator; mirrors that behaviour. An empty
+                    //    `flow_local_types` map is correct here — flow-local agent
+                    //    bindings live inside `FlowStmt::Let` walks which the
+                    //    export-block AST does not carry.
+                    for cref in &eb.condition_refs {
+                        // Import-usage: split on non-identifier chars and probe each
+                        // word against every imported namespace set.
+                        for ident in cref.raw.split(|c: char| !c.is_alphanumeric() && c != '_') {
+                            if ident.is_empty() {
+                                continue;
+                            }
+                            if imported_blocks.contains(ident)
+                                || imported_texts.contains(ident)
+                                || imported_constraint_skills.contains(ident)
+                                || imported_context_skills.contains(ident)
+                            {
+                                used_import_names.insert(ident.to_string());
+                            }
+                        }
+                        // `.applies()` validation — empty flow_local_types is fine;
+                        // export blocks have no `let` walks.
+                        check_applies_in_condition(
+                            &cref.raw,
+                            cref.span,
+                            file_id,
+                            file_label,
+                            line_index,
+                            bag,
+                            &text_names,
+                            &block_names,
+                            &block_decls,
+                            imported_block_descriptions,
+                            &std::collections::HashMap::new(),
+                        );
+                    }
                 }
                 // PRD #159 / Codex round-1 Issue 1: emit `return-of-no-value-call`
                 // (Error) when an export block's `return <call>` targets a callee

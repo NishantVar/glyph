@@ -4,10 +4,10 @@
 //! `update_docs.glyph` per `docs/reference/mvp-acceptance.md` §1.
 
 use crate::ast::{
-    BlockDecl, ConstDecl, ConstValue, ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl,
-    DuplicateSubsection, ElifBranch, ExportBlockDecl, FlowCallRef, FlowStmt, FreeformItem,
-    FreeformSection, ImportDecl, ImportKind, ImportName, Param, ReservedMarker, ReturnExpr,
-    SectionSpan, Skill, SourceFile, TypeDecl,
+    BlockDecl, ConditionRef, ConstDecl, ConstValue, ConstraintMarker, ConstraintMarkerKind,
+    ContextEntry, Decl, DuplicateSubsection, ElifBranch, ExportBlockDecl, FlowCallRef, FlowStmt,
+    FreeformItem, FreeformSection, ImportDecl, ImportKind, ImportName, Param, ReservedMarker,
+    ReturnExpr, SectionSpan, Skill, SourceFile, TypeDecl,
 };
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::output_target::{OutputTargetExpr, OutputTargetParseError};
@@ -1147,6 +1147,12 @@ impl<'a> Parser<'a> {
         // these when the current logical line did NOT start with `return` (the
         // `line_kw_was_return` gate).
         let mut flow_calls: Vec<FlowCallRef> = Vec::new();
+        // B03 GAP 5: per-export-block accumulator for captured `if`/`elif`
+        // condition expressions. Each entry holds the raw expression text
+        // (between the keyword and the trailing `:`) plus its byte span,
+        // for downstream `applies-on-non-block` validation and the
+        // import-usage sweep.
+        let mut condition_refs: Vec<ConditionRef> = Vec::new();
         // Issue #166: structural capture of body-level
         // `require` / `avoid` / `must` / `must avoid` markers and
         // `context <name>` / `context "..."` entries. Mirrors the
@@ -1288,6 +1294,43 @@ impl<'a> Parser<'a> {
                         // are NOT over-collected as standalone flow calls.
                         if kw == "if" || kw == "elif" {
                             line_in_if_condition = true;
+                            // B03 GAP 5: capture the condition expression that follows the
+                            // `if`/`elif` keyword on this line. Walk tokens forward from the
+                            // keyword until we hit `:` (condition terminator), `Eof`, or the
+                            // next `LineStart` (defensive — a well-formed condition has its
+                            // `:` on the same line). The condition text is the source slice
+                            // between the first non-keyword token and the terminator;
+                            // `check_applies_in_condition` only substring-scans for
+                            // `.applies()`, so the exact whitespace fidelity is not material.
+                            let mut scan = self.pos + 1;
+                            while let Some(tok) = self.tokens.get(scan) {
+                                if matches!(
+                                    tok.kind,
+                                    TokenKind::Colon | TokenKind::Eof | TokenKind::LineStart { .. }
+                                ) {
+                                    break;
+                                }
+                                scan += 1;
+                            }
+                            if let (Some(first_tok), Some(end_tok)) =
+                                (self.tokens.get(self.pos + 1), self.tokens.get(scan))
+                            {
+                                let start_byte = first_tok.span.start;
+                                let end_byte = end_tok.span.start;
+                                if end_byte > start_byte {
+                                    let raw = self.source[start_byte as usize..end_byte as usize]
+                                        .trim()
+                                        .to_string();
+                                    if !raw.is_empty() {
+                                        let span = Span {
+                                            file_id: first_tok.span.file_id,
+                                            start: start_byte,
+                                            end: end_byte,
+                                        };
+                                        condition_refs.push(ConditionRef { raw, span });
+                                    }
+                                }
+                            }
                         }
                         let dispatch_kw: std::borrow::Cow<'_, str> = if kw
                             .eq_ignore_ascii_case("description")
@@ -1996,6 +2039,7 @@ impl<'a> Parser<'a> {
                 return_type,
                 terminal_return,
                 flow_calls,
+                condition_refs,
                 extra_subsections,
                 description_span,
                 context_section_span,
