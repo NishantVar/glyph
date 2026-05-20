@@ -48,16 +48,15 @@ skill s() -> Confirmation
     );
 }
 
-/// `<"oops\n` — unterminated string — the tokenizer raises `UnterminatedString`
-/// which falls through to `Err(_) => return None` in `parse_with_diagnostics`
-/// without pushing any diagnostic ID into the bag. As a result `glyph check`
-/// produces no JSON output and exits 0 (empty diag bag).
-///
-/// Cached design fact: no new diagnostic ID for this case; accept the current
-/// silent behaviour. This test pins that contract so any future change (e.g.
-/// promoting the tokenizer error to a structured diagnostic) gets noticed.
 #[test]
-fn descriptive_form_unterminated_produces_no_structured_diagnostic() {
+fn descriptive_form_unterminated_emits_unterminated_string() {
+    // B01: previously this case (an unterminated string inside a
+    // descriptive output target) was the silent-tokenize-error escape
+    // hatch — `glyph check` printed nothing and exited 0, while
+    // `glyph compile` later failed with a generic build error. The
+    // tokenizer now maps `TokenizeError::UnterminatedString` to a
+    // structured `G::parse::unterminated-string` diagnostic so the
+    // source is surfaced as invalid at check time.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("unterminated_desc.glyph");
     std::fs::write(
@@ -68,11 +67,11 @@ fn descriptive_form_unterminated_produces_no_structured_diagnostic() {
     )
     .unwrap();
     let result = run_check(&path);
+    assert_eq!(result.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&result.stdout);
-    // No structured diagnostic is emitted — the tokenizer bails silently.
     assert!(
-        stdout.trim().is_empty(),
-        "expected no structured diagnostics for unterminated descriptive form, got:\n{stdout}"
+        ndjson_contains_id(&stdout, "G::parse::unterminated-string"),
+        "expected G::parse::unterminated-string for unterminated descriptive form, got:\n{stdout}"
     );
 }
 
@@ -98,5 +97,48 @@ skill s() -> Confirmation
     assert!(
         ndjson_contains_id(&stdout, "G::parse::output-target-outside-return"),
         "expected output-target-outside-return for descriptive form outside terminal return, got:\n{stdout}"
+    );
+}
+
+/// B01 regression: an unexpected character in flow position (e.g. `@`)
+/// previously fell through to the tokenizer's catch-all error path,
+/// returning `None` from the parser without pushing any diagnostic.
+/// `glyph check` then printed nothing and exited 0 while `glyph compile`
+/// later failed with a generic `G::build::compile-error`. The tokenizer
+/// now maps every `TokenizeError` variant to a structured diagnostic so
+/// invalid source is rejected at check time with a non-zero exit and a
+/// diagnostic classified as `error`.
+#[test]
+fn unexpected_char_in_flow_emits_diagnostic() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("unexpected_char.glyph");
+    std::fs::write(
+        &path,
+        "skill main()\n    description: \"Demo.\"\n    flow:\n        @\n",
+    )
+    .unwrap();
+    let result = run_check(&path);
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "expected non-zero exit; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert!(
+        ndjson_contains_id(&stdout, "G::parse::unexpected-char"),
+        "expected G::parse::unexpected-char for `@` in flow, got:\n{stdout}"
+    );
+    // Every diagnostic emitted in this case must be classification `error`
+    // (no silent or warning-only path).
+    let has_error_class = stdout
+        .lines()
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .any(|v| v.get("classification").and_then(|x| x.as_str()) == Some("error"));
+    assert!(
+        has_error_class,
+        "expected at least one diagnostic with classification=error, got:\n{stdout}"
     );
 }
