@@ -4347,18 +4347,27 @@ pub fn analyze_with_imports(
                     //    bindings live inside `FlowStmt::Let` walks which the
                     //    export-block AST does not carry.
                     for cref in &eb.condition_refs {
-                        // Import-usage: split on non-identifier chars and probe each
-                        // word against every imported namespace set.
-                        for ident in cref.raw.split(|c: char| !c.is_alphanumeric() && c != '_') {
-                            if ident.is_empty() {
-                                continue;
-                            }
-                            if imported_blocks.contains(ident)
-                                || imported_texts.contains(ident)
-                                || imported_constraint_skills.contains(ident)
-                                || imported_context_skills.contains(ident)
+                        // B03 GAP 7: reuse `condition::tokenize_condition` (the same helper
+                        // `track_flow_usage` uses for skill/block flows). The naive
+                        // `split(non_ident_chars)` previously here matched identifiers
+                        // inside string literals and after `.` — so `if risk == "ready":`
+                        // wrongly marked imported `ready` as used, and `if x.applies():`
+                        // wrongly marked imported `applies` as used. `tokenize_condition`
+                        // emits string literals as a single `"..."` token and keeps
+                        // `name(args...)` / `name.applies()` as one token, so receiver
+                        // extraction below recovers ONLY the bare receiver identifier.
+                        for tok in crate::condition::tokenize_condition(&cref.raw) {
+                            let stripped = tok.strip_suffix(".applies()").unwrap_or(tok.as_str());
+                            let receiver = match stripped.find('(') {
+                                Some(i) => &stripped[..i],
+                                None => stripped,
+                            };
+                            if imported_blocks.contains(receiver)
+                                || imported_texts.contains(receiver)
+                                || imported_constraint_skills.contains(receiver)
+                                || imported_context_skills.contains(receiver)
                             {
-                                used_import_names.insert(ident.to_string());
+                                used_import_names.insert(receiver.to_string());
                             }
                         }
                         // `.applies()` validation — empty flow_local_types is fine;

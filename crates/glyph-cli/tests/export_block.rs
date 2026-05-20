@@ -529,15 +529,115 @@ export block runner() -> Report
     let (output, _dir) = run_check_on_two_files(dep_src, main_src);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // B03 GAP 6 strengthening: the pre-strengthening assertion only checked
+    // that `unused-import` was absent — it did NOT catch
+    // `G::analyze::applies-on-undescribed-block` (which fires when GAP-5's
+    // condition validator sees an empty `imported_block_descriptions` map).
+    // Demand exit 0 + zero diagnostic lines so the absence of a description
+    // plumb is now a hard failure.
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "imported described block used in if-condition must be clean (exit 0);\nstdout={stdout}\nstderr={stderr}",
+    );
+    assert!(
+        stdout.trim().is_empty(),
+        "expected zero diagnostics for imported-described-block-in-condition;\nstdout={stdout}\nstderr={stderr}",
+    );
+}
+
+/// B03 GAP 7 — Codex round-5 repro: the export-block import-usage sweep
+/// previously split `cref.raw` on non-identifier chars, which matched
+/// identifiers inside string literal contents. So an imported const whose
+/// name happens to appear only inside a `"..."` literal in a condition
+/// (e.g. `if risk == "ready":`) was wrongly marked as used and
+/// `G::analyze::unused-import` never fired.
+///
+/// Post-fix the sweep uses `condition::tokenize_condition`, which yields
+/// string literals as a single `"..."` token (quotes preserved). The
+/// receiver-extraction below then probes the QUOTED token against the
+/// import sets and finds no match, so the imported name correctly stays
+/// unused.
+#[test]
+fn b03_repro18_imported_const_in_string_literal_only_still_unused() {
+    let dep_src = "\
+export const ready = \"yes\"
+";
+    let main_src = "\
+import \"./dep.glyph\" { ready }
+
+export block runner(risk: String) -> Report
+    flow:
+        if risk == \"ready\":
+            \"branch-noop\"
+        return \"idle\"
+";
+    let (output, _dir) = run_check_on_two_files(dep_src, main_src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut found_unused = false;
     for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
         let v: serde_json::Value =
             serde_json::from_str(line).expect("each NDJSON line must parse as JSON");
         let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
         let msg = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
         if id == "G::analyze::unused-import" && msg.contains("ready") {
-            panic!(
-                "post-fix must not emit unused-import for `ready` (used in if-condition);\nstdout={stdout}\nstderr={stderr}",
-            );
+            found_unused = true;
+            break;
         }
     }
+    assert!(
+        found_unused,
+        "expected G::analyze::unused-import for `ready` (only present inside a string literal);\nstdout={stdout}\nstderr={stderr}",
+    );
+}
+
+/// B03 GAP 7 — Codex round-5 repro: the export-block import-usage sweep
+/// previously matched any bare identifier in `cref.raw`, including the
+/// method name following `.` in a `name.applies()` call. So an imported
+/// name appearing only as a `.applies` method token (e.g. `if cond.applies():`
+/// where `cond` is a local block and `applies` is an imported const) was
+/// wrongly marked as used.
+///
+/// Post-fix the sweep uses `condition::tokenize_condition`, which keeps
+/// `name.applies()` as ONE token, then strips the `.applies()` suffix to
+/// recover just `name`. So an imported name that only appears as the
+/// method token is correctly never marked as used.
+#[test]
+fn b03_repro19_imported_name_as_method_token_only_still_unused() {
+    let dep_src = "\
+export const applies = \"yes\"
+";
+    let main_src = "\
+import \"./dep.glyph\" { applies }
+
+block cond() -> Report
+    description: \"check\"
+    flow:
+        return \"yes\"
+
+export block runner() -> Report
+    flow:
+        if cond.applies():
+            \"branch-noop\"
+        return \"idle\"
+";
+    let (output, _dir) = run_check_on_two_files(dep_src, main_src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut found_unused = false;
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value =
+            serde_json::from_str(line).expect("each NDJSON line must parse as JSON");
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+        let msg = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
+        if id == "G::analyze::unused-import" && msg.contains("applies") {
+            found_unused = true;
+            break;
+        }
+    }
+    assert!(
+        found_unused,
+        "expected G::analyze::unused-import for `applies` (only present as the `.applies()` method token);\nstdout={stdout}\nstderr={stderr}",
+    );
 }
