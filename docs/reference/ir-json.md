@@ -378,11 +378,30 @@ Here `{scope}` is a parameter slot (not in `local_refs`) and `{diagnosis}` is a 
 
 ### Return
 
+`Return` is a flow node at the source position of a `return <…>` line — at skill scope it appears as the trailing node in `flow`; for arm-local returns (post-MVP) it appears inside a branch arm's body. See [[../adr/0026-return-as-flow-node|ADR 0026]].
+
+Descriptive form (`return <"…">`):
+
 ```json
 {
   "node_id": "n11",
   "kind": "return",
-  "value": { "node_id": "n12", "kind": "call_expr", "target": "summarize_changes", "args": {} }
+  "form": "description",
+  "description": "absolute paths of every emitted .md file",
+  "ty": null
+}
+```
+
+Identifier form (`return <name>`) — when the binding resolves to a flow-local producer, `producer_node_id` is populated so consumers don't have to re-resolve the binding:
+
+```json
+{
+  "node_id": "n11",
+  "kind": "return",
+  "form": "identifier",
+  "local_ref": "summary",
+  "producer_node_id": "n7",
+  "ty": { "domain_type": "Tour" }
 }
 ```
 
@@ -390,7 +409,11 @@ Here `{scope}` is a parameter slot (not in `local_refs`) and `{diagnosis}` is a 
 |---|---|---|---|
 | `node_id` | string | yes | |
 | `kind` | string | yes | Always `"return"`. |
-| `value` | Expression | yes | The return expression. |
+| `form` | string | yes | `"description"` or `"identifier"`. |
+| `description` | string | when `form="description"` | Verbatim text inside `<"…">` with inline-string escapes resolved. |
+| `local_ref` | string | when `form="identifier"` | Canonical binding name inside `<name>`. |
+| `producer_node_id` | string | no | The `node_id` of the flow node that produces `local_ref`. Omitted for the description form and when the identifier shadows a parameter (no flow-local producer). |
+| `ty` | TypeTag \| null | yes | Mirrors the enclosing declaration's `-> DomainType`, if any. |
 
 ### Constraint
 
@@ -696,15 +719,19 @@ A complete `fix_bug.ir.json` for the `fix_bug` skill from [[design/expand]] §8.
       {
         "node_id": "n11",
         "kind": "return",
-        "value": {
-          "node_id": "n12",
-          "kind": "call_expr",
-          "target": "summarize_changes",
-          "args": {}
-        }
+        "form": "description",
+        "description": "a summary of the changes and the rationale",
+        "ty": null
       }
     ],
-    "output_contract": null,
+    "output_contract": {
+      "node_id": "n12",
+      "kind": "output_contract",
+      "form": "description",
+      "description": "a summary of the changes and the rationale",
+      "ty": null,
+      "source": "synthesized_by_agent"
+    },
     "freeform_sections": [],
     "freeform_section_headings": []
   }

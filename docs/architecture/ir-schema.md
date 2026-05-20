@@ -148,9 +148,16 @@ ElifBranch {
 
 ```
 Return {
-  value:             Expr | OutputTargetForm // call, binding ref, literal, dot access, none, `<name>`, or `<"description">`
+  node_id:           NodeId
+  form:              OutputTargetForm      // identifier form (`<name>`) or descriptive form (`<"…">`)
+  ty:                TypeTag?              // enclosing declaration's `-> DomainType`, if any
+  producer_node_id:  NodeId?               // resolved at lower time for identifier form when the binding
+                                           // has a flow-local producer; None for description form and
+                                           // for identifier returns that shadow a parameter.
 }
 ```
+
+`Return` is an ordered `FlowNode`. At skill scope it appears as the trailing node in `flow`; arm-local returns (post-MVP `if x: return <a> / else: return <b>`) appear inside a branch arm's body. The deterministic emitter renders it as a numbered `Output: …` step at top level, or as a lettered `a. Output: …` substep inside a branch arm. The identifier form renders `<name> from step <M>` by looking up `producer_node_id` against the flow's positional step index — no name resolution at emit time. See [[../adr/0026-return-as-flow-node|ADR 0026]].
 
 ### OutputContract
 
@@ -170,7 +177,7 @@ OutputTargetForm = Identifier(name: String) | Description(text: String)
 // identifier form. See [[design/values-and-names]] §No Value-Level Operators and [[design/data-flow]] §Return Semantics.
 ```
 
-`OutputContract` is a sidecar contract for agent-synthesized output. It does not appear as an ordered `FlowNode`; it annotates the enclosing `Skill`, `Block`, or `ExportBlock` and folds into the final Step prose during Expand. The `form` discriminates which Expand folding rule applies (see [[design/compiled-output]] §Return Folding and [[design/expand]] §3.3).
+`OutputContract` is a top-level metadata view (type, form, description text) that mirrors the same information carried by the trailing `Return` flow node. It is kept as a sidecar on `Skill`, `Block`, and `ExportBlock` for type-checking and tooling that wants a single-field lookup. The **renderable position** of a skill-scope return is the `Return` node in `flow`; the emitter no longer consults `skill.output_contract` on that path (see [[../adr/0026-return-as-flow-node|ADR 0026]]). Block / procedure / Tier-1 callee return rendering still consults the block's `OutputContract` (`proc_oc_form`, `callee_output_contract`); those legacy paths are out of scope for ADR 0026 and will be migrated separately.
 
 ## Constraint
 
