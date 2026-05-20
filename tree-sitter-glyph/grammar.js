@@ -446,7 +446,7 @@ module.exports = grammar({
       ),
 
     comparison: ($) =>
-      prec(4, seq($._condition_atom, "==", $._condition_atom)),
+      prec(4, seq($._condition_atom, choice("==", "!="), $._condition_atom)),
 
     _condition_atom: ($) =>
       choice(

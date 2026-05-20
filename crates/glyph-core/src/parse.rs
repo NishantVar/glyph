@@ -4041,6 +4041,10 @@ impl<'a> Parser<'a> {
                     parts.push("==".into());
                     self.pos += 1;
                 }
+                TokenKind::NotEquals => {
+                    parts.push("!=".into());
+                    self.pos += 1;
+                }
                 TokenKind::Dot => {
                     parts.push(".".into());
                     self.pos += 1;

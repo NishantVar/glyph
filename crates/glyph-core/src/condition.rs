@@ -323,7 +323,7 @@ impl<'a> ConditionContext<'a> {
 /// Mirrors the dispatch in `analyze.rs::classify_token` (Task 6 rewires the
 /// analyze caller to consult this version).
 fn classify_token(tok: &str, ctx: &ConditionContext) -> ConditionTokenKind {
-    if matches!(tok, "and" | "or" | "not" | "==" | "(" | ")") {
+    if matches!(tok, "and" | "or" | "not" | "==" | "!=" | "(" | ")") {
         return ConditionTokenKind::Operator;
     }
     if tok.starts_with('"') {
@@ -419,7 +419,7 @@ pub fn classify_condition(condition: &str, ctx: &ConditionContext) -> ConditionC
 
     let mut is_operand = vec![false; raw.len()];
     for (i, tok) in raw.iter().enumerate() {
-        if tok == "==" {
+        if tok == "==" || tok == "!=" {
             if i > 0 {
                 let lhs_end = i - 1;
                 let lhs_start = match_paren_left(&raw, lhs_end);
@@ -451,7 +451,7 @@ pub fn classify_condition(condition: &str, ctx: &ConditionContext) -> ConditionC
                 ConditionTokenKind::Operator => {
                     if matches!(text.as_str(), "and" | "not") {
                         summary.has_compositional_operator = true;
-                    } else if text == "==" {
+                    } else if text == "==" || text == "!=" {
                         summary.has_boolean_token = true;
                         summary.has_comparison_operator = true;
                     }

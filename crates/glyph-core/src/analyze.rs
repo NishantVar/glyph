@@ -6348,7 +6348,7 @@ fn push_numeric_condition_diag(
             span: SourceSpan::from_byte_span(file_label, span, line_index),
             related: Vec::new(),
             hints: vec![
-                "Bind to a boolean (e.g., a Bool-returning call), use a string predicate const, or compare with ==. Glyph does not implicitly truth-test integers."
+                "Bind to a boolean (e.g., a Bool-returning call), use a string predicate const, or compare with == or !=. Glyph does not implicitly truth-test integers."
                     .into(),
             ],
         },
