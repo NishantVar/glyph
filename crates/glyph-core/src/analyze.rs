@@ -2853,6 +2853,7 @@ pub fn analyze_with_diagnostics(
                 &block_decls,
                 &export_block_decls,
                 &empty_imported_block_params,
+                &HashSet::new(),
                 &HashMap::new(),
                 &local_callee_return_types,
                 &empty_imported_block_return_types,
@@ -2872,6 +2873,13 @@ pub fn analyze_with_diagnostics(
                     &visible_binding_names,
                     &case_bad,
                     &mut explicit_decl_seen,
+                    &text_names,
+                    &block_names,
+                    &block_decls,
+                    &export_block_decls,
+                    &empty_imported_block_params,
+                    &local_callee_return_types,
+                    &empty_imported_block_return_types,
                 );
                 // PRD #159 / Codex round-1 Issue 1: emit `return-of-no-value-call`
                 // (Error) when an export block's `return <call>` targets a callee
@@ -4256,7 +4264,140 @@ pub fn analyze_with_imports(
                     &visible_binding_names,
                     &case_bad,
                     &mut explicit_decl_seen,
+                    &text_names,
+                    &block_names,
+                    &block_decls,
+                    &export_block_decls,
+                    imported_block_params,
+                    &local_callee_return_types,
+                    imported_block_return_types,
                 );
+
+                // B03 GAP 4: track imported-name usage from export-block flow content.
+                // `ExportBlockDecl` has no `flow: Vec<FlowStmt>`, so the per-Skill /
+                // per-Block `track_flow_usage` sweep does not reach it. Without this
+                // local mirror, an import consumed ONLY inside an export block's
+                // `terminal_return`, `flow_calls`, `body_constraints`, or
+                // `body_context` would leave `used_import_names` empty and the
+                // lib.rs unused-import emission step would fire
+                // `G::analyze::unused-import` (Repairable, exit 2) on an import the
+                // program actually depends on. Symmetric in spirit to
+                // `track_flow_usage` for FlowStmt::Return / Call / ConstraintMarker /
+                // ContextMarker.
+                {
+                    let eb = &spanned.node;
+                    // terminal_return — `return foo()` / `return foo`.
+                    match eb.terminal_return.as_ref() {
+                        Some(crate::ast::ReturnExpr::Call { target, .. }) => {
+                            if imported_blocks.contains(&target.node) {
+                                used_import_names.insert(target.node.clone());
+                            }
+                        }
+                        Some(crate::ast::ReturnExpr::Name(name)) => {
+                            if imported_blocks.contains(&name.node)
+                                || imported_texts.contains(&name.node)
+                            {
+                                used_import_names.insert(name.node.clone());
+                            }
+                        }
+                        _ => {}
+                    }
+                    // flow_calls — non-return flow-position calls collected in GAP 1.
+                    for call in &eb.flow_calls {
+                        if imported_blocks.contains(&call.target.node) {
+                            used_import_names.insert(call.target.node.clone());
+                        }
+                    }
+                    // body_constraints — `require X` / `avoid X` / `must X`.
+                    for marker in &eb.body_constraints {
+                        if imported_texts.contains(&marker.name.node)
+                            || imported_constraint_skills.contains(&marker.name.node)
+                        {
+                            used_import_names.insert(marker.name.node.clone());
+                        }
+                    }
+                    // body_context — `context X` / `context "..."` entries.
+                    for entry in &eb.body_context {
+                        if let crate::ast::ContextEntry::NameRef(name) = entry {
+                            if imported_texts.contains(&name.node)
+                                || imported_context_skills.contains(&name.node)
+                            {
+                                used_import_names.insert(name.node.clone());
+                            }
+                        }
+                    }
+                    // B03 GAP 5: condition_refs — `if`/`elif` condition expressions.
+                    // Two responsibilities run in this sweep so we stay inside the
+                    // single scope where `imported_block_descriptions`, `text_names`,
+                    // `block_names`, and `block_decls` are all in scope:
+                    //
+                    // 1. Import-usage tracking: any imported name (block, text,
+                    //    constraint-skill, context-skill) that appears as an identifier
+                    //    inside a condition expression counts as a use. Without this,
+                    //    an `import { ready } ... if ready.applies():` would leave
+                    //    `used_import_names` empty and lib.rs would fire
+                    //    `G::analyze::unused-import` (Repairable, exit 2) on `ready`.
+                    //
+                    // 2. `.applies()` validation: invoke `check_applies_in_condition`
+                    //    on each captured condition string so receiver checks
+                    //    (`G::analyze::applies-on-non-block`,
+                    //    `G::analyze::applies-on-undescribed-block`) fire on the
+                    //    export-block path. Skill / private-block flows already
+                    //    invoke this validator; mirrors that behaviour. An empty
+                    //    `flow_local_types` map is correct here — flow-local agent
+                    //    bindings live inside `FlowStmt::Let` walks which the
+                    //    export-block AST does not carry.
+                    for cref in &eb.condition_refs {
+                        // B03 GAP 7: reuse `condition::tokenize_condition` (the same helper
+                        // `track_flow_usage` uses for skill/block flows). The naive
+                        // `split(non_ident_chars)` previously here matched identifiers
+                        // inside string literals and after `.` — so `if risk == "ready":`
+                        // wrongly marked imported `ready` as used, and `if x.applies():`
+                        // wrongly marked imported `applies` as used. `tokenize_condition`
+                        // emits string literals as a single `"..."` token and keeps
+                        // `name(args...)` / `name.applies()` as one token, so receiver
+                        // extraction below recovers ONLY the bare receiver identifier.
+                        for tok in crate::condition::tokenize_condition(&cref.raw) {
+                            let stripped = tok.strip_suffix(".applies()").unwrap_or(tok.as_str());
+                            let receiver = match stripped.find('(') {
+                                Some(i) => &stripped[..i],
+                                None => stripped,
+                            };
+                            if imported_blocks.contains(receiver)
+                                || imported_texts.contains(receiver)
+                                || imported_constraint_skills.contains(receiver)
+                                || imported_context_skills.contains(receiver)
+                            {
+                                used_import_names.insert(receiver.to_string());
+                            }
+                            // B03 GAP 8: a `dep.ready` receiver (whole-module-alias form per
+                            // GLYPH_LANGUAGE_GUIDE §8.7) consumes BOTH the `dep.ready` compound
+                            // entry in `imported_blocks` (matched above) AND the bare alias
+                            // `dep` recorded in `all_import_names`. Without marking the bare
+                            // alias here, `unused-import` fires on `dep` even though the
+                            // module is actively used.
+                            if let Some(dot_idx) = receiver.find('.') {
+                                used_import_names.insert(receiver[..dot_idx].to_string());
+                            }
+                        }
+                        // `.applies()` validation — empty flow_local_types is fine;
+                        // export blocks have no `let` walks.
+                        check_applies_in_condition(
+                            &cref.raw,
+                            cref.span,
+                            file_id,
+                            file_label,
+                            line_index,
+                            bag,
+                            &text_names,
+                            &block_names,
+                            &block_decls,
+                            imported_blocks,
+                            imported_block_descriptions,
+                            &std::collections::HashMap::new(),
+                        );
+                    }
+                }
                 // PRD #159 / Codex round-1 Issue 1: emit `return-of-no-value-call`
                 // (Error) when an export block's `return <call>` targets a callee
                 // that resolves but declares no `-> Type`. Symmetric to
@@ -4556,6 +4697,7 @@ fn analyze_skill_with_usage_tracking(
         block_decls,
         export_block_decls,
         imported_block_params,
+        imported_blocks,
         imported_block_descriptions,
         local_callee_return_types,
         imported_block_return_types,
@@ -5055,6 +5197,13 @@ fn analyze_skill(
     block_decls: &HashMap<&str, &BlockDecl>,
     export_block_decls: &HashMap<&str, &crate::ast::ExportBlockDecl>,
     imported_block_params: &HashMap<String, Vec<crate::ast::Param>>,
+    // B03 GAP 10: full imported-block name set, needed by
+    // `check_applies_in_condition` to distinguish whole-module-alias
+    // receivers that resolve to undescribed imported blocks
+    // (`applies-on-undescribed-block`) from ones that don't resolve at all
+    // (`applies-on-non-block`). `imported_block_descriptions` is the
+    // description-restricted subset of the same map.
+    imported_blocks: &HashSet<String>,
     imported_block_descriptions: &HashMap<String, String>,
     local_callee_return_types: &HashMap<&str, &Spanned<String>>,
     imported_block_return_types: &HashMap<String, Spanned<String>>,
@@ -5454,6 +5603,7 @@ fn analyze_skill(
                     &text_names,
                     &block_names,
                     &block_decls,
+                    imported_blocks,
                     imported_block_descriptions,
                     &flow_scope.flow_local_types,
                 );
@@ -5469,6 +5619,7 @@ fn analyze_skill(
                         &text_names,
                         &block_names,
                         &block_decls,
+                        imported_blocks,
                         imported_block_descriptions,
                         &flow_scope.flow_local_types,
                     );
@@ -6406,100 +6557,150 @@ fn check_applies_in_condition(
     text_names: &HashSet<&str>,
     block_names: &HashSet<&str>,
     block_decls: &HashMap<&str, &BlockDecl>,
+    // B03 GAP 10: full set of imported block names (selective + whole-module
+    // alias compound keys per GLYPH_LANGUAGE_GUIDE §8.7), re-keyed under
+    // consumer-local spellings. Used to distinguish whole-module-alias
+    // receivers that DO resolve to an imported block (no description →
+    // `applies-on-undescribed-block`) from ones that don't resolve at all
+    // (`applies-on-non-block`). `imported_block_descriptions` is the same
+    // re-keying restricted to blocks that have a `description:` sub-section.
+    imported_blocks: &HashSet<String>,
     imported_block_descriptions: &HashMap<String, String>,
     flow_local_types: &HashMap<String, FlowLocalType>,
 ) {
     // Find all `NAME.applies()` patterns in the condition.
     // Simple string scanning — condition is a reconstructed string.
-    let applies_suffix = ".applies()";
-    let mut search_from = 0;
-    while let Some(pos) = condition[search_from..].find(applies_suffix) {
-        let abs_pos = search_from + pos;
-        // Extract the receiver name (word before the dot).
-        let receiver = &condition[..abs_pos];
-        let receiver_name = receiver
-            .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
-            .next()
-            .unwrap_or("");
-        if !receiver_name.is_empty() {
-            // §6.3: an agent-shape flow-local binding is a valid
-            // `.applies()` receiver. Plumb the live FlowScope so this
-            // branch annotation runs against the binding state at the
-            // current walk position.
-            if let Some(flt) = flow_local_types.get(receiver_name) {
-                if flt.is_agent {
-                    search_from = abs_pos + applies_suffix.len();
-                    continue;
-                }
-            }
-            if text_names.contains(receiver_name) {
-                // Receiver is a text declaration — not a block.
+
+    // B03 GAP 8: walk the tokenized condition rather than substring-scanning.
+    // Tokenizing keeps the FULL receiver path (`dep.ready` for whole-module
+    // alias receivers per GLYPH_LANGUAGE_GUIDE §8.7) in a single token so
+    // the `imported_block_descriptions` lookup matches the compound key, and
+    // isolates string-literal content (`"x.applies()"`) so the substring
+    // scanner no longer fires inside a value.
+    for tok in crate::condition::tokenize_condition(condition) {
+        if tok.starts_with('"') {
+            continue;
+        }
+        let receiver = match tok.strip_suffix(".applies()") {
+            Some(r) => r,
+            None => continue,
+        };
+        if receiver.is_empty() {
+            continue;
+        }
+
+        // Dotted receivers (`dep.ready`) are only meaningful as whole-module
+        // alias references to imported blocks — they cannot resolve to
+        // same-file text/block decls or flow-local bindings.
+        if receiver.contains('.') {
+            if imported_block_descriptions.contains_key(receiver) {
+                // Described whole-module-alias block — OK.
+            } else if imported_blocks.contains(receiver) {
+                // B03 GAP 10: whole-module-alias receiver resolves to an
+                // imported block, but the source file's block has no
+                // `description:` sub-section. Mirror the selective-import
+                // branch shape (`applies-on-undescribed-block` Error, no
+                // repair — single-file repair can't reach into the dep).
                 bag.push(
                     Diagnostic::error(
-                        "G::analyze::applies-on-non-block",
+                        "G::analyze::applies-on-undescribed-block",
                         format!(
-                            "`{}.applies()` — receiver `{}` is a `text` declaration, not a `block`",
-                            receiver_name, receiver_name
+                            "`{}.applies()` but imported block `{}` has no accessible `description:`; add `description:` in the source file",
+                            receiver, receiver
                         ),
                         SourceSpan::from_byte_span(file_label, span, line_index),
                     ),
                     span,
                 );
-            } else if block_names.contains(receiver_name) {
-                // Check if the block has a description.
-                if let Some(block) = block_decls.get(receiver_name) {
-                    if block.description.is_none() {
-                        bag.push(
-                            Diagnostic {
-                                id: "G::analyze::applies-on-undescribed-block".into(),
-                                classification: Classification::Repairable,
-                                message: format!(
-                                    "`{}.applies()` but `block {}` has no `description:` sub-section",
-                                    receiver_name, receiver_name
-                                ),
-                                span: SourceSpan::from_byte_span(file_label, span, line_index),
-                                related: Vec::new(),
-                                hints: vec![
-                                    format!("add `description:` to `block {}`", receiver_name),
-                                ],
-                            },
-                            span,
-                        );
-                    }
-                } else if !imported_block_descriptions.contains_key(receiver_name) {
-                    // Block is known by name but not in block_decls — imported
-                    // block without accessible declaration. Treat as hard error
-                    // per ir-and-semantics.md §Block Trigger Predicate: imported
-                    // export blocks without description are not repairable
-                    // (Repair is single-file).
-                    bag.push(
-                        Diagnostic::error(
-                            "G::analyze::applies-on-undescribed-block",
-                            format!(
-                                "`{}.applies()` but imported block `{}` has no accessible `description:`; add `description:` in the source file",
-                                receiver_name, receiver_name
-                            ),
-                            SourceSpan::from_byte_span(file_label, span, line_index),
-                        ),
-                        span,
-                    );
-                }
             } else {
-                // Not a block, not a text — unknown name or parameter.
                 bag.push(
                     Diagnostic::error(
                         "G::analyze::applies-on-non-block",
                         format!(
                             "`{}.applies()` — receiver `{}` does not resolve to a `block`",
-                            receiver_name, receiver_name
+                            receiver, receiver
                         ),
                         SourceSpan::from_byte_span(file_label, span, line_index),
                     ),
                     span,
                 );
             }
+            continue;
         }
-        search_from = abs_pos + applies_suffix.len();
+
+        // §6.3: an agent-shape flow-local binding is a valid
+        // `.applies()` receiver. Plumb the live FlowScope so this
+        // branch annotation runs against the binding state at the
+        // current walk position.
+        if let Some(flt) = flow_local_types.get(receiver) {
+            if flt.is_agent {
+                continue;
+            }
+        }
+        if text_names.contains(receiver) {
+            // Receiver is a text declaration — not a block.
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::applies-on-non-block",
+                    format!(
+                        "`{}.applies()` — receiver `{}` is a `text` declaration, not a `block`",
+                        receiver, receiver
+                    ),
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+        } else if block_names.contains(receiver) {
+            // Check if the block has a description.
+            if let Some(block) = block_decls.get(receiver) {
+                if block.description.is_none() {
+                    bag.push(
+                        Diagnostic {
+                            id: "G::analyze::applies-on-undescribed-block".into(),
+                            classification: Classification::Repairable,
+                            message: format!(
+                                "`{}.applies()` but `block {}` has no `description:` sub-section",
+                                receiver, receiver
+                            ),
+                            span: SourceSpan::from_byte_span(file_label, span, line_index),
+                            related: Vec::new(),
+                            hints: vec![format!("add `description:` to `block {}`", receiver)],
+                        },
+                        span,
+                    );
+                }
+            } else if !imported_block_descriptions.contains_key(receiver) {
+                // Block is known by name but not in block_decls — imported
+                // block without accessible declaration. Treat as hard error
+                // per ir-and-semantics.md §Block Trigger Predicate: imported
+                // export blocks without description are not repairable
+                // (Repair is single-file).
+                bag.push(
+                    Diagnostic::error(
+                        "G::analyze::applies-on-undescribed-block",
+                        format!(
+                            "`{}.applies()` but imported block `{}` has no accessible `description:`; add `description:` in the source file",
+                            receiver, receiver
+                        ),
+                        SourceSpan::from_byte_span(file_label, span, line_index),
+                    ),
+                    span,
+                );
+            }
+        } else {
+            // Not a block, not a text — unknown name or parameter.
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::applies-on-non-block",
+                    format!(
+                        "`{}.applies()` — receiver `{}` does not resolve to a `block`",
+                        receiver, receiver
+                    ),
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+        }
     }
 }
 
@@ -6757,6 +6958,13 @@ fn analyze_export_block(
     visible_binding_names: &HashSet<&str>,
     case_bad: &HashSet<Span>,
     explicit_decl_seen: &mut HashSet<String>,
+    text_names: &HashSet<&str>,
+    block_names: &HashSet<&str>,
+    block_decls: &HashMap<&str, &crate::ast::BlockDecl>,
+    export_block_decls: &HashMap<&str, &crate::ast::ExportBlockDecl>,
+    imported_block_params: &HashMap<String, Vec<crate::ast::Param>>,
+    local_callee_return_types: &HashMap<&str, &Spanned<String>>,
+    imported_block_return_types: &HashMap<String, Spanned<String>>,
 ) {
     let decl = &spanned.node;
 
@@ -6787,6 +6995,119 @@ fn analyze_export_block(
             line_index,
             bag,
         );
+
+        // B03: G::analyze::undefined-call — emit when `terminal_return` is a
+        // call to a name that resolves to no `block`/`export block` (same-file
+        // or imported). Mirrors the FlowStmt::Return(Call) walk used by
+        // skills/blocks; ExportBlockDecl has no `flow: Vec<FlowStmt>`, so we
+        // inspect `terminal_return` directly.
+        check_return_call_undefined(expr, spanned.span, block_names, file_label, line_index, bag);
+
+        // B03: G::analyze::missing-required-arg — when `terminal_return` is a
+        // call, verify each required parameter is satisfied by a positional
+        // argument. Mirrors the FlowStmt::Call resolver used elsewhere.
+        if let crate::ast::ReturnExpr::Call { target, args, .. } = expr {
+            let callee_params: Option<&[crate::ast::Param]> = block_decls
+                .get(target.node.as_str())
+                .map(|b| b.params.as_slice())
+                .or_else(|| {
+                    export_block_decls
+                        .get(target.node.as_str())
+                        .map(|eb| eb.params.as_slice())
+                })
+                .or_else(|| {
+                    imported_block_params
+                        .get(target.node.as_str())
+                        .map(|v| v.as_slice())
+                });
+            if let Some(params) = callee_params {
+                // B03 GAP 2: pin missing-required-arg diagnostic span to the callee
+                // identifier (`target.span`) so the squiggle covers `foo`, not the
+                // entire export-block declaration. Matches the FlowStmt::Call
+                // resolver convention used by skill/block callers.
+                let diags = validate_call_args(
+                    target.node.as_str(),
+                    params,
+                    args,
+                    target.span,
+                    file_label,
+                    line_index,
+                );
+                let sp = target.span;
+                for d in diags {
+                    bag.push(d, sp);
+                }
+            }
+        }
+
+        // B03: G::analyze::nominal-mismatch — when `terminal_return` is a call
+        // to a typed callee, the callee's `-> Type` must canonically match the
+        // export block's own `-> Type`. Mirrors `check_block_return_calls`.
+        let return_stmt = crate::ast::FlowStmt::Return(expr.clone());
+        check_return_call_nominal(
+            decl.return_type.as_ref(),
+            &return_stmt,
+            spanned.span,
+            registry,
+            local_callee_return_types,
+            imported_block_return_types,
+            file_label,
+            line_index,
+            bag,
+        );
+    }
+
+    // B03 GAP 1: validate non-return flow-position calls collected from the
+    // export block's `flow:` section. Each `FlowCallRef` represents a call
+    // that is NOT the terminal `return foo(...)` — either a standalone
+    // root-level call or a call inside an `if`/`elif`/`else` branch body.
+    // Mirrors the FlowStmt::Call resolver's validation suite used elsewhere:
+    // `G::analyze::undefined-call` and `G::analyze::missing-required-arg`.
+    // Diagnostic spans pin to `target.span` (the callee identifier), not the
+    // surrounding export block, so the squiggle covers `foo`, not the whole
+    // declaration. Nominal-mismatch is intentionally skipped — these are not
+    // the export block's return value; only the terminal-return path runs the
+    // nominal check.
+    for call in &decl.flow_calls {
+        let synthetic = ReturnExpr::Call {
+            target: call.target.clone(),
+            args: call.args.clone(),
+        };
+        check_return_call_undefined(
+            &synthetic,
+            call.target.span,
+            block_names,
+            file_label,
+            line_index,
+            bag,
+        );
+        let callee_params: Option<&[Param]> = block_decls
+            .get(call.target.node.as_str())
+            .map(|b| b.params.as_slice())
+            .or_else(|| {
+                export_block_decls
+                    .get(call.target.node.as_str())
+                    .map(|eb| eb.params.as_slice())
+            })
+            .or_else(|| {
+                imported_block_params
+                    .get(call.target.node.as_str())
+                    .map(|v| v.as_slice())
+            });
+        if let Some(params) = callee_params {
+            let diags = validate_call_args(
+                call.target.node.as_str(),
+                params,
+                &call.args,
+                call.target.span,
+                file_label,
+                line_index,
+            );
+            let sp = call.target.span;
+            for d in diags {
+                bag.push(d, sp);
+            }
+        }
     }
 
     // PRD #103 / Slice 2 (#105): the previous `G::analyze::missing-param-default`
@@ -6815,6 +7136,27 @@ fn analyze_export_block(
             },
             span,
         );
+    }
+
+    // B03: G::analyze::undefined-name — body-level constraint markers
+    // (`require X`, `avoid X`, `must X`, `must avoid X`) must reference a
+    // declared `const`. Mirrors the skill body_constraints sweep at the
+    // `analyze_skill` site (~line 5566).
+    for marker in &decl.body_constraints {
+        if !text_names.contains(marker.name.node.as_str()) {
+            let span = spanned.span;
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::undefined-name",
+                    format!(
+                        "`{}` is not a declared `const` in this file",
+                        marker.name.node
+                    ),
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+        }
     }
 
     // G::analyze::export-missing-return-type — issue #82 AC2: an export block
@@ -7318,6 +7660,7 @@ skill current() -> BranchName
             &text_names,
             &block_names,
             &block_decls,
+            &HashSet::new(),
             &HashMap::new(),
             &HashMap::new(),
         );
