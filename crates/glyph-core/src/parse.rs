@@ -864,13 +864,11 @@ impl<'a> Parser<'a> {
                     decls.push(Decl::TypeDecl(d));
                 }
                 "generated" => {
-                    // TODO(#81 follow-up): enforce placement order per
-                    // language-surface.md §3.6 line 342 / §3.7 line 375 (all
-                    // `generated const` / `generated block` decls must appear
-                    // after all non-generated top-level decls).
-                    //
                     // Peek the token after `generated` to dispatch:
                     // `generated const` (§3.6) vs `generated block` (§3.7).
+                    // Placement order (all `generated` decls must follow every
+                    // non-generated top-level decl) is enforced above via
+                    // `first_generated_span` / `G::parse::generated-decl-out-of-order`.
                     let saved = self.pos;
                     self.pos += 1; // skip `generated`
                     let next_kw = match &self.peek().kind {
@@ -4664,10 +4662,12 @@ impl<'a> Parser<'a> {
     /// declaration head.
     ///
     /// Per §3.7 a `generated block` admits no return type. Authors who need
-    /// one should promote to a hand-authored `block`. Body shape (single
-    /// inline/block string vs. multi-statement `flow:`) is not enforced
-    /// here — repair emits a single string body, and §3.7 placement-order
-    /// enforcement is deferred alongside §3.6.
+    /// one should promote to a hand-authored `block`. Body shape (a single
+    /// inline-or-block string — no `description:` / `constraints:` /
+    /// `context:` / `effects:` / extras, and no multi-statement `flow:` body)
+    /// is enforced here as `G::parse::generated-block-body-shape` (hard).
+    /// §3.6 / §3.7 placement order is enforced in `parse_file` as
+    /// `G::parse::generated-decl-out-of-order` (hard).
     fn parse_generated_block(&mut self) -> Result<Spanned<BlockDecl>, ParseError> {
         let (_, gen_span) = self.expect_ident(Some("generated"))?;
         let mut decl = self.parse_block_decl()?;
