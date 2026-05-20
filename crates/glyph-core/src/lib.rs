@@ -617,6 +617,14 @@ pub struct ExportedNames {
     /// falls back to `TypeTag::String` for every imported name and silently
     /// skips `condition-non-boolean-non-predicate` for imported numerics.
     pub text_value_types: HashMap<String, kind_infer::TypeTag>,
+    /// B03 GAP 6: per-exported-block `description:` sub-section text, keyed by
+    /// the block's name. Re-keyed under the consumer-local spelling in
+    /// `check_one_file` and passed into `analyze_with_imports` so
+    /// `check_applies_in_condition` recognises imported described blocks as
+    /// valid `.applies()` receivers (otherwise
+    /// `G::analyze::applies-on-undescribed-block` fires on every imported
+    /// block reference in an export-block `if`/`elif` condition).
+    pub block_descriptions: HashMap<String, String>,
 }
 
 /// Extract the exported names from a parsed source file.
@@ -632,6 +640,7 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
         types: HashMap::new(),
         text_values: HashMap::new(),
         text_value_types: HashMap::new(),
+        block_descriptions: HashMap::new(),
     };
     for decl in &file.decls {
         match decl {
@@ -669,6 +678,15 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
                 exports
                     .block_params
                     .insert(b.node.name.clone(), b.node.params.clone());
+                // B03 GAP 6: capture the producer-side `description:` text so the
+                // consumer can plumb it into `check_applies_in_condition` and avoid a
+                // spurious `G::analyze::applies-on-undescribed-block` on a described
+                // imported block used in an export-block condition.
+                if let Some(desc) = b.node.description.as_ref() {
+                    exports
+                        .block_descriptions
+                        .insert(b.node.name.clone(), desc.clone());
+                }
                 if let Some(form) = b.node.terminal_return.as_ref().and_then(|expr| match expr {
                     ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id)) => {
                         Some(OutputTargetForm::Identifier(id.name.clone()))
@@ -994,6 +1012,13 @@ fn check_one_file(
     // used for return types above; consumed by `analyze_with_imports` to
     // validate cross-file call-arg counts.
     let mut imported_block_params: HashMap<String, Vec<ast::Param>> = HashMap::new();
+    // B03 GAP 6: consumer-local re-keyed map of producer-side `description:`
+    // text per imported block. Threaded into `analyze_with_imports` so
+    // `check_applies_in_condition` recognises a described imported block as a
+    // valid `.applies()` receiver — without this, the export-block condition
+    // validator (added in GAP 5) would fire
+    // `G::analyze::applies-on-undescribed-block` on every imported block.
+    let mut imported_block_descriptions: HashMap<String, String> = HashMap::new();
     // Task 9: per-import-alias resolved namespace kind, keyed by the
     // consumer-local name. Drives both the alias-case rule (PascalCase iff
     // Type, snake_case iff Value) and the kind-aware lookups in
@@ -1203,6 +1228,12 @@ fn check_one_file(
                             {
                                 imported_block_params.insert(local.to_string(), params.clone());
                             }
+                            // B03 GAP 6: mirror the params re-keying for descriptions.
+                            if let Some(desc) =
+                                dep_exports.block_descriptions.get(&imp_name.name.node)
+                            {
+                                imported_block_descriptions.insert(local.to_string(), desc.clone());
+                            }
                             // Task 9: block re-export → Value alias.
                             let alias_span = imp_name
                                 .alias
@@ -1292,7 +1323,14 @@ fn check_one_file(
                         // PRD #103 / Slice 2 (#105): mirror the alias prefix
                         // on parameter lists.
                         if let Some(params) = dep_exports.block_params.get(b) {
-                            imported_block_params.insert(qualified, params.clone());
+                            imported_block_params.insert(qualified.clone(), params.clone());
+                        }
+                        // B03 GAP 6: prefix imported block descriptions under `alias.name` to
+                        // match the consumer's call-site spelling, so an imported described
+                        // block used in an export-block condition is recognised as a valid
+                        // `.applies()` receiver.
+                        if let Some(desc) = dep_exports.block_descriptions.get(b) {
+                            imported_block_descriptions.insert(qualified, desc.clone());
                         }
                     }
                     // Phase B.7: prefix imported `export type` names under
@@ -1367,7 +1405,11 @@ fn check_one_file(
         &HashSet::new(),
         &HashSet::new(),
         &mut used_import_names,
-        &HashMap::new(),
+        // B03 GAP 6: was `&HashMap::new()` — pass the consumer-local re-keyed
+        // imported-block descriptions so `check_applies_in_condition` (now
+        // invoked on export-block conditions per GAP 5) does not flag a
+        // described imported block as undescribed.
+        &imported_block_descriptions,
         &mut registry,
         &imported_block_return_types,
         &imported_block_params,
