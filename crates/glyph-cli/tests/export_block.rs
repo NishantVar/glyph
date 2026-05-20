@@ -641,3 +641,200 @@ export block runner() -> Report
         "expected G::analyze::unused-import for `applies` (only present as the `.applies()` method token);\nstdout={stdout}\nstderr={stderr}",
     );
 }
+
+/// B03 GAP 8 — Codex round-6 repro: whole-module alias (`import ... as
+/// dep`) where the export-block condition uses the dotted receiver
+/// `dep.ready.applies()` per GLYPH_LANGUAGE_GUIDE §8.7. Pre-fix the
+/// substring scanner stripped to just `ready`, then attempted to resolve
+/// it against same-file `block_names`/`text_names`, which fail, so it
+/// fired `applies-on-non-block` and (because the bare alias `dep` was
+/// never marked used by the sweep) `unused-import` on `dep`.
+///
+/// Post-fix `check_applies_in_condition` walks the tokenized condition
+/// so the receiver is the FULL `dep.ready` (one token), which matches
+/// the `dep.ready` compound key recorded in `imported_block_descriptions`.
+/// The sweep also marks the bare alias `dep` as used whenever the
+/// receiver contains `.`. So this should be a clean exit-0 run with
+/// zero diagnostic lines.
+#[test]
+fn b03_repro20_whole_module_alias_applies_resolves() {
+    let dep_src = "\
+export block ready() -> Report
+    description: \"always ready\"
+    flow:
+        return \"yes\"
+";
+    let main_src = "\
+import \"./dep.glyph\" as dep
+
+export block runner() -> Report
+    flow:
+        if dep.ready.applies():
+            \"branch-noop\"
+        return \"idle\"
+";
+    let (output, _dir) = run_check_on_two_files(dep_src, main_src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "whole-module-alias `.applies()` on described imported block must be clean (exit 0);\nstdout={stdout}\nstderr={stderr}",
+    );
+    assert!(
+        stdout.trim().is_empty(),
+        "expected zero diagnostics for whole-module-alias `.applies()` on described imported block;\nstdout={stdout}\nstderr={stderr}",
+    );
+}
+
+/// B03 GAP 9 — Codex round-6 repro: malformed `.applies` in an
+/// export-block `if` condition. `.applies` without parens
+/// (e.g. `if x.applies:`) is invalid per `parse_branch_condition`'s
+/// validator, but the export-block body-walker path never reached
+/// that validator — so the diagnostic was silently dropped (exit 0).
+///
+/// Post-fix, parse.rs walks the captured if/elif condition tokens
+/// after the outer if-let-Ident closes and fires
+/// `G::parse::applies-no-parens` when an `Ident("applies")` token
+/// preceded by `Dot` is NOT followed by `Lparen`.
+#[test]
+fn b03_repro21_export_condition_applies_no_parens() {
+    let src = "\
+block cond() -> Report
+    description: \"check\"
+    flow:
+        return \"yes\"
+
+export block runner() -> Report
+    flow:
+        if cond.applies:
+            \"branch-noop\"
+        return \"idle\"
+";
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let path = dir.path().join("main.glyph");
+    std::fs::write(&path, src).expect("write main.glyph");
+    let output = Command::new(glyph_bin())
+        .arg("check")
+        .arg(&path)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("failed to spawn glyph binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "malformed `.applies` (no parens) in export-block condition must exit 1;\nstdout={stdout}\nstderr={stderr}",
+    );
+    let mut found = false;
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value =
+            serde_json::from_str(line).expect("each NDJSON line must parse as JSON");
+        if v.get("id").and_then(|x| x.as_str()) == Some("G::parse::applies-no-parens") {
+            found = true;
+            break;
+        }
+    }
+    assert!(
+        found,
+        "expected G::parse::applies-no-parens diagnostic;\nstdout={stdout}\nstderr={stderr}",
+    );
+}
+
+/// B03 GAP 9 — Codex round-6 repro: malformed `.applies` in an
+/// export-block `if` condition. `.applies(arg)` with arguments is
+/// invalid per `parse_branch_condition`'s validator, but the
+/// export-block body-walker path never reached that validator — so
+/// the diagnostic was silently dropped (exit 0).
+///
+/// Post-fix, parse.rs walks the captured if/elif condition tokens
+/// after the outer if-let-Ident closes and fires
+/// `G::parse::applies-with-args` when an `Ident("applies")` token
+/// preceded by `Dot` is followed by `Lparen` whose immediate next
+/// token is NOT `Rparen`.
+#[test]
+fn b03_repro22_export_condition_applies_with_args() {
+    let src = "\
+block cond() -> Report
+    description: \"check\"
+    flow:
+        return \"yes\"
+
+export block runner() -> Report
+    flow:
+        if cond.applies(\"foo\"):
+            \"branch-noop\"
+        return \"idle\"
+";
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let path = dir.path().join("main.glyph");
+    std::fs::write(&path, src).expect("write main.glyph");
+    let output = Command::new(glyph_bin())
+        .arg("check")
+        .arg(&path)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("failed to spawn glyph binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "malformed `.applies(...)` (with args) in export-block condition must exit 1;\nstdout={stdout}\nstderr={stderr}",
+    );
+    let mut found = false;
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value =
+            serde_json::from_str(line).expect("each NDJSON line must parse as JSON");
+        if v.get("id").and_then(|x| x.as_str()) == Some("G::parse::applies-with-args") {
+            found = true;
+            break;
+        }
+    }
+    assert!(
+        found,
+        "expected G::parse::applies-with-args diagnostic;\nstdout={stdout}\nstderr={stderr}",
+    );
+}
+
+/// B03 GAP 8 bonus — `check_applies_in_condition` previously
+/// substring-scanned for `.applies()` in the raw condition text, so
+/// a string literal like `if x == ".applies()":` triggered a false
+/// positive `G::analyze::applies-on-non-block`. Post-fix, the
+/// validator walks `condition::tokenize_condition`, which yields
+/// string literals as one quoted `"..."` token — the `tok.starts_with('"')`
+/// skip means substring scans inside literal values are now ignored.
+#[test]
+fn b03_repro23_string_literal_applies_no_false_positive() {
+    let src = "\
+export block runner(risk: String) -> Report
+    flow:
+        if risk == \"ready.applies()\":
+            \"branch-noop\"
+        return \"idle\"
+";
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let path = dir.path().join("main.glyph");
+    std::fs::write(&path, src).expect("write main.glyph");
+    let output = Command::new(glyph_bin())
+        .arg("check")
+        .arg(&path)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("failed to spawn glyph binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value =
+            serde_json::from_str(line).expect("each NDJSON line must parse as JSON");
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+        assert_ne!(
+            id, "G::analyze::applies-on-non-block",
+            "string-literal containing `.applies()` must not trigger applies-on-non-block;\nstdout={stdout}\nstderr={stderr}",
+        );
+    }
+}

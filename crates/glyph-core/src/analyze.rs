@@ -4369,6 +4369,15 @@ pub fn analyze_with_imports(
                             {
                                 used_import_names.insert(receiver.to_string());
                             }
+                            // B03 GAP 8: a `dep.ready` receiver (whole-module-alias form per
+                            // GLYPH_LANGUAGE_GUIDE §8.7) consumes BOTH the `dep.ready` compound
+                            // entry in `imported_blocks` (matched above) AND the bare alias
+                            // `dep` recorded in `all_import_names`. Without marking the bare
+                            // alias here, `unused-import` fires on `dep` even though the
+                            // module is actively used.
+                            if let Some(dot_idx) = receiver.find('.') {
+                                used_import_names.insert(receiver[..dot_idx].to_string());
+                            }
                         }
                         // `.applies()` validation — empty flow_local_types is fine;
                         // export blocks have no `let` walks.
@@ -6541,95 +6550,118 @@ fn check_applies_in_condition(
 ) {
     // Find all `NAME.applies()` patterns in the condition.
     // Simple string scanning — condition is a reconstructed string.
-    let applies_suffix = ".applies()";
-    let mut search_from = 0;
-    while let Some(pos) = condition[search_from..].find(applies_suffix) {
-        let abs_pos = search_from + pos;
-        // Extract the receiver name (word before the dot).
-        let receiver = &condition[..abs_pos];
-        let receiver_name = receiver
-            .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
-            .next()
-            .unwrap_or("");
-        if !receiver_name.is_empty() {
-            // §6.3: an agent-shape flow-local binding is a valid
-            // `.applies()` receiver. Plumb the live FlowScope so this
-            // branch annotation runs against the binding state at the
-            // current walk position.
-            if let Some(flt) = flow_local_types.get(receiver_name) {
-                if flt.is_agent {
-                    search_from = abs_pos + applies_suffix.len();
-                    continue;
-                }
-            }
-            if text_names.contains(receiver_name) {
-                // Receiver is a text declaration — not a block.
-                bag.push(
-                    Diagnostic::error(
-                        "G::analyze::applies-on-non-block",
-                        format!(
-                            "`{}.applies()` — receiver `{}` is a `text` declaration, not a `block`",
-                            receiver_name, receiver_name
-                        ),
-                        SourceSpan::from_byte_span(file_label, span, line_index),
-                    ),
-                    span,
-                );
-            } else if block_names.contains(receiver_name) {
-                // Check if the block has a description.
-                if let Some(block) = block_decls.get(receiver_name) {
-                    if block.description.is_none() {
-                        bag.push(
-                            Diagnostic {
-                                id: "G::analyze::applies-on-undescribed-block".into(),
-                                classification: Classification::Repairable,
-                                message: format!(
-                                    "`{}.applies()` but `block {}` has no `description:` sub-section",
-                                    receiver_name, receiver_name
-                                ),
-                                span: SourceSpan::from_byte_span(file_label, span, line_index),
-                                related: Vec::new(),
-                                hints: vec![
-                                    format!("add `description:` to `block {}`", receiver_name),
-                                ],
-                            },
-                            span,
-                        );
-                    }
-                } else if !imported_block_descriptions.contains_key(receiver_name) {
-                    // Block is known by name but not in block_decls — imported
-                    // block without accessible declaration. Treat as hard error
-                    // per ir-and-semantics.md §Block Trigger Predicate: imported
-                    // export blocks without description are not repairable
-                    // (Repair is single-file).
-                    bag.push(
-                        Diagnostic::error(
-                            "G::analyze::applies-on-undescribed-block",
-                            format!(
-                                "`{}.applies()` but imported block `{}` has no accessible `description:`; add `description:` in the source file",
-                                receiver_name, receiver_name
-                            ),
-                            SourceSpan::from_byte_span(file_label, span, line_index),
-                        ),
-                        span,
-                    );
-                }
-            } else {
-                // Not a block, not a text — unknown name or parameter.
+
+    // B03 GAP 8: walk the tokenized condition rather than substring-scanning.
+    // Tokenizing keeps the FULL receiver path (`dep.ready` for whole-module
+    // alias receivers per GLYPH_LANGUAGE_GUIDE §8.7) in a single token so
+    // the `imported_block_descriptions` lookup matches the compound key, and
+    // isolates string-literal content (`"x.applies()"`) so the substring
+    // scanner no longer fires inside a value.
+    for tok in crate::condition::tokenize_condition(condition) {
+        if tok.starts_with('"') {
+            continue;
+        }
+        let receiver = match tok.strip_suffix(".applies()") {
+            Some(r) => r,
+            None => continue,
+        };
+        if receiver.is_empty() {
+            continue;
+        }
+
+        // Dotted receivers (`dep.ready`) are only meaningful as whole-module
+        // alias references to imported described blocks — they cannot
+        // resolve to same-file text/block decls or flow-local bindings.
+        if receiver.contains('.') {
+            if !imported_block_descriptions.contains_key(receiver) {
                 bag.push(
                     Diagnostic::error(
                         "G::analyze::applies-on-non-block",
                         format!(
                             "`{}.applies()` — receiver `{}` does not resolve to a `block`",
-                            receiver_name, receiver_name
+                            receiver, receiver
                         ),
                         SourceSpan::from_byte_span(file_label, span, line_index),
                     ),
                     span,
                 );
             }
+            continue;
         }
-        search_from = abs_pos + applies_suffix.len();
+
+        // §6.3: an agent-shape flow-local binding is a valid
+        // `.applies()` receiver. Plumb the live FlowScope so this
+        // branch annotation runs against the binding state at the
+        // current walk position.
+        if let Some(flt) = flow_local_types.get(receiver) {
+            if flt.is_agent {
+                continue;
+            }
+        }
+        if text_names.contains(receiver) {
+            // Receiver is a text declaration — not a block.
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::applies-on-non-block",
+                    format!(
+                        "`{}.applies()` — receiver `{}` is a `text` declaration, not a `block`",
+                        receiver, receiver
+                    ),
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+        } else if block_names.contains(receiver) {
+            // Check if the block has a description.
+            if let Some(block) = block_decls.get(receiver) {
+                if block.description.is_none() {
+                    bag.push(
+                        Diagnostic {
+                            id: "G::analyze::applies-on-undescribed-block".into(),
+                            classification: Classification::Repairable,
+                            message: format!(
+                                "`{}.applies()` but `block {}` has no `description:` sub-section",
+                                receiver, receiver
+                            ),
+                            span: SourceSpan::from_byte_span(file_label, span, line_index),
+                            related: Vec::new(),
+                            hints: vec![format!("add `description:` to `block {}`", receiver)],
+                        },
+                        span,
+                    );
+                }
+            } else if !imported_block_descriptions.contains_key(receiver) {
+                // Block is known by name but not in block_decls — imported
+                // block without accessible declaration. Treat as hard error
+                // per ir-and-semantics.md §Block Trigger Predicate: imported
+                // export blocks without description are not repairable
+                // (Repair is single-file).
+                bag.push(
+                    Diagnostic::error(
+                        "G::analyze::applies-on-undescribed-block",
+                        format!(
+                            "`{}.applies()` but imported block `{}` has no accessible `description:`; add `description:` in the source file",
+                            receiver, receiver
+                        ),
+                        SourceSpan::from_byte_span(file_label, span, line_index),
+                    ),
+                    span,
+                );
+            }
+        } else {
+            // Not a block, not a text — unknown name or parameter.
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::applies-on-non-block",
+                    format!(
+                        "`{}.applies()` — receiver `{}` does not resolve to a `block`",
+                        receiver, receiver
+                    ),
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+        }
     }
 }
 

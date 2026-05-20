@@ -1798,6 +1798,81 @@ impl<'a> Parser<'a> {
                             }
                         }
                     }
+                    // B03 GAP 9: validate `.applies` shape in export-block conditions.
+                    // `parse_branch_condition` (used for inner block bodies) emits these
+                    // diagnostics directly; export-block conditions take the body-walker
+                    // path, which never invokes `parse_branch_condition` — so the same
+                    // malformed-`.applies` forms (no parens, args inside parens) parsed
+                    // silently before this gate. We re-walk the condition tokens AFTER
+                    // the outer `if let TokenKind::Ident(kw) = ...` block closes, so
+                    // `kw`'s immutable borrow on `self` is dropped and `self.bag.push`
+                    // is borrow-safe. Each `matches!` / `map` reads `self.tokens` via a
+                    // short-lived borrow that ends before the push runs.
+                    if line_in_if_condition {
+                        let mut scan = self.pos + 1;
+                        while let Some(tok) = self.tokens.get(scan) {
+                            if matches!(
+                                tok.kind,
+                                TokenKind::Colon | TokenKind::Eof | TokenKind::LineStart { .. }
+                            ) {
+                                break;
+                            }
+                            scan += 1;
+                        }
+                        let mut vscan = self.pos + 1;
+                        while vscan < scan {
+                            let cur_info: Option<(Span, bool)> = self.tokens.get(vscan).map(|t| {
+                                let is_applies =
+                                    matches!(&t.kind, TokenKind::Ident(s) if s == "applies");
+                                (t.span, is_applies)
+                            });
+                            let prev_is_dot = vscan > 0
+                                && matches!(
+                                    self.tokens.get(vscan - 1).map(|t| &t.kind),
+                                    Some(TokenKind::Dot)
+                                );
+                            let next_is_lparen = matches!(
+                                self.tokens.get(vscan + 1).map(|t| &t.kind),
+                                Some(TokenKind::Lparen)
+                            );
+                            let after_lparen_is_rparen = matches!(
+                                self.tokens.get(vscan + 2).map(|t| &t.kind),
+                                Some(TokenKind::Rparen)
+                            );
+                            if let Some((applies_span, true)) = cur_info {
+                                if prev_is_dot {
+                                    if !next_is_lparen {
+                                        self.bag.push(
+                                            Diagnostic::error(
+                                                "G::parse::applies-no-parens",
+                                                "`.applies` must be followed by `()` — write `.applies()`",
+                                                SourceSpan::from_byte_span(
+                                                    self.file_label,
+                                                    applies_span,
+                                                    self.line_index,
+                                                ),
+                                            ),
+                                            applies_span,
+                                        );
+                                    } else if !after_lparen_is_rparen {
+                                        self.bag.push(
+                                            Diagnostic::error(
+                                                "G::parse::applies-with-args",
+                                                "`.applies()` must not be called with arguments",
+                                                SourceSpan::from_byte_span(
+                                                    self.file_label,
+                                                    applies_span,
+                                                    self.line_index,
+                                                ),
+                                            ),
+                                            applies_span,
+                                        );
+                                    }
+                                }
+                            }
+                            vscan += 1;
+                        }
+                    }
                     if current_section == Some("flow") && !line_is_section_header {
                         let item_index = flow_item_count;
                         flow_item_count += 1;
