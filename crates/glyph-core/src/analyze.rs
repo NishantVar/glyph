@@ -4271,6 +4271,61 @@ pub fn analyze_with_imports(
                     &local_callee_return_types,
                     imported_block_return_types,
                 );
+
+                // B03 GAP 4: track imported-name usage from export-block flow content.
+                // `ExportBlockDecl` has no `flow: Vec<FlowStmt>`, so the per-Skill /
+                // per-Block `track_flow_usage` sweep does not reach it. Without this
+                // local mirror, an import consumed ONLY inside an export block's
+                // `terminal_return`, `flow_calls`, `body_constraints`, or
+                // `body_context` would leave `used_import_names` empty and the
+                // lib.rs unused-import emission step would fire
+                // `G::analyze::unused-import` (Repairable, exit 2) on an import the
+                // program actually depends on. Symmetric in spirit to
+                // `track_flow_usage` for FlowStmt::Return / Call / ConstraintMarker /
+                // ContextMarker.
+                {
+                    let eb = &spanned.node;
+                    // terminal_return — `return foo()` / `return foo`.
+                    match eb.terminal_return.as_ref() {
+                        Some(crate::ast::ReturnExpr::Call { target, .. }) => {
+                            if imported_blocks.contains(&target.node) {
+                                used_import_names.insert(target.node.clone());
+                            }
+                        }
+                        Some(crate::ast::ReturnExpr::Name(name)) => {
+                            if imported_blocks.contains(&name.node)
+                                || imported_texts.contains(&name.node)
+                            {
+                                used_import_names.insert(name.node.clone());
+                            }
+                        }
+                        _ => {}
+                    }
+                    // flow_calls — non-return flow-position calls collected in GAP 1.
+                    for call in &eb.flow_calls {
+                        if imported_blocks.contains(&call.target.node) {
+                            used_import_names.insert(call.target.node.clone());
+                        }
+                    }
+                    // body_constraints — `require X` / `avoid X` / `must X`.
+                    for marker in &eb.body_constraints {
+                        if imported_texts.contains(&marker.name.node)
+                            || imported_constraint_skills.contains(&marker.name.node)
+                        {
+                            used_import_names.insert(marker.name.node.clone());
+                        }
+                    }
+                    // body_context — `context X` / `context "..."` entries.
+                    for entry in &eb.body_context {
+                        if let crate::ast::ContextEntry::NameRef(name) = entry {
+                            if imported_texts.contains(&name.node)
+                                || imported_context_skills.contains(&name.node)
+                            {
+                                used_import_names.insert(name.node.clone());
+                            }
+                        }
+                    }
+                }
                 // PRD #159 / Codex round-1 Issue 1: emit `return-of-no-value-call`
                 // (Error) when an export block's `return <call>` targets a callee
                 // that resolves but declares no `-> Type`. Symmetric to

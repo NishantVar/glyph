@@ -289,3 +289,169 @@ export block caller() -> Report
         "well-formed export block must produce no diagnostics, got: {stdout}",
     );
 }
+
+/// Run `glyph check` against `main.glyph`, which imports from `dep.glyph`.
+/// Both files are written to a fresh tempdir so the relative `import "./dep.glyph"`
+/// path resolves. Returns stdout/stderr from the JSON-format check.
+fn run_check_on_two_files(dep_src: &str, main_src: &str) -> (Output, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let dep_path = dir.path().join("dep.glyph");
+    let main_path = dir.path().join("main.glyph");
+    std::fs::write(&dep_path, dep_src).expect("write dep.glyph");
+    std::fs::write(&main_path, main_src).expect("write main.glyph");
+    let output = Command::new(glyph_bin())
+        .arg("check")
+        .arg(&main_path)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("failed to spawn glyph binary");
+    (output, dir)
+}
+
+/// Repro 11 — B03 GAP 3, dotted-method case.
+///
+/// `helper.applies()` in flow position must NOT be harvested as a standalone
+/// `applies()` call. Pre-fix, the body walker's `Ident` arm saw `applies`
+/// followed by `(` and collected it into `flow_calls` because the previous-
+/// token `Dot` was ignored, firing `G::analyze::undefined-call` for `applies`.
+/// Post-fix, the harvest gate skips identifiers whose previous token is
+/// `TokenKind::Dot`, so the diagnostic does NOT fire.
+#[test]
+fn b03_repro11_dotted_method_not_collected_as_call() {
+    let src = "\
+export block helper() -> Report
+    flow:
+        return \"ok\"
+
+export block caller() -> Report
+    flow:
+        helper.applies()
+        return \"ok\"
+";
+    let (output, _dir) = run_check_on_source(src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value =
+            serde_json::from_str(line).expect("each NDJSON line must parse as JSON");
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+        let msg = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
+        if id == "G::analyze::undefined-call" && msg.contains("applies") {
+            panic!(
+                "post-fix must not emit undefined-call for `applies` (dotted-method position);\nstdout={stdout}\nstderr={stderr}",
+            );
+        }
+    }
+}
+
+/// Repro 12 — B03 GAP 4, terminal_return case.
+///
+/// An imported block consumed in an export block's `terminal_return` must
+/// mark the import as used. Pre-fix, `ExportBlockDecl` had no
+/// `flow: Vec<FlowStmt>` so the per-Skill / per-Block `track_flow_usage`
+/// sweep did not reach export blocks; the lib.rs unused-import emission step
+/// then fired `G::analyze::unused-import` (Repairable, exit 2) on
+/// `dep_helper`. Post-fix, the GAP-4 export-block usage sweep marks
+/// `dep_helper` as used.
+#[test]
+fn b03_repro12_imported_return_call_marks_import_used() {
+    let dep_src = "\
+export block dep_helper() -> Report
+    flow:
+        return \"ok\"
+";
+    let main_src = "\
+import \"./dep.glyph\" { dep_helper }
+
+export block runner() -> Report
+    flow:
+        return dep_helper()
+";
+    let (output, _dir) = run_check_on_two_files(dep_src, main_src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value =
+            serde_json::from_str(line).expect("each NDJSON line must parse as JSON");
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+        let msg = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
+        if id == "G::analyze::unused-import" && msg.contains("dep_helper") {
+            panic!(
+                "post-fix must not emit unused-import for `dep_helper` (used in terminal_return);\nstdout={stdout}\nstderr={stderr}",
+            );
+        }
+    }
+}
+
+/// Repro 13 — B03 GAP 4, flow_calls (non-return) case.
+///
+/// An imported block consumed in an export block's non-return
+/// `flow_calls` (e.g. a standalone root-level call before the terminal
+/// `return`) must mark the import as used. Same diagnostic gap as
+/// repro 12 — closed by the same GAP-4 sweep over `eb.flow_calls`.
+#[test]
+fn b03_repro13_imported_nonreturn_call_marks_import_used() {
+    let dep_src = "\
+export block dep_side_effect() -> Report
+    flow:
+        return \"ok\"
+";
+    let main_src = "\
+import \"./dep.glyph\" { dep_side_effect }
+
+export block runner() -> Report
+    flow:
+        dep_side_effect()
+        return \"ok\"
+";
+    let (output, _dir) = run_check_on_two_files(dep_src, main_src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value =
+            serde_json::from_str(line).expect("each NDJSON line must parse as JSON");
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+        let msg = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
+        if id == "G::analyze::unused-import" && msg.contains("dep_side_effect") {
+            panic!(
+                "post-fix must not emit unused-import for `dep_side_effect` (used in flow_calls);\nstdout={stdout}\nstderr={stderr}",
+            );
+        }
+    }
+}
+
+/// Repro 14 — B03 GAP 4, body_constraints case.
+///
+/// An imported text const consumed in an export block's
+/// `body_constraints` (e.g. `require imported_const`) must mark the
+/// import as used. Same diagnostic gap as repros 12/13 — closed by
+/// the GAP-4 sweep over `eb.body_constraints`.
+#[test]
+fn b03_repro14_imported_constraint_marks_import_used() {
+    let dep_src = "\
+export const dep_rule = \"Be accurate.\"
+";
+    let main_src = "\
+import \"./dep.glyph\" { dep_rule }
+
+export block runner() -> Report
+    require dep_rule
+    flow:
+        return \"ok\"
+";
+    let (output, _dir) = run_check_on_two_files(dep_src, main_src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value =
+            serde_json::from_str(line).expect("each NDJSON line must parse as JSON");
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+        let msg = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
+        if id == "G::analyze::unused-import" && msg.contains("dep_rule") {
+            panic!(
+                "post-fix must not emit unused-import for `dep_rule` (used in body_constraints);\nstdout={stdout}\nstderr={stderr}",
+            );
+        }
+    }
+}

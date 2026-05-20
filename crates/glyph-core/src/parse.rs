@@ -1263,6 +1263,12 @@ impl<'a> Parser<'a> {
                     // B03: per-iteration flag — set true inside the `return` dispatch arm
                     // below. Read after the body walker to drive `prev_root_line_was_return`.
                     let mut line_kw_was_return: bool = false;
+                    // B03 GAP 3: per-iteration flag — set true when this line dispatches as
+                    // an `if`/`elif` condition header. Read by the body walker's harvest
+                    // gate to skip identifiers in condition-position, which are NOT flow
+                    // calls. Without this gate, `if helper(x):` would over-collect
+                    // `helper(x)` as a standalone flow call.
+                    let mut line_in_if_condition: bool = false;
                     // Check if line starts with a sub-section keyword or `return`.
                     if let TokenKind::Ident(kw) = &self.peek().kind {
                         // Section-header keywords (`description`, `effects`,
@@ -1272,6 +1278,17 @@ impl<'a> Parser<'a> {
                         // computed once; downstream uses still reference `kw`
                         // (the author's original spelling) for diagnostics
                         // and freeform-section names.
+                        // B03 GAP 3: detect `if`/`elif` condition header lines BEFORE the
+                        // dispatch match runs. These keywords have no arm in the match below
+                        // (they fall through to the catch-all `_ =>`, which leaves the cursor
+                        // at position 0 since `next_is_colon` is false for `if cond:` — the
+                        // next token is the condition, not `:`). Setting the per-iteration
+                        // flag here lets the body walker's harvest gate skip condition-
+                        // position identifiers (e.g. the `helper` in `if helper(x):`) so they
+                        // are NOT over-collected as standalone flow calls.
+                        if kw == "if" || kw == "elif" {
+                            line_in_if_condition = true;
+                        }
                         let dispatch_kw: std::borrow::Cow<'_, str> = if kw
                             .eq_ignore_ascii_case("description")
                             || kw.eq_ignore_ascii_case("effects")
@@ -1765,7 +1782,17 @@ impl<'a> Parser<'a> {
                                     // call would be double-collected). The next token must be `(`. The
                                     // walker's `self.pos` is left unchanged — a separate `probe` cursor
                                     // scans the argument list.
-                                    if current_section == Some("flow") && !line_kw_was_return {
+                                    if current_section == Some("flow")
+                                        && !line_kw_was_return
+                                        && !line_in_if_condition
+                                        && !matches!(
+                                            self.pos
+                                                .checked_sub(1)
+                                                .and_then(|i| self.tokens.get(i))
+                                                .map(|t| &t.kind),
+                                            Some(TokenKind::Dot),
+                                        )
+                                    {
                                         if let Some(next) = self.tokens.get(self.pos + 1) {
                                             if matches!(next.kind, TokenKind::Lparen) {
                                                 let target =
