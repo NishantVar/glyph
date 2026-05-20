@@ -101,6 +101,10 @@ The catalog below grows as the compiler is implemented. The completeness meta-ru
 | `G::parse::none-as-return-type` | repairable | A declaration header uses `-> None` as a return-type annotation. Declarations with no meaningful return omit `->` entirely. Repair deterministically strips the trailing ` -> None` from declaration headers. Match is case-insensitive on `none` with identifier-boundary semantics; the value keyword `none` (in `return none`, `effects: none`, value positions) is preserved. |
 | `G::parse::malformed-output-target` | error | A `return <...>` output-target candidate matches neither valid form. Identifier-form failures: empty `<>`, whitespace inside brackets, dot access, call syntax, or any non-identifier character. Descriptive-form failures: empty `<"">` (the description string must be non-empty). The same diagnostic ID covers both; the message names the offending shape. |
 | `G::parse::output-target-outside-return` | error | An output-target literal — `<name>` (identifier form) or `<"…">` (descriptive form) — appears outside the single MVP-legal position: the terminal top-level `return …` expression. The same diagnostic ID covers both forms. |
+| `G::parse::bad-indent` | error | Leading indentation on a non-blank line is not a multiple of 4 spaces. Glyph requires consistent 4-space indents. |
+| `G::parse::unterminated-string` | error | A `"…"` string literal is missing its closing `"` (typically because the newline terminates the line before the close quote is seen). |
+| `G::parse::unexpected-char` | error | The tokenizer encountered a character that is not part of any Glyph token (e.g., `@`, `!`, `#` in source position). Distinct from `G::parse::operator-in-expression`, which fires only for the repairable arithmetic operators `+`, `-`, `*`, `/`. |
+| `G::parse::unexpected` | repairable / error | Catch-all parser failure. **Repairable**: parser bails with an unstructured error and no specific ID is wired. **Error**: parsing produces no AST and no other diagnostic was raised — a hard fallback so `glyph check` cannot silently exit 0 on an unparseable source. |
 
 ### Analyze phase
 
