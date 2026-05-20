@@ -104,7 +104,7 @@ The catalog below grows as the compiler is implemented. The completeness meta-ru
 | `G::parse::bad-indent` | error | Leading indentation on a non-blank line is not a multiple of 4 spaces. Glyph requires consistent 4-space indents. |
 | `G::parse::unterminated-string` | error | A `"…"` string literal is missing its closing `"` (typically because the newline terminates the line before the close quote is seen). |
 | `G::parse::unexpected-char` | error | The tokenizer encountered a character that is not part of any Glyph token (e.g., `@`, `!`, `#` in source position). Distinct from `G::parse::operator-in-expression`, which fires only for the repairable arithmetic operators `+`, `-`, `*`, `/`. |
-| `G::parse::unexpected` | error | Catch-all parser failure used in two situations: (1) when the parser bails with an unstructured `ParseError` and no specific ID has been wired yet (classified `repairable` in that case), and (2) the belt-and-suspenders fallback fired by `check_source_with_effects` / `check_one_file` when parsing returns `None` and the diagnostic bag is empty — guarantees `glyph check` never silently exits 0 on an unparseable source. |
+| `G::parse::unexpected` | repairable / error | Catch-all parser failure. **Repairable**: parser bails with an unstructured error and no specific ID is wired. **Error**: parsing produces no AST and no other diagnostic was raised — a hard fallback so `glyph check` cannot silently exit 0 on an unparseable source. |
 
 ### Analyze phase
 
