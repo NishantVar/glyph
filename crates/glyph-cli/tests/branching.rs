@@ -435,6 +435,26 @@ fn stub_fill_numeric_eq_no_substitution() {
 }
 
 #[test]
+fn stub_fill_numeric_neq_no_substitution() {
+    // Regression for B02: `if max_attempts != 3` must (1) pass `glyph check`
+    // (no `condition-non-boolean-non-predicate` diagnostic) and (2) render
+    // the numeric operand verbatim through the stub-fill retokenize path.
+    let source = r#"skill main(max_attempts: Int = <"maximum attempts">)
+    description: "Test."
+    flow:
+        if max_attempts != 3
+            "Halt."
+        else
+            "Continue."
+"#;
+    let md = compile_and_read_md("numeric_neq.glyph", source);
+    assert!(
+        md.contains("max_attempts != 3"),
+        "numeric != operand must render verbatim:\n{md}"
+    );
+}
+
+#[test]
 fn stub_fill_paren_grouped_predicates_preserves_parens_and_substitutes() {
     let source = r#"const big = "the change is big"
 const small = "the change is small"
@@ -460,4 +480,48 @@ skill main(reviewable: Bool = <"whether reviewable">)
         md.contains("reviewable"),
         "Boolean token `reviewable` rendered bare:\n{md}"
     );
+}
+
+// --- B02 regression: `!=` operator in branch conditions ---
+// `GLYPH_LANGUAGE_GUIDE.md` documents `if risk != "low":`. Prior to this fix,
+// the tokenizer rejected `!` as `G::parse::unexpected-char`. These tests
+// guard the documented surface.
+
+const NEQ_SOURCE: &str = r##"const low = "low"
+
+skill main(risk = <"caller-supplied risk level">)
+    description: "Demo."
+    flow:
+        if risk != "low":
+            "Act."
+"##;
+
+#[test]
+fn not_equals_in_if_condition_check_emits_no_diagnostics() {
+    let dir = tempfile::tempdir().unwrap();
+    let src_path = dir.path().join("neq.glyph");
+    std::fs::write(&src_path, NEQ_SOURCE).unwrap();
+    let result = run_check_json(src_path);
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "glyph check should succeed for `!=`; stdout={}; stderr={}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    let ids = stdout_diagnostic_ids(&result);
+    assert!(
+        ids.is_empty(),
+        "expected no diagnostics for documented `!=`; got: {:?}",
+        ids
+    );
+}
+
+#[test]
+fn not_equals_in_if_condition_compiles_with_operator_in_output() {
+    let md = compile_and_read_md("neq_compile.glyph", NEQ_SOURCE);
+    assert!(
+            md.contains("risk != \"low\""),
+            "compiled markdown should preserve the full `risk != \"low\"` operand-preserving form in the If header:\n{md}"
+        );
 }

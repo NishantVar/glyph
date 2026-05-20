@@ -126,3 +126,48 @@ const stale_references = "y"
     name: (identifier)
     value: (string_literal
       (string_content))))
+
+================================================================================
+If / elif with inequality (`!=`) comparison
+================================================================================
+
+skill main(risk = "high")
+    flow:
+        if risk != "low"
+            "Act."
+        elif risk != "high"
+            "Hold."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        default: (string_literal
+          (string_content))))
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (if_statement
+            condition: (condition
+              (comparison
+                (identifier)
+                (string_literal
+                  (string_content))))
+            (flow_statement
+              (inline_instruction
+                (string_literal
+                  (string_content))))
+            (elif_clause
+              condition: (condition
+                (comparison
+                  (identifier)
+                  (string_literal
+                    (string_content))))
+              (flow_statement
+                (inline_instruction
+                  (string_literal
+                    (string_content)))))))))))
