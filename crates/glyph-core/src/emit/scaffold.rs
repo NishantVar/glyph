@@ -392,6 +392,52 @@ fn skill_return_type_text_owned(arena: &IrArena) -> Option<String> {
     None
 }
 
+/// ADR 0026: render the body of an `Output:` step for an `IrReturn` node.
+/// Description form → `Output: <description>.`
+/// Identifier  form → `Output: <name> from step <M>.` when `<name>` is a
+/// flow-local binding produced by a numbered step in `skill.steps`;
+/// otherwise → `Output: <name>.`
+fn render_return_step(
+    _arena: &crate::ir::IrArena,
+    skill: &crate::ir::IrSkill,
+    ret: &crate::ir::IrReturn,
+) -> String {
+    match &ret.form {
+        crate::ir::OutputTargetForm::Description(text) => {
+            // ADR 0026 + control-char normalization: collapse all runs of
+            // ASCII whitespace (including LF/CR/TAB) to single spaces so the
+            // emitted line stays on a single Markdown row.
+            let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let trimmed = collapsed.trim_end_matches('.').trim();
+            format!("Output: {}.", trimmed)
+        }
+        crate::ir::OutputTargetForm::Identifier(name) => {
+            // ADR 0026 + reviewer follow-up: consume the explicit producer
+            // provenance captured at lower time. Fallback to the bare form
+            // when the binding doesn't resolve to a flow-local producer.
+            if let Some(step_num) = ret
+                .producer_node_id
+                .and_then(|pid| producer_step_index(skill, pid))
+            {
+                format!("Output: {} from step {}.", name, step_num)
+            } else {
+                format!("Output: {}.", name)
+            }
+        }
+    }
+}
+
+/// ADR 0026 + reviewer follow-up: locate the 1-based step number of the
+/// producer flow node identified by `NodeId`. Replaces the previous
+/// name-resolving `producer_step_number` walker; emit consumes the field.
+fn producer_step_index(skill: &crate::ir::IrSkill, producer: crate::ir::NodeId) -> Option<usize> {
+    skill
+        .steps
+        .iter()
+        .position(|step_id| *step_id == producer)
+        .map(|idx| idx + 1)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SpanId(pub u32);
 
@@ -1260,7 +1306,11 @@ fn emit_flow_section(
                         c.target
                     );
                 }
-                _ => panic!("Step node was not an InlineInstruction, Branch, or Call"),
+                IrNode::Return(r) => {
+                    let body = render_return_step(arena, skill, r);
+                    s.push_literal(format!("{}. {}\n", idx + 1, body));
+                }
+                _ => panic!("Step node was not an InlineInstruction, Branch, Call, or Return"),
             };
         }
     }

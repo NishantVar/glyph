@@ -38,6 +38,9 @@ pub enum IrNode {
     /// `-> DomainType` annotation. Chunk 5 wires JSON; chunk 6 rewrites
     /// in expand; chunks 8/9 surface diagnostics.
     OutputContract(IrOutputContract),
+    /// ADR 0026 flow-node return: a `return <"...">` or `return <name>` at
+    /// flow position. Rendered deterministically as `Output:` by the emitter.
+    Return(IrReturn),
     /// Phase 3 freeform colon-keyword section (e.g. `quality:`, `risks:`).
     /// Container node; the marker-aware items it owns are
     /// [`IrNode::FreeformContent`] entries referenced by `items`.
@@ -503,6 +506,33 @@ pub struct IrOutputContract {
     #[serde(skip)]
     pub ty: Option<TypeTag>,
     pub source: OutputSource,
+}
+
+/// ADR 0026 — `return` as a flow node. Carries the same `form` payload as
+/// [`IrOutputContract`] (Description / Identifier) and the lowered
+/// enclosing-decl return type. The renderable position lives in the
+/// containing flow array (`IrSkill.steps`, branch `then_body`,
+/// `else_body`, or elif `body`). The deterministic emitter renders this
+/// node as `<N>. Output: …` at top level or `a. Output: …` inside a
+/// branch arm.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct IrReturn {
+    pub node_id: NodeId,
+    pub form: OutputTargetForm,
+    #[serde(skip)]
+    pub ty: Option<TypeTag>,
+    /// ADR 0026 + reviewer follow-up: when `form == Identifier(name)` and
+    /// `name` resolves at lower time to a producing flow node (an upstream
+    /// `IrCall` with `bound_name == Some(name)`), the producer's `NodeId`
+    /// is captured here. Emit consumes this directly instead of
+    /// re-walking the flow at render time. `None` for the description
+    /// form, for identifier returns that don't resolve to a flow-local
+    /// producer (e.g. param-shadow), and for skill-level lowerings that
+    /// pre-date this field. The IR-JSON emitter renders this slot
+    /// explicitly (under `"producer_node_id"`), so `#[serde(skip)]` keeps
+    /// the derive consistent with the rest of the struct.
+    #[serde(skip)]
+    pub producer_node_id: Option<NodeId>,
 }
 
 /// Issue #85: the provenance of an output contract. Today's only variant is

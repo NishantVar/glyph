@@ -12,8 +12,8 @@ use crate::domain_registry::canonicalize_identifier;
 use crate::ir::{
     BranchPredicateShape, IrArena, IrBlock, IrBlockFlowItem, IrBranch, IrCall, IrConstraint,
     IrContext, IrElifBranch, IrFreeformContent, IrFreeformSection, IrInlineInstruction, IrNode,
-    IrOutputContract, IrParam, IrSkill, NodeId, OutputSource, OutputTargetForm, Polarity, Role,
-    Strength,
+    IrOutputContract, IrParam, IrReturn, IrSkill, NodeId, OutputSource, OutputTargetForm, Polarity,
+    Role, Strength,
 };
 use crate::kind_infer::{infer_primitive, Literal as KindLiteral, TypeTag};
 use crate::output_target::OutputTargetExpr;
@@ -1322,14 +1322,33 @@ pub fn lower_with_imports(
                     _ => None,
                 };
                 if let Some(form) = form {
-                    let next = NodeId(arena.len() as u32);
+                    // ADR 0026: keep IrOutputContract as a metadata view for
+                    // type-checking, and additionally push an IrReturn flow
+                    // node so the renderable position lives in skill.steps.
+                    let oc_next = NodeId(arena.len() as u32);
                     let oc_id = arena.push(IrNode::OutputContract(IrOutputContract {
-                        node_id: next,
-                        form,
+                        node_id: oc_next,
+                        form: form.clone(),
                         ty: skill_return_type.clone(),
                         source: OutputSource::SynthesizedByAgent,
                     }));
                     skill_output_contract = Some(oc_id);
+                    let ret_next = NodeId(arena.len() as u32);
+                    // ADR 0026 + reviewer follow-up: resolve the binding to its producing
+                    // flow node at lower time when the return is in identifier form. This
+                    // captures provenance explicitly on the IR node instead of having emit
+                    // re-walk the flow with name resolution.
+                    let producer_node_id = match &form {
+                        OutputTargetForm::Identifier(n) => skill_producers.get(n).copied(),
+                        OutputTargetForm::Description(_) => None,
+                    };
+                    let ret_id = arena.push(IrNode::Return(IrReturn {
+                        node_id: ret_next,
+                        form,
+                        ty: skill_return_type.clone(),
+                        producer_node_id,
+                    }));
+                    step_ids.push(ret_id);
                 }
             }
             FlowStmt::BareName(_) => {
