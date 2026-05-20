@@ -91,10 +91,11 @@ skill current() -> BranchName
     );
 
     let md = std::fs::read_to_string(md_path(&path)).unwrap();
-    // §8.4 row 3: `return <name>` + `-> Foo`, no `type Foo` decl.
+    // ADR 0026: return becomes its own `Output:` step. No prior producer step,
+    // so the identifier-form sentence omits the "from step M" suffix.
     assert!(
-        md.contains("Produce `current_branch` (`BranchName`)."),
-        "compiled Markdown should contain the §8.4 row-3 sentence:\n{md}"
+        md.contains("Output: current_branch."),
+        "compiled Markdown should contain the Output: line:\n{md}"
     );
     assert!(
         !md.contains("<current_branch>"),
@@ -109,6 +110,106 @@ skill current() -> BranchName
     assert_eq!(oc["target_name"], "current_branch");
     assert_eq!(oc["ty"], serde_json::json!({ "domain_type": "branchname" }));
     assert_eq!(oc["source"], "synthesized_by_agent");
+}
+
+/// ADR 0026: the trailing `return` becomes a `Return` flow node. For the
+/// identifier form bound by a prior flow assignment, the emitted IR carries
+/// `form="identifier"`, `local_ref=<name>`, and `producer_node_id` pointing
+/// at the producing flow node. For the description form, only `form` and
+/// `description` are populated; `producer_node_id` is omitted.
+#[test]
+fn return_is_flow_node_with_producer_provenance() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Identifier form bound to a prior call's result.
+    let ident_path = dir.path().join("ident.glyph");
+    std::fs::write(
+        &ident_path,
+        "\
+block inspect() -> Diagnosis
+    flow:
+        \"Inspect the repository.\"
+        return <\"the inspection result\">
+
+skill diagnose() -> Diagnosis
+    description: \"Diagnose an issue.\"
+    flow:
+        diagnosis = inspect()
+        return <diagnosis>
+",
+    )
+    .unwrap();
+
+    let result = run_compile_emit_ir(&ident_path);
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "identifier-form compile should succeed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let ir: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(ir_json_path(&ident_path)).unwrap()).unwrap();
+    let flow = ir["skill"]["flow"].as_array().unwrap();
+    let ret = flow
+        .iter()
+        .find(|n| n["kind"] == "return")
+        .expect("identifier-form skill flow must end with a Return node");
+    assert_eq!(ret["form"], "identifier");
+    assert_eq!(ret["local_ref"], "diagnosis");
+    let producer = ret["producer_node_id"]
+        .as_str()
+        .expect("producer_node_id must be populated for flow-local binding");
+    let producer_node = flow
+        .iter()
+        .find(|n| n["node_id"] == producer)
+        .expect("producer_node_id should reference a node in the same flow");
+    assert_eq!(
+        producer_node["bound_name"], "diagnosis",
+        "producer should be the flow assignment that binds `diagnosis`"
+    );
+
+    // Description form — `producer_node_id` must be absent.
+    let desc_path = dir.path().join("desc.glyph");
+    std::fs::write(
+        &desc_path,
+        "\
+type Summary = <\"a short summary of the situation\">
+
+skill summarize() -> Summary
+    description: \"Summarize the situation.\"
+    flow:
+        \"Read the inputs.\"
+        return <\"a short summary of the situation\">
+",
+    )
+    .unwrap();
+
+    let result = run_compile_emit_ir(&desc_path);
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "description-form compile should succeed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let ir: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(ir_json_path(&desc_path)).unwrap()).unwrap();
+    let flow = ir["skill"]["flow"].as_array().unwrap();
+    let ret = flow
+        .iter()
+        .find(|n| n["kind"] == "return")
+        .expect("description-form skill flow must end with a Return node");
+    assert_eq!(ret["form"], "description");
+    assert_eq!(ret["description"], "a short summary of the situation");
+    assert!(
+        ret.get("producer_node_id").is_none(),
+        "description form must not carry producer_node_id; got {ret}"
+    );
+    assert!(
+        ret.get("local_ref").is_none(),
+        "description form must not carry local_ref; got {ret}"
+    );
 }
 
 #[test]
