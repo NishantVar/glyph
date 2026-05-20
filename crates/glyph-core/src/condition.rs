@@ -77,7 +77,9 @@ fn is_call_receiver(buf: &str) -> bool {
 /// so that `classify_token` can match the `.applies()` suffix. The
 /// `is_call_receiver` helper distinguishes the two cases.
 ///
-/// // TODO: escaped quotes are not supported (`"a\"b"` truncates at the backslash-quote).
+/// Backslash escapes (`\"`, `\\`, `\n`, `\t`, and unknown `\X`) are honored
+/// inside `"..."` and preserved verbatim in the returned token text, mirroring
+/// the canonical string-literal escape policy in `tokenize.rs`.
 pub fn tokenize_condition(s: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut iter = s.chars().peekable();
