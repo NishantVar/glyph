@@ -600,17 +600,12 @@ mod tests {
     #[test]
     fn skill_output_contract_folds_to_natural_prose() {
         let md = compile_markdown(
-            "\
-skill current() -> BranchName
-    description: \"Return the current branch.\"
-    flow:
-        return <current_branch>
-",
+            "skill current() -> BranchName\n    description: \"Return the current branch.\"\n    flow:\n        return <current_branch>\n",
         );
-        // §8.4 row 3: `return <name>` + `-> Foo`, no `type Foo` decl.
+        // ADR 0026: identifier return renders as its own `Output:` step.
         assert!(
-            md.contains("Produce `current_branch` (`BranchName`)."),
-            "compiled Markdown should use the §8.4 row-3 sentence:\n{md}"
+            md.contains("Output: current_branch."),
+            "compiled Markdown should contain the deterministic Output line:\n{md}"
         );
         assert!(
             !md.contains("<current_branch>"),
@@ -650,22 +645,17 @@ skill current()
     #[test]
     fn descriptive_output_contract_folds_into_prose() {
         let md = compile_markdown(
-            "\
-skill diagnose_issue() -> Diagnosis
-    flow:
-        \"Inspect the repository.\"
-        return <\"root cause and affected files\">
-",
+            "skill diagnose_issue() -> Diagnosis\n    flow:\n        \"Inspect the repository.\"\n        return <\"root cause and affected files\">\n",
         );
         // Constraint (a): no literal `<"…">` survives.
         assert!(
             !md.contains("<\"root cause and affected files\">"),
             "compiled Markdown leaked the descriptive token:\n{md}"
         );
-        // §8.4 row 1: descriptive output target — `Produce: X.`.
+        // ADR 0026: descriptive return becomes its own `Output:` step.
         assert!(
-            md.contains(". Produce: root cause and affected files."),
-            "compiled Markdown must use the §8.4 row-1 sentence:\n{md}"
+            md.contains("Output: root cause and affected files."),
+            "compiled Markdown must use the deterministic Output sentence:\n{md}"
         );
     }
 
@@ -700,18 +690,12 @@ skill main()
     #[test]
     fn empty_body_tier1_callee_with_description_uses_standalone_return() {
         let md = compile_markdown(
-            "\
-block helper() -> Diagnosis
-    flow:
-        return <\"root cause and affected files\">
-
-skill main()
-    description: \"Demo.\"
-    flow:
-        helper()
-",
+            "block helper() -> Diagnosis\n    flow:\n        return <\"root cause and affected files\">\n\nskill main()\n    description: \"Demo.\"\n    flow:\n        helper()\n",
         );
-        // §8.4 row 1 wins regardless of the `-> Diagnosis` annotation.
+        // §8.4 row 1 wins regardless of the `-> Diagnosis` annotation. The skill
+        // itself has no `return`, so under ADR 0026 the Tier-1 callee's
+        // descriptive contract is the only source of return prose and still
+        // surfaces via the legacy `compute_return_sentence` fold.
         assert!(
             md.contains("1. Produce: root cause and affected files."),
             "return-only Tier-1 callee with descriptive contract should produce the §8.4 row-1 sentence:\n{md}"
@@ -747,16 +731,11 @@ skill main()
     #[test]
     fn descriptive_output_contract_with_embedded_control_chars_normalizes_to_single_line() {
         // The tokenizer decodes `\n`/`\t` inside `<"…">` to literal control
-        // characters before reaching the scaffold builder. The §8.4 sentence
+        // characters before reaching the scaffold builder. The Output sentence
         // must collapse runs of whitespace (incl. LF/CR/TAB) to single spaces
         // so the prose stays on one line.
         let md = compile_markdown(
-            "\
-skill diagnose_issue() -> Diagnosis
-    flow:
-        \"Inspect the repository.\"
-        return <\"root cause\\nseverity\\tand affected files\">
-",
+            "skill diagnose_issue() -> Diagnosis\n    flow:\n        \"Inspect the repository.\"\n        return <\"root cause\\nseverity\\tand affected files\">\n",
         );
         // No raw control characters in the prose region.
         assert!(
@@ -767,15 +746,11 @@ skill diagnose_issue() -> Diagnosis
             !md.contains("severity\tand"),
             "compiled Markdown must not embed a literal TAB inside the prose:\n{md:?}"
         );
-        // Whitespace collapsed to single spaces.
+        // ADR 0026: descriptive return becomes its own `Output:` step with
+        // whitespace collapsed to single spaces.
         assert!(
-            md.contains("root cause severity and affected files"),
-            "expected whitespace-collapsed description in prose:\n{md}"
-        );
-        // Return sentence uses the §8.4 row-1 form.
-        assert!(
-            md.contains(". Produce: root cause severity and affected files."),
-            "expected §8.4 row-1 sentence with whitespace-collapsed description:\n{md}"
+            md.contains("Output: root cause severity and affected files."),
+            "expected deterministic Output line with whitespace-collapsed description:\n{md}"
         );
     }
 
@@ -786,26 +761,16 @@ skill diagnose_issue() -> Diagnosis
     #[test]
     fn skill_output_contract_beats_callee_in_tier1() {
         let md = compile_markdown(
-            "\
-block helper() -> Diagnosis
-    flow:
-        \"Probe state.\"
-        return <\"raw helper diagnosis\">
-
-skill main() -> Diagnosis
-    description: \"Wraps helper.\"
-    flow:
-        helper()
-        return <\"final wrapped diagnosis\">
-",
+            "block helper() -> Diagnosis\n    flow:\n        \"Probe state.\"\n        return <\"raw helper diagnosis\">\n\nskill main() -> Diagnosis\n    description: \"Wraps helper.\"\n    flow:\n        helper()\n        return <\"final wrapped diagnosis\">\n",
         );
+        // ADR 0026: the skill's own return renders as its own `Output:` step.
         assert!(
-            md.contains(". Produce: final wrapped diagnosis."),
-            "skill's output_contract should drive the §8.4 row-1 sentence:\n{md}"
+            md.contains("Output: final wrapped diagnosis."),
+            "skill's return should drive the deterministic Output line:\n{md}"
         );
         assert!(
             !md.contains("raw helper diagnosis"),
-            "callee's contract description must not surface when skill's contract wins:\n{md}"
+            "callee's contract description must not surface when skill has its own return:\n{md}"
         );
     }
 

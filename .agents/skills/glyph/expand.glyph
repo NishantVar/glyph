@@ -28,7 +28,6 @@ skill expand(scaffold_path, resolved_ir) -> ExpandedMarkdown
         weave_site_modifier_into_call_prose()
         fold_scoped_constraints_into_call_prose()
         resolve_local_binding_references()
-        paraphrase_description_output_contract()
         rewrite_code_shaped_branch_condition()
         generate_parameter_description()
         calibrate_consecutive_step_prose()
@@ -43,9 +42,6 @@ block fold_scoped_constraints_into_call_prose()
 block resolve_local_binding_references()
     "For each `{name}` token in a Step's resolved body whose name appears in the Call's `local_refs` array, replace the token with a natural-language cross-reference to the producing step (for example, `the diagnosis from your earlier analysis` or `the diagnosis identified in step 1`). The literal `{name}` token must not survive in the output."
 
-block paraphrase_description_output_contract()
-    "For an OutputContract whose `form` is the `Description` variant, paraphrase the description into a Step-shaped sentence and fold it into the final Step's prose. The angle-bracket-quoted token, the surrounding angle brackets, and the verbatim quoted text must all be absent from the output. The `Identifier` variant is handled deterministically — leave its scaffold span untouched."
-
 block rewrite_code_shaped_branch_condition()
     "For each Branch whose `condition` is a code-shaped expression, convert the expression into natural-language prose suitable for an `If <prose>:` arm header. Use `applies_descriptions` from the IR side-map for any embedded `BLOCKNAME.applies()` sub-expressions and weave them into the larger condition prose. Pure-`applies()` Branches and the `Otherwise:` arm header are emitted deterministically — leave their scaffold spans untouched."
 
@@ -57,7 +53,7 @@ block calibrate_consecutive_step_prose()
 
 const span_scoped_edits_only = "Edit only the prose inside marked spans the deterministic emitter laid down. Do not add, merge, split, or reorder Steps, sub-steps, constraints, sections, or commentary relative to the IR's flow order."
 
-const preserve_deterministic_structure = "Preserve every deterministic structure the emitter laid down: section headings, numbered Step ordering, sub-step lettering, `### Context` bullets, InlineInstruction and InstructionRef text, pure-`applies()` decision-frame headers, the `If <condition>:` and `Otherwise:` arm structure, the `## Parameters` bullet structure, every `### Constraints` bullet, the locked external-file Step template, and the OutputContract Identifier return-fold suffix. If any look malformed, do not edit them — that is a deterministic-emitter bug, surfaced by Phase 6b."
+const preserve_deterministic_structure = "Preserve every deterministic structure the emitter laid down: section headings, numbered Step ordering, sub-step lettering, `### Context` bullets, InlineInstruction and InstructionRef text, pure-`applies()` decision-frame headers, the `If <condition>:` and `Otherwise:` arm structure, the `## Parameters` bullet structure, every `### Constraints` bullet, the locked external-file Step template, and the `Output:` step rendered from each `Return` flow node (ADR 0026). If any look malformed, do not edit them — that is a deterministic-emitter bug, surfaced by Phase 6b."
 
 const parameter_slots_survive_verbatim = "Preserve every `{param}` token whose name matches a declared InputContract parameter verbatim into the output. If Step 1's resolved body contained a parameter slot, re-introduce it in the output prose — silent dropping is forbidden."
 
@@ -73,7 +69,7 @@ const structural_markdown_inside_step_bodies = "use HTML, tables, or fenced code
 
 const invocation_shape_is_one_scaffold_with_resolved_ir = "The LLM receives one scaffolded Markdown document plus the resolved IR side-map for the same skill in a single prompt, and returns one expanded Markdown document with every marked prose span filled."
 
-const deterministic_emitter_owns_structure = "The deterministic emitter owns section headings, Step numbering, sub-step lettering, the `If`/`Otherwise` arm structure, the `## Parameters` bullet structure, every `### Constraints` bullet, the external-file Step template, and the OutputContract Identifier return-fold suffix. The LLM's role is to fill prose into existing slots, never to regenerate, paraphrase, or restructure them."
+const deterministic_emitter_owns_structure = "The deterministic emitter owns section headings, Step numbering, sub-step lettering, the `If`/`Otherwise` arm structure, the `## Parameters` bullet structure, every `### Constraints` bullet, the external-file Step template, and the `Output:` step rendered from each `Return` flow node (ADR 0026). The LLM's role is to fill prose into existing slots, never to regenerate, paraphrase, or restructure them."
 
 const full_ir_visibility_enables_calibration = "The LLM sees the full resolved IR for the skill in a single prompt. That visibility is for calibrating prose so consecutive Steps read naturally — not for reordering, merging, or splitting them."
 
