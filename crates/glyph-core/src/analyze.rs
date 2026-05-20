@@ -2872,6 +2872,13 @@ pub fn analyze_with_diagnostics(
                     &visible_binding_names,
                     &case_bad,
                     &mut explicit_decl_seen,
+                    &text_names,
+                    &block_names,
+                    &block_decls,
+                    &export_block_decls,
+                    &empty_imported_block_params,
+                    &local_callee_return_types,
+                    &empty_imported_block_return_types,
                 );
                 // PRD #159 / Codex round-1 Issue 1: emit `return-of-no-value-call`
                 // (Error) when an export block's `return <call>` targets a callee
@@ -4256,6 +4263,13 @@ pub fn analyze_with_imports(
                     &visible_binding_names,
                     &case_bad,
                     &mut explicit_decl_seen,
+                    &text_names,
+                    &block_names,
+                    &block_decls,
+                    &export_block_decls,
+                    imported_block_params,
+                    &local_callee_return_types,
+                    imported_block_return_types,
                 );
                 // PRD #159 / Codex round-1 Issue 1: emit `return-of-no-value-call`
                 // (Error) when an export block's `return <call>` targets a callee
@@ -6757,6 +6771,13 @@ fn analyze_export_block(
     visible_binding_names: &HashSet<&str>,
     case_bad: &HashSet<Span>,
     explicit_decl_seen: &mut HashSet<String>,
+    text_names: &HashSet<&str>,
+    block_names: &HashSet<&str>,
+    block_decls: &HashMap<&str, &crate::ast::BlockDecl>,
+    export_block_decls: &HashMap<&str, &crate::ast::ExportBlockDecl>,
+    imported_block_params: &HashMap<String, Vec<crate::ast::Param>>,
+    local_callee_return_types: &HashMap<&str, &Spanned<String>>,
+    imported_block_return_types: &HashMap<String, Spanned<String>>,
 ) {
     let decl = &spanned.node;
 
@@ -6783,6 +6804,62 @@ fn analyze_export_block(
             expr,
             decl.return_type.as_ref(),
             spanned.span,
+            file_label,
+            line_index,
+            bag,
+        );
+
+        // B03: G::analyze::undefined-call — emit when `terminal_return` is a
+        // call to a name that resolves to no `block`/`export block` (same-file
+        // or imported). Mirrors the FlowStmt::Return(Call) walk used by
+        // skills/blocks; ExportBlockDecl has no `flow: Vec<FlowStmt>`, so we
+        // inspect `terminal_return` directly.
+        check_return_call_undefined(expr, spanned.span, block_names, file_label, line_index, bag);
+
+        // B03: G::analyze::missing-required-arg — when `terminal_return` is a
+        // call, verify each required parameter is satisfied by a positional
+        // argument. Mirrors the FlowStmt::Call resolver used elsewhere.
+        if let crate::ast::ReturnExpr::Call { target, args, .. } = expr {
+            let callee_params: Option<&[crate::ast::Param]> = block_decls
+                .get(target.node.as_str())
+                .map(|b| b.params.as_slice())
+                .or_else(|| {
+                    export_block_decls
+                        .get(target.node.as_str())
+                        .map(|eb| eb.params.as_slice())
+                })
+                .or_else(|| {
+                    imported_block_params
+                        .get(target.node.as_str())
+                        .map(|v| v.as_slice())
+                });
+            if let Some(params) = callee_params {
+                let diags = validate_call_args(
+                    target.node.as_str(),
+                    params,
+                    args,
+                    spanned.span,
+                    file_label,
+                    line_index,
+                );
+                let sp = spanned.span;
+                for d in diags {
+                    bag.push(d, sp);
+                }
+            }
+        }
+
+        // B03: G::analyze::nominal-mismatch — when `terminal_return` is a call
+        // to a typed callee, the callee's `-> Type` must canonically match the
+        // export block's own `-> Type`. Mirrors `check_block_return_calls`.
+        let return_stmt = crate::ast::FlowStmt::Return(expr.clone());
+        check_return_call_nominal(
+            decl.return_type.as_ref(),
+            &return_stmt,
+            spanned.span,
+            registry,
+            local_callee_return_types,
+            imported_block_return_types,
             file_label,
             line_index,
             bag,
@@ -6815,6 +6892,27 @@ fn analyze_export_block(
             },
             span,
         );
+    }
+
+    // B03: G::analyze::undefined-name — body-level constraint markers
+    // (`require X`, `avoid X`, `must X`, `must avoid X`) must reference a
+    // declared `const`. Mirrors the skill body_constraints sweep at the
+    // `analyze_skill` site (~line 5566).
+    for marker in &decl.body_constraints {
+        if !text_names.contains(marker.name.node.as_str()) {
+            let span = spanned.span;
+            bag.push(
+                Diagnostic::error(
+                    "G::analyze::undefined-name",
+                    format!(
+                        "`{}` is not a declared `const` in this file",
+                        marker.name.node
+                    ),
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+        }
     }
 
     // G::analyze::export-missing-return-type — issue #82 AC2: an export block

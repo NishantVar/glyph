@@ -1162,6 +1162,26 @@ impl<'a> Parser<'a> {
         let mut description: Option<String> = None;
         let mut effects: Vec<String> = Vec::new();
         let mut flow_strings: Vec<String> = Vec::new();
+        // B03: flat-scanner tracking for parse-time return-rule diagnostics on
+        // `export block` bodies. Mirrors `check_return_rules` (which operates on
+        // `Vec<FlowStmt>`); ExportBlockDecl has no structured `flow` field, so
+        // the rules are enforced inline here.
+        //
+        // - `flow_root_return_count` increments once per `return` line at the
+        //   flow-root indent (== 2). > 1 fires `G::parse::multiple-returns`.
+        // - `flow_in_branch_return_seen` flips true when a `return` appears at
+        //   indent > 2 inside the `flow:` section (i.e. nested in an
+        //   `if`/`elif`/`else` body) and fires `G::parse::return-in-branch`.
+        // - `flow_return_not_terminal_seen` flips true when a non-return content
+        //   line at the flow root immediately follows a `return` at the flow
+        //   root and fires `G::parse::return-not-terminal`. Suppressed when
+        //   multiple-returns fires (mirrors `check_return_rules`).
+        // - `prev_root_line_was_return` is per-iteration scratch driving the
+        //   above adjacency check.
+        let mut flow_root_return_count: usize = 0;
+        let mut flow_in_branch_return_seen: bool = false;
+        let mut flow_return_not_terminal_seen: bool = false;
+        let mut prev_root_line_was_return: bool = false;
         // Issue #85 chunk 4b (D4): last-write-wins capture of the
         // structurally-parsed return expression. See
         // `ExportBlockDecl::terminal_return` for the language invariant.
@@ -1234,6 +1254,9 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     let mut line_is_section_header = false;
                     let mut output_target_return_span: Option<Span> = None;
+                    // B03: per-iteration flag — set true inside the `return` dispatch arm
+                    // below. Read after the body walker to drive `prev_root_line_was_return`.
+                    let mut line_kw_was_return: bool = false;
                     // Check if line starts with a sub-section keyword or `return`.
                     if let TokenKind::Ident(kw) = &self.peek().kind {
                         // Section-header keywords (`description`, `effects`,
@@ -1257,6 +1280,17 @@ impl<'a> Parser<'a> {
                         match dispatch_kw.as_ref() {
                             "return" => {
                                 has_return = true;
+                                // B03: classify this `return` for parse-time return-rule checking.
+                                // A `return` at the flow-root indent (2) is a root return. A `return`
+                                // at indent > 2 lives in an `if`/`elif`/`else` branch body.
+                                line_kw_was_return = true;
+                                if current_section == Some("flow") {
+                                    if line_indent == 2 {
+                                        flow_root_return_count += 1;
+                                    } else if line_indent > 2 {
+                                        flow_in_branch_return_seen = true;
+                                    }
+                                }
                                 // Distinguish meaningful (`return foo`,
                                 // `return some_call()`, `return "lit"`) from
                                 // non-meaningful (bare `return`,
@@ -1782,6 +1816,23 @@ impl<'a> Parser<'a> {
                         }
                         self.pos += 1;
                     }
+                    // B03: per-iteration state update for parse-time return-rule detection.
+                    // After the body walker has run, classify this line for the
+                    // flow-root return-not-terminal adjacency rule. Restricted to
+                    // flow-root content lines (current_section == flow && indent == 2
+                    // && not a section header); section headers, freeform sections,
+                    // and branch-body lines all bypass.
+                    if current_section == Some("flow")
+                        && line_indent == 2
+                        && !line_is_section_header
+                    {
+                        if !line_kw_was_return && prev_root_line_was_return {
+                            flow_return_not_terminal_seen = true;
+                        }
+                        prev_root_line_was_return = line_kw_was_return;
+                    } else {
+                        prev_root_line_was_return = false;
+                    }
                 }
                 _ => break,
             }
@@ -1811,6 +1862,45 @@ impl<'a> Parser<'a> {
             kw_span
         };
         let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
+        // B03: emit parse-time return-rule diagnostics now that the body has been
+        // scanned. Mirrors the order in `check_return_rules`:
+        //   1. `G::parse::return-in-branch` (per-flow-section; suppresses peers
+        //      only inside the in-branch recursion in the FlowStmt version, so
+        //      we still fire root rules here independently — matches existing
+        //      same-file analyze behaviour).
+        //   2. `G::parse::multiple-returns` when > 1 root returns; suppresses
+        //      return-not-terminal.
+        //   3. `G::parse::return-not-terminal` otherwise.
+        let decl_span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
+        if flow_in_branch_return_seen {
+            self.bag.push(
+                Diagnostic::error(
+                    "G::parse::return-in-branch",
+                    "`return` is not allowed inside an `if`/`elif`/`else` branch",
+                    SourceSpan::from_byte_span(self.file_label, decl_span, self.line_index),
+                ),
+                decl_span,
+            );
+        }
+        if flow_root_return_count > 1 {
+            self.bag.push(
+                Diagnostic::error(
+                    "G::parse::multiple-returns",
+                    "more than one `return` statement in `flow:`",
+                    SourceSpan::from_byte_span(self.file_label, decl_span, self.line_index),
+                ),
+                decl_span,
+            );
+        } else if flow_return_not_terminal_seen {
+            self.bag.push(
+                Diagnostic::error(
+                    "G::parse::return-not-terminal",
+                    "`return` must be the last statement in `flow:`",
+                    SourceSpan::from_byte_span(self.file_label, decl_span, self.line_index),
+                ),
+                decl_span,
+            );
+        }
         Ok(Spanned::new(
             ExportBlockDecl {
                 name,
