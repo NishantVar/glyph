@@ -144,6 +144,7 @@ fn node_id(n: &IrNode) -> u32 {
         IrNode::Call(c) => c.node_id.0,
         IrNode::Branch(br) => br.node_id.0,
         IrNode::OutputContract(oc) => oc.node_id.0,
+        IrNode::Return(r) => r.node_id.0,
         IrNode::FreeformSection(s) => s.node_id.0,
         IrNode::FreeformContent(c) => c.node_id.0,
     }

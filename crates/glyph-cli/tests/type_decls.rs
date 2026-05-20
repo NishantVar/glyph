@@ -263,20 +263,23 @@ fn return_row1_descriptive_target_produces_x() {
 #[test]
 fn return_row2_named_with_type_decl_includes_description() {
     let md = compile_and_read("return_row2_named_with_type_decl.glyph");
+    // ADR 0026: return renders as its own `Output:` step with name + producer step.
+    // For row 2 (named return + `-> Type` + `type Type` decl), description metadata
+    // lives only on `skill.output_contract`; the rendered step just names the binding.
     assert!(
-        md.contains(
-            "Inspect the scope. Produce `diagnosis` (`Diagnosis`): root cause and severity."
-        ),
-        "row 2 sentence should appear:\n{md}"
+        md.contains("Output: diagnosis."),
+        "row 2 Output line should appear:\n{md}"
     );
 }
 
 #[test]
 fn return_row3_named_with_type_no_decl_omits_description() {
     let md = compile_and_read("return_row3_named_with_type_no_decl.glyph");
+    // ADR 0026: identifier return renders as `Output: <name>.` (no description
+    // since row 3 has no `type Foo` decl to source one from).
     assert!(
-        md.contains("Inspect the scope. Produce `diagnosis` (`Diagnosis`)."),
-        "row 3 sentence should appear:\n{md}"
+        md.contains("Output: diagnosis."),
+        "row 3 Output line should appear:\n{md}"
     );
     assert!(
         !md.contains("`Diagnosis`):"),

@@ -35,7 +35,16 @@ the same way `Call` and `Branch` nodes are. The IR introduces a `Return`
 flow node with two variants:
 
 - `{ kind: "return", form: "description", description: "...", ty: ... }`
-- `{ kind: "return", form: "identifier", local_ref: "<name>", ty: ... }`
+- `{ kind: "return", form: "identifier", local_ref: "<name>",
+    producer_node_id: "<node_id>", ty: ... }`
+
+For the identifier variant the producer's `NodeId` is resolved at lower
+time from the binding's producing flow node and stored explicitly on the
+`Return` node. The deterministic emitter consumes `producer_node_id`
+directly when rendering `<name> from step <M>` — it does not re-walk the
+flow with name resolution at emit time. `producer_node_id` is omitted for
+the description form and for identifier returns that don't resolve to a
+flow-local producer (e.g. when the identifier shadows a parameter).
 
 `skill.output_contract` may remain as a top-level metadata view (type, form,
 description text) for type-checking and tooling, but the **renderable
@@ -46,9 +55,9 @@ The deterministic emitter renders a Return node as:
 
 - Top-level: `<N>. Output: <description>.`
 - Inside a branch arm: `a. Output: <description>.`
-- Identifier variant: `<N>. Output: <name> from step <M>.` where `M` is the
-  number of the step that produced the binding, derived deterministically
-  from the IR.
+- Identifier variant: `<N>. Output: <name> from step <M>.` where `M` is
+  the step number of the producing flow node referenced by the Return
+  node's `producer_node_id`.
 
 Expand Step 4 (the OutputContract fold) is removed. The "OutputContract
 Identifier return-fold suffix" preservation note in Expand's constraint list

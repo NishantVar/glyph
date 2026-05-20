@@ -6,7 +6,7 @@
 
 use crate::ir::{
     IrArena, IrBranch, IrCall, IrConstraint, IrContext, IrElifBranch, IrFreeformContent,
-    IrFreeformSection, IrInlineInstruction, IrNode, IrOutputContract, IrParam, NodeId,
+    IrFreeformSection, IrInlineInstruction, IrNode, IrOutputContract, IrParam, IrReturn, NodeId,
     OutputSource, OutputTargetForm, Polarity, Role, Strength,
 };
 use crate::kind_infer::TypeTag;
@@ -568,8 +568,40 @@ fn serialize_flow_node(arena: &IrArena, id: NodeId) -> Value {
         IrNode::Context(c) => serialize_context(c),
         IrNode::FreeformSection(s) => serialize_freeform_section(s),
         IrNode::FreeformContent(c) => serialize_freeform_content(c),
+        IrNode::Return(r) => serialize_return(r),
         _ => json!({"node_id": node_id_str(id), "kind": "unknown"}),
     }
+}
+
+/// ADR 0026: serialize an `IrReturn` flow node. Two forms:
+/// `{"kind":"return","form":"description","description":"...","ty":...}` and
+/// `{"kind":"return","form":"identifier","local_ref":"...","producer_node_id":"n<X>"?,"ty":...}`.
+/// `producer_node_id` is omitted for the description form and for identifier
+/// returns whose binding has no flow-local producer (e.g. shadows a parameter).
+/// The `ty` slot mirrors `IrOutputContract`.
+fn serialize_return(r: &IrReturn) -> Value {
+    let mut m = Map::new();
+    m.insert("node_id".into(), Value::String(node_id_str(r.node_id)));
+    m.insert("kind".into(), Value::String("return".into()));
+    match &r.form {
+        OutputTargetForm::Description(d) => {
+            m.insert("form".into(), Value::String("description".into()));
+            m.insert("description".into(), Value::String(d.clone()));
+        }
+        OutputTargetForm::Identifier(n) => {
+            // ADR 0026: identifier-form returns serialize the binding name
+            // under `"local_ref"` (not `"name"`).
+            m.insert("form".into(), Value::String("identifier".into()));
+            m.insert("local_ref".into(), Value::String(n.clone()));
+        }
+    }
+    // ADR 0026 + reviewer follow-up: explicit producer provenance so
+    // consumers don't have to re-resolve `local_ref` against the flow.
+    if let Some(pid) = r.producer_node_id {
+        m.insert("producer_node_id".into(), Value::String(node_id_str(pid)));
+    }
+    m.insert("ty".into(), opt_typetag_to_json(&r.ty));
+    Value::Object(m)
 }
 
 /// Find a Block node in the arena by name.

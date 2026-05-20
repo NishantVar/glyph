@@ -105,6 +105,10 @@ pub fn validate_output(ir_json: &str, md: &str) -> Vec<Violation> {
     // Description-driven branch validation
     check_resolved_predicates(skill, md, &mut violations);
 
+    // ADR 0026: every `Return` flow node has a matching `Output:` line at its
+    // expected MD position (top-level numbered step, or arm sub-step).
+    check_return_output_lines(&md_struct, skill, &mut violations);
+
     violations
 }
 
@@ -593,9 +597,8 @@ fn check_step_count(md_struct: &MdStructure, skill: &Value, violations: &mut Vec
 
 fn compute_expected_step_count(flow: &[Value]) -> usize {
     let mut count = 0;
-    let mut has_trailing_return = false;
 
-    for (i, node) in flow.iter().enumerate() {
+    for node in flow.iter() {
         let kind = node.get("kind").and_then(|k| k.as_str()).unwrap_or("");
         match kind {
             "call" | "inline_instruction" | "instruction_ref" => {
@@ -604,28 +607,14 @@ fn compute_expected_step_count(flow: &[Value]) -> usize {
                     count += 1;
                 }
             }
-            "branch" => {
-                count += 1; // Each branch = 1 top-level step
-            }
-            "return" => {
-                // Return folds into the last step — check if it's the last node
-                if i == flow.len() - 1 {
-                    has_trailing_return = true;
-                }
-            }
-            "constraint" => {
-                // Constraints don't count as steps
-            }
+            // Each branch = 1 top-level step.
+            "branch" => count += 1,
+            // ADR 0026: Return is its own top-level step.
+            "return" => count += 1,
             _ => {}
         }
     }
 
-    // Return folds into the last step, so doesn't add a new step.
-    // But if the last node before return was a step-projecting node,
-    // the return folds into it (already counted).
-    // If return is standalone and not last, it would be a separate item,
-    // but per spec, return always folds.
-    let _ = has_trailing_return;
     count
 }
 
@@ -775,7 +764,10 @@ fn check_substep_count(md_struct: &MdStructure, skill: &Value, violations: &mut 
                 }
                 step_idx += 1;
             }
-            "return" => {}     // folds, doesn't increment
+            "return" => {
+                // ADR 0026: top-level Return is its own step.
+                step_idx += 1;
+            }
             "constraint" => {} // doesn't count as step
             _ => {}
         }
@@ -825,6 +817,8 @@ fn count_step_projecting_nodes(body: &[Value]) -> usize {
                     role == "step"
                 }
                 "branch" => true, // nested branch counts as 1
+                // ADR 0026: arm-local Return projects as a lettered sub-step.
+                "return" => true,
                 _ => false,
             }
         })
@@ -1680,6 +1674,124 @@ fn body_h2_items(h2: &H2Section) -> Vec<ListItem> {
         items.push(it);
     }
     items
+}
+
+/// ADR 0026: structural check — every `Return` node in the IR's `flow`
+/// array has a matching `Output: …` line at its expected MD position.
+/// Top-level returns expect a numbered step body whose text starts with
+/// `Output:`. Arm-local returns (post-MVP) expect a lettered sub-item.
+fn check_return_output_lines(
+    md_struct: &MdStructure,
+    skill: &Value,
+    violations: &mut Vec<Violation>,
+) {
+    let flow = match skill.get("flow").and_then(|f| f.as_array()) {
+        Some(f) => f,
+        None => return,
+    };
+
+    let steps_items: Vec<ListItem> = match find_body_h2(md_struct, "Steps") {
+        Some(h2) => body_h2_items(h2),
+        None => return,
+    };
+
+    let mut step_idx: usize = 0;
+    for node in flow {
+        let kind = node.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+        match kind {
+            "call" | "inline_instruction" | "instruction_ref" => {
+                let role = node.get("role").and_then(|r| r.as_str()).unwrap_or("step");
+                if role == "step" {
+                    step_idx += 1;
+                }
+            }
+            "branch" => {
+                // Arm-local Return nodes (post-MVP) — scan then/else/elif arms.
+                check_return_arm(node, steps_items.get(step_idx), violations);
+                step_idx += 1;
+            }
+            "return" => {
+                match steps_items.get(step_idx) {
+                    Some(item) if item.text.trim_start().starts_with("Output:") => {}
+                    Some(item) => violations.push(Violation::new(
+                        "G::expand::malformed-markdown",
+                        format!(
+                            "expected step {} to be an `Output:` line for the flow Return node, got: {:?}",
+                            step_idx + 1,
+                            item.text
+                        ),
+                    )),
+                    None => violations.push(Violation::new(
+                        "G::expand::malformed-markdown",
+                        format!(
+                            "expected step {} to contain the `Output:` line for the flow Return node",
+                            step_idx + 1
+                        ),
+                    )),
+                }
+                step_idx += 1;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Walk arm bodies looking for arm-local Return nodes; verify the
+/// corresponding sub-step starts with `Output:`. Post-MVP: arm-local
+/// returns are not yet emitted, so this is a no-op until the parser
+/// allows them.
+fn check_return_arm(branch: &Value, md_item: Option<&ListItem>, violations: &mut Vec<Violation>) {
+    let mut arms: Vec<&Vec<Value>> = Vec::new();
+    if let Some(then_body) = branch.get("then_body").and_then(|b| b.as_array()) {
+        arms.push(then_body);
+    }
+    if let Some(elifs) = branch.get("elif_branches").and_then(|e| e.as_array()) {
+        for elif in elifs {
+            if let Some(body) = elif.get("body").and_then(|b| b.as_array()) {
+                arms.push(body);
+            }
+        }
+    }
+    if let Some(else_body) = branch.get("else_body").and_then(|b| b.as_array()) {
+        arms.push(else_body);
+    }
+
+    // `md_item.sub_items` is a single flattened lettered list covering
+    // then -> elif -> else in source order, so `letter_idx` accumulates
+    // across all arms (do not reset per arm).
+    let mut letter_idx: usize = 0;
+    for arm in arms {
+        for node in arm {
+            let kind = node.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+            match kind {
+                "call" | "inline_instruction" | "instruction_ref" => {
+                    letter_idx += 1;
+                }
+                "branch" => {
+                    letter_idx += 1;
+                }
+                "return" => {
+                    let sub = md_item.and_then(|it| it.sub_items.get(letter_idx));
+                    match sub {
+                        Some(s) if s.text.trim_start().starts_with("Output:") => {}
+                        Some(s) => violations.push(Violation::new(
+                            "G::expand::malformed-markdown",
+                            format!(
+                                "expected arm sub-step to be an `Output:` line, got: {:?}",
+                                s.text
+                            ),
+                        )),
+                        None => violations.push(Violation::new(
+                            "G::expand::malformed-markdown",
+                            "missing `Output:` sub-step for arm-local Return".to_string(),
+                        )),
+                    }
+                    letter_idx += 1;
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 /// Serialize violations to JSON (for --format json output).
@@ -3422,6 +3534,250 @@ mod tests {
         assert!(
             viols.iter().any(|v| v.id == "G::expand::procedure-order"),
             "expected procedure-order; got: {:?}",
+            viols
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // ADR 0026 — arm-local Return rendering
+    //
+    // A branch whose `then_body`, `elif_branches[*].body`, and `else_body` each
+    // contain a Return must validate cleanly when the matching Markdown lays
+    // down a flat lettered sub-list `a / b / c …` of `Output: …` lines in source
+    // order — `then` first, then each `elif` in order, then `else`. The
+    // sub-step count must include those Return nodes.
+    // ---------------------------------------------------------------------------
+
+    fn branch_with_arm_returns_ir() -> serde_json::Value {
+        serde_json::json!({
+            "ir_version": 2,
+            "compiler": "glyph 0.1.0",
+            "source_file": "test.glyph",
+            "skill": {
+                "node_id": "n0",
+                "kind": "skill",
+                "name": "test_skill",
+                "description": "A test skill.",
+                "params": [],
+                "effects": [],
+                "context": [],
+                "constraints": [],
+                "flow": [
+                    {
+                        "node_id": "n1",
+                        "kind": "branch",
+                        "condition": "audience == \"beginner\"",
+                        "then_body": [
+                            {
+                                "node_id": "n2",
+                                "kind": "return",
+                                "form": "description",
+                                "description": "a beginner-friendly walkthrough",
+                                "ty": null
+                            }
+                        ],
+                        "elif_branches": [
+                            {
+                                "node_id": "n3",
+                                "kind": "elif_branch",
+                                "condition": "audience == \"intermediate\"",
+                                "body": [
+                                    {
+                                        "node_id": "n4",
+                                        "kind": "return",
+                                        "form": "description",
+                                        "description": "an intermediate walkthrough",
+                                        "ty": null
+                                    }
+                                ]
+                            }
+                        ],
+                        "else_body": [
+                            {
+                                "node_id": "n5",
+                                "kind": "return",
+                                "form": "description",
+                                "description": "an expert walkthrough",
+                                "ty": null
+                            }
+                        ],
+                        "resolved_predicates": null,
+                        "predicate_shape": {
+                            "has_boolean_token": false,
+                            "has_predicate_token": false,
+                            "has_compositional_operator": false
+                        }
+                    }
+                ]
+            }
+        })
+    }
+
+    #[test]
+    fn arm_local_returns_validate_cleanly() {
+        let ir = branch_with_arm_returns_ir().to_string();
+        let md = "\
+## Steps
+
+1. If audience == \"beginner\":
+   a. Output: a beginner-friendly walkthrough.
+   b. Output: an intermediate walkthrough.
+   c. Output: an expert walkthrough.
+";
+        let viols = validate_output(&ir, md);
+        assert!(
+            viols.is_empty(),
+            "arm-local returns should validate clean (flat letter index across then -> elif -> else); got {:?}",
+            viols
+        );
+    }
+
+    #[test]
+    fn arm_local_returns_count_against_substeps() {
+        // Drop the `else` arm's Output: line — substep count must mismatch
+        // because `count_step_projecting_nodes` counts the Return node.
+        let ir = branch_with_arm_returns_ir().to_string();
+        let md = "\
+## Steps
+
+1. If audience == \"beginner\":
+   a. Output: a beginner-friendly walkthrough.
+   b. Output: an intermediate walkthrough.
+";
+        let viols = validate_output(&ir, md);
+        assert!(
+            viols
+                .iter()
+                .any(|v| v.id == "G::expand::substep-count-mismatch"),
+            "missing one arm-local Output: line should trip substep-count-mismatch; got {:?}",
+            viols
+        );
+    }
+
+    /// Regression-locks the cross-arm `letter_idx` accumulation in
+    /// `check_return_arm`. Setup:
+    /// - then arm: 1 Return (occupies flattened slot `a`)
+    /// - elif arm: 1 Return (occupies flattened slot `b`)
+    /// - MD: 2 sub-items; slot `a` is `Output: …` (clean), slot `b` is a
+    ///   non-`Output:` line.
+    ///
+    /// Under the correct flat indexing, elif's Return reads `sub_items[1]`,
+    /// sees a non-`Output:` line, and fires `G::expand::malformed-markdown`.
+    /// Under the old per-arm reset, elif's Return would re-read
+    /// `sub_items[0]` (which is the clean `Output:` line) and incorrectly
+    /// pass. Substep counts match either way, so this is the only signal
+    /// distinguishing the two implementations.
+    #[test]
+    fn arm_local_return_misalignment_fires_under_flat_indexing() {
+        let ir = serde_json::json!({
+            "ir_version": 2,
+            "compiler": "glyph 0.1.0",
+            "source_file": "test.glyph",
+            "skill": {
+                "node_id": "n0",
+                "kind": "skill",
+                "name": "test_skill",
+                "description": "A test skill.",
+                "params": [],
+                "effects": [],
+                "context": [],
+                "constraints": [],
+                "flow": [
+                    {
+                        "node_id": "n1",
+                        "kind": "branch",
+                        "condition": "audience == \"beginner\"",
+                        "then_body": [
+                            {
+                                "node_id": "n2",
+                                "kind": "return",
+                                "form": "description",
+                                "description": "a beginner-friendly walkthrough",
+                                "ty": null
+                            }
+                        ],
+                        "elif_branches": [
+                            {
+                                "node_id": "n3",
+                                "kind": "elif_branch",
+                                "condition": "audience == \"intermediate\"",
+                                "body": [
+                                    {
+                                        "node_id": "n4",
+                                        "kind": "return",
+                                        "form": "description",
+                                        "description": "an intermediate walkthrough",
+                                        "ty": null
+                                    }
+                                ]
+                            }
+                        ],
+                        "else_body": [],
+                        "resolved_predicates": null,
+                        "predicate_shape": {
+                            "has_boolean_token": false,
+                            "has_predicate_token": false,
+                            "has_compositional_operator": false
+                        }
+                    }
+                ]
+            }
+        })
+        .to_string();
+        let md = "\
+## Steps
+
+1. If audience == \"beginner\":
+   a. Output: a beginner-friendly walkthrough.
+   b. Continue without producing a deliverable.
+";
+        let viols = validate_output(&ir, md);
+        // The misaligned elif arm-local Return must be flagged.
+        assert!(
+            viols
+                .iter()
+                .any(|v| v.id == "G::expand::malformed-markdown"
+                    && v.message.contains("arm sub-step")),
+            "expected arm-substep malformed-markdown for the misaligned elif Return; got {:?}",
+            viols
+        );
+        // Substep count is still 2 == 2; that channel must not fire here,
+        // because we're isolating the flattened-letter-index check.
+        assert!(
+            !viols
+                .iter()
+                .any(|v| v.id == "G::expand::substep-count-mismatch"),
+            "substep counts match (2 == 2); should not fire here, got {:?}",
+            viols
+        );
+    }
+
+    #[test]
+    fn arm_local_return_letter_index_is_flat_across_arms() {
+        // Swap `else` Output: into the `then` arm's slot — letter index must
+        // catch the misordering. The validator surfaces an `Output:` line in
+        // the wrong sub-position as a malformed-markdown violation only if
+        // the slot at that letter is missing entirely; here every sub-item is
+        // an `Output:` line so the check_return_arm pass stays clean. The
+        // substep-count remains 3 (then=1, elif=1, else=1).
+        let ir = branch_with_arm_returns_ir().to_string();
+        let md = "\
+## Steps
+
+1. If audience == \"beginner\":
+   a. Output: an expert walkthrough.
+   b. Output: an intermediate walkthrough.
+   c. Output: a beginner-friendly walkthrough.
+";
+        let viols = validate_output(&ir, md);
+        // No substep-count-mismatch — three lettered sub-items match three
+        // Returns. This locks the flattened-letter contract: the validator
+        // sums Return nodes across all arms into a single sub-step total.
+        assert!(
+            !viols
+                .iter()
+                .any(|v| v.id == "G::expand::substep-count-mismatch"),
+            "three arm-local Returns must yield three expected sub-steps; got {:?}",
             viols
         );
     }
