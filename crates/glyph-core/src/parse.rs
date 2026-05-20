@@ -791,6 +791,11 @@ impl<'a> Parser<'a> {
 
     fn parse_file(&mut self) -> Result<SourceFile, ParseError> {
         let mut decls = Vec::new();
+        // B12: track the first `generated` top-level decl span so a
+        // following non-`generated` decl can be flagged with
+        // `G::parse::generated-decl-out-of-order`. See
+        // `design/language-surface.md` §3.6, §3.7.
+        let mut first_generated_span: Option<Span> = None;
         loop {
             // Skip any leading LineStart with indent 0 plus advance to a top-level decl keyword.
             if self.at_eof() {
@@ -813,6 +818,30 @@ impl<'a> Parser<'a> {
                     });
                 }
             };
+            let kw_span = self.peek().span;
+            // B12: §3.6/§3.7 placement — a non-`generated` top-level decl must
+            // not appear after the first `generated const` / `generated block`.
+            if kw != "generated" {
+                if let Some(prev) = first_generated_span {
+                    self.bag.push(
+                        Diagnostic {
+                            id: "G::parse::generated-decl-out-of-order".into(),
+                            classification: Classification::Error,
+                            message: format!(
+                                "non-`generated` top-level declaration `{}` must not appear after a `generated` declaration",
+                                kw
+                            ),
+                            span: SourceSpan::from_byte_span(self.file_label, kw_span, self.line_index),
+                            related: Vec::new(),
+                            hints: vec![format!(
+                                "first `generated` declaration starts at byte {}; move this declaration above it (see design/language-surface.md §3.6, §3.7)",
+                                prev.start
+                            )],
+                        },
+                        kw_span,
+                    );
+                }
+            }
             match kw.as_str() {
                 "skill" => {
                     let d = self.parse_skill()?;
@@ -873,6 +902,9 @@ impl<'a> Parser<'a> {
                             });
                         }
                     }
+                    // B12: mark that we have seen a `generated` decl so any subsequent
+                    // non-`generated` decl is flagged with `G::parse::generated-decl-out-of-order`.
+                    first_generated_span.get_or_insert(kw_span);
                 }
                 "export" => {
                     // Peek at the word after `export` to decide:
@@ -4647,6 +4679,26 @@ impl<'a> Parser<'a> {
                           promote to a hand-authored `block` if one is needed"
                     .to_string(),
             });
+        }
+        let bad_shape = decl.node.description.is_some()
+            || !decl.node.body_constraints.is_empty()
+            || !decl.node.body_context.is_empty()
+            || !decl.node.effects.is_empty()
+            || !decl.node.extra_subsections.is_empty()
+            || !decl.node.freeform_sections.is_empty()
+            || decl.node.flow.len() != 1
+            || !matches!(decl.node.flow.first(), Some(FlowStmt::InlineString(_)));
+        if bad_shape {
+            self.bag.push(
+                Diagnostic::error(
+                    "G::parse::generated-block-body-shape",
+                    "`generated block` body must be a single inline-or-block string \
+                     (see design/language-surface.md §3.7); multi-statement `flow:` \
+                     bodies and other sub-sections are not allowed",
+                    SourceSpan::from_byte_span(self.file_label, gen_span, self.line_index),
+                ),
+                gen_span,
+            );
         }
         decl.node.generated = true;
         decl.span = Span::new(gen_span.file_id, gen_span.start, decl.span.end);

@@ -1,0 +1,10 @@
+// B12 positive baseline: well-formed generated block using the single-
+// string shorthand per design/language-surface.md §3.7. Must parse and
+// compile clean (no parse-level diagnostics).
+skill main()
+    description: "Demo skill."
+    flow:
+        inspect_failure("logs")
+
+generated block inspect_failure(area)
+    "Inspect the failure in {area} and identify what is failing."
