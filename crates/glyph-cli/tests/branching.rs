@@ -435,6 +435,26 @@ fn stub_fill_numeric_eq_no_substitution() {
 }
 
 #[test]
+fn stub_fill_numeric_neq_no_substitution() {
+    // Regression for B02: `if max_attempts != 3` must (1) pass `glyph check`
+    // (no `condition-non-boolean-non-predicate` diagnostic) and (2) render
+    // the numeric operand verbatim through the stub-fill retokenize path.
+    let source = r#"skill main(max_attempts: Int = <"maximum attempts">)
+    description: "Test."
+    flow:
+        if max_attempts != 3
+            "Halt."
+        else
+            "Continue."
+"#;
+    let md = compile_and_read_md("numeric_neq.glyph", source);
+    assert!(
+        md.contains("max_attempts != 3"),
+        "numeric != operand must render verbatim:\n{md}"
+    );
+}
+
+#[test]
 fn stub_fill_paren_grouped_predicates_preserves_parens_and_substitutes() {
     let source = r#"const big = "the change is big"
 const small = "the change is small"
@@ -501,7 +521,7 @@ fn not_equals_in_if_condition_check_emits_no_diagnostics() {
 fn not_equals_in_if_condition_compiles_with_operator_in_output() {
     let md = compile_and_read_md("neq_compile.glyph", NEQ_SOURCE);
     assert!(
-        md.contains("!="),
-        "compiled markdown should preserve the `!=` operator in the If header:\n{md}"
-    );
+            md.contains("risk != \"low\""),
+            "compiled markdown should preserve the full `risk != \"low\"` operand-preserving form in the If header:\n{md}"
+        );
 }

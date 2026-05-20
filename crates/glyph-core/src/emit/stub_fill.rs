@@ -128,7 +128,7 @@ fn render_substitution_from_retokenize(raw: &str, rp: &BTreeMap<String, String>)
 
     let mut is_operand = vec![false; tokens.len()];
     for (i, tok) in tokens.iter().enumerate() {
-        if tok == "==" {
+        if tok == "==" || tok == "!=" {
             if i > 0 {
                 let lhs_end = i - 1;
                 let lhs_start = match_paren_left(&tokens, lhs_end);
