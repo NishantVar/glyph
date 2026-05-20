@@ -259,6 +259,22 @@ pub fn check_source_with_effects(
             &mut bag,
             &mut registry,
         );
+    } else if !bag.has_error() && !bag.has_repairable() {
+        // B01 belt-and-suspenders: parsing returned `None` but no
+        // diagnostic was pushed. Surface a hard `G::parse::unexpected`
+        // so `glyph check` can never silently exit 0 on a file the
+        // pipeline considers unparseable. Every parser bail path
+        // should push its own structured diagnostic; if a future
+        // refactor forgets one this fallback keeps the contract.
+        let span = Span::new(file_id, 0, 0);
+        bag.push(
+            Diagnostic::error(
+                "G::parse::unexpected",
+                "source could not be parsed and no specific diagnostic was reported",
+                SourceSpan::from_byte_span(file_label, span, &line_index),
+            ),
+            span,
+        );
     }
 
     bag
@@ -916,6 +932,24 @@ fn check_one_file(
     let file = match parsed {
         Some(f) => f,
         None => {
+            // B01 belt-and-suspenders: parsing returned `None` but the
+            // file's diagnostic bag is still empty. Surface a hard
+            // `G::parse::unexpected` so directory- and check-mode never
+            // silently report a clean exit on an unparseable file.
+            {
+                let entry_bag = bags.entry(key.clone()).or_default();
+                if !entry_bag.has_error() && !entry_bag.has_repairable() {
+                    let span = Span::new(file_id, 0, 0);
+                    entry_bag.push(
+                        Diagnostic::error(
+                            "G::parse::unexpected",
+                            "source could not be parsed and no specific diagnostic was reported",
+                            SourceSpan::from_byte_span(&file_label, span, &line_index),
+                        ),
+                        span,
+                    );
+                }
+            }
             stack.pop();
             return None;
         }

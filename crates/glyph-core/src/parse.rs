@@ -177,7 +177,40 @@ pub fn parse_with_diagnostics_opts(
             );
             return None;
         }
-        Err(_) => {
+        Err(TokenizeError::BadIndent { byte_offset }) => {
+            let span = Span::new(file_id, byte_offset, byte_offset + 1);
+            bag.push(
+                Diagnostic::error(
+                    "G::parse::bad-indent",
+                    "indentation is not a multiple of 4 spaces; Glyph requires 4-space indents",
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+            return None;
+        }
+        Err(TokenizeError::UnterminatedString { byte_offset }) => {
+            let span = Span::new(file_id, byte_offset, byte_offset + 1);
+            bag.push(
+                Diagnostic::error(
+                    "G::parse::unterminated-string",
+                    "string literal is missing its closing `\"`",
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+            return None;
+        }
+        Err(TokenizeError::UnexpectedChar { byte_offset, ch }) => {
+            let span = Span::new(file_id, byte_offset, byte_offset + 1);
+            bag.push(
+                Diagnostic::error(
+                    "G::parse::unexpected-char",
+                    format!("unexpected character `{}`; not part of any Glyph token", ch),
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
             return None;
         }
     };
