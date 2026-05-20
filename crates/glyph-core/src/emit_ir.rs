@@ -10,6 +10,7 @@ use crate::ir::{
     OutputSource, OutputTargetForm, Polarity, Role, Strength,
 };
 use crate::kind_infer::TypeTag;
+use crate::lower::name_to_typetag;
 use serde_json::{json, Map, Value};
 
 /// Serialize a `TypeTag` to its IR JSON representation per
@@ -387,9 +388,35 @@ fn serialize_call(c: &IrCall, arena: &IrArena) -> Value {
     // contract; the pinned object otherwise. Inline resolved calls carry it
     // too so validate-output can run the output-target leak check using only
     // the emitted IR JSON.
-    let callee_output_contract = match find_block_by_name(arena, &c.target) {
-        Some(b) => output_contract_json(arena, b.output_contract),
-        None => Value::Null,
+    let callee_output_contract = if let Some(form) = &c.callee_output_contract {
+        let mut oc = Map::new();
+        oc.insert(
+            "node_id".into(),
+            Value::String(format!("{}_oc", node_id_str(c.node_id))),
+        );
+        oc.insert("kind".into(), Value::String("output_contract".into()));
+        match form {
+            OutputTargetForm::Identifier(name) => {
+                oc.insert("form".into(), Value::String("identifier".into()));
+                oc.insert("target_name".into(), Value::String(name.clone()));
+            }
+            OutputTargetForm::Description(desc) => {
+                oc.insert("form".into(), Value::String("description".into()));
+                oc.insert("description".into(), Value::String(desc.clone()));
+            }
+        }
+        let ty = c.callee_return_type_text.as_deref().map(name_to_typetag);
+        oc.insert("ty".into(), opt_typetag_to_json(&ty));
+        oc.insert(
+            "source".into(),
+            Value::String(output_source_str(OutputSource::SynthesizedByAgent).into()),
+        );
+        Value::Object(oc)
+    } else {
+        match find_block_by_name(arena, &c.target) {
+            Some(b) => output_contract_json(arena, b.output_contract),
+            None => Value::Null,
+        }
     };
     if is_inline {
         m.insert("callee_flow".into(), Value::Null);

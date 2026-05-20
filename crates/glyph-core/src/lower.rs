@@ -80,7 +80,7 @@ fn build_call_ir_node(
 /// `DomainType("list")`. The `G::analyze::generic-type-name` diagnostic
 /// (chunk 2 banned-list, issue #83 AC3) surfaces them upstream. This module
 /// records authorial intent in canonical form; analyze owns warnings.
-fn name_to_typetag(name: &str) -> TypeTag {
+pub(crate) fn name_to_typetag(name: &str) -> TypeTag {
     // Issue #84 codex pass 3 — F1 [P2]: classify by canonical form per D6,
     // not raw ASCII case. `values-and-names.md §Case Normalization` treats
     // underscores as insignificant alongside ASCII case, so `A_g_e_n_t`
