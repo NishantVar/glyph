@@ -713,20 +713,40 @@ fn byte_range_from_linecol(
 }
 
 fn locate_byte(source: &str, line: u32, col: u32) -> usize {
-    // Walk line-by-line. col is 1-indexed bytes from start of line.
-    let mut current_line: u32 = 1;
+    // Translate a 1-indexed (line, col) byte position into a byte offset
+    // into `source`. Both line and col are interpreted byte-wise (matching
+    // `LineIndex::line_col` in `glyph_core::span`, which is what the
+    // upstream diagnostic emitter uses). Column is clamped to the located
+    // line's length so an out-of-line column still maps inside that line —
+    // crucial for codespan-reporting, which would otherwise misattribute
+    // the carry-over byte to the next line.
+    if line == 0 {
+        return source.len().saturating_sub(1);
+    }
+    let bytes = source.as_bytes();
     let mut line_start: usize = 0;
-    for (idx, b) in source.bytes().enumerate() {
-        if current_line == line {
-            return line_start + (col.saturating_sub(1) as usize).min(idx + 1 - line_start);
+    if line > 1 {
+        let mut current_line: u32 = 1;
+        let mut found = false;
+        for (idx, &b) in bytes.iter().enumerate() {
+            if b == b'\n' {
+                current_line += 1;
+                if current_line == line {
+                    line_start = idx + 1;
+                    found = true;
+                    break;
+                }
+            }
         }
-        if b == b'\n' {
-            current_line += 1;
-            line_start = idx + 1;
+        if !found {
+            return source.len().saturating_sub(1);
         }
     }
-    if current_line == line {
-        return line_start + (col.saturating_sub(1) as usize);
-    }
-    source.len().saturating_sub(1)
+    let line_end = bytes[line_start..]
+        .iter()
+        .position(|&b| b == b'\n')
+        .map(|p| line_start + p)
+        .unwrap_or(bytes.len());
+    let col_offset = (col.saturating_sub(1) as usize).min(line_end - line_start);
+    line_start + col_offset
 }
