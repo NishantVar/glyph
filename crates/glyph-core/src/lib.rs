@@ -1805,7 +1805,7 @@ pub fn compile_directory_with_layout(
                 for (block_name, rel_path) in emitted {
                     procedure_paths.insert((file.clone(), block_name), rel_path);
                 }
-                let mut lib_diags = outside_root_warn.unwrap_or_else(DiagBag::new);
+                let mut lib_diags = outside_root_warn.unwrap_or_default();
                 lib_diags.merge(proc_diags);
                 if lib_diags.has_error() {
                     failed_files.insert(file.clone());
@@ -1980,7 +1980,7 @@ fn build_call_body_message(
     out.push_str("; this compiler build is using the stub filler. ");
     out.push_str("Enable the LLM expand filler, or drop ");
     out.push_str(remediation);
-    out.push_str(".");
+    out.push('.');
     out
 }
 
@@ -3175,6 +3175,10 @@ fn compile_file_with_resolved_imports(
 }
 
 /// Compile source with full import context: text values for Lower, block bodies for Validate.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compile-pipeline helper; long parameter list threads resolved-import context"
+)]
 fn compile_source_with_resolved_imports(
     source: &str,
     file_id: u32,
@@ -7132,7 +7136,7 @@ export block inspect(scope = default_scope <\"directory to inspect\">) -> Path
         let tools_lib_path = dir.path().join("tools_lib.glyph");
         std::fs::write(&tools_lib_path, &tools_lib_src).unwrap();
 
-        let result = compile_directory(&[tools_lib_path.clone()]);
+        let result = compile_directory(std::slice::from_ref(&tools_lib_path));
         assert_eq!(result.exit_code, 0, "compile should succeed");
 
         let proc_path = dir.path().join("tools_lib/inspect.md");
@@ -7914,9 +7918,7 @@ skill main()
         let importer_bag = bags.get(&canon_importer).unwrap();
         let importer_ids: Vec<&str> = importer_bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
-            importer_ids
-                .iter()
-                .any(|id| *id == "G::analyze::import-private"),
+            importer_ids.contains(&"G::analyze::import-private"),
             "import-private should surface on the importer. got: {:?}",
             importer_ids
         );

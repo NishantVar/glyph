@@ -115,7 +115,8 @@ fn site_stdlib_toplevel_with_modifier_hard_fails() {
     let dir = tempfile::tempdir().unwrap();
     let main_path = dir.path().join("delegate.glyph");
     std::fs::write(&main_path, STDLIB_TOPLEVEL).unwrap();
-    let result = glyph_core::compile_directory_with_options(&[main_path.clone()], false, false);
+    let result =
+        glyph_core::compile_directory_with_options(std::slice::from_ref(&main_path), false, false);
     let bag = result
         .outcomes
         .into_iter()
@@ -332,7 +333,8 @@ fn trivial_stdlib_toplevel_renders_follow_procedure() {
     let dir = tempfile::tempdir().unwrap();
     let main_path = dir.path().join("delegate.glyph");
     std::fs::write(&main_path, src).unwrap();
-    let result = glyph_core::compile_directory_with_options(&[main_path.clone()], false, false);
+    let result =
+        glyph_core::compile_directory_with_options(std::slice::from_ref(&main_path), false, false);
     let outcome = result
         .outcomes
         .into_iter()

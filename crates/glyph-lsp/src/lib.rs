@@ -643,6 +643,26 @@ fn gather_strings(stmts: &[FlowStmt], out: &mut Vec<String>) {
     }
 }
 
+/// Run the LSP server over stdio until the client sends `exit`.
+///
+/// Builds a `current_thread` `tokio` runtime (per design §10.F — keeps the
+/// dependency footprint lean given our serial work pattern) and drives a
+/// `tower-lsp::Server` on `stdin`/`stdout`.
+pub fn run_stdio() -> std::io::Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    runtime.block_on(async {
+        let stdin = tokio::io::stdin();
+        let stdout = tokio::io::stdout();
+        let (service, socket) = LspService::new(Backend::new);
+        Server::new(stdin, stdout, socket).serve(service).await;
+    });
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1239,24 +1259,4 @@ skill main()
         // (since prev_line starts at 0).
         assert_eq!(encoded[0].delta_line, raw[0].line);
     }
-}
-
-/// Run the LSP server over stdio until the client sends `exit`.
-///
-/// Builds a `current_thread` `tokio` runtime (per design §10.F — keeps the
-/// dependency footprint lean given our serial work pattern) and drives a
-/// `tower-lsp::Server` on `stdin`/`stdout`.
-pub fn run_stdio() -> std::io::Result<()> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-
-    runtime.block_on(async {
-        let stdin = tokio::io::stdin();
-        let stdout = tokio::io::stdout();
-        let (service, socket) = LspService::new(Backend::new);
-        Server::new(stdin, stdout, socket).serve(service).await;
-    });
-
-    Ok(())
 }

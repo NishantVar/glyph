@@ -154,7 +154,7 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
         }
 
         // Indent must be a multiple of 4.
-        if space_count % 4 != 0 {
+        if !space_count.is_multiple_of(4) {
             return Err(TokenizeError::BadIndent {
                 byte_offset: line_start as u32,
             });
@@ -497,7 +497,7 @@ fn dedent_block_string(s: &str) -> String {
     let lines: Vec<&str> = s.split('\n').collect();
     let mut common: Option<&str> = None;
     for line in &lines {
-        let stripped = line.trim_start_matches(|c: char| c == ' ' || c == '\t');
+        let stripped = line.trim_start_matches([' ', '\t']);
         if stripped.is_empty() {
             continue;
         }
@@ -520,11 +520,11 @@ fn dedent_block_string(s: &str) -> String {
         if i > 0 {
             out.push('\n');
         }
-        let stripped = line.trim_start_matches(|c: char| c == ' ' || c == '\t');
+        let stripped = line.trim_start_matches([' ', '\t']);
         if stripped.is_empty() {
             // whitespace-only line → empty
-        } else if line.starts_with(prefix) {
-            out.push_str(&line[prefix.len()..]);
+        } else if let Some(rest) = line.strip_prefix(prefix) {
+            out.push_str(rest);
         } else {
             out.push_str(line);
         }

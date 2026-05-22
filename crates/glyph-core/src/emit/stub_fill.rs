@@ -132,15 +132,15 @@ fn render_substitution_from_retokenize(raw: &str, rp: &BTreeMap<String, String>)
             if i > 0 {
                 let lhs_end = i - 1;
                 let lhs_start = match_paren_left(&tokens, lhs_end);
-                for j in lhs_start..=lhs_end {
-                    is_operand[j] = true;
+                for slot in is_operand.iter_mut().take(lhs_end + 1).skip(lhs_start) {
+                    *slot = true;
                 }
             }
             if i + 1 < tokens.len() {
                 let rhs_start = i + 1;
                 let rhs_end = match_paren_right(&tokens, rhs_start);
-                for j in rhs_start..=rhs_end {
-                    is_operand[j] = true;
+                for slot in is_operand.iter_mut().take(rhs_end + 1).skip(rhs_start) {
+                    *slot = true;
                 }
             }
         }

@@ -66,7 +66,7 @@ fn is_call_receiver(buf: &str) -> bool {
     }
     buf.chars()
         .last()
-        .map_or(false, |c| c.is_ascii_alphanumeric() || c == '_')
+        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Split a condition string into tokens, treating `"..."` as a single token
@@ -445,15 +445,15 @@ pub fn classify_condition(condition: &str, ctx: &ConditionContext) -> ConditionC
             if i > 0 {
                 let lhs_end = i - 1;
                 let lhs_start = match_paren_left(&raw, lhs_end);
-                for j in lhs_start..=lhs_end {
-                    is_operand[j] = true;
+                for slot in is_operand.iter_mut().take(lhs_end + 1).skip(lhs_start) {
+                    *slot = true;
                 }
             }
             if i + 1 < raw.len() {
                 let rhs_start = i + 1;
                 let rhs_end = match_paren_right(&raw, rhs_start);
-                for j in rhs_start..=rhs_end {
-                    is_operand[j] = true;
+                for slot in is_operand.iter_mut().take(rhs_end + 1).skip(rhs_start) {
+                    *slot = true;
                 }
             }
         }

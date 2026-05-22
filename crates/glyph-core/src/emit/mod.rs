@@ -86,6 +86,10 @@ pub struct ProcedureContext<'a> {
     pub text: &'a str,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "emission entry point; long parameter list threads scaffold and IR context"
+)]
 pub fn emit_procedure(
     name: &str,
     description: &str,
@@ -326,7 +330,7 @@ pub fn emit_procedure(
         let rendered: Vec<String> = section
             .items
             .iter()
-            .map(|item| render_procedure_freeform_item(item))
+            .map(render_procedure_freeform_item)
             .filter(|s| !s.is_empty())
             .collect();
         match rendered.len() {

@@ -521,7 +521,7 @@ fn assert_does_not_contain_diagnostic_id(stdout: &str, id: &str) {
 /// `Context:`, `Flow:`) must dispatch to the same built-in handler as their
 /// canonical lowercase forms. The catalogue lookup and duplicate-check are
 /// already case-insensitive; the parser's dispatch must match.
-
+///
 /// `Description:` (mixed case) routes through the description-section
 /// handler. A `{slot}` inside it must fire the description-specific
 /// non-instruction-string diagnostic, not the freeform/unknown-slot path.

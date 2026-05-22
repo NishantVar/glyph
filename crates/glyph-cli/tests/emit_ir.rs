@@ -467,7 +467,7 @@ fn emit_ir_params_serialize_with_correct_default() {
     // target has no default (required)
     let target = &params[1];
     assert_eq!(target["name"], "target");
-    assert!(target.get("default").map_or(true, |d| d.is_null()));
+    assert!(target.get("default").is_none_or(|d| d.is_null()));
 }
 
 #[test]
