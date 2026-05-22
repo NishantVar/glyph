@@ -434,10 +434,8 @@ fn collect_glyph_sources(path: &std::path::Path) -> Result<Vec<PathBuf>, ExitCod
                 };
                 if ft.is_dir() {
                     stack.push(p);
-                } else if ft.is_file() {
-                    if p.to_string_lossy().ends_with(".glyph") {
-                        out.push(p);
-                    }
+                } else if ft.is_file() && p.to_string_lossy().ends_with(".glyph") {
+                    out.push(p);
                 }
             }
         }

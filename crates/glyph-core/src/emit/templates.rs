@@ -119,13 +119,10 @@ pub fn compute_return_sentence(
             },
             None => format!("Produce `{}`.", name),
         }),
-        None => match return_type_text {
-            Some(t) => Some(match type_registry.get(t) {
-                Some(d) => format!("Return a `{}`: {}.", t, normalize_ws(d)),
-                None => format!("Return a `{}`.", t),
-            }),
-            None => None,
-        },
+        None => return_type_text.map(|t| match type_registry.get(t) {
+            Some(d) => format!("Return a `{}`: {}.", t, normalize_ws(d)),
+            None => format!("Return a `{}`.", t),
+        }),
     }
 }
 

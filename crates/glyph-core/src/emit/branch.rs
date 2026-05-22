@@ -26,8 +26,7 @@ pub fn extract_predicate_token(condition: &str) -> Option<(String, ConditionToke
     let trimmed = condition.trim().trim_end_matches(':').trim();
 
     // Form 1: .applies() — "name.applies()"
-    if trimmed.ends_with(".applies()") {
-        let stem = &trimmed[..trimmed.len() - ".applies()".len()];
+    if let Some(stem) = trimmed.strip_suffix(".applies()") {
         if !stem.is_empty() && is_ident(stem) {
             return Some((trimmed.to_string(), ConditionTokenKind::PredicateApplies));
         }
@@ -302,8 +301,7 @@ pub(super) fn emit_lettered_substeps(
     body: &[NodeId],
     next_span_id: &mut u32,
 ) {
-    let mut letter = b'a';
-    for node_id in body {
+    for (letter, node_id) in (b'a'..).zip(body) {
         match arena.get(*node_id) {
             // Flow-position-assignments §9.2: rewrite `{name}` → bare `name`
             // for any slot whose name is a flow-local in scope.
@@ -349,7 +347,6 @@ pub(super) fn emit_lettered_substeps(
             }
             _ => panic!("Unexpected node type in branch body"),
         }
-        letter += 1;
     }
 }
 

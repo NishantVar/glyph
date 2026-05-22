@@ -4,6 +4,10 @@ use super::scaffold::{Chunk, Scaffold, SpanId};
 use std::collections::HashMap;
 
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "SpanId payloads are matched in unit tests but unread in non-test builds"
+)]
 pub enum MergeError {
     MissingSpan(SpanId),
     UnknownSpan(SpanId),

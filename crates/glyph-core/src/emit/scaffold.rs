@@ -442,6 +442,10 @@ fn producer_step_index(skill: &crate::ir::IrSkill, producer: crate::ir::NodeId) 
 pub struct SpanId(pub u32);
 
 #[derive(Clone, Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "boxing Span would change every Chunk construction/match site; out of scope for lint cleanup"
+)]
 pub enum Chunk {
     Literal(String),
     Span(SpanRef),
@@ -473,16 +477,28 @@ pub enum ProjectionMode {
 #[derive(Clone, Debug, Default)]
 pub struct SpanPayload {
     pub site_modifier: Option<String>,
+    #[allow(
+        dead_code,
+        reason = "read only under cfg(test); retained as emission metadata on the non-test read path"
+    )]
     pub resolved_body: Option<String>,
     pub condition_expression: Option<String>,
     pub resolved_predicates: Option<BTreeMap<String, String>>,
     pub classification: Option<crate::condition::ConditionClassification>,
+    #[expect(
+        dead_code,
+        reason = "populated from branch lowering; retained as emission metadata, not yet consumed on the read path"
+    )]
     pub predicate_shape: BranchPredicateShape,
     pub param_name: Option<String>,
     pub param_type: Option<String>,
     pub param_default: Option<String>,
     // New for CallBodyShape (see docs/superpowers/specs/2026-05-18-callbodyshape-span-emission-design.md §3.5):
     pub target_name: Option<String>,
+    #[allow(
+        dead_code,
+        reason = "CallBodyShape span metadata; read only under cfg(test) on the non-test read path"
+    )]
     pub projection_mode: Option<ProjectionMode>,
     pub local_refs: Vec<crate::ir::LocalRef>,
     pub post_merge_return_sentence: Option<String>,
@@ -918,9 +934,9 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                 &arena.type_registry,
             );
 
-            if visible_count == 0 && proc_sentence.is_some() {
+            if let Some(sentence) = proc_sentence.as_deref().filter(|_| visible_count == 0) {
                 // Return-only block: emit the §8.4 sentence as a standalone step.
-                s.push_literal(format!("1. {}\n", proc_sentence.unwrap()));
+                s.push_literal(format!("1. {sentence}\n"));
             } else {
                 let mut visible_idx: usize = 0;
                 for item in &items {
@@ -1402,20 +1418,15 @@ fn trim_trailing_blank_line(s: &mut Scaffold) {
     // The last chunk (if any) is a Literal in the patterns above. If it ends with
     // a redundant trailing newline, trim. The cheapest correct implementation is to
     // walk the tail of `chunks` and pop newlines.
-    loop {
-        match s.chunks.last_mut() {
-            Some(Chunk::Literal(text)) => {
-                while text.ends_with("\n\n") {
-                    text.pop();
-                }
-                if text.is_empty() {
-                    s.chunks.pop();
-                    continue;
-                }
-                break;
-            }
-            _ => break,
+    while let Some(Chunk::Literal(text)) = s.chunks.last_mut() {
+        while text.ends_with("\n\n") {
+            text.pop();
         }
+        if text.is_empty() {
+            s.chunks.pop();
+            continue;
+        }
+        break;
     }
 }
 

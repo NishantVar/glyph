@@ -16,7 +16,7 @@
 //! through `glyph check` as well as `glyph compile`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::ast::{
     self, BlockDecl, ContextEntry, Decl, DuplicateSubsection, FlowStmt, Param, ReturnExpr,
@@ -59,6 +59,10 @@ pub(crate) struct FlowLocalType {
     /// `TypeTag` for the nominal-matcher fast path. `String` for every
     /// non-Agent return type today (the existing matcher works on
     /// `raw_type` text); `Agent` when the callee returns an agent-shape.
+    #[expect(
+        dead_code,
+        reason = "kept for the agent-shape fast path; the nominal matcher currently consumes raw_type text instead"
+    )]
     pub tag: TypeTag,
     /// The declared `-> Type` text with its original span. The existing
     /// nominal matcher consumes raw text plus span (banned-name skipping,
@@ -67,6 +71,10 @@ pub(crate) struct FlowLocalType {
     pub raw_type: Spanned<String>,
     /// Span of the producing assignment statement. Used for "bound at line
     /// N" hints on `use-before-bind` and other binding-related diagnostics.
+    #[expect(
+        dead_code,
+        reason = "reserved for binding-related diagnostic hints (bound-at-line-N); not yet wired"
+    )]
     pub producer_span: Span,
     /// Whether the callee's return is agent-shape. Decided by the
     /// agent-shape rule in §9.1 (Codex Round 3 Med 5): rule (1) — match
@@ -163,17 +171,15 @@ impl SkillBindingTrace {
                         bound_name: Some(spanned),
                         target,
                         ..
-                    } => {
-                        if resolve_callee_return_for_assign(
-                            target.node.as_str(),
-                            target.span,
-                            local_callee_return_types,
-                            imported_block_return_types,
-                        )
-                        .is_some()
-                        {
-                            trace.all_names_ever_bound.insert(spanned.node.clone());
-                        }
+                    } if resolve_callee_return_for_assign(
+                        target.node.as_str(),
+                        target.span,
+                        local_callee_return_types,
+                        imported_block_return_types,
+                    )
+                    .is_some() =>
+                    {
+                        trace.all_names_ever_bound.insert(spanned.node.clone());
                     }
                     FlowStmt::Branch {
                         then_body,
@@ -312,6 +318,10 @@ pub(crate) enum TypeUseKind {
 /// `is_builtin_type_name` gate. Banned-generic names (issue #83) must be
 /// handled by the caller (`warn_if_banned_return_type` still owns that check)
 /// before invoking this helper.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compiler-pass helper; long parameter list threads analysis context"
+)]
 pub(crate) fn register_type_use(
     raw: &str,
     span: Span,
@@ -512,7 +522,7 @@ fn placeholder_description(s: &str) -> Option<&str> {
     // require source-level escaping. The tokenizer has already decoded source
     // escapes by this point, so we'd otherwise emit a "Repairable" diagnostic
     // that the formatter cannot actually repair.
-    if inner.contains(|c: char| c == '"' || c == '\\' || c == '\n' || c == '\t' || c == '\r') {
+    if inner.contains(['"', '\\', '\n', '\t', '\r']) {
         return None;
     }
     Some(inner)
@@ -920,17 +930,15 @@ fn walk_flow_for_case(
         FlowStmt::Call {
             bound_name: Some(bn),
             ..
-        } => {
-            if !is_snake_case(&bn.node) {
-                let mut diag = Diagnostic::error(
-                    crate::diagnostic::VALUE_CASE_VIOLATION_DIAG_ID,
-                    format!("binding `{}` must be snake_case", bn.node),
-                    SourceSpan::from_byte_span(file_label, bn.span, line_index),
-                );
-                diag.hints.push("rename to snake_case".into());
-                bag.push(diag, bn.span);
-                bad.insert(bn.span);
-            }
+        } if !is_snake_case(&bn.node) => {
+            let mut diag = Diagnostic::error(
+                crate::diagnostic::VALUE_CASE_VIOLATION_DIAG_ID,
+                format!("binding `{}` must be snake_case", bn.node),
+                SourceSpan::from_byte_span(file_label, bn.span, line_index),
+            );
+            diag.hints.push("rename to snake_case".into());
+            bag.push(diag, bn.span);
+            bad.insert(bn.span);
         }
         FlowStmt::Branch {
             then_body,
@@ -1080,6 +1088,10 @@ fn sweep_value_name_collisions(
 ) {
     use crate::domain_registry::canonicalize_identifier;
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "compiler-pass helper; long parameter list threads analysis context"
+    )]
     fn record(
         raw: &str,
         span: Span,
@@ -1369,6 +1381,10 @@ fn walk_flow_for_value_bindings(
 /// Push one `G::analyze::name-collision` Error against a `type` decl.
 /// Anchors the primary span on the type declaration (the binding site that
 /// introduces the name) and uses `offender_span` as the related span.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "diagnostic emitter; long parameter list threads analysis context"
+)]
 fn emit_type_decl_collision(
     type_name: &str,
     type_span: Span,
@@ -1408,6 +1424,10 @@ fn emit_type_decl_collision(
 /// the placeholder predates this work and its lone unit test does not
 /// exercise the `related` path; left untouched per surgical-changes
 /// principle. A future codex-pass cleanup may fold the two into one helper.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "diagnostic emitter; long parameter list threads analysis context"
+)]
 fn emit_nominal_mismatch_at_return(
     call_target: &str,
     expected_type_raw: &str,
@@ -1804,47 +1824,41 @@ pub(crate) fn walk_skill_flow_assign_checks(
                     );
                 }
             }
-            FlowStmt::Return(expr) => {
-                if let crate::ast::ReturnExpr::Name(name) = expr {
-                    if !scope.param_names.contains(&name.node)
-                        && !text_names.contains(name.node.as_str())
-                    {
-                        if let Some(flt) = scope.flow_local_types.get(&name.node).cloned() {
-                            if let Some(caller_rt) = skill_return_type {
-                                if crate::type_position::validate_type_position(&caller_rt.node)
-                                    .is_ok()
-                                    && crate::type_position::validate_type_position(
-                                        &flt.raw_type.node,
-                                    )
-                                    .is_ok()
-                                    && !registry.nominal_match(&caller_rt.node, &flt.raw_type.node)
-                                {
-                                    emit_nominal_mismatch_at_return(
-                                        name.node.as_str(),
-                                        &caller_rt.node,
-                                        &flt.raw_type.node,
-                                        decl_span,
-                                        caller_rt.span,
-                                        file_label,
-                                        line_index,
-                                        bag,
-                                    );
-                                }
-                            }
-                        } else if binding_trace.all_names_ever_bound.contains(&name.node) {
-                            // §6.3 specialization: name bound elsewhere
-                            // in this skill (e.g. in a sibling arm) but
-                            // not in scope here.
-                            bag.push(
-                                Diagnostic::error(
-                                    "G::analyze::use-before-bind",
-                                    format!("`{}` is not in scope here", name.node),
-                                    SourceSpan::from_byte_span(file_label, name.span, line_index),
-                                ),
-                                name.span,
+            FlowStmt::Return(crate::ast::ReturnExpr::Name(name))
+                if !scope.param_names.contains(&name.node)
+                    && !text_names.contains(name.node.as_str()) =>
+            {
+                if let Some(flt) = scope.flow_local_types.get(&name.node).cloned() {
+                    if let Some(caller_rt) = skill_return_type {
+                        if crate::type_position::validate_type_position(&caller_rt.node).is_ok()
+                            && crate::type_position::validate_type_position(&flt.raw_type.node)
+                                .is_ok()
+                            && !registry.nominal_match(&caller_rt.node, &flt.raw_type.node)
+                        {
+                            emit_nominal_mismatch_at_return(
+                                name.node.as_str(),
+                                &caller_rt.node,
+                                &flt.raw_type.node,
+                                decl_span,
+                                caller_rt.span,
+                                file_label,
+                                line_index,
+                                bag,
                             );
                         }
                     }
+                } else if binding_trace.all_names_ever_bound.contains(&name.node) {
+                    // §6.3 specialization: name bound elsewhere
+                    // in this skill (e.g. in a sibling arm) but
+                    // not in scope here.
+                    bag.push(
+                        Diagnostic::error(
+                            "G::analyze::use-before-bind",
+                            format!("`{}` is not in scope here", name.node),
+                            SourceSpan::from_byte_span(file_label, name.span, line_index),
+                        ),
+                        name.span,
+                    );
                 }
             }
             FlowStmt::Branch {
@@ -1995,6 +2009,10 @@ pub(crate) fn check_block_flow_assign_rejected(
 /// flow walk in [`check_block_return_calls`]. `decl_span` is the
 /// enclosing callable's declaration span (D14 primary, synthetic
 /// fallback option 3 per `docs/reference/diagnostics.md` §Span Semantics).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compiler-pass helper; long parameter list threads analysis context"
+)]
 fn check_return_call_nominal(
     caller_return_type: Option<&Spanned<String>>,
     stmt: &FlowStmt,
@@ -2118,6 +2136,10 @@ fn check_return_call_undefined(
 /// [`check_return_call_nominal`]. ExportBlockDecl is deliberately not
 /// handled — its AST has no `flow: Vec<FlowStmt>`, so cross-file
 /// ExportBlock-as-caller is deferred per AST limitation (D16).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compiler-pass helper; long parameter list threads analysis context"
+)]
 fn check_block_return_calls(
     block: &BlockDecl,
     decl_span: Span,
@@ -3206,7 +3228,7 @@ pub fn analyze_with_resolutions(
     file: SourceFile,
     file_id: u32,
     file_label: &str,
-    file_path: &PathBuf,
+    file_path: &Path,
     line_index: &LineIndex,
     bag: &mut DiagBag,
     _enable_effects: bool,
@@ -3226,7 +3248,7 @@ pub fn analyze_with_resolutions(
 /// invoke [`analyze_with_resolutions`] which does both in one call).
 /// Unresolvable names produce no entry — the LSP returns `null` for those
 /// (see design §7).
-pub fn collect_same_file_resolutions(file: &SourceFile, file_path: &PathBuf) -> Vec<Resolution> {
+pub fn collect_same_file_resolutions(file: &SourceFile, file_path: &Path) -> Vec<Resolution> {
     // Build name → def_span maps from the file's declarations. These mirror
     // the `text_names` / `block_names` checks above; the only difference is
     // we keep the decl's full span (rather than discarding it after the
@@ -3530,14 +3552,14 @@ fn record_text_use(
     name: &str,
     use_span: Span,
     text_defs: &HashMap<&str, Span>,
-    file_path: &PathBuf,
+    file_path: &Path,
     out: &mut Vec<Resolution>,
 ) {
     if let Some(def_span) = text_defs.get(name) {
         out.push(Resolution {
             use_span,
             def_span: *def_span,
-            def_file: file_path.clone(),
+            def_file: file_path.to_path_buf(),
             kind: ResolutionKind::Text,
         });
     }
@@ -3545,6 +3567,10 @@ fn record_text_use(
 
 /// Resolve a context-entry name reference. Tries text, block, export block,
 /// and skill defs in that order — context entries can point to any of these.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compiler-pass helper; long parameter list threads analysis context"
+)]
 fn record_context_name_use(
     name: &str,
     use_span: Span,
@@ -3552,43 +3578,47 @@ fn record_context_name_use(
     block_defs: &HashMap<&str, Span>,
     export_block_defs: &HashMap<&str, Span>,
     skill_defs: &HashMap<&str, Span>,
-    file_path: &PathBuf,
+    file_path: &Path,
     out: &mut Vec<Resolution>,
 ) {
     if let Some(def_span) = text_defs.get(name) {
         out.push(Resolution {
             use_span,
             def_span: *def_span,
-            def_file: file_path.clone(),
+            def_file: file_path.to_path_buf(),
             kind: ResolutionKind::Text,
         });
     } else if let Some(def_span) = block_defs.get(name) {
         out.push(Resolution {
             use_span,
             def_span: *def_span,
-            def_file: file_path.clone(),
+            def_file: file_path.to_path_buf(),
             kind: ResolutionKind::Block,
         });
     } else if let Some(def_span) = export_block_defs.get(name) {
         out.push(Resolution {
             use_span,
             def_span: *def_span,
-            def_file: file_path.clone(),
+            def_file: file_path.to_path_buf(),
             kind: ResolutionKind::ExportBlock,
         });
     } else if let Some(def_span) = skill_defs.get(name) {
         out.push(Resolution {
             use_span,
             def_span: *def_span,
-            def_file: file_path.clone(),
+            def_file: file_path.to_path_buf(),
             kind: ResolutionKind::Skill,
         });
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compiler-pass helper; long parameter list threads analysis context"
+)]
 fn walk_flow_for_resolutions(
     stmts: &[FlowStmt],
-    file_path: &PathBuf,
+    file_path: &Path,
     text_defs: &HashMap<&str, Span>,
     block_defs: &HashMap<&str, Span>,
     export_block_defs: &HashMap<&str, Span>,
@@ -3730,7 +3760,7 @@ fn walk_flow_for_resolutions(
 
 fn record_call_target(
     target: &Spanned<String>,
-    file_path: &PathBuf,
+    file_path: &Path,
     block_defs: &HashMap<&str, Span>,
     export_block_defs: &HashMap<&str, Span>,
     stdlib_names: &HashMap<String, Span>,
@@ -3740,14 +3770,14 @@ fn record_call_target(
         out.push(Resolution {
             use_span: target.span,
             def_span: *def_span,
-            def_file: file_path.clone(),
+            def_file: file_path.to_path_buf(),
             kind: ResolutionKind::Block,
         });
     } else if let Some(def_span) = export_block_defs.get(target.node.as_str()) {
         out.push(Resolution {
             use_span: target.span,
             def_span: *def_span,
-            def_file: file_path.clone(),
+            def_file: file_path.to_path_buf(),
             kind: ResolutionKind::ExportBlock,
         });
     } else if stdlib_names.contains_key(&target.node) {
@@ -3881,6 +3911,10 @@ fn record_cross_file_call(
 /// Like `analyze_with_diagnostics` but also considers imported texts and blocks
 /// when resolving names. Tracks which imported names are actually used via
 /// `used_import_names`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "cross-file analysis entry point; long parameter list threads resolved-import context"
+)]
 pub fn analyze_with_imports(
     file: &SourceFile,
     file_id: u32,
@@ -4297,17 +4331,16 @@ pub fn analyze_with_imports(
                     let eb = &spanned.node;
                     // terminal_return — `return foo()` / `return foo`.
                     match eb.terminal_return.as_ref() {
-                        Some(crate::ast::ReturnExpr::Call { target, .. }) => {
-                            if imported_blocks.contains(&target.node) {
-                                used_import_names.insert(target.node.clone());
-                            }
+                        Some(crate::ast::ReturnExpr::Call { target, .. })
+                            if imported_blocks.contains(&target.node) =>
+                        {
+                            used_import_names.insert(target.node.clone());
                         }
-                        Some(crate::ast::ReturnExpr::Name(name)) => {
-                            if imported_blocks.contains(&name.node)
-                                || imported_texts.contains(&name.node)
-                            {
-                                used_import_names.insert(name.node.clone());
-                            }
+                        Some(crate::ast::ReturnExpr::Name(name))
+                            if (imported_blocks.contains(&name.node)
+                                || imported_texts.contains(&name.node)) =>
+                        {
+                            used_import_names.insert(name.node.clone());
                         }
                         _ => {}
                     }
@@ -4461,22 +4494,22 @@ pub fn analyze_with_imports(
                 {
                     let span = spanned.span;
                     bag.push(
-                        Diagnostic {
-                            id: "G::analyze::export-missing-return-type".into(),
-                            classification: Classification::Repairable,
-                            message: format!(
-                                "`block {}` returns a meaningful value but its header lacks a `-> DomainType` annotation",
-                                spanned.node.name
-                            ),
-                            span: SourceSpan::from_byte_span(file_label, span, line_index),
-                            related: Vec::new(),
-                            hints: vec![
-                                "add a return-type annotation to the header — e.g. `block name(...) -> DomainType`"
-                                    .into(),
-                            ],
-                        },
-                        span,
-                    );
+                    Diagnostic {
+                        id: "G::analyze::export-missing-return-type".into(),
+                        classification: Classification::Repairable,
+                        message: format!(
+                            "`block {}` returns a meaningful value but its header lacks a `-> DomainType` annotation",
+                            spanned.node.name
+                        ),
+                        span: SourceSpan::from_byte_span(file_label, span, line_index),
+                        related: Vec::new(),
+                        hints: vec![
+                            "add a return-type annotation to the header — e.g. `block name(...) -> DomainType`"
+                                .into(),
+                        ],
+                    },
+                    span,
+                );
                 }
 
                 // PRD #159 / Codex round-1 Issue 1: emit `return-of-no-value-call`
@@ -4770,22 +4803,18 @@ fn track_flow_usage(
 ) {
     for stmt in flow {
         match stmt {
-            crate::ast::FlowStmt::Call { target, .. } => {
-                if imported_blocks.contains(&target.node) {
-                    used.insert(target.node.clone());
-                }
+            crate::ast::FlowStmt::Call { target, .. } if imported_blocks.contains(&target.node) => {
+                used.insert(target.node.clone());
             }
-            crate::ast::FlowStmt::ConstraintMarker(marker) => {
-                if imported_texts.contains(&marker.name.node) {
-                    used.insert(marker.name.node.clone());
-                }
+            crate::ast::FlowStmt::ConstraintMarker(marker)
+                if imported_texts.contains(&marker.name.node) =>
+            {
+                used.insert(marker.name.node.clone());
             }
-            crate::ast::FlowStmt::ContextMarker(entry) => {
-                if let crate::ast::ContextEntry::NameRef(name) = entry {
-                    if imported_texts.contains(&name.node) {
-                        used.insert(name.node.clone());
-                    }
-                }
+            crate::ast::FlowStmt::ContextMarker(crate::ast::ContextEntry::NameRef(name))
+                if imported_texts.contains(&name.node) =>
+            {
+                used.insert(name.node.clone());
             }
             crate::ast::FlowStmt::Branch {
                 condition,
@@ -4831,18 +4860,19 @@ fn track_flow_usage(
             // the catch-all `_` and `unused-import` fired spuriously, blocking
             // AC8's exit-0 success contract for cross-file return-position
             // consumers.
-            crate::ast::FlowStmt::Return(crate::ast::ReturnExpr::Call { target, .. }) => {
-                if imported_blocks.contains(&target.node) {
-                    used.insert(target.node.clone());
-                }
+            crate::ast::FlowStmt::Return(crate::ast::ReturnExpr::Call { target, .. })
+                if imported_blocks.contains(&target.node) =>
+            {
+                used.insert(target.node.clone());
             }
             // Symmetric to `ContextMarker(NameRef)` above (L753-758): a
             // `return <name>` reference may resolve to either an imported text
             // const or an imported block, so check both pools.
-            crate::ast::FlowStmt::Return(crate::ast::ReturnExpr::Name(name)) => {
-                if imported_blocks.contains(&name.node) || imported_texts.contains(&name.node) {
-                    used.insert(name.node.clone());
-                }
+            crate::ast::FlowStmt::Return(crate::ast::ReturnExpr::Name(name))
+                if (imported_blocks.contains(&name.node)
+                    || imported_texts.contains(&name.node)) =>
+            {
+                used.insert(name.node.clone());
             }
             _ => {}
         }
@@ -5025,6 +5055,10 @@ fn check_skill_freeform_and_context_slots(
 /// scans `freeform_sections`. Block-level *flow strings* also still lack slot
 /// validation; that is a pre-existing gap orthogonal to Task 3.12 and not
 /// addressed here.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compiler-pass helper; long parameter list threads analysis context"
+)]
 fn check_block_freeform_slots(
     block_name: &str,
     params: &[crate::ast::Param],
@@ -5612,9 +5646,9 @@ fn analyze_skill(
                     file_label,
                     line_index,
                     bag,
-                    &text_names,
-                    &block_names,
-                    &block_decls,
+                    text_names,
+                    block_names,
+                    block_decls,
                     imported_blocks,
                     imported_block_descriptions,
                     &flow_scope.flow_local_types,
@@ -5628,9 +5662,9 @@ fn analyze_skill(
                         file_label,
                         line_index,
                         bag,
-                        &text_names,
-                        &block_names,
-                        &block_decls,
+                        text_names,
+                        block_names,
+                        block_decls,
                         imported_blocks,
                         imported_block_descriptions,
                         &flow_scope.flow_local_types,
@@ -5643,10 +5677,10 @@ fn analyze_skill(
                     file_label,
                     line_index,
                     bag,
-                    &text_names,
-                    &block_names,
+                    text_names,
+                    block_names,
                     context_skill_names,
-                    &block_decls,
+                    block_decls,
                     export_block_decls,
                     imported_block_params,
                 );
@@ -5657,10 +5691,10 @@ fn analyze_skill(
                         file_label,
                         line_index,
                         bag,
-                        &text_names,
-                        &block_names,
+                        text_names,
+                        block_names,
                         context_skill_names,
-                        &block_decls,
+                        block_decls,
                         export_block_decls,
                         imported_block_params,
                     );
@@ -5672,10 +5706,10 @@ fn analyze_skill(
                         file_label,
                         line_index,
                         bag,
-                        &text_names,
-                        &block_names,
+                        text_names,
+                        block_names,
                         context_skill_names,
-                        &block_decls,
+                        block_decls,
                         export_block_decls,
                         imported_block_params,
                     );
@@ -6195,32 +6229,31 @@ fn annotate_skill_flow_with_locals(
     for stmt in flow.iter_mut() {
         match stmt {
             FlowStmt::Call {
-                target, bound_name, ..
+                target,
+                bound_name: Some(spanned_name),
+                ..
             } => {
-                if let Some(spanned_name) = bound_name {
-                    let n = spanned_name.node.clone();
-                    let raw = local_callee_return_types
-                        .get(target.node.as_str())
-                        .cloned()
-                        .or_else(|| {
-                            imported_block_return_types
-                                .get(target.node.as_str())
-                                .cloned()
-                        })
-                        .or_else(|| {
-                            crate::stdlib_sig(target.node.as_str())
-                                .and_then(|s| s.return_type.map(str::to_string))
-                        });
-                    let is_agent = raw
-                        .as_deref()
-                        .map(|s| s.eq_ignore_ascii_case("Agent"))
-                        .unwrap_or(false)
-                        || crate::stdlib_sig(target.node.as_str())
-                            .map(|s| s.is_agent)
-                            .unwrap_or(false);
-                    flow_local_bindings
-                        .insert(n, crate::condition::ConditionFlowLocal { is_agent });
-                }
+                let n = spanned_name.node.clone();
+                let raw = local_callee_return_types
+                    .get(target.node.as_str())
+                    .cloned()
+                    .or_else(|| {
+                        imported_block_return_types
+                            .get(target.node.as_str())
+                            .cloned()
+                    })
+                    .or_else(|| {
+                        crate::stdlib_sig(target.node.as_str())
+                            .and_then(|s| s.return_type.map(str::to_string))
+                    });
+                let is_agent = raw
+                    .as_deref()
+                    .map(|s| s.eq_ignore_ascii_case("Agent"))
+                    .unwrap_or(false)
+                    || crate::stdlib_sig(target.node.as_str())
+                        .map(|s| s.is_agent)
+                        .unwrap_or(false);
+                flow_local_bindings.insert(n, crate::condition::ConditionFlowLocal { is_agent });
             }
             FlowStmt::Branch {
                 condition,
@@ -6484,7 +6517,7 @@ fn check_flow_numeric_conditions(
         {
             if condition_classification
                 .as_ref()
-                .map_or(false, |c| c.has_numeric_bare_condition)
+                .is_some_and(|c| c.has_numeric_bare_condition)
             {
                 push_numeric_condition_diag(span, file_label, line_index, bag);
             }
@@ -6492,7 +6525,7 @@ fn check_flow_numeric_conditions(
                 if elif
                     .condition_classification
                     .as_ref()
-                    .map_or(false, |c| c.has_numeric_bare_condition)
+                    .is_some_and(|c| c.has_numeric_bare_condition)
                 {
                     push_numeric_condition_diag(span, file_label, line_index, bag);
                 }
@@ -6726,6 +6759,10 @@ fn check_applies_in_condition(
 }
 
 /// Check flow statements inside branch bodies for name resolution.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compiler-pass helper; long parameter list threads analysis context"
+)]
 fn check_branch_body_names(
     body: &[FlowStmt],
     span: crate::span::Span,
@@ -6758,21 +6795,21 @@ fn check_branch_body_names(
                 if !block_names.contains(target.node.as_str()) {
                     if is_stdlib_block_name(&target.node) {
                         bag.push(
-                            Diagnostic {
-                                id: "G::analyze::stdlib-missing-import".into(),
-                                classification: Classification::Repairable,
-                                message: format!(
-                                    "`{}` is a standard library block; add `import \"@glyph/std\" {{ {} }}`",
-                                    target.node, target.node
-                                ),
-                                span: SourceSpan::from_byte_span(file_label, span, line_index),
-                                related: Vec::new(),
-                                hints: vec![
-                                    format!("add `import \"@glyph/std\" {{ {} }}` at the top of the file", target.node),
-                                ],
-                            },
-                            span,
-                        );
+                        Diagnostic {
+                            id: "G::analyze::stdlib-missing-import".into(),
+                            classification: Classification::Repairable,
+                            message: format!(
+                                "`{}` is a standard library block; add `import \"@glyph/std\" {{ {} }}`",
+                                target.node, target.node
+                            ),
+                            span: SourceSpan::from_byte_span(file_label, span, line_index),
+                            related: Vec::new(),
+                            hints: vec![
+                                format!("add `import \"@glyph/std\" {{ {} }}` at the top of the file", target.node),
+                            ],
+                        },
+                        span,
+                    );
                     } else {
                         bag.push(
                             Diagnostic {
@@ -6805,20 +6842,20 @@ fn check_branch_body_names(
                     }
                 }
             }
-            FlowStmt::ConstraintMarker(marker) => {
-                if !text_names.contains(marker.name.node.as_str()) {
-                    bag.push(
-                        Diagnostic::error(
-                            "G::analyze::undefined-name",
-                            format!(
-                                "`{}` is not a declared `const` in this file",
-                                marker.name.node
-                            ),
-                            SourceSpan::from_byte_span(file_label, span, line_index),
+            FlowStmt::ConstraintMarker(marker)
+                if !text_names.contains(marker.name.node.as_str()) =>
+            {
+                bag.push(
+                    Diagnostic::error(
+                        "G::analyze::undefined-name",
+                        format!(
+                            "`{}` is not a declared `const` in this file",
+                            marker.name.node
                         ),
-                        span,
-                    );
-                }
+                        SourceSpan::from_byte_span(file_label, span, line_index),
+                    ),
+                    span,
+                );
             }
             FlowStmt::ContextMarker(entry) => {
                 check_context_entry_name(
@@ -6969,6 +7006,10 @@ pub(crate) fn validate_call_args(
     out
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compiler-pass helper; long parameter list threads analysis context"
+)]
 fn analyze_export_block(
     spanned: &crate::span::Spanned<crate::ast::ExportBlockDecl>,
     file_label: &str,
@@ -7190,21 +7231,21 @@ fn analyze_export_block(
     if decl.has_meaningful_return && decl.return_type.is_none() {
         let span = spanned.span;
         bag.push(
-            Diagnostic {
-                id: "G::analyze::export-missing-return-type".into(),
-                classification: Classification::Repairable,
-                message: format!(
-                    "`export block {}` returns a meaningful value but its header lacks a `-> DomainType` annotation",
-                    decl.name
-                ),
-                span: SourceSpan::from_byte_span(file_label, span, line_index),
-                related: Vec::new(),
-                hints: vec![
-                    "add a return-type annotation to the header — e.g. `export block name(...) -> DomainType`".into(),
-                ],
-            },
-            span,
-        );
+        Diagnostic {
+            id: "G::analyze::export-missing-return-type".into(),
+            classification: Classification::Repairable,
+            message: format!(
+                "`export block {}` returns a meaningful value but its header lacks a `-> DomainType` annotation",
+                decl.name
+            ),
+            span: SourceSpan::from_byte_span(file_label, span, line_index),
+            related: Vec::new(),
+            hints: vec![
+                "add a return-type annotation to the header — e.g. `export block name(...) -> DomainType`".into(),
+            ],
+        },
+        span,
+    );
     }
 
     // G::analyze::closure-violation — export block must not reference private names.
@@ -7213,16 +7254,16 @@ fn analyze_export_block(
         if private_names.contains(body_ref.as_str()) && !param_names.contains(body_ref.as_str()) {
             let span = spanned.span;
             bag.push(
-                Diagnostic::error(
-                    "G::analyze::closure-violation",
-                    format!(
-                        "`export block {}` references private name `{}` which is not visible to importers",
-                        decl.name, body_ref
-                    ),
-                    SourceSpan::from_byte_span(file_label, span, line_index),
+            Diagnostic::error(
+                "G::analyze::closure-violation",
+                format!(
+                    "`export block {}` references private name `{}` which is not visible to importers",
+                    decl.name, body_ref
                 ),
-                span,
-            );
+                SourceSpan::from_byte_span(file_label, span, line_index),
+            ),
+            span,
+        );
         }
     }
 }
@@ -9573,7 +9614,7 @@ skill main()
         let is_empty_or_absent = signals
             .inferred_effects
             .get("main")
-            .map_or(true, |v| v.is_empty());
+            .is_none_or(|v| v.is_empty());
         assert!(
             is_empty_or_absent,
             "expected no inferred effects when author declared effects, got {:?}",

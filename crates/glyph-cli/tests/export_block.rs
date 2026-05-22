@@ -699,8 +699,8 @@ export block runner() -> Report
 /// Post-fix, the dotted-receiver branch does a three-way check:
 ///   - `imported_block_descriptions` hit → OK
 ///   - `imported_blocks` hit (no description)
-///       → `G::analyze::applies-on-undescribed-block` (Error,
-///         imported-no-repair — repair is single-file)
+///     → `G::analyze::applies-on-undescribed-block` (Error,
+///     imported-no-repair — repair is single-file)
 ///   - neither → existing `G::analyze::applies-on-non-block`
 #[test]
 fn b03_repro24_whole_module_undescribed_block_undescribed_diagnostic() {

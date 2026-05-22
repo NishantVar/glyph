@@ -144,7 +144,7 @@ impl SectionCatalogue {
     /// consume; the CLI derives the bool from this lookup at the boundary
     /// and threads the bare bool through internal call sites.
     pub fn effects_enabled(&self) -> bool {
-        self.get("effects").map_or(true, |e| e.enabled)
+        self.get("effects").is_none_or(|e| e.enabled)
     }
 
     /// Look up the catalogue-registered `expand_hook` name for `section`,

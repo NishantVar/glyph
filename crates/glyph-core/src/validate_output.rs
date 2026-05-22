@@ -266,7 +266,7 @@ fn is_numbered_item(s: &str) -> bool {
     let mut chars = s.chars();
     // Must start with digit(s)
     let first = chars.next();
-    if !first.map_or(false, |c| c.is_ascii_digit()) {
+    if !first.is_some_and(|c| c.is_ascii_digit()) {
         return false;
     }
     for c in chars {
@@ -293,10 +293,8 @@ fn is_bulleted_item(s: &str) -> bool {
 }
 
 fn strip_bullet_prefix(s: &str) -> String {
-    if s.starts_with("- ") {
-        s[2..].to_string()
-    } else if s.starts_with("* ") {
-        s[2..].to_string()
+    if let Some(rest) = s.strip_prefix("- ").or_else(|| s.strip_prefix("* ")) {
+        rest.to_string()
     } else {
         s.to_string()
     }
@@ -467,7 +465,7 @@ fn check_section_shape(md_struct: &MdStructure, skill: &Value, violations: &mut 
     let has_params = skill
         .get("params")
         .and_then(|p| p.as_array())
-        .map_or(false, |a| !a.is_empty());
+        .is_some_and(|a| !a.is_empty());
 
     // Phase 3 (Task 3.11): freeform colon-keyword sections compile to `##`
     // H2s peer to `## Steps` / `## Constraints`. Their headings come from
@@ -650,8 +648,8 @@ fn check_step_order(md_struct: &MdStructure, flow: &[Value], violations: &mut Ve
                         .get("resolved_body_text")
                         .and_then(|t| t.as_str())
                         .filter(|s| !s.is_empty());
-                    if projection == "inline" && body.is_some() {
-                        ir_step_keys.push((body.unwrap().to_string(), StepKeyKind::Prose));
+                    if let Some(body_text) = body.filter(|_| projection == "inline") {
+                        ir_step_keys.push((body_text.to_string(), StepKeyKind::Prose));
                     } else {
                         let target = node.get("target").and_then(|t| t.as_str()).unwrap_or("");
                         ir_step_keys.push((target.to_string(), StepKeyKind::Identifier));
@@ -683,48 +681,46 @@ fn check_step_order(md_struct: &MdStructure, flow: &[Value], violations: &mut Ve
     let steps_items = find_body_h2(md_struct, "Steps")
         .map(body_h2_items)
         .unwrap_or_default();
-    if !steps_items.is_empty() {
-        if steps_items.len() == ir_step_keys.len() {
-            for (i, ((ir_key, key_kind), md_item)) in
-                ir_step_keys.iter().zip(steps_items.iter()).enumerate()
-            {
-                if matches!(key_kind, StepKeyKind::Identifier) && ir_key.starts_with("branch:") {
-                    continue;
+    if !steps_items.is_empty() && steps_items.len() == ir_step_keys.len() {
+        for (i, ((ir_key, key_kind), md_item)) in
+            ir_step_keys.iter().zip(steps_items.iter()).enumerate()
+        {
+            if matches!(key_kind, StepKeyKind::Identifier) && ir_key.starts_with("branch:") {
+                continue;
+            }
+            if ir_key.is_empty() {
+                continue;
+            }
+            let md_lower = md_item.text.to_lowercase();
+            let found = match key_kind {
+                StepKeyKind::Prose => {
+                    let phrase: String = ir_key
+                        .split_whitespace()
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .to_lowercase();
+                    !phrase.is_empty() && md_lower.contains(&phrase)
                 }
-                if ir_key.is_empty() {
-                    continue;
+                StepKeyKind::Identifier => {
+                    let ir_words: Vec<&str> = ir_key
+                        .split(|c: char| c.is_whitespace() || c == '_' || c == '-')
+                        .filter(|w| !w.is_empty())
+                        .collect();
+                    ir_words
+                        .iter()
+                        .any(|w| md_lower.contains(&w.to_lowercase()))
                 }
-                let md_lower = md_item.text.to_lowercase();
-                let found = match key_kind {
-                    StepKeyKind::Prose => {
-                        let phrase: String = ir_key
-                            .split_whitespace()
-                            .take(3)
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                            .to_lowercase();
-                        !phrase.is_empty() && md_lower.contains(&phrase)
-                    }
-                    StepKeyKind::Identifier => {
-                        let ir_words: Vec<&str> = ir_key
-                            .split(|c: char| c.is_whitespace() || c == '_' || c == '-')
-                            .filter(|w| !w.is_empty())
-                            .collect();
-                        ir_words
-                            .iter()
-                            .any(|w| md_lower.contains(&w.to_lowercase()))
-                    }
-                };
-                if !found {
-                    violations.push(Violation::new(
-                        "G::expand::step-order-mismatch",
-                        format!(
-                            "step {} does not match IR flow order (expected content related to `{}`)",
-                            i + 1,
-                            ir_key
-                        ),
-                    ));
-                }
+            };
+            if !found {
+                violations.push(Violation::new(
+                    "G::expand::step-order-mismatch",
+                    format!(
+                        "step {} does not match IR flow order (expected content related to `{}`)",
+                        i + 1,
+                        ir_key
+                    ),
+                ));
             }
         }
     }
@@ -1051,10 +1047,11 @@ fn scan_line_for_curly_refs(line: &str, refs: &mut Vec<String>) {
             }
             if end < bytes.len() && bytes[end] == b'}' {
                 let name = &line[start..end];
-                if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                    if !refs.contains(&name.to_string()) {
-                        refs.push(name.to_string());
-                    }
+                if !name.is_empty()
+                    && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    && !refs.contains(&name.to_string())
+                {
+                    refs.push(name.to_string());
                 }
                 i = end + 1;
             } else {
@@ -1548,9 +1545,9 @@ fn check_resolved_predicates_in_flow(flow: &[Value], md: &str, violations: &mut 
                                     }
                                 }
                             }
-                            ConditionTokenKind::PredicateLiteral => {
+                            ConditionTokenKind::PredicateLiteral
                                 // Literal form: the inner text IS the prose; no resolved_predicates lookup.
-                                if !md.contains(&tok) {
+                                if !md.contains(&tok) => {
                                     violations.push(Violation::new(
                                         "G::expand::predicate-prose-missing",
                                         format!(
@@ -1559,7 +1556,6 @@ fn check_resolved_predicates_in_flow(flow: &[Value], md: &str, violations: &mut 
                                         ),
                                     ));
                                 }
-                            }
                             _ => {}
                         }
                     }
@@ -2088,7 +2084,7 @@ mod tests {
 1. Scan for issues.
 2. Report findings.
 ";
-        let violations = validate_output(&ir, &md);
+        let violations = validate_output(&ir, md);
         let extra_h3 = violations
             .iter()
             .filter(|v| v.id == "G::expand::extra-h3")
