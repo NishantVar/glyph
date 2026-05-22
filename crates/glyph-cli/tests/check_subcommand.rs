@@ -207,6 +207,166 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
+// ----------------------------------------------------------------------------
+// B05 regression: imported-file diagnostics must render against the imported
+// file (its own path + source text), and a shared dependency must not have its
+// diagnostics duplicated when a directory is checked.
+// ----------------------------------------------------------------------------
+
+/// Pretty mode: an entry file imports `dep.glyph`, which contains a skill with
+/// no `description:`. That diagnostic originates in `dep.glyph` and must be
+/// rendered with `dep.glyph`'s path in the file header and `dep.glyph`'s own
+/// source text in the snippet -- never the entry file's.
+#[test]
+fn b05_imported_diagnostic_renders_against_dependency_file_pretty() {
+    let entry = corpus_path("imported-diagnostics", "single/main.glyph");
+    let result = run_check(entry, "pretty");
+    let stderr = strip_ansi(&String::from_utf8_lossy(&result.stderr));
+
+    let lines: Vec<&str> = stderr.lines().collect();
+    let header_idx = lines
+        .iter()
+        .position(|l| l.contains("G::analyze::missing-description"))
+        .unwrap_or_else(|| {
+            panic!("expected a missing-description diagnostic from the dependency:\n{stderr}")
+        });
+
+    // The file-location line immediately follows the diagnostic title. It must
+    // name the dependency file, not the entry file.
+    let location_line = lines[header_idx + 1];
+    assert!(
+        location_line.contains("dep.glyph"),
+        "imported diagnostic must render against `dep.glyph`, got header: {location_line:?}\n{stderr}"
+    );
+    assert!(
+        !location_line.contains("main.glyph"),
+        "imported diagnostic must NOT render against the entry file `main.glyph`, \
+         got header: {location_line:?}\n{stderr}"
+    );
+
+    // The rendered snippet must show the dependency's own source -- the skill
+    // that is actually missing a description -- not entry-file lines.
+    let snippet: String = lines[header_idx..]
+        .iter()
+        .take(8)
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        snippet.contains("dep_skill_without_description"),
+        "imported diagnostic must render the dependency's own source text, got:\n{snippet}"
+    );
+    assert!(
+        !snippet.contains("Entry skill that imports a dependency"),
+        "imported diagnostic must NOT render the entry file's source text, got:\n{snippet}"
+    );
+}
+
+/// JSON mode, single entry: the imported diagnostic's span must identify the
+/// dependency file, not the entry file.
+#[test]
+fn b05_imported_diagnostic_span_identifies_dependency_file_json() {
+    let entry = corpus_path("imported-diagnostics", "single/main.glyph");
+    let result = run_check(entry, "json");
+    let stdout = String::from_utf8_lossy(&result.stdout);
+
+    let mut saw = false;
+    for line in stdout.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(line).expect("each NDJSON line must parse as JSON");
+        if v.get("id").and_then(|x| x.as_str()) == Some("G::analyze::missing-description") {
+            saw = true;
+            let file = v
+                .get("span")
+                .and_then(|s| s.get("file"))
+                .and_then(|f| f.as_str())
+                .unwrap_or("");
+            assert!(
+                file.contains("dep.glyph"),
+                "imported diagnostic span must identify the dependency file, got file={file:?}"
+            );
+            assert!(
+                !file.ends_with("main.glyph"),
+                "imported diagnostic span must NOT identify the entry file, got file={file:?}"
+            );
+        }
+    }
+    assert!(
+        saw,
+        "expected a missing-description diagnostic from the dependency in:\n{stdout}"
+    );
+}
+
+/// Directory mode: the directory holds an entry that imports a shared
+/// dependency. The dependency's diagnostic must be reported exactly once, not
+/// once per importing root.
+#[test]
+fn b05_shared_dependency_diagnostic_not_duplicated_in_directory_mode() {
+    let dir = corpus_path("imported-diagnostics", "dir");
+    let result = run_check(dir, "json");
+    let stdout = String::from_utf8_lossy(&result.stdout);
+
+    let count = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter(|l| {
+            let v: serde_json::Value =
+                serde_json::from_str(l).expect("each NDJSON line must parse as JSON");
+            v.get("id").and_then(|x| x.as_str()) == Some("G::analyze::missing-description")
+        })
+        .count();
+
+    assert_eq!(
+        count, 1,
+        "the shared dependency's diagnostic must appear exactly once in directory mode, \
+         found {count} occurrences in:\n{stdout}"
+    );
+}
+
+/// JSON mode: an entry file imports two *different* dependency files that
+/// happen to share the basename `dep.glyph` (under `dep_a/` and `dep_b/`).
+/// Each carries a description-less skill. Their diagnostics' `span.file`
+/// values must be distinct -- a bare basename cannot tell the two apart, so
+/// the rendered path must include enough directory context.
+#[test]
+fn b05_same_basename_dependency_diagnostics_have_distinct_span_files_json() {
+    let entry = corpus_path("imported-diagnostics", "samename/main.glyph");
+    let result = run_check(entry, "json");
+    let stdout = String::from_utf8_lossy(&result.stdout);
+
+    let mut span_files: Vec<String> = Vec::new();
+    for line in stdout.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(line).expect("each NDJSON line must parse as JSON");
+        if v.get("id").and_then(|x| x.as_str()) == Some("G::analyze::missing-description") {
+            let file = v
+                .get("span")
+                .and_then(|s| s.get("file"))
+                .and_then(|f| f.as_str())
+                .unwrap_or("")
+                .to_string();
+            span_files.push(file);
+        }
+    }
+
+    assert_eq!(
+        span_files.len(),
+        2,
+        "expected one missing-description diagnostic per dependency in:\n{stdout}"
+    );
+    assert_ne!(
+        span_files[0], span_files[1],
+        "two distinct dependency files sharing the basename `dep.glyph` must have \
+         distinguishable `span.file` values, got {span_files:?}"
+    );
+}
+
 /// B04 regression: `--format pretty` diagnostic carets must point at the column
 /// the diagnostic span actually starts at, not near column 2.
 ///

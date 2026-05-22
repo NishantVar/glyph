@@ -1,0 +1,5 @@
+export const a_text = "a"
+
+skill a_skill_without_description()
+    flow:
+        "skill in dep_a has no description"

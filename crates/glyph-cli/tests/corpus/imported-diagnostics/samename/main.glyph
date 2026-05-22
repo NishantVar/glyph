@@ -1,0 +1,9 @@
+import "./dep_a/dep.glyph" { a_text }
+import "./dep_b/dep.glyph" { b_text }
+
+skill main()
+    description: "Entry skill importing two dependencies both named dep.glyph."
+    require a_text
+    require b_text
+    flow:
+        "ok"
