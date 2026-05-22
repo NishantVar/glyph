@@ -17,6 +17,76 @@ fn glyph_bin() -> PathBuf {
 }
 
 #[test]
+fn imported_tier1_callee_output_contract_emitted_in_ir_json() {
+    // B10 regression: an imported Tier-1 callee has no same-file `IrBlock`,
+    // so the IR-JSON emitter fell through to `callee_output_contract: null`
+    // even though the imported callee declares `return <current_branch>`.
+    // The contract hoisted onto the `IrCall` must surface in the emitted JSON.
+    let dir = tempfile::tempdir().unwrap();
+    let lib_path = dir.path().join("lib.glyph");
+    let main_path = dir.path().join("main.glyph");
+
+    std::fs::write(
+        &lib_path,
+        "\
+export block helper() -> BranchName
+    flow:
+        return <current_branch>
+",
+    )
+    .unwrap();
+
+    std::fs::write(
+        &main_path,
+        "\
+import \"./lib.glyph\" { helper }
+
+skill main()
+    description: \"Demo.\"
+    flow:
+        helper()
+",
+    )
+    .unwrap();
+
+    let output = Command::new(glyph_bin())
+        .arg("compile")
+        .arg(&main_path)
+        .arg("--emit-ir")
+        .output()
+        .expect("failed to spawn glyph binary");
+
+    assert!(
+        output.status.success(),
+        "compile failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let ir_path = dir.path().join("main.ir.json");
+    let ir: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&ir_path).unwrap()).unwrap();
+
+    let flow = ir["skill"]["flow"]
+        .as_array()
+        .expect("emitted IR carries a skill flow array");
+    let call = flow
+        .iter()
+        .find(|n| n["kind"] == "call" && n["target"] == "helper")
+        .expect("the imported `helper` call appears in the emitted flow");
+
+    let oc = &call["callee_output_contract"];
+    assert!(
+        oc.is_object(),
+        "imported Tier-1 callee must carry a non-null `callee_output_contract` \
+         in the emitted IR JSON; got {oc}"
+    );
+    assert_eq!(oc["kind"], "output_contract");
+    assert_eq!(oc["form"], "identifier");
+    assert_eq!(oc["target_name"], "current_branch");
+}
+
+#[test]
 fn imported_tier1_callee_uses_locked_identifier_suffix() {
     let dir = tempfile::tempdir().unwrap();
     let lib_path = dir.path().join("lib.glyph");

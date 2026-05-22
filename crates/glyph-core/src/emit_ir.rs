@@ -141,6 +141,41 @@ fn output_contract_json(arena: &IrArena, slot: Option<NodeId>) -> Value {
     }
 }
 
+/// Serialize the `callee_output_contract` JSON from the contract form hoisted
+/// onto the `IrCall` itself. An imported Tier-1 callee has no same-file
+/// `IrBlock` in this skill arena, so `find_block_by_name` cannot reach its
+/// `IrOutputContract` arena entry; the contract survives only as
+/// `IrCall.callee_output_contract`. This is the fallback used by
+/// `serialize_call` when the same-file block lookup misses. It mirrors the
+/// `serialize_output_contract` shape minus `node_id` (the imported contract
+/// has no arena entry in this skill). `ty` is taken from the resolved callee
+/// return type, which stays `null` for cross-file callees pending D17
+/// cross-file return-type resolution.
+fn call_callee_output_contract_json(c: &IrCall) -> Value {
+    let form = match &c.callee_output_contract {
+        Some(form) => form,
+        None => return Value::Null,
+    };
+    let mut m = Map::new();
+    m.insert("kind".into(), Value::String("output_contract".into()));
+    match form {
+        OutputTargetForm::Identifier(name) => {
+            m.insert("form".into(), Value::String("identifier".into()));
+            m.insert("target_name".into(), Value::String(name.clone()));
+        }
+        OutputTargetForm::Description(desc) => {
+            m.insert("form".into(), Value::String("description".into()));
+            m.insert("description".into(), Value::String(desc.clone()));
+        }
+    }
+    m.insert("ty".into(), opt_typetag_to_json(&c.return_type));
+    m.insert(
+        "source".into(),
+        Value::String(output_source_str(OutputSource::SynthesizedByAgent).into()),
+    );
+    Value::Object(m)
+}
+
 /// Serialize a Param node to JSON.
 fn serialize_param(param: &IrParam, node_id: &str) -> Value {
     let mut m = Map::new();
@@ -389,7 +424,7 @@ fn serialize_call(c: &IrCall, arena: &IrArena) -> Value {
     // the emitted IR JSON.
     let callee_output_contract = match find_block_by_name(arena, &c.target) {
         Some(b) => output_contract_json(arena, b.output_contract),
-        None => Value::Null,
+        None => call_callee_output_contract_json(c),
     };
     if is_inline {
         m.insert("callee_flow".into(), Value::Null);
