@@ -3978,42 +3978,6 @@ block helper()
     }
 
     #[test]
-    #[ignore = "PRD #159: this surface is now Repairable through compile; relift as expand-pass-level test against IrArena directly. See todo/expand-todos.md."]
-    fn return_call_folds_into_final_step() {
-        // AC1: `return summarize_changes()` becomes the last sentence of the
-        // final numbered step.
-        //
-        // Ignored under PRD #159 — see todo/expand-todos.md. Relift target:
-        // drive the expand pass directly against an IrArena to bypass the
-        // analyzer (which now flags this surface as Repairable).
-        let src = concat!(
-            "block summarize_changes()\n",
-            "    \"Summarize what was changed and why.\"\n",
-            "\n",
-            "skill update_docs()\n",
-            "    description: \"Update documentation.\"\n",
-            "    flow:\n",
-            "        \"Read the repository changes.\"\n",
-            "        return summarize_changes()\n",
-        );
-        let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
-        match outcome {
-            CompileOutcome::Compiled { markdown, .. } => {
-                // The final step should contain the return folding text.
-                assert!(
-                    markdown.contains("Return the result of summarize_changes()."),
-                    "expected return folding in final step:\n{}",
-                    markdown
-                );
-            }
-            CompileOutcome::Diagnostics(bag) => {
-                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
-                panic!("expected compiled output, got diagnostics: {:?}", ids);
-            }
-        }
-    }
-
-    #[test]
     fn private_block_may_omit_return() {
         // AC2: Private blocks may omit `return`; no diagnostic fires.
         let src = "\
@@ -4985,37 +4949,6 @@ skill main()
                 assert!(
                     markdown.contains("1. Do something."),
                     "step should be preserved:\n{}",
-                    markdown
-                );
-            }
-            CompileOutcome::Diagnostics(bag) => {
-                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
-                panic!("expected compiled output, got diagnostics: {:?}", ids);
-            }
-        }
-    }
-
-    #[test]
-    #[ignore = "PRD #159: this surface is now Repairable through compile; relift as expand-pass-level test against IrArena directly. See todo/expand-todos.md."]
-    fn return_bare_name_folds_into_final_step() {
-        // `return result` with a bare name should fold.
-        //
-        // Ignored under PRD #159 — see todo/expand-todos.md. Relift target:
-        // drive the expand pass directly against an IrArena to bypass the
-        // analyzer (which now flags this surface as Repairable).
-        let src = concat!(
-            "skill main()\n",
-            "    description: \"Main skill.\"\n",
-            "    flow:\n",
-            "        \"Compute the result.\"\n",
-            "        return result\n",
-        );
-        let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
-        match outcome {
-            CompileOutcome::Compiled { markdown, .. } => {
-                assert!(
-                    markdown.contains("Return the result of result."),
-                    "expected return folding for bare name:\n{}",
                     markdown
                 );
             }
