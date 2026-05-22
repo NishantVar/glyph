@@ -765,6 +765,7 @@ name: teach
 - Avoid writing a bare string-valued constant name in `flow:` without a marker. Wrap it with `context`/`require`/`avoid`/`must`, or convert it into a `block` if it really represents an instruction sequence.
 - Avoid reaching for `must` / `must avoid` for everyday rules. Reserve hard markers for genuinely non-negotiable constraints; default to soft `require` / `avoid`.
 - Avoid stacking nested calls (`apply(merge(base, overlay(ctx)))`). Nested calls are legal but read and visualize better as named intermediate bindings.
+- Avoid starting an `avoid` or `must avoid` constraint's const body with a negation word (`do not`, `never`, `no`) — the polarity marker already supplies the negative, so a negation-leading body produces a double-negative bullet (`Avoid do not touch …`). Phrase the body as a noun or gerund phrase that completes `Avoid X` cleanly.
 
 ### Procedure: write-flow-section
 

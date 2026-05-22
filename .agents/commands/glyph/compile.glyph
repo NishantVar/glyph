@@ -6,7 +6,7 @@
 // next to the source. Phase order matches design/pipeline.md and
 // design/agent-skill.md.
 
-skill compile(source_path)
+skill compile(source_path) -> CompiledArtifactReport
     description: "Runs the full Glyph pipeline — compile, fmt, LLM repair loop, prose reshape, validate-output — and surfaces every emitted compiled `.md` (top-level skills and procedure files) to the user."
 
     flow:

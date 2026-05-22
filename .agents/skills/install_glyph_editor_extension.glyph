@@ -2,7 +2,7 @@
 // compatible IDE detected on the user's machine. Idempotent:
 // re-running uninstalls and reinstalls cleanly.
 
-skill install_glyph_editor_extension(repo_root = ".")
+skill install_glyph_editor_extension(repo_root = ".") -> InstallationReport
     description: "Build the Glyph VS Code extension and install it into every VS Code-compatible IDE detected on the user's machine."
 
     context:
@@ -45,66 +45,68 @@ block verify_build_prerequisites()
 
 
 block build_vsix(repo_root) -> BuiltVsix
-    """
-    Switch the working directory to `{repo_root}/editors/vscode/`. Run
-    `npm install` to install devDependencies (esbuild, @vscode/vsce)
-    and the runtime dep (vscode-languageclient); skip when
-    `node_modules/` already exists and `package-lock.json` is unchanged
-    since the last install. If install fails, surface the npm error
-    verbatim and stop. Then run `npm run package`, which invokes
-    `vscode:prepublish` (esbuild bundles `src/extension.ts` into
-    `out/extension.js` with every runtime dep inlined) and then runs
-    `vsce package` to emit a self-contained
-    `glyph-language-<version>.vsix` next to `package.json`. If either
-    step fails, surface the exact error and stop. Return the absolute
-    path to the produced `glyph-language-<version>.vsix` file.
-    """
+    flow:
+        """
+        Switch the working directory to `{repo_root}/editors/vscode/`. Run
+        `npm install` to install devDependencies (esbuild, @vscode/vsce)
+        and the runtime dep (vscode-languageclient); skip when
+        `node_modules/` already exists and `package-lock.json` is unchanged
+        since the last install. If install fails, surface the npm error
+        verbatim and stop. Then run `npm run package`, which invokes
+        `vscode:prepublish` (esbuild bundles `src/extension.ts` into
+        `out/extension.js` with every runtime dep inlined) and then runs
+        `vsce package` to emit a self-contained
+        `glyph-language-<version>.vsix` next to `package.json`. If either
+        step fails, surface the exact error and stop.
+        """
+        return <"the absolute path to the produced glyph-language-<version>.vsix file">
 
 
 block detect_installed_ides() -> DetectedIdeList
-    """
-    Probe for every VS Code-compatible editor by attempting two checks
-    per candidate, in order: first run `command -v <cli>` to check
-    PATH, and if that fails, check the OS-specific fallback path for
-    the current platform. Record an IDE as detected only when one of
-    the probes resolves to an executable; skip IDEs that fail both
-    probes. The candidate set is: VS Code (PATH `code`; macOS fallback
-    `/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code`;
-    Windows fallback
-    `%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\bin\\code.cmd`);
-    Cursor (PATH `cursor`; macOS fallback
-    `/Applications/Cursor.app/Contents/Resources/app/bin/cursor`;
-    Windows fallback
-    `%LOCALAPPDATA%\\Programs\\cursor\\resources\\app\\bin\\cursor.cmd`);
-    Antigravity (typically not on PATH; macOS fallback
-    `/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity`
-    or `~/.antigravity/antigravity/bin/antigravity`; Linux fallback
-    `~/.antigravity/antigravity/bin/antigravity`); Windsurf (PATH
-    `windsurf`; macOS fallback
-    `/Applications/Windsurf.app/Contents/Resources/app/bin/windsurf`);
-    and VSCodium (PATH `codium`; macOS fallback
-    `/Applications/VSCodium.app/Contents/Resources/app/bin/codium`).
-    If the probe yields zero detected IDEs, tell the user no
-    compatible editor was found, print every CLI name and fallback
-    path that was probed, and stop the workflow before any install
-    attempt. Return the list of detected IDE entries — each entry
-    pairs a display name with the absolute CLI path that subsequent
-    installs will use.
-    """
+    flow:
+        """
+        Probe for every VS Code-compatible editor by attempting two checks
+        per candidate, in order: first run `command -v <cli>` to check
+        PATH, and if that fails, check the OS-specific fallback path for
+        the current platform. Record an IDE as detected only when one of
+        the probes resolves to an executable; skip IDEs that fail both
+        probes. The candidate set is: VS Code (PATH `code`; macOS fallback
+        `/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code`;
+        Windows fallback
+        `%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\bin\\code.cmd`);
+        Cursor (PATH `cursor`; macOS fallback
+        `/Applications/Cursor.app/Contents/Resources/app/bin/cursor`;
+        Windows fallback
+        `%LOCALAPPDATA%\\Programs\\cursor\\resources\\app\\bin\\cursor.cmd`);
+        Antigravity (typically not on PATH; macOS fallback
+        `/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity`
+        or `~/.antigravity/antigravity/bin/antigravity`; Linux fallback
+        `~/.antigravity/antigravity/bin/antigravity`); Windsurf (PATH
+        `windsurf`; macOS fallback
+        `/Applications/Windsurf.app/Contents/Resources/app/bin/windsurf`);
+        and VSCodium (PATH `codium`; macOS fallback
+        `/Applications/VSCodium.app/Contents/Resources/app/bin/codium`).
+        If the probe yields zero detected IDEs, tell the user no
+        compatible editor was found, print every CLI name and fallback
+        path that was probed, and stop the workflow before any install
+        attempt.
+        """
+        return <"the list of detected IDE entries, each pairing a display name with the absolute CLI path that subsequent installs will use">
 
 
 block confirm_targets_with_user(detected_ides) -> ChosenIdeList
-    """
-    Print the detected IDEs from {detected_ides} as a numbered list,
-    showing each entry's display name and the absolute CLI path that
-    would be used. Then ask the user which IDEs to install into.
-    Accept any of: pressing Enter with no input (= every detected IDE),
-    the bare word `all`, a comma-separated list of indices from the
-    printed list, or a comma-separated list of IDE display names.
-    Reject anything else and re-prompt until the input matches one of
-    these forms. Return the list of IDE entries the user chose;
-    defaults to every detected IDE when the user accepts the default.
-    """
+    flow:
+        """
+        Print the detected IDEs from {detected_ides} as a numbered list,
+        showing each entry's display name and the absolute CLI path that
+        would be used. Then ask the user which IDEs to install into.
+        Accept any of: pressing Enter with no input (= every detected IDE),
+        the bare word `all`, a comma-separated list of indices from the
+        printed list, or a comma-separated list of IDE display names.
+        Reject anything else and re-prompt until the input matches one of
+        these forms.
+        """
+        return <"the list of IDE entries the user chose, defaulting to every detected IDE when the user accepts the default">
 
 
 block install_into_each_chosen_ide(chosen_ides, vsix_path)

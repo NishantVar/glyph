@@ -5,7 +5,7 @@
 // tandem. Deliberately bypasses the full compile pipeline so unrelated
 // prose in the compiled output is preserved verbatim.
 
-skill icompile(source_path, change)
+skill icompile(source_path, change) -> IncrementalEditSummary
     description: "Apply a small targeted change to both the .glyph source and the sibling compiled .md output in tandem, bypassing the full compile pipeline so unrelated prose is preserved."
 
     constraints:

@@ -9,11 +9,10 @@
 // next to the source. Phase order matches design/pipeline.md and
 // design/agent-skill.md.
 
-skill compile(source_path)
+skill compile(source_path) -> CompiledArtifactReport
 
     flow:
         compile_with_repair(source_path)
-        scan_constraint_conflicts(source_path)
         expand_and_validate(source_path)
         final_review(source_path)
         return <"absolute paths of every emitted .md file (zero or more, top-level skills and procedure files), grouped by source file, with any per-file review change summaries surfaced inline">
@@ -28,16 +27,9 @@ block compile_with_repair(source_path)
         "If repairable diagnostics persist after fmt, load `.agents/skills/glyph/repair.md` and follow its procedure for each offending source file, passing that source path and its NDJSON diagnostics as inputs. The skill writes the rewritten source back to disk. Then re-run `glyph compile {source_path} --format json --emit-ir`; if exit 0, exit the loop."
         "After 3 iterations, if repairable diagnostics remain, hard-fail: surface the residual diagnostics verbatim to the user and stop."
 
-block scan_constraint_conflicts(source_path)
-    flow:
-        "Enumerate every compiled `.glyph` source under {source_path}: a single file when {source_path} is a `.glyph` file, or every `*.glyph` recursively under {source_path} when it is a directory. For each source, derive `<stem>` by stripping the trailing `.glyph` from the basename and read the IR sidecar at `<dir>/<stem>.ir.json` (every successfully compiled source has one)."
-        "Across every IR sidecar, enumerate every declaration whose `constraints:` set has 2 or more entries. Skip declarations with 0 or 1 constraints without an LLM call."
-        "For each such declaration, load `.agents/skills/glyph/semantic_validation.md` and follow its procedure, passing the declaration's resolved constraint set as input."
-        "Aggregate the returned JSON conflict reports: on any `contradiction`, hard-fail and surface the conflict to the author — note that the compiled `.md` and `.ir.json` artifacts are already on disk per `design/repair.md` §4.10 (Phase 3c runs post-compile in the agent loop), and the contract is that the author edits the source and recompiles. Treat each `tension` as a warning; otherwise the build proceeds."
-
 block expand_and_validate(source_path)
     flow:
-        "Enumerate every compiled `.glyph` source under {source_path} the same way as `scan_constraint_conflicts`: a single file when {source_path} is a `.glyph` file, or every `*.glyph` recursively under {source_path} when it is a directory. For each source, derive `<stem>` by stripping `.glyph` from the basename; the IR sidecar lives at `<dir>/<stem>.ir.json`."
+        "Enumerate every compiled `.glyph` source under {source_path}: a single file when {source_path} is a `.glyph` file, or every `*.glyph` recursively under {source_path} when it is a directory. For each source, derive `<stem>` by stripping `.glyph` from the basename; the IR sidecar lives at `<dir>/<stem>.ir.json`."
         "For each source, collect the set of emitted `.md` artifacts: the top-level scaffold at `<dir>/<stem>.md` if it exists on disk (present for sources containing at least one `skill` declaration; absent for pure library files, which is normal — not an error), plus every `*.md` inside the sibling subdirectory `<dir>/<stem>/` if that directory exists (these are Tier-3 / library procedure files)."
         "For each collected `.md` path, run the expand-then-validate cycle: load `.agents/skills/glyph/expand.md` and follow its procedure, passing that `.md` path as `scaffold_path` and the source's `<dir>/<stem>.ir.json` as `resolved_ir`. The skill writes the expanded Markdown back to the same `.md` path."
         "After expansion, run `glyph validate-output <dir>/<stem>.ir.json <md_path>` for that pair. On exit 0, the file is done. On exit 1, retry the expand pass for that one file using the structural diagnostics as revise-with-feedback input. Budget at most 2 retries per file before surfacing the failure verbatim."

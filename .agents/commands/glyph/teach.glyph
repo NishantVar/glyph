@@ -53,7 +53,7 @@ import "../../skills/glyph/passes.glyph" {
     ask_user,
 }
 
-skill teach(target)
+skill teach(target) -> AuthoredGlyphFile
     description: "Author or edit a Glyph source file (.glyph) at `target` for a task described by the user."
 
     context:
