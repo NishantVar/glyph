@@ -27,3 +27,7 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
+      - name: Glyph dogfood check
+        run: |
+          cargo run -p glyph-cli -- check --strict .agents/skills
+          cargo run -p glyph-cli -- check --strict .agents/commands/glyph
