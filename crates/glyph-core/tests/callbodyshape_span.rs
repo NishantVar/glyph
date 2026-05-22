@@ -107,7 +107,7 @@ fn site_tier3_toplevel_with_modifier_hard_fails() {
 const STDLIB_TOPLEVEL: &str = "import \"@glyph/std\" { subagent }\n\nskill delegate(scope = \".\") -> Report\n    description: \"Delegate work to a subagent.\"\n    flow:\n        subagent(scope) with \"focus on lint failures\"\n        return context\n";
 
 #[test]
-#[ignore = "stdlib end-to-end blocked on PR #149 / flow-assign-subagent-cli — re-enable when build_resolved_imports wires @glyph/std; remove #[ignore]"]
+
 fn site_stdlib_toplevel_with_modifier_hard_fails() {
     // End-to-end regression scaffold: gated #[ignore] until Task 9 / PR #149
     // teaches `compile_directory_with_options` to resolve `@glyph/std`. Once
@@ -326,9 +326,9 @@ fn trivial_tier3_toplevel_renders_follow_procedure() {
 }
 
 #[test]
-#[ignore = "stdlib resolution blocked on PR #149 — same gate as site_stdlib_toplevel_with_modifier_hard_fails"]
+
 fn trivial_stdlib_toplevel_renders_follow_procedure() {
-    let src = "import \"@glyph/std\" { subagent }\n\nskill delegate(scope = \".\") -> Report\n    description: \"Delegate work to a subagent.\"\n    flow:\n        subagent(scope)\n        return context\n";
+    let src = "import \"@glyph/std\" { subagent }\n\nskill delegate(scope = \".\" <\"directory to delegate\">) -> Report\n    description: \"Delegate work to a subagent.\"\n    flow:\n        subagent(scope)\n        return context\n";
     let dir = tempfile::tempdir().unwrap();
     let main_path = dir.path().join("delegate.glyph");
     std::fs::write(&main_path, src).unwrap();
@@ -354,6 +354,96 @@ fn trivial_stdlib_toplevel_renders_follow_procedure() {
         }
         other => panic!("expected Compiled outcome; got {other:?}"),
     }
+}
+
+// B06 concern 2: an aliased selective stdlib import (`subagent as spawn`)
+// must keep the Agent return-shape so the bound-name step renders the
+// agent prose, not the value prose.
+#[test]
+fn aliased_stdlib_subagent_renders_agent_shape() {
+    let src = "import \"@glyph/std\" { subagent as spawn }\n\nskill delegate(scope = \".\" <\"directory to delegate\">) -> Report\n    description: \"Delegate work to a subagent.\"\n    flow:\n        researcher = spawn(scope)\n        return context\n";
+    let dir = tempfile::tempdir().unwrap();
+    let main_path = dir.path().join("delegate.glyph");
+    std::fs::write(&main_path, src).unwrap();
+    let result =
+        glyph_core::compile_directory_with_options(std::slice::from_ref(&main_path), false, false);
+    let outcome = result
+        .outcomes
+        .into_iter()
+        .find(|(p, _)| p.file_name() == main_path.file_name())
+        .map(|(_, o)| o)
+        .expect("delegate.glyph outcome present");
+    match outcome {
+        glyph_core::FileOutcome::Compiled { diagnostics } => {
+            assert!(
+                diagnostics.sorted().is_empty(),
+                "aliased stdlib-bound Call must compile cleanly: {:?}",
+                diagnostics.sorted()
+            );
+            let md = std::fs::read_to_string(main_path.with_extension("md"))
+                .expect("compiled .md must exist");
+            assert!(
+                md.contains("Refer to this agent as 'researcher.'"),
+                "aliased stdlib subagent must render the Agent-shape step:\n{md}"
+            );
+        }
+        other => panic!("expected Compiled outcome; got {other:?}"),
+    }
+}
+
+// B06 concern 3: `load` is compiler-internal and not author-importable;
+// the compile/directory path must reject it (and unknown selective names)
+// with the same `G::analyze::import-private` diagnostic the check path uses.
+#[test]
+fn stdlib_load_import_is_rejected_on_compile_path() {
+    let src = "import \"@glyph/std\" { load }\n\nskill delegate(scope = \".\" <\"directory to delegate\">) -> Report\n    description: \"Delegate work to a subagent.\"\n    flow:\n        \"do work at {scope}\"\n        return context\n";
+    let dir = tempfile::tempdir().unwrap();
+    let main_path = dir.path().join("delegate.glyph");
+    std::fs::write(&main_path, src).unwrap();
+    let result =
+        glyph_core::compile_directory_with_options(std::slice::from_ref(&main_path), false, false);
+    let outcome = result
+        .outcomes
+        .into_iter()
+        .find(|(p, _)| p.file_name() == main_path.file_name())
+        .map(|(_, outcome)| match outcome {
+            glyph_core::FileOutcome::Compiled { diagnostics }
+            | glyph_core::FileOutcome::Failed { diagnostics } => diagnostics,
+            glyph_core::FileOutcome::Skipped { .. } => panic!("file should not be skipped"),
+        })
+        .expect("delegate.glyph outcome present");
+    let sorted = outcome.sorted();
+    assert!(
+        sorted.iter().any(|d| d.id == "G::analyze::import-private"),
+        "importing `load` from @glyph/std must be rejected: {sorted:?}"
+    );
+}
+
+// B06 concern 3: an unknown selective name from @glyph/std is rejected the
+// same way as `load`.
+#[test]
+fn stdlib_unknown_selective_name_is_rejected_on_compile_path() {
+    let src = "import \"@glyph/std\" { teleport }\n\nskill delegate(scope = \".\" <\"directory to delegate\">) -> Report\n    description: \"Delegate work to a subagent.\"\n    flow:\n        \"do work at {scope}\"\n        return context\n";
+    let dir = tempfile::tempdir().unwrap();
+    let main_path = dir.path().join("delegate.glyph");
+    std::fs::write(&main_path, src).unwrap();
+    let result =
+        glyph_core::compile_directory_with_options(std::slice::from_ref(&main_path), false, false);
+    let outcome = result
+        .outcomes
+        .into_iter()
+        .find(|(p, _)| p.file_name() == main_path.file_name())
+        .map(|(_, outcome)| match outcome {
+            glyph_core::FileOutcome::Compiled { diagnostics }
+            | glyph_core::FileOutcome::Failed { diagnostics } => diagnostics,
+            glyph_core::FileOutcome::Skipped { .. } => panic!("file should not be skipped"),
+        })
+        .expect("delegate.glyph outcome present");
+    let sorted = outcome.sorted();
+    assert!(
+        sorted.iter().any(|d| d.id == "G::analyze::import-private"),
+        "importing an unknown name from @glyph/std must be rejected: {sorted:?}"
+    );
 }
 
 #[test]

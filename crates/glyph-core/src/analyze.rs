@@ -2861,6 +2861,11 @@ pub fn analyze_with_diagnostics(
                 &constraint_skill_names,
                 &case_bad,
                 &mut explicit_decl_seen,
+                // B06: the no-imports path has no resolved `@glyph/std`
+                // blocks, so the stdlib effect gate is irrelevant here;
+                // pass `false` to keep `infer_effects_for_skill` from
+                // counting any stray stdlib name.
+                false,
             ),
             Decl::ExportBlock(spanned) => {
                 analyze_export_block(
@@ -3913,6 +3918,9 @@ pub fn analyze_with_imports(
     // lookups in the value/type-decl collision sweeps. Empty in the
     // no-imports path (`analyze_with_diagnostics`).
     import_alias_kinds: &HashMap<String, (crate::name_kind::ResolvedImportKind, Span)>,
+    // B06: `--enable-effects` gate, threaded to `infer_effects_for_skill`
+    // so stdlib effect metadata is suppressed when the gate is off.
+    enable_effects: bool,
 ) -> SourceFile {
     // Issue #109 chunk 3 — Analyze invariant. Enforced on the import-aware
     // path too so multi-file compiles get identical guarantees. See
@@ -4251,6 +4259,7 @@ pub fn analyze_with_imports(
                     &constraint_skill_names,
                     &case_bad,
                     &mut explicit_decl_seen,
+                    enable_effects,
                 );
             }
             Decl::ExportBlock(spanned) => {
@@ -4682,6 +4691,7 @@ fn analyze_skill_with_usage_tracking(
     constraint_skill_names: &HashSet<&str>,
     case_bad: &HashSet<Span>,
     explicit_decl_seen: &mut HashSet<String>,
+    enable_effects: bool,
 ) {
     // Run the normal analysis.
     analyze_skill(
@@ -4705,6 +4715,7 @@ fn analyze_skill_with_usage_tracking(
         constraint_skill_names,
         case_bad,
         explicit_decl_seen,
+        enable_effects,
     );
 
     // Track usage: walk flow/constraints/context to see which imported names are referenced.
@@ -5211,6 +5222,7 @@ fn analyze_skill(
     constraint_skill_names: &HashSet<&str>,
     case_bad: &HashSet<Span>,
     explicit_decl_seen: &mut HashSet<String>,
+    enable_effects: bool,
 ) {
     let skill = &spanned.node;
     let visible_names = visible_names_for_decl(
@@ -5888,7 +5900,7 @@ fn analyze_skill(
 
     // --- Effect inference and validation ---
     // Infer effects by walking the call graph (local-transitive for same-file blocks).
-    let inferred = infer_effects_for_skill(skill, block_decls);
+    let inferred = infer_effects_for_skill(skill, block_decls, enable_effects);
 
     let declared_set: BTreeSet<&str> = skill.effects.iter().map(|s| s.as_str()).collect();
 
@@ -5996,6 +6008,7 @@ fn analyze_skill(
 fn infer_effects_for_skill(
     skill: &crate::ast::Skill,
     block_decls: &HashMap<&str, &BlockDecl>,
+    enable_effects: bool,
 ) -> BTreeSet<String> {
     let mut inferred = BTreeSet::new();
     let mut visited: HashSet<String> = HashSet::new();
@@ -6027,10 +6040,18 @@ fn infer_effects_for_skill(
                     worklist.push(inner.node.clone());
                 }
             }
-        } else if let Some(effects) = stdlib_block_effects(&target) {
-            // Stdlib block: add its known effect signature.
-            for eff in effects {
-                inferred.insert((*eff).to_string());
+        } else if enable_effects {
+            // B06 / `design/stdlib.md` §The `spawns_agent` Effect: stdlib
+            // effect metadata is gated behind `--enable-effects`. With the
+            // gate off, a stdlib call (`subagent`, `send`) contributes no
+            // inferred effects — so a stdlib-only skill does not fire
+            // `missing-effects`. User-declared block effects are unaffected
+            // (they flow through the `block_decls` branch above).
+            if let Some(effects) = stdlib_block_effects(&target) {
+                // Stdlib block: add its known effect signature.
+                for eff in effects {
+                    inferred.insert((*eff).to_string());
+                }
             }
         }
     }
@@ -7931,6 +7952,7 @@ skill current() -> BranchName
             &std::collections::BTreeMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            false,
         );
         let entry = registry
             .lookup("Report")
@@ -8299,6 +8321,7 @@ const accuracy = "Be accurate."
             &std::collections::BTreeMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            false,
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -8392,6 +8415,7 @@ const accuracy = "Be accurate."
             &std::collections::BTreeMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            false,
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -8473,6 +8497,7 @@ const accuracy = "Be accurate."
             &std::collections::BTreeMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            false,
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -8652,6 +8677,7 @@ const accuracy = "Be accurate."
             &std::collections::BTreeMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            false,
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -8887,6 +8913,7 @@ const accuracy = "Be accurate."
             &std::collections::BTreeMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            false,
         );
 
         let mismatches = nominal_mismatches(&bag);
@@ -9066,6 +9093,7 @@ const accuracy = "Be accurate."
             &std::collections::BTreeMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            false,
         );
 
         assert!(
@@ -9157,6 +9185,7 @@ const accuracy = "Be accurate."
             &std::collections::BTreeMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            false,
         );
 
         let diags = undefined_call_diags(&bag);
@@ -11313,6 +11342,7 @@ skill demo()
             &std::collections::BTreeMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            false,
         );
 
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
@@ -11382,6 +11412,7 @@ skill demo()
             &std::collections::BTreeMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            false,
         );
 
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
