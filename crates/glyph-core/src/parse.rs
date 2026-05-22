@@ -4687,7 +4687,8 @@ impl<'a> Parser<'a> {
             || !decl.node.extra_subsections.is_empty()
             || !decl.node.freeform_sections.is_empty()
             || decl.node.flow.len() != 1
-            || !matches!(decl.node.flow.first(), Some(FlowStmt::InlineString(_)));
+            || !matches!(decl.node.flow.first(), Some(FlowStmt::InlineString(_)))
+            || decl.node.flow_span.is_some();
         if bad_shape {
             self.bag.push(
                 Diagnostic::error(

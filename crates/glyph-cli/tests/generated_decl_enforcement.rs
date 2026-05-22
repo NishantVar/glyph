@@ -83,6 +83,33 @@ fn generated_block_with_multi_statement_flow_body_fires_body_shape() {
     );
 }
 
+/// Covers the single-statement-`flow:` gap: a `generated block` whose body
+/// is an explicit `flow:` sub-section with exactly one inline string must
+/// still fire `G::parse::generated-block-body-shape` (no `flow:` keyword is
+/// allowed in a generated block body).
+#[test]
+fn generated_block_with_single_statement_flow_body_fires_body_shape() {
+    let src = fixture(
+        "invalid",
+        "generated_block_single_statement_flow_body.glyph",
+    );
+    let result = run_check(&src);
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "expected exit 1 (Hard); stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let ids = diagnostic_ids(&stdout);
+    assert!(
+        ids.iter()
+            .any(|x| x == "G::parse::generated-block-body-shape"),
+        "expected `G::parse::generated-block-body-shape`; got {ids:?}\nraw stdout:\n{stdout}"
+    );
+}
+
 #[test]
 fn well_formed_generated_block_stays_clean() {
     let src = fixture("valid", "generated_block_single_string_ok.glyph");
