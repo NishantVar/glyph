@@ -516,13 +516,25 @@ module.exports = grammar({
       ),
 
     // ── calls and arguments ────────────────────────────────────────
+    // Optional trailing `call_modifier` mirrors the Rust parser's
+    // `try_parse_with_modifier` (see crates/glyph-core/src/parse.rs).
+    // The Rust parser attaches `with <string>` only on flow-level calls,
+    // but tree-sitter accepts it on any `call_expression`; the compiler
+    // remains the source of truth for positional validity.
     call_expression: ($) =>
       prec(2,
         seq(
           field("function", choice($.qualified_name, $.identifier)),
           $.argument_list,
+          optional($.call_modifier),
         ),
       ),
+
+    // `with <string>` modifier attached to a call. The Rust tokenizer
+    // collapses `"..."` and `"""..."""` to a single `StringLit` token,
+    // so both forms are accepted after `with`.
+    call_modifier: ($) =>
+      seq("with", field("modifier", choice($.string_literal, $.block_string))),
 
     applies_expression: ($) =>
       prec(3,

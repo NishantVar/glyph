@@ -1,0 +1,96 @@
+================================================================================
+Direct flow call with `with` modifier
+================================================================================
+
+skill main(scope = "repo")
+    flow:
+        inspect_repo(scope) with "focus"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        default: (string_literal
+          (string_content))))
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (call_expression
+            function: (identifier)
+            (argument_list
+              (argument
+                (identifier)))
+            (call_modifier
+              modifier: (string_literal
+                (string_content)))))))))
+
+================================================================================
+Assignment-form flow call with `with` modifier
+================================================================================
+
+skill main(scope = "repo")
+    description: "Demo."
+    flow:
+        ctx = inspect_repo(scope) with "focus"
+        return ctx
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        default: (string_literal
+          (string_content))))
+    (declaration_body
+      (description_section
+        content: (string_literal
+          (string_content)))
+      (flow_section
+        (flow_statement
+          (variable_binding
+            name: (identifier)
+            value: (call_expression
+              function: (identifier)
+              (argument_list
+                (argument
+                  (identifier)))
+              (call_modifier
+                modifier: (string_literal
+                  (string_content))))))
+        (flow_statement
+          (return_statement
+            value: (identifier)))))))
+
+================================================================================
+Direct flow call with `with` block-string modifier
+================================================================================
+
+skill main()
+    flow:
+        do_thing() with """
+            multi-line
+            modifier
+            """
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (skill_declaration
+    name: (identifier)
+    (parameter_list)
+    (declaration_body
+      (flow_section
+        (flow_statement
+          (call_expression
+            function: (identifier)
+            (argument_list)
+            (call_modifier
+              modifier: (block_string
+                (block_string_content)))))))))
