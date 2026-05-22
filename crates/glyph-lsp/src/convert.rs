@@ -35,10 +35,11 @@ use tower_lsp::lsp_types::{
 pub const SOURCE: &str = "glyph";
 
 /// Convert a `LineCol` start (1-indexed) into an LSP `Position` (0-indexed).
-fn start_position(lc: &LineCol) -> Position {
+fn start_position(lc: &LineCol, source: &str) -> Position {
+    let line = lc.line.saturating_sub(1);
     Position {
-        line: lc.line.saturating_sub(1),
-        character: lc.col.saturating_sub(1),
+        line,
+        character: utf16_character(source, line, lc.col.saturating_sub(1)),
     }
 }
 
@@ -47,18 +48,19 @@ fn start_position(lc: &LineCol) -> Position {
 /// stays as-is because the off-by-ones cancel.
 ///
 /// See module docs for the derivation.
-fn end_position(lc: &LineCol) -> Position {
+fn end_position(lc: &LineCol, source: &str) -> Position {
+    let line = lc.line.saturating_sub(1);
     Position {
-        line: lc.line.saturating_sub(1),
-        character: lc.col,
+        line,
+        character: utf16_character(source, line, lc.col),
     }
 }
 
 /// Convert a `SourceSpan` (Glyph's diagnostic span) into an LSP `Range`.
-fn source_span_to_range(span: &SourceSpan) -> Range {
+fn source_span_to_range(span: &SourceSpan, source: &str) -> Range {
     Range {
-        start: start_position(&span.start),
-        end: end_position(&span.end),
+        start: start_position(&span.start, source),
+        end: end_position(&span.end, source),
     }
 }
 
@@ -97,7 +99,11 @@ fn render_hints(hints: &[String]) -> String {
 /// pointer at the related location). The `file` on a `SourceSpan` is the
 /// label string the compiler was invoked with (typically the path); we treat
 /// it as the URI's path component when building the `Location`.
-fn related_to_lsp(spans: &[SourceSpan]) -> Option<Vec<DiagnosticRelatedInformation>> {
+fn related_to_lsp(
+    spans: &[SourceSpan],
+    primary_file: &str,
+    source: &str,
+) -> Option<Vec<DiagnosticRelatedInformation>> {
     if spans.is_empty() {
         return None;
     }
@@ -105,10 +111,15 @@ fn related_to_lsp(spans: &[SourceSpan]) -> Option<Vec<DiagnosticRelatedInformati
         .iter()
         .filter_map(|s| {
             let uri = file_label_to_url(&s.file)?;
+            // A related span in the same file as the primary diagnostic is
+            // converted against its source; one in another file has no
+            // source on hand, so `utf16_character` falls back to byte
+            // columns (ASCII-correct).
+            let span_source = if s.file == primary_file { source } else { "" };
             Some(DiagnosticRelatedInformation {
                 location: Location {
                     uri,
-                    range: source_span_to_range(s),
+                    range: source_span_to_range(s, span_source),
                 },
                 message: String::new(),
             })
@@ -152,36 +163,69 @@ fn file_label_to_url(label: &str) -> Option<Url> {
 /// `Span.end` is **exclusive** (half-open `[start, end)`), so unlike the
 /// diagnostic-span path (§10.B) there is no inclusive→exclusive bump — both
 /// endpoints translate symmetrically.
-pub fn byte_span_to_lsp_range(span: Span, line_index: &LineIndex) -> Range {
+pub fn byte_span_to_lsp_range(span: Span, line_index: &LineIndex, source: &str) -> Range {
     let (sl, sc) = line_index.line_col(span.start);
     let (el, ec) = line_index.line_col(span.end);
     Range {
         start: Position {
             line: sl.saturating_sub(1),
-            character: sc.saturating_sub(1),
+            character: utf16_character(source, sl.saturating_sub(1), sc.saturating_sub(1)),
         },
         end: Position {
             line: el.saturating_sub(1),
-            character: ec.saturating_sub(1),
+            character: utf16_character(source, el.saturating_sub(1), ec.saturating_sub(1)),
         },
     }
+}
+
+/// Convert a 0-indexed byte column on the 0-indexed `line_idx` of `source`
+/// into the 0-indexed UTF-16 `character` LSP expects.
+///
+/// LSP measures `Position.character` in UTF-16 code units; Glyph spans and
+/// columns count bytes. When `source` is empty, or `line_idx` falls outside
+/// `source` — e.g. a related span pointing into a file whose text is not on
+/// hand — the byte column is returned unchanged on every line, including
+/// line 0, so the position degrades to an ASCII-correct value, never to 0.
+fn utf16_character(source: &str, line_idx: u32, byte_col: u32) -> u32 {
+    if source.is_empty() {
+        return byte_col;
+    }
+    match source.split('\n').nth(line_idx as usize) {
+        Some(line) => glyph_core::span::utf16_len(line, byte_col),
+        None => byte_col,
+    }
+}
+
+/// Convert an incoming LSP `Position` into a Glyph byte offset.
+///
+/// The inverse of [`byte_span_to_lsp_range`]: LSP delivers `character` as a
+/// UTF-16 code-unit column, so the cursor's line is walked with
+/// [`glyph_core::span::utf16_to_byte`] to recover the byte column before it
+/// is resolved through `line_index`. A `character` past the line's end
+/// resolves to the line's end via the clamp in `LineIndex::byte_offset`.
+pub fn lsp_position_to_byte_offset(pos: Position, line_index: &LineIndex, source: &str) -> u32 {
+    let byte_col = match source.split('\n').nth(pos.line as usize) {
+        Some(line) => glyph_core::span::utf16_to_byte(line, pos.character),
+        None => pos.character,
+    };
+    line_index.byte_offset(pos.line.saturating_add(1), byte_col.saturating_add(1))
 }
 
 /// Convert a Glyph `Diagnostic` to an LSP `Diagnostic`.
 ///
 /// Pure: takes an immutable reference, allocates a fresh value. No I/O.
-pub fn diagnostic_to_lsp(d: &GlyphDiagnostic) -> LspDiagnostic {
+pub fn diagnostic_to_lsp(d: &GlyphDiagnostic, source: &str) -> LspDiagnostic {
     let mut message = d.message.clone();
     message.push_str(&render_hints(&d.hints));
 
     LspDiagnostic {
-        range: source_span_to_range(&d.span),
+        range: source_span_to_range(&d.span, source),
         severity: Some(severity(d.classification)),
         code: Some(NumberOrString::String(d.id.clone())),
         code_description: None,
         source: Some(SOURCE.to_string()),
         message,
-        related_information: related_to_lsp(&d.related),
+        related_information: related_to_lsp(&d.related, &d.span.file, source),
         tags: None,
         data: None,
     }
@@ -210,7 +254,7 @@ mod tests {
     #[test]
     fn single_character_span_end_col_conversion() {
         let s = span("f.glyph", 5, 7, 5, 7);
-        let r = source_span_to_range(&s);
+        let r = source_span_to_range(&s, "");
         assert_eq!(
             r.start,
             Position {
@@ -232,7 +276,7 @@ mod tests {
     #[test]
     fn multi_character_single_line_span() {
         let s = span("f.glyph", 3, 5, 3, 7);
-        let r = source_span_to_range(&s);
+        let r = source_span_to_range(&s, "");
         assert_eq!(
             r.start,
             Position {
@@ -254,7 +298,7 @@ mod tests {
     #[test]
     fn multi_line_span() {
         let s = span("f.glyph", 1, 1, 3, 4);
-        let r = source_span_to_range(&s);
+        let r = source_span_to_range(&s, "");
         assert_eq!(
             r.start,
             Position {
@@ -267,6 +311,30 @@ mod tests {
             Position {
                 line: 2,
                 character: 4
+            }
+        );
+    }
+
+    #[test]
+    fn source_span_first_line_empty_source_keeps_byte_columns() {
+        // Regression: empty `source` must fall back to byte columns on
+        // every line, including line 0 — `"".split(char::is_whitespace)`
+        // style splitting yields `Some("")` for `nth(0)`, which previously
+        // collapsed the column to 0 instead of leaving the byte column.
+        let s = span("f.glyph", 1, 5, 1, 8);
+        let r = source_span_to_range(&s, "");
+        assert_eq!(
+            r.start,
+            Position {
+                line: 0,
+                character: 4
+            }
+        );
+        assert_eq!(
+            r.end,
+            Position {
+                line: 0,
+                character: 8
             }
         );
     }
@@ -294,7 +362,7 @@ mod tests {
             "tab character used for indentation",
             span("f.glyph", 2, 1, 2, 1),
         );
-        let lsp = diagnostic_to_lsp(&d);
+        let lsp = diagnostic_to_lsp(&d, "");
         assert_eq!(
             lsp.code,
             Some(NumberOrString::String("G::parse::tab-indent".into()))
@@ -329,7 +397,7 @@ mod tests {
             "`x` is not a declared `const` in this file",
             span("f.glyph", 10, 5, 10, 5),
         );
-        let lsp = diagnostic_to_lsp(&d);
+        let lsp = diagnostic_to_lsp(&d, "");
         assert_eq!(
             lsp.code,
             Some(NumberOrString::String("G::analyze::undefined-name".into()))
@@ -351,7 +419,7 @@ mod tests {
             "call to `bar()` is missing required argument `x`",
             span("f.glyph", 4, 9, 4, 13),
         );
-        let lsp = diagnostic_to_lsp(&d);
+        let lsp = diagnostic_to_lsp(&d, "");
         assert_eq!(
             lsp.code,
             Some(NumberOrString::String(
@@ -373,7 +441,7 @@ mod tests {
             related: Vec::new(),
             hints: vec!["remove the unused import".into()],
         };
-        let lsp = diagnostic_to_lsp(&d);
+        let lsp = diagnostic_to_lsp(&d, "");
         assert_eq!(lsp.severity, Some(DiagnosticSeverity::WARNING));
         assert!(lsp.message.contains("imported name"));
         assert!(
@@ -391,7 +459,7 @@ mod tests {
         let src = "abc\ndef";
         let li = LineIndex::new(src);
         let span = Span::new(0, 4, 7);
-        let r = byte_span_to_lsp_range(span, &li);
+        let r = byte_span_to_lsp_range(span, &li, src);
         assert_eq!(
             r.start,
             Position {
@@ -414,7 +482,7 @@ mod tests {
         let src = "abc";
         let li = LineIndex::new(src);
         let span = Span::new(0, 0, 3);
-        let r = byte_span_to_lsp_range(span, &li);
+        let r = byte_span_to_lsp_range(span, &li, src);
         assert_eq!(
             r.start,
             Position {
@@ -429,6 +497,63 @@ mod tests {
                 character: 3
             }
         );
+    }
+
+    /// B14: a line with an astral-plane emoji before the referenced token.
+    /// `😀` is 4 UTF-8 bytes but 2 UTF-16 code units; LSP `Position.character`
+    /// counts UTF-16 units, so `x` lands at character 3 — not byte column 5.
+    #[test]
+    fn byte_span_to_range_uses_utf16_columns() {
+        let src = "😀 x";
+        let li = LineIndex::new(src);
+        // `x` occupies bytes 5..6 (`😀` = 0..4, space = 4, `x` = 5).
+        let span = Span::new(0, 5, 6);
+        let r = byte_span_to_lsp_range(span, &li, src);
+        assert_eq!(
+            r.start,
+            Position {
+                line: 0,
+                character: 3
+            }
+        );
+        assert_eq!(
+            r.end,
+            Position {
+                line: 0,
+                character: 4
+            }
+        );
+    }
+
+    /// B14: diagnostic columns are UTF-16 code units, not bytes. The `😀`
+    /// before the flagged token `x` is 4 bytes but 2 UTF-16 units, so the
+    /// LSP range starts at character 3.
+    #[test]
+    fn diagnostic_to_lsp_uses_utf16_columns() {
+        let src = "😀 x";
+        let d = Diagnostic::error(
+            "G::analyze::undefined-name",
+            "bad",
+            span("f.glyph", 1, 6, 1, 6),
+        );
+        let lsp = diagnostic_to_lsp(&d, src);
+        assert_eq!(lsp.range.start.character, 3);
+        assert_eq!(lsp.range.end.character, 4);
+    }
+
+    /// B14 incoming direction: an LSP `Position.character` is a UTF-16
+    /// column. On `"😀 x"` the cursor at character 3 sits on `x`, whose byte
+    /// offset is 5 — a byte-naive reading would land at offset 3, inside the
+    /// 4-byte emoji.
+    #[test]
+    fn lsp_position_to_byte_offset_reads_utf16_columns() {
+        let src = "😀 x";
+        let li = LineIndex::new(src);
+        let pos = Position {
+            line: 0,
+            character: 3,
+        };
+        assert_eq!(lsp_position_to_byte_offset(pos, &li, src), 5);
     }
 
     /// `related` spans flow through into LSP `related_information`.
@@ -453,7 +578,7 @@ mod tests {
             related: vec![other],
             hints: Vec::new(),
         };
-        let lsp = diagnostic_to_lsp(&d);
+        let lsp = diagnostic_to_lsp(&d, "");
         let related = lsp
             .related_information
             .expect("related info should be present");
