@@ -14,12 +14,12 @@
 //!
 //! Each `RawSemToken` carries:
 //! - `line`: 0-indexed line number (LSP convention).
-//! - `start`: 0-indexed byte column from the start of the line.
-//!   Glyph rejects tabs and non-ASCII identifiers, so byte == utf-16 code
-//!   unit for everything except string-literal contents. Pure-ASCII source
-//!   is exact; string literals containing non-ASCII may produce slightly
-//!   off LSP ranges.
-//! - `length`: byte length of the token.
+//! - `start`: 0-indexed UTF-16 column from the start of the line —
+//!   the unit LSP uses for `Position.character`.
+//!   `collect_semantic_tokens` converts byte columns to UTF-16 code
+//!   units as its final pass, so a line with non-ASCII content before
+//!   a token still yields correct editor positions.
+//! - `length`: token length in UTF-16 code units.
 //! - `token_type`: index into [`SemTokenType::legend`].
 //! - `modifiers`: bitset over [`SemTokenModifier::legend`].
 //!
@@ -163,9 +163,9 @@ impl SemTokenModifier {
 pub struct RawSemToken {
     /// 0-indexed line number.
     pub line: u32,
-    /// 0-indexed column (bytes from line start).
+    /// 0-indexed UTF-16 column from the start of the line.
     pub start: u32,
-    /// Byte length of the token.
+    /// Token length in UTF-16 code units.
     pub length: u32,
     /// Token type — discriminant value of [`SemTokenType`].
     pub token_type: u32,
@@ -213,6 +213,7 @@ pub fn collect_semantic_tokens(source: &str, file_id: u32) -> Vec<RawSemToken> {
     }
 
     sort_and_dedup(&mut tokens);
+    to_utf16_columns(&mut tokens, source);
     tokens
 }
 
@@ -1109,6 +1110,22 @@ fn sort_and_dedup(tokens: &mut Vec<RawSemToken>) {
     *tokens = deduped;
 }
 
+/// Rewrite every token's `start`/`length` from byte columns into UTF-16
+/// code units. Glyph spans are byte offsets, but LSP semantic-token columns
+/// (like every other LSP `Position.character`) are measured in UTF-16 code
+/// units. Run as the final pass once tokens are sorted, so each token is
+/// converted against the source line it points at.
+fn to_utf16_columns(tokens: &mut [RawSemToken], source: &str) {
+    let lines: Vec<&str> = source.split('\n').collect();
+    for t in tokens.iter_mut() {
+        let line = lines.get(t.line as usize).copied().unwrap_or("");
+        let start = crate::span::utf16_len(line, t.start);
+        let end = crate::span::utf16_len(line, t.start + t.length);
+        t.start = start;
+        t.length = end - start;
+    }
+}
+
 /// Find the absolute byte span of the identifier that follows the given
 /// keyword sequence inside a decl's source slice.
 ///
@@ -1340,6 +1357,22 @@ mod tests {
             .expect("interpolation");
         // `{scope}` is 7 bytes including braces.
         assert_eq!(interp.length, "{scope}".len() as u32);
+    }
+
+    #[test]
+    fn token_columns_are_utf16_code_units() {
+        // The 2-byte `é` in `café` sits before the interpolation token, so
+        // its UTF-16 column is one less than its byte column. LSP positions
+        // are measured in UTF-16 code units, not bytes.
+        let src = "skill main(scope = \".\")\n    description: \"d\"\n    flow:\n        \"café {scope}\"\n";
+        let tokens = collect_semantic_tokens(src, 0);
+        let interp = tokens
+            .iter()
+            .find(|t| t.line == 3 && t.token_type == SemTokenType::GlyphInterpolation as u32)
+            .expect("interpolation");
+        // `{` is at byte column 15 but UTF-16 column 14.
+        assert_eq!(interp.start, 14);
+        assert_eq!(interp.length, 7);
     }
 
     #[test]
