@@ -713,20 +713,10 @@ fn byte_range_from_linecol(
 }
 
 fn locate_byte(source: &str, line: u32, col: u32) -> usize {
-    // Walk line-by-line. col is 1-indexed bytes from start of line.
-    let mut current_line: u32 = 1;
-    let mut line_start: usize = 0;
-    for (idx, b) in source.bytes().enumerate() {
-        if current_line == line {
-            return line_start + (col.saturating_sub(1) as usize).min(idx + 1 - line_start);
-        }
-        if b == b'\n' {
-            current_line += 1;
-            line_start = idx + 1;
-        }
-    }
-    if current_line == line {
-        return line_start + (col.saturating_sub(1) as usize);
-    }
-    source.len().saturating_sub(1)
+    // Resolve a 1-indexed (line, byte-column) pair to an absolute byte offset
+    // via the shared line index, then clamp into the source buffer. `LineIndex`
+    // computes `line_start + (col - 1)`, so a column past the start of the line
+    // advances correctly instead of stopping at the line break.
+    let offset = glyph_core::span::LineIndex::new(source).byte_offset(line, col) as usize;
+    offset.min(source.len())
 }
