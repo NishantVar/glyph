@@ -1417,6 +1417,7 @@ fn check_one_file(
         &imported_const_types,
         &imported_type_spans,
         &import_alias_kinds,
+        enable_effects,
     );
 
     // Unused import detection.
@@ -2678,9 +2679,51 @@ struct ResolvedImports {
     /// `sweep_type_decl_name_collisions`. Mirrors the same map the
     /// check-only pipeline builds inside `check_file_recursive`.
     import_alias_kinds: HashMap<String, (crate::name_kind::ResolvedImportKind, crate::span::Span)>,
+    /// B06 concern 3: diagnostics raised while resolving `@glyph/std`
+    /// imports — importing the compiler-internal `load`, an unknown
+    /// selective name, or an unknown stdlib module. The check pipeline
+    /// raises these inline in `check_one_file`; the compile/directory
+    /// pipeline has no equivalent import-validation pass, so they are
+    /// collected here and surfaced by `compile_file_with_resolved_imports`
+    /// (which also keeps such a file off the no-import fast path).
+    import_diagnostics: DiagBag,
 }
 
 /// Build the full resolved import data for a consumer file.
+fn stdlib_synthetic_block(
+    exported_name: &str,
+) -> Option<(
+    String,
+    Vec<ast::Param>,
+    Option<crate::span::Spanned<String>>,
+)> {
+    // Synthetic in-memory definitions for `@glyph/std` selective imports.
+    // `load` is intentionally excluded: it is compiler-internal and not
+    // author-importable (`design/stdlib.md` §The `load` Primitive).
+    let zero = crate::span::Span::new(0, 0, 0);
+    let mk_param = |name: &str, ty: Option<&str>| ast::Param {
+        name: name.to_string(),
+        default: None,
+        default_is_name_ref: false,
+        type_annotation: ty.map(|t| crate::span::Spanned::new(t.to_string(), zero)),
+        description: None,
+        span: zero,
+    };
+    match exported_name {
+        "subagent" => Some((
+            "Spawn a new subagent to perform the given task.".to_string(),
+            vec![mk_param("task", None)],
+            Some(crate::span::Spanned::new("Agent".to_string(), zero)),
+        )),
+        "send" => Some((
+            "Send a follow-up message to the given agent.".to_string(),
+            vec![mk_param("agent", Some("Agent")), mk_param("message", None)],
+            None,
+        )),
+        _ => None,
+    }
+}
+
 fn build_resolved_imports(
     consumer: &Path,
     file_exports: &HashMap<PathBuf, ExportedNames>,
@@ -2702,6 +2745,7 @@ fn build_resolved_imports(
         type_descriptions: std::collections::BTreeMap::new(),
         type_spans: HashMap::new(),
         import_alias_kinds: HashMap::new(),
+        import_diagnostics: DiagBag::new(),
     };
 
     let source = match std::fs::read_to_string(consumer) {
@@ -2712,20 +2756,99 @@ fn build_resolved_imports(
         Ok((file, _)) => file,
         Err(_) => return result,
     };
+    // B06 concern 3: anchor stdlib-import diagnostics to the consumer file.
+    let file_label = consumer.display().to_string();
+    let line_index = LineIndex::new(&source);
 
     for decl in &parsed.decls {
         if let Decl::Import(import_spanned) = decl {
             let import = &import_spanned.node;
-            // TODO(flow-assign-subagent-cli): `@glyph/std` imports skipped
-            // here means the CLI compile path never resolves stdlib
-            // subagent end-to-end. Combined with the fast-path bail-out
-            // in `compile_file_with_resolved_imports` (see TODO ~L2194),
-            // a consumer like `import "@glyph/std" { subagent }` followed
-            // by `researcher = subagent(...)` falls through to the
-            // non-import-aware compile and fires
-            // `G::analyze::stdlib-missing-import`. Tracked as deferred
-            // on PR #149: https://github.com/NishantVar/glyph/pull/149
+
             if import.path.starts_with("@glyph/") {
+                // B06: synthesize `@glyph/std` exported-block metadata so the
+                // CLI/directory compile path resolves stdlib calls (`subagent`,
+                // `send`) end-to-end, mirroring `check_one_file`. `load`, unknown
+                // selective names, and unknown `@glyph/*` modules are not
+                // resolved; each pushes a diagnostic onto
+                // `result.import_diagnostics` (`G::analyze::import-private` /
+                // `G::imports::unknown-stdlib-module`, matching the check path)
+                // which `compile_file_with_resolved_imports` surfaces — B06
+                // concern 3.
+
+                if import.path == "@glyph/std" {
+                    match &import.kind {
+                        ImportKind::Selective(names) => {
+                            for imp_name in names {
+                                let local = imp_name
+                                    .alias
+                                    .as_ref()
+                                    .map(|a| a.node.as_str())
+                                    .unwrap_or(imp_name.name.node.as_str());
+                                let alias_span = imp_name
+                                    .alias
+                                    .as_ref()
+                                    .map(|a| a.span)
+                                    .unwrap_or(imp_name.name.span);
+                                if let Some((body, params, return_type)) =
+                                    stdlib_synthetic_block(&imp_name.name.node)
+                                {
+                                    result.block_names.insert(local.to_string());
+                                    result.block_bodies.insert(local.to_string(), body);
+                                    result.block_params.insert(local.to_string(), params);
+                                    if let Some(rt) = return_type {
+                                        result.block_return_types.insert(local.to_string(), rt);
+                                    }
+                                    result.import_alias_kinds.insert(
+                                        local.to_string(),
+                                        (crate::name_kind::ResolvedImportKind::Value, alias_span),
+                                    );
+                                } else {
+                                    // B06 concern 3: `load` and any unknown selective name are not
+                                    // author-importable from `@glyph/std`. Mirror `check_one_file`'s
+                                    // `G::analyze::import-private` so the compile/directory path
+                                    // rejects the file instead of silently dropping the name.
+                                    result.import_diagnostics.push(
+                                        Diagnostic::error(
+                                            "G::analyze::import-private",
+                                            format!(
+                                                "`{}` is not exported from `{}`",
+                                                imp_name.name.node, import.path
+                                            ),
+                                            SourceSpan::from_byte_span(
+                                                &file_label,
+                                                import_spanned.span,
+                                                &line_index,
+                                            ),
+                                        ),
+                                        import_spanned.span,
+                                    );
+                                }
+                            }
+                        }
+                        // Whole-module `import "@glyph/std" as std` is intentionally not
+                        // resolved: dotted call targets (`std.subagent(...)`) are not yet
+                        // accepted by the parser, so registering `std.subagent` here would
+                        // be dead metadata. Out of scope for B06; the check path's
+                        // whole-module arm only registers names for the unused-import sweep.
+                        ImportKind::WholeModule { .. } => {}
+                    }
+                } else {
+                    // B06 concern 3: an unknown `@glyph/*` module. Mirror the check
+                    // path's `G::imports::unknown-stdlib-module` so the compile path
+                    // fails the file instead of silently dropping the import.
+                    result.import_diagnostics.push(
+                        Diagnostic::error(
+                            "G::imports::unknown-stdlib-module",
+                            format!("unknown stdlib module `{}`", import.path),
+                            SourceSpan::from_byte_span(
+                                &file_label,
+                                import_spanned.span,
+                                &line_index,
+                            ),
+                        ),
+                        import_spanned.span,
+                    );
+                }
                 continue;
             }
             let resolved = match resolve_import_path(consumer, &import.path) {
@@ -2843,6 +2966,7 @@ fn build_resolved_imports(
                         }
                     }
                 }
+
                 ImportKind::WholeModule { alias } => {
                     // Task 9: whole-module aliases bind to the value namespace
                     // (qualified `alias.Type` refs are MVP-unsupported per B.7).
@@ -2990,14 +3114,20 @@ fn compile_file_with_resolved_imports(
     // Phase B.7: also check `type_descriptions` so a types-only consumer
     // (no imported texts/blocks/procedure-paths) still routes through the
     // resolved-imports path that folds imported types into the TypeRegistry.
-    // TODO(flow-assign-subagent-cli): the `build_resolved_imports` pass
-    // skips `@glyph/*` paths (see TODO ~L1963), so a stdlib-only consumer
-    // arrives here with empty collections and falls through to the
-    // non-import-aware `compile_file_with_effects`. That path sees no
-    // import names and `subagent(...)` / `send(...)` references fire
-    // `G::analyze::stdlib-missing-import`. End-to-end stdlib subagent via
-    // CLI compile is deferred. Tracked on PR #149:
-    // https://github.com/NishantVar/glyph/pull/149
+
+    // B06 concern 3: `build_resolved_imports` raises `import-private` /
+    // `unknown-stdlib-module` for an invalid `@glyph/std` import (e.g.
+    // `load`, an unknown selective name, or an unknown module). The
+    // compile/directory path has no separate import-validation pass, so
+    // surface them here — and bail before the no-import fast path, which
+    // would otherwise route an invalid-import file to the non-import-aware
+    // `compile_file_with_layout` and exit 0.
+    if !resolved_imports.import_diagnostics.is_empty() {
+        return Ok(CompileOutcome::Diagnostics(
+            resolved_imports.import_diagnostics.clone(),
+        ));
+    }
+
     if imported_procedure_paths.is_empty()
         && resolved_imports.text_names.is_empty()
         && resolved_imports.block_names.is_empty()
@@ -3114,6 +3244,7 @@ fn compile_source_with_resolved_imports(
         &resolved_imports.text_value_types,
         &resolved_imports.type_spans,
         &resolved_imports.import_alias_kinds,
+        enable_effects,
     );
     if bag.has_error() || bag.has_repairable() {
         return Ok(CompileOutcome::Diagnostics(bag));
@@ -3172,6 +3303,20 @@ fn compile_source_with_resolved_imports(
             if c.callee_return_type_text.is_none() {
                 if let Some(rt) = resolved_imports.block_return_types.get(&c.target) {
                     c.callee_return_type_text = Some(rt.node.clone());
+                }
+            }
+            // B06 concern 2: an aliased imported call (e.g. `subagent as
+            // spawn`) is not recognized by `lower::callee_is_agent`, which
+            // only consults `crate::stdlib_sig` on the *bare* target name.
+            // The resolved `block_return_types` (re-keyed under the local /
+            // alias name) already records the Agent return-shape, so correct
+            // `is_agent` here for bound calls — mirroring scaffold emit's
+            // agent-vs-result prose split.
+            if !c.is_agent && c.bound_name.is_some() {
+                if let Some(rt) = resolved_imports.block_return_types.get(&c.target) {
+                    if rt.node.eq_ignore_ascii_case("Agent") {
+                        c.is_agent = true;
+                    }
                 }
             }
         }

@@ -169,7 +169,7 @@ impl Diagnostic {
 /// Holds each diagnostic together with the originating byte span — the byte
 /// offset is the canonical sort key for stable output ordering, even after
 /// the public `SourceSpan` has lossily collapsed to `(line, col)`.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct DiagBag {
     entries: Vec<DiagEntry>,
 }
