@@ -1,0 +1,11 @@
+// B12: a non-`generated` top-level decl must NOT follow a `generated`
+// top-level decl (design/language-surface.md §3.6 last bullet, §3.7 last
+// bullet). Expect `G::parse::generated-decl-out-of-order` on `const later`.
+generated const generated_summary = "x"
+
+const later = "y"
+
+skill main()
+    description: "Demo."
+    flow:
+        "ok"

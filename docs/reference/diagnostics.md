@@ -104,6 +104,8 @@ The catalog below grows as the compiler is implemented. The completeness meta-ru
 | `G::parse::bad-indent` | error | Leading indentation on a non-blank line is not a multiple of 4 spaces. Glyph requires consistent 4-space indents. |
 | `G::parse::unterminated-string` | error | A `"…"` string literal is missing its closing `"` (typically because the newline terminates the line before the close quote is seen). |
 | `G::parse::unexpected-char` | error | The tokenizer encountered a character that is not part of any Glyph token (e.g., `@`, `!`, `#` in source position). Distinct from `G::parse::operator-in-expression`, which fires only for the repairable arithmetic operators `+`, `-`, `*`, `/`. |
+| `G::parse::generated-decl-out-of-order` | error | A non-`generated` top-level declaration appears after a `generated const` / `generated block`. Per `design/language-surface.md` §3.6 / §3.7, all `generated` declarations must follow every non-generated top-level declaration; move the offending declaration above the first `generated` declaration. |
+| `G::parse::generated-block-body-shape` | error | A `generated block` body violates the single-inline-or-block-string shape required by `design/language-surface.md` §3.7. Triggers: a multi-statement `flow:` body, or any of `description:` / `constraints:` / `context:` / `effects:` / extra subsections appearing alongside the body. |
 | `G::parse::unexpected` | repairable / error | Catch-all parser failure. **Repairable**: parser bails with an unstructured error and no specific ID is wired. **Error**: parsing produces no AST and no other diagnostic was raised — a hard fallback so `glyph check` cannot silently exit 0 on an unparseable source. |
 
 ### Analyze phase

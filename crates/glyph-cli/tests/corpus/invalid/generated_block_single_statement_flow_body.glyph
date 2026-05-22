@@ -1,0 +1,12 @@
+// B12: a `generated block` body must use the single-string shorthand
+// with NO `flow:` keyword. Per design/repair.md a generated block has a
+// single-string body and no `flow:` sub-section. An explicit single-
+// statement `flow:` body must still fire `G::parse::generated-block-body-shape`.
+skill main()
+    description: "Demo."
+    flow:
+        offending_helper()
+
+generated block offending_helper()
+    flow:
+        "first instruction"

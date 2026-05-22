@@ -363,7 +363,7 @@ generated const root_cause_before_fix = """
 - String literals follow [[values-and-names]]: inline `"..."` or block `"""..."""`.
 - Not a callable. A bare name resolves to its string content; a parenthesized form is a compile error.
 - Not exportable. `export generated const` is invalid. To share, promote to `export const`.
-- All `generated const` declarations must appear after all non-generated top-level declarations in the source file. (Placement-order enforcement at the analyzer is deferred; the repair pass and authors honor the order manually for now.)
+- All `generated const` declarations must appear after all non-generated top-level declarations in the source file. Enforced at the parser as `G::parse::generated-decl-out-of-order` (hard error).
 - Full rules for authorship, stability, placement, promotion, and the no-shadowing interaction are in [[design/repair]].
 
 ### 3.7 `generated block`
@@ -393,7 +393,7 @@ generated block summarize_changes()
 - Body is a single inline or block string, using the same single-string shorthand available to hand-authored simple blocks (§3.2 above). Compound sentences are allowed; multi-statement `flow:` bodies are not. This keeps the machine-generated definition close to the name's meaning and minimizes drift from author intent.
 - Used for undefined names in `flow:`. Both parens-calls and bare names without parens materialize as `generated block` (bare const names in flow are a compile error, so undefined bare names in flow are treated as intended callable instructions).
 - Not exportable. `export generated block` is invalid. To share, promote to `block` or `export block`.
-- All `generated block` declarations must appear after all non-generated top-level declarations, alongside `generated const`. (Placement-order enforcement at the analyzer is deferred; the repair pass and authors honor the order manually for now.)
+- All `generated block` declarations must appear after all non-generated top-level declarations, alongside `generated const`. Enforced at the parser as `G::parse::generated-decl-out-of-order` (hard error). The single-string body-shape rule above is enforced as `G::parse::generated-block-body-shape` (hard error).
 - Full rules for authorship, the single-string constraint, placement, promotion, and the no-shadowing interaction are in [[design/repair]].
 
 ### 3.8 Parameter Syntax
