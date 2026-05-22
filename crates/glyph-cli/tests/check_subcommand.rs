@@ -188,3 +188,76 @@ fn check_default_format_is_pretty() {
     let result = run_check_no_format(src);
     assert_eq!(result.status.code(), Some(0));
 }
+
+/// Strip ANSI SGR escape sequences so caret column math is on visible characters.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for n in chars.by_ref() {
+                if n == 'm' {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// B04 regression: `--format pretty` diagnostic carets must point at the column
+/// the diagnostic span actually starts at, not near column 2.
+///
+/// Fixture `param_annotation_snake_case.glyph` line 1 is `block foo(x: link_mode)`;
+/// the `type-case-violation` diagnostic spans `link_mode` (1-indexed byte columns
+/// 14..=22), so the rendered caret must sit directly under `link_mode`.
+#[test]
+fn pretty_caret_points_at_diagnostic_start_column() {
+    let src = corpus_path(
+        "invalid",
+        "case-violation/param_annotation_snake_case.glyph",
+    );
+    let result = run_check(src, "pretty");
+    let stderr = strip_ansi(&String::from_utf8_lossy(&result.stderr));
+    let lines: Vec<&str> = stderr.lines().collect();
+
+    // Anchor on the single-line `type-case-violation` diagnostic, whose span is
+    // `link_mode` at byte columns 14..=22 on source line 1.
+    let header_idx = lines
+        .iter()
+        .position(|l| l.contains("G::analyze::type-case-violation"))
+        .unwrap_or_else(|| panic!("did not find type-case-violation diagnostic in:\n{stderr}"));
+
+    // Within that diagnostic block, find the rendered source line for line 1 and
+    // the caret line that immediately follows it.
+    let src_line_idx = lines[header_idx..]
+        .iter()
+        .position(|l| l.contains("block foo(x: link_mode)"))
+        .map(|off| header_idx + off)
+        .unwrap_or_else(|| panic!("did not find rendered source line 1 in:\n{stderr}"));
+    let src_line = lines[src_line_idx];
+    let caret_line = lines
+        .get(src_line_idx + 1)
+        .unwrap_or_else(|| panic!("no caret line after source line in:\n{stderr}"));
+    assert!(
+        caret_line.contains("^"),
+        "expected a caret line after the source line, got: {caret_line:?}\n{stderr}"
+    );
+
+    // The caret line shares the same gutter width as the source line, so the
+    // byte offset of the first caret must equal the byte offset of `link_mode`.
+    let token_col = src_line
+        .find("link_mode")
+        .expect("rendered source line should contain `link_mode`");
+    let caret_col = caret_line
+        .find("^")
+        .expect("caret line should contain a caret");
+
+    assert_eq!(
+        caret_col, token_col,
+        "pretty caret must sit under `link_mode` (rendered col {token_col}), but it \
+         rendered at col {caret_col}\n--- src   : {src_line:?}\n--- caret : {caret_line:?}\n{stderr}"
+    );
+}
