@@ -38,3 +38,25 @@ When this feature ships, move these entries to [[docs/reference/diagnostics]] an
 The Repair pass internally distinguishes deterministic auto-fixes from LLM-assisted fixes. This is currently an implementation detail of the repair loop, not part of the diagnostic shape. If a future need arises to expose this distinction (e.g., for IDE quick-fix UX that wants to mark "instant" vs "LLM-bounded" fixes), it should be added as a separate field on `Diagnostic`, not by overloading `classification`.
 
 This is a speculative item — no work is scheduled. Listed here to record the consideration so it isn't re-litigated from scratch.
+
+## Diagnostic ↔ Code Drift (B11 audit)
+
+The 2026-05-20 bug audit's B11 fix reconciled `docs/reference/diagnostics.md` and `tests/DIAGNOSTIC_COVERAGE.md` with the compiler. Three residual items were surfaced but deliberately left outside B11's doc-only scope:
+
+### `G::repair::generated-const` has no live emission path
+
+`docs/reference/diagnostics.md` documents `G::repair::generated-const` as a live Repair notification ("a `generated const` was materialized for an undefined bare name"), but no compiler code constructs it. `G::analyze::undefined-name` is now a hard `error` with no repair path, so nothing materializes a `generated const`. Either restore the repair behavior or retire the ID via the documented "deprecate and replace" rule.
+
+### `G::build::compile-error` is an undocumented generic fallback
+
+The build pipeline emits `G::build::compile-error` ("compile pipeline failed: …") as a catch-all. It is intentionally absent from the public catalog because it is an internal fallback — but the catalog's own §Catalog Completeness Rule forbids generic fallback diagnostics. Resolve by either giving every failing build-phase check a specific ID (and removing the fallback) or amending the completeness rule to permit one documented build-phase fallback.
+
+### Compiler-scope diagnostic IDs with no triggering test
+
+`tests/DIAGNOSTIC_COVERAGE.md` is now honest at 114/119. Five IDs are emitted by the compiler but have no test that triggers them:
+
+- `G::parse::bad-indent`
+- `G::parse::leading-zero-numeric` — tokenizer-level leading-zero rejection is tested; the parse diagnostic itself is not.
+- `G::parse::effect-keyword-outside-effects-section`
+- `G::validate::no-root-skill`
+- `G::build::compile-error` — the internal fallback above.
