@@ -24,7 +24,7 @@
 //!    them via code-actions.
 
 use glyph_core::diagnostic::{Classification, Diagnostic as GlyphDiagnostic, LineCol, SourceSpan};
-use glyph_core::span::{LineIndex, Span};
+use glyph_core::span::{byte_col_to_utf16_col, LineIndex, Span};
 use tower_lsp::lsp_types::{
     Diagnostic as LspDiagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location,
     NumberOrString, Position, Range, Url,
@@ -152,18 +152,27 @@ fn file_label_to_url(label: &str) -> Option<Url> {
 /// `Span.end` is **exclusive** (half-open `[start, end)`), so unlike the
 /// diagnostic-span path (§10.B) there is no inclusive→exclusive bump — both
 /// endpoints translate symmetrically.
-pub fn byte_span_to_lsp_range(span: Span, line_index: &LineIndex) -> Range {
-    let (sl, sc) = line_index.line_col(span.start);
-    let (el, ec) = line_index.line_col(span.end);
+pub fn byte_span_to_lsp_range(span: Span, line_index: &LineIndex, source: &str) -> Range {
     Range {
-        start: Position {
-            line: sl.saturating_sub(1),
-            character: sc.saturating_sub(1),
-        },
-        end: Position {
-            line: el.saturating_sub(1),
-            character: ec.saturating_sub(1),
-        },
+        start: byte_offset_to_lsp_position(span.start, line_index, source),
+        end: byte_offset_to_lsp_position(span.end, line_index, source),
+    }
+}
+
+/// Convert a single byte offset into the file to an LSP `Position`
+/// (0-indexed line + UTF-16 character offset). LSP defaults to UTF-16
+/// for `Position.character`; counting bytes here would mis-place the
+/// cursor whenever the line contains non-ASCII characters before
+/// `byte_offset`.
+fn byte_offset_to_lsp_position(byte_offset: u32, line_index: &LineIndex, source: &str) -> Position {
+    let (line_1, col_1_bytes) = line_index.line_col(byte_offset);
+    let line_zero = line_1.saturating_sub(1);
+    let byte_col_zero = col_1_bytes.saturating_sub(1);
+    let line_text = source.lines().nth(line_zero as usize).unwrap_or("");
+    let character = byte_col_to_utf16_col(line_text, byte_col_zero);
+    Position {
+        line: line_zero,
+        character,
     }
 }
 
@@ -391,7 +400,7 @@ mod tests {
         let src = "abc\ndef";
         let li = LineIndex::new(src);
         let span = Span::new(0, 4, 7);
-        let r = byte_span_to_lsp_range(span, &li);
+        let r = byte_span_to_lsp_range(span, &li, src);
         assert_eq!(
             r.start,
             Position {
@@ -414,7 +423,7 @@ mod tests {
         let src = "abc";
         let li = LineIndex::new(src);
         let span = Span::new(0, 0, 3);
-        let r = byte_span_to_lsp_range(span, &li);
+        let r = byte_span_to_lsp_range(span, &li, src);
         assert_eq!(
             r.start,
             Position {
@@ -429,6 +438,48 @@ mod tests {
                 character: 3
             }
         );
+    }
+
+    /// LSP `Position.character` defaults to UTF-16 code units. A span whose
+    /// byte start sits after a multi-byte UTF-8 character must be reported
+    /// at the matching UTF-16 column, not the byte column.
+    #[test]
+    fn byte_span_to_range_uses_utf16_after_multibyte_char() {
+        // "αbc" — α is 2 UTF-8 bytes, 1 UTF-16 code unit.
+        // The span over "bc" is bytes 2..4 → UTF-16 chars 1..3.
+        let src = "αbc";
+        let li = LineIndex::new(src);
+        let span = Span::new(0, 2, 4);
+        let r = byte_span_to_lsp_range(span, &li, src);
+        assert_eq!(
+            r.start,
+            Position {
+                line: 0,
+                character: 1
+            }
+        );
+        assert_eq!(
+            r.end,
+            Position {
+                line: 0,
+                character: 3
+            }
+        );
+    }
+
+    /// Supplementary-plane characters (e.g. emoji) take 4 UTF-8 bytes but
+    /// 2 UTF-16 code units (a surrogate pair). The conversion has to count
+    /// the surrogate pair, not the byte pair.
+    #[test]
+    fn byte_span_to_range_uses_utf16_for_supplementary_chars() {
+        // "🦀x" — the crab is 4 UTF-8 bytes / 2 UTF-16 units; "x" is at
+        // byte 4, UTF-16 column 2.
+        let src = "🦀x";
+        let li = LineIndex::new(src);
+        let span = Span::new(0, 4, 5);
+        let r = byte_span_to_lsp_range(span, &li, src);
+        assert_eq!(r.start.character, 2);
+        assert_eq!(r.end.character, 3);
     }
 
     /// `related` spans flow through into LSP `related_information`.

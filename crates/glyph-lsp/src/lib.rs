@@ -61,7 +61,7 @@ use glyph_core::ast::{Decl, FlowStmt, ReturnExpr};
 use glyph_core::semantic_tokens::{
     collect_semantic_tokens, RawSemToken, SemTokenModifier, SemTokenType,
 };
-use glyph_core::span::{LineIndex, Span};
+use glyph_core::span::{byte_col_to_utf16_col, LineIndex, Span};
 
 /// One open buffer's mirror inside the LSP server.
 ///
@@ -436,13 +436,13 @@ impl LanguageServer for Backend {
                     Err(_) => return Ok(None),
                 };
                 let target_li = LineIndex::new(&target_text);
-                let range = convert::byte_span_to_lsp_range(r.def_span, &target_li);
+                let range = convert::byte_span_to_lsp_range(r.def_span, &target_li, &target_text);
                 return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                     uri: target_uri,
                     range,
                 })));
             }
-            let range = convert::byte_span_to_lsp_range(r.def_span, &view.line_index);
+            let range = convert::byte_span_to_lsp_range(r.def_span, &view.line_index, &text);
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                 uri,
                 range,
@@ -451,7 +451,7 @@ impl LanguageServer for Backend {
 
         // Fallback: cursor inside a `{name}` slot in a flow inline string.
         if let Some(param_span) = resolve_param_slot(&text, &view.ast, off) {
-            let range = convert::byte_span_to_lsp_range(param_span, &view.line_index);
+            let range = convert::byte_span_to_lsp_range(param_span, &view.line_index, &text);
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                 uri,
                 range,
@@ -484,7 +484,7 @@ impl LanguageServer for Backend {
         };
 
         let raw = collect_semantic_tokens(&text, 0);
-        let data = encode_semantic_tokens(&raw);
+        let data = encode_semantic_tokens(&raw, &text);
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
             result_id: None,
             data,
@@ -495,26 +495,31 @@ impl LanguageServer for Backend {
 /// Delta-encode a sorted list of [`RawSemToken`] into the LSP
 /// `data: Vec<SemanticToken>` shape. Tokens MUST be sorted by
 /// (line, start) — the collector guarantees that.
-fn encode_semantic_tokens(raw: &[RawSemToken]) -> Vec<SemanticToken> {
+fn encode_semantic_tokens(raw: &[RawSemToken], source: &str) -> Vec<SemanticToken> {
+    let lines: Vec<&str> = source.lines().collect();
     let mut out: Vec<SemanticToken> = Vec::with_capacity(raw.len());
     let mut prev_line: u32 = 0;
     let mut prev_start: u32 = 0;
     for t in raw {
+        let line_text = lines.get(t.line as usize).copied().unwrap_or("");
+        let utf16_start = byte_col_to_utf16_col(line_text, t.start);
+        let utf16_end = byte_col_to_utf16_col(line_text, t.start.saturating_add(t.length));
+        let utf16_length = utf16_end.saturating_sub(utf16_start);
         let delta_line = t.line - prev_line;
         let delta_start = if delta_line == 0 {
-            t.start - prev_start
+            utf16_start - prev_start
         } else {
-            t.start
+            utf16_start
         };
         out.push(SemanticToken {
             delta_line,
             delta_start,
-            length: t.length,
+            length: utf16_length,
             token_type: t.token_type,
             token_modifiers_bitset: t.modifiers,
         });
         prev_line = t.line;
-        prev_start = t.start;
+        prev_start = utf16_start;
     }
     out
 }
@@ -1187,7 +1192,7 @@ skill main()
                 modifiers: SemTokenModifier::DECLARATION,
             },
         ];
-        let encoded = encode_semantic_tokens(&raw);
+        let encoded = encode_semantic_tokens(&raw, "skill main\n");
         assert_eq!(encoded.len(), 2);
         assert_eq!(encoded[0].delta_line, 0);
         assert_eq!(encoded[0].delta_start, 0);
@@ -1200,6 +1205,29 @@ skill main()
             encoded[1].token_modifiers_bitset,
             SemTokenModifier::DECLARATION
         );
+    }
+
+    /// LSP `Position.character` and token `length` are UTF-16 code units. Glyph
+    /// carries byte columns internally in `RawSemToken`; the encoder is the
+    /// boundary that re-encodes to UTF-16 for the wire.
+    ///
+    /// Source line `"α x"` — α is 2 bytes UTF-8 / 1 UTF-16 code unit. A token
+    /// pointing at `x` (byte col 3) must be encoded with `delta_start = 2`
+    /// (UTF-16 column).
+    #[test]
+    fn encode_semantic_tokens_converts_byte_offsets_to_utf16() {
+        let src = "α x\n";
+        let raw = vec![RawSemToken {
+            line: 0,
+            start: 3,
+            length: 1,
+            token_type: 0,
+            modifiers: 0,
+        }];
+        let encoded = encode_semantic_tokens(&raw, src);
+        assert_eq!(encoded.len(), 1);
+        assert_eq!(encoded[0].delta_start, 2);
+        assert_eq!(encoded[0].length, 1);
     }
 
     #[test]
@@ -1220,7 +1248,7 @@ skill main()
                 modifiers: 0,
             },
         ];
-        let encoded = encode_semantic_tokens(&raw);
+        let encoded = encode_semantic_tokens(&raw, "skill main\n\n    description\n");
         // delta_line = 2; new line ⇒ delta_start is the absolute column.
         assert_eq!(encoded[1].delta_line, 2);
         assert_eq!(encoded[1].delta_start, 4);
@@ -1233,7 +1261,7 @@ skill main()
         let src = "skill main()\n    description: \"d\"\n    flow:\n        \"hi\"\n";
         let raw = collect_semantic_tokens(src, 0);
         assert!(!raw.is_empty(), "non-trivial source should produce tokens");
-        let encoded = encode_semantic_tokens(&raw);
+        let encoded = encode_semantic_tokens(&raw, src);
         assert_eq!(encoded.len(), raw.len());
         // First token's delta_line must equal the first raw token's line
         // (since prev_line starts at 0).
