@@ -598,6 +598,97 @@ mod tests {
     }
 
     #[test]
+    fn return_call_folds_into_final_step() {
+        // Relift of a PRD #159-ignored compile_source test. Driving expand
+        // directly bypasses the analyzer, which now flags an untyped
+        // meaningful return as Repairable and short-circuits compile.
+        // Defence-in-depth: the expand pass must still fold a meaningful
+        // `return <call>` on an untyped skill into the final step (8.4 row 3).
+        let md = compile_markdown(concat!(
+            "block summarize_changes()\n",
+            "    \"Summarize what was changed and why.\"\n",
+            "\n",
+            "skill update_docs()\n",
+            "    description: \"Update documentation.\"\n",
+            "    flow:\n",
+            "        \"Read the repository changes.\"\n",
+            "        return summarize_changes()\n",
+        ));
+        assert!(
+            md.contains("Return the result of summarize_changes()."),
+            "expected return folding in final step:\n{md}"
+        );
+    }
+
+    #[test]
+    fn return_bare_name_folds_into_final_step() {
+        // Relift of a PRD #159-ignored compile_source test. A meaningful
+        // `return <bare-name>` on an untyped skill must still fold into the
+        // final step when expand runs without the analyzer in front of it.
+        let md = compile_markdown(concat!(
+            "skill main()\n",
+            "    description: \"Main skill.\"\n",
+            "    flow:\n",
+            "        \"Compute the result.\"\n",
+            "        return result\n",
+        ));
+        assert!(
+            md.contains("Return the result of result."),
+            "expected return folding for bare name:\n{md}"
+        );
+    }
+
+    #[test]
+    fn return_row1_descriptive_target_folds_into_final_step() {
+        // Relift of a PRD #159-ignored CLI integration test (deleted fixture
+        // return_row1_descriptive.glyph). 8.4 row 1: a descriptive output
+        // target `return <"...">` on an untyped Tier-1 callee folds a
+        // `Produce: <description>.` sentence onto the final step.
+        let md = compile_markdown(concat!(
+            "block diagnose_scope()\n",
+            "    flow:\n",
+            "        \"Inspect the scope.\"\n",
+            "        return <\"a structured diagnosis\">\n",
+            "\n",
+            "skill main()\n",
+            "    description: \"Diagnose the scope.\"\n",
+            "    flow:\n",
+            "        diagnose_scope()\n",
+        ));
+        assert!(
+            md.contains("Inspect the scope. Produce: a structured diagnosis."),
+            "expected 8.4 row-1 descriptive return sentence:\n{md}"
+        );
+    }
+
+    #[test]
+    fn return_row4_named_no_type_folds_into_final_step() {
+        // Relift of a PRD #159-ignored CLI integration test (deleted fixture
+        // return_row4_named_no_type.glyph). 8.4 row 4: a named output target
+        // `return <name>` with no `-> Type` folds a `Produce <name>.` sentence
+        // (name in backticks, no parenthesized type) onto the final step.
+        let md = compile_markdown(concat!(
+            "block diagnose_scope()\n",
+            "    flow:\n",
+            "        \"Inspect the scope.\"\n",
+            "        return <diagnosis>\n",
+            "\n",
+            "skill main()\n",
+            "    description: \"Diagnose the scope.\"\n",
+            "    flow:\n",
+            "        diagnose_scope()\n",
+        ));
+        assert!(
+            md.contains("Inspect the scope. Produce `diagnosis`."),
+            "expected 8.4 row-4 named return sentence:\n{md}"
+        );
+        assert!(
+            !md.contains("`diagnosis` ("),
+            "row 4 must not include a parenthesized type:\n{md}"
+        );
+    }
+
+    #[test]
     fn skill_output_contract_folds_to_natural_prose() {
         let md = compile_markdown(
             "skill current() -> BranchName\n    description: \"Return the current branch.\"\n    flow:\n        return <current_branch>\n",

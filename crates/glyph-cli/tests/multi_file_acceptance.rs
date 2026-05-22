@@ -476,23 +476,6 @@ fn review_pr_parameters() {
 // ── AC: Return folding ─────────────────────────────────────────────
 
 #[test]
-#[ignore = "PRD #159: this surface is now unreachable end-to-end — the driver fixture fix_bug.glyph is typed (-> ChangeSummary) to satisfy #160, which gates off the row-3 fold; if it were untyped, the analyzer would short-circuit compile first. Relift as expand-pass-level test against IrArena directly. See todo/expand-todos.md."]
-fn fix_bug_return_folded() {
-    let (_dir, path) = setup_tempdir();
-    let output = compile_directory(&path);
-    assert!(output.status.success(), "compile failed");
-
-    let md = std::fs::read_to_string(path.join("fix_bug.md")).unwrap();
-
-    // return summarize_changes() should fold the block's body into the
-    // last step with "Return the result of" prefix or inline the body.
-    assert!(
-        md.contains("summarize_changes") || md.contains("List what was changed"),
-        "return folding should include summarize_changes block content"
-    );
-}
-
-#[test]
 fn review_pr_return_folded() {
     let (_dir, path) = setup_tempdir();
     let output = compile_directory(&path);
