@@ -119,7 +119,8 @@ skill <name>(<params>) -> <ReturnType>
 ```
 
 - Parentheses always required, even with no parameters.
-- Return type is optional. When present, it folds into the closing sentence of the final Step in compiled output (no separate `### Returns` section). Only **domain types** (`Plan`, `RepoContext`, `Diagnosis`, …) are valid here — there are no primitive type names like `String` or `Int` in author-facing source. Omit `->` entirely if the skill produces no meaningful return value.
+- **Return type required when the body has a meaningful `return <expr>`.** Bare `return` and `return none` (case-insensitive) are the no-meaningful-return form — omit `->` for them. A meaningful return without `-> DomainType` is repairable (`G::analyze::export-missing-return-type`; the ID predates the broadened scope and now fires on skills, private blocks, and export blocks alike). Only **domain types** (`Plan`, `RepoContext`, `Diagnosis`, …) are valid here — there are no primitive type names like `String` or `Int` in author-facing source.
+- The return is rendered as a dedicated `Output:` step at the end of the flow, not folded into the final Step's prose (see §8.8).
 - Parameters resolve at runtime: each declared parameter shows up in the compiled `## Parameters` section. The consuming agent must supply each *required* parameter (no default) from the user's request context. Parameters with defaults are optional at runtime.
 
 ### 5.2 `block`
@@ -141,6 +142,8 @@ block summarize_changes()
 ```
 
 The bare string is always treated as an instruction (Step). For metadata about the block itself, use `description:`.
+
+**Return type required when the body has a meaningful `return <expr>`.** Same rule as `skill` (§5.1): bare `return` and `return none` are the no-meaningful-return form; everything else must declare `-> DomainType` or it's repairable as `G::analyze::export-missing-return-type`.
 
 ### 5.3 `export block`
 
@@ -236,6 +239,11 @@ Rules:
 ### 5.6 `generated const` / `generated block` (informational)
 
 These are produced by the **repair pass** when your source uses an undefined name and the compiler can confidently materialize a definition. You don't write them by hand — the compiler writes them back into your source after a clarifying repair cycle. Treat them as cached, reviewable, source-level evidence of what the compiler inferred. If you don't like what was generated, either rename to use an explicit `const`/`block`, or edit the generated definition (then it's no longer "generated" in spirit; promote it to a hand-authored declaration). `generated const` always materializes a string-valued constant; numeric `generated const` is not produced by repair.
+
+Two shape rules enforced at parse time:
+
+- **Placement order.** All `generated const` / `generated block` decls must follow every non-generated top-level decl. Interleaving is a hard error (`G::parse::generated-decl-out-of-order`).
+- **`generated block` body shape.** The body must be exactly one inline-or-block string. No `flow:`, no `description:`, no `constraints:`, no `context:`, no `effects:` — anything else is a hard error (`G::parse::generated-block-body-shape`). If repair needs richer structure, promote to a hand-authored `block`.
 
 ---
 
@@ -851,9 +859,10 @@ Hard rules:
 - **At most one `return` per `flow:`**, and when present it must be the **last statement at the top level** (not inside `if`/`elif`/`else`).
 - `return` is forbidden inside branch arms — there is no early return in MVP.
 - **`export block` requires an explicit `return`** (even `return none`). For `skill` and private `block`, omitting `return` is fine; the compiler implicitly returns `none`.
-- The return type annotation (`-> Plan`, `-> Agent`, etc.) is **advisory** — used to shape compiled prose ("Your output should be a Plan containing…") and for nominal type matching at call boundaries. There is no runtime structural enforcement.
+- **A meaningful `return <expr>` requires `-> DomainType` on the header** (`G::analyze::export-missing-return-type`, repairable). Bare `return` and `return none` are the no-meaningful-return form and need no annotation. See §5.1.
+- The return type annotation (`-> Plan`, `-> Agent`, etc.) is otherwise **advisory** — used to shape compiled prose and for nominal type matching at call boundaries. There is no runtime structural enforcement.
 
-The return expression folds into the closing sentence of the final Step in compiled output. There is no `### Returns` section.
+**Compiled output.** The return is rendered as a dedicated `Output:` step at the end of the flow — a numbered top-level step (e.g., `5. Output: …`) rather than folded into the closing sentence of an earlier Step. There is no `## Returns` section. Inside a branch arm the post-MVP `if/else return` form will render as a lettered `a. Output: …` substep; in MVP, `return` only appears at the top level. See ADR 0026.
 
 #### Output target expressions (`<name>` and `<"description">`)
 
@@ -1202,7 +1211,7 @@ Notes:
 - `## Constraints` only if any unconditional constraints exist.
 - `## Steps` is omitted only for pure constraint-only skills (no `flow:` at all). At least one of `## Steps` or `## Constraints` is always present.
 - Branches project to a single numbered Step with lettered sub-steps per arm. Letters reset per arm.
-- The `return` expression folds into the final Step's closing sentence; there is no `## Returns` section.
+- The `return` expression is rendered as a dedicated `Output:` step at the end of the flow (e.g., `5. Output: …`); there is no `## Returns` section. See §8.8 and ADR 0026.
 - Imports compile away — no import paths or module names appear in the output.
 
 You don't need to know the exact projection to write a skill — but knowing the shape helps you anticipate what the agent will read.
@@ -1259,6 +1268,24 @@ What you experience day-to-day:
 - Diagnostics with IDs like `G::parse::<thing>`, `G::analyze::<thing>`, `G::repair::<thing>`. **Errors** must be fixed; **repairable** diagnostics are auto-fixed; **warnings** are informational.
 - Repair may rewrite your source — review the diff. Generated definitions appear after all hand-authored declarations and are clearly marked `generated const` / `generated block`.
 - If you want to harden a generated definition, promote it: rename `generated const X` to `const X` (or `export const X`) in source. Repair never overwrites hand-authored declarations.
+
+### 15.1 Where compiled `.md` files land
+
+By default `glyph compile <path>` writes each `.md` next to its `.glyph` source. Two flags override that:
+
+| Flag | What it does |
+|---|---|
+| `--output <file>` | Single-file input only. Writes the entry file's compiled `.md` to exactly `<file>`. With `--emit-ir`, the IR sidecar is `<file>` with `.md` replaced by `.ir.json`. |
+| `--out-dir <dir>` (`-o`) | Mirrors the input directory layout under `<dir>` — `some/root/sub/b.glyph` → `<dir>/sub/b.md`. Auto-creates `<dir>` and intermediate mirrored directories. |
+
+Rules:
+
+- **Mutually exclusive.** Passing both is a CLI error (exit 2).
+- **`--output` validation (exit 3 on misuse).** Rejects directory inputs, missing or non-directory parents, and existing-directory targets. A bare relative path (`renamed.md`) normalizes to cwd.
+- **Imports outside the input root with `--out-dir`** are written in-place next to the source rather than mirrored, and the compiler emits the warning `G::build::import-outside-out-dir` so you know an artifact landed outside `<dir>`.
+- Absence of both flags preserves the default same-directory behavior.
+
+See [docs/reference/cli.md](docs/reference/cli.md) for the full CLI contract.
 
 ---
 

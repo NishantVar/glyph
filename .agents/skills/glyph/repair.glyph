@@ -40,10 +40,10 @@ block repair_param_slot_in_non_instruction_string()
     "For each `G::parse::param-slot-in-non-instruction-string` diagnostic, strip the `{...}` braces, or move the slot into an instruction-bearing string."
 
 block materialize_undefined_name_as_const()
-    "For each `G::analyze::undefined-name` diagnostic, append `generated const <name> = \"<one sentence>\"` after every non-generated declaration in the file."
+    "For each `G::analyze::undefined-name` diagnostic, append `generated const <name> = \"<one sentence>\"` after every non-generated declaration in the file. Generated decls must come after all hand-authored decls — interleaving violates `G::parse::generated-decl-out-of-order`."
 
 block materialize_undefined_call_as_block()
-    "For each `G::analyze::undefined-call` diagnostic, append `generated block <name>(<inferred-params>)` with a single-string body, after every non-generated declaration."
+    "For each `G::analyze::undefined-call` diagnostic, append `generated block <name>(<inferred-params>)` with a single inline-or-block string body, after every non-generated declaration. The body must be exactly one string — no `flow:`, no `description:`, no `constraints:` / `context:` / `effects:` subsections — or it violates `G::parse::generated-block-body-shape`."
 
 block attach_explicit_role_marker()
     "For each `G::analyze::ambiguous-role` diagnostic, add an explicit role marker (`require` / `avoid` / `must` / `context`) to the offending entry, or convert it into an instruction string or a call."
@@ -55,7 +55,7 @@ block infer_and_attach_return_type()
     "For each `G::analyze::export-missing-return-type` diagnostic, infer a named domain type from the returned value (never a primitive name) and add ` -> DomainType` to the offending declaration's header (skill, block, or export block)."
 
 block extract_nested_branch_into_block()
-    "For each `G::analyze::nested-branch` diagnostic, extract the inner branch into a `generated block` and replace it with a call passing captured outer-scope bindings."
+    "For each `G::analyze::nested-branch` diagnostic, extract the inner branch into a `generated block` and replace it with a call passing captured outer-scope bindings. The extracted `generated block` must follow all hand-authored decls and its body must be a single string (see `materialize_undefined_call_as_block`); branch logic that does not fit a single-string body must instead be a hand-authored `block`."
 
 block synthesize_skill_description()
     "For each `G::analyze::missing-description` diagnostic on a skill, generate a single-line `description:` phrased as a trigger condition the consuming agent can match on."
