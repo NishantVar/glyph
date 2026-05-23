@@ -9,6 +9,10 @@
 // The extension is intentionally minimal — all language behaviour lives
 // in `glyph-lsp` so VS Code and Neovim share the same logic.
 
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { execFileSync } from "child_process";
 import * as vscode from "vscode";
 import {
   LanguageClient,
@@ -19,9 +23,48 @@ import {
 
 let client: LanguageClient | undefined;
 
+// Resolves the glyph binary when the user left serverPath at the default
+// "glyph" and the IDE's PATH doesn't include the install location.
+// Returns an absolute path on success, or "glyph" as a fallback.
+function resolveGlyphBinary(configured: string): string {
+  if (configured !== "glyph") {
+    return configured; // user explicitly set a path — trust it
+  }
+
+  // 1. Try whatever is on the IDE's inherited PATH first.
+  try {
+    const which = process.platform === "win32" ? "where" : "which";
+    const found = execFileSync(which, ["glyph"], { encoding: "utf8" }).trim().split("\n")[0].trim();
+    if (found && fs.existsSync(found)) {
+      return found;
+    }
+  } catch {
+    // not on PATH — fall through to candidate scan
+  }
+
+  // 2. Check well-known install locations.
+  const home = os.homedir();
+  const ext = process.platform === "win32" ? ".exe" : "";
+  const candidates = [
+    path.join(home, ".local", "bin", `glyph${ext}`),
+    path.join(home, ".cargo", "bin", `glyph${ext}`),
+    `/opt/homebrew/bin/glyph${ext}`,
+    `/usr/local/bin/glyph${ext}`,
+    `/usr/bin/glyph${ext}`,
+  ];
+
+  for (const c of candidates) {
+    if (fs.existsSync(c)) {
+      return c;
+    }
+  }
+
+  return "glyph"; // let the OS error surface in the activation failure message
+}
+
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const config = vscode.workspace.getConfiguration("glyph");
-  const serverPath = config.get<string>("serverPath", "glyph");
+  const serverPath = resolveGlyphBinary(config.get<string>("serverPath", "glyph"));
   const enableEffects = config.get<boolean>("enableEffects", false);
 
   const serverOptions: ServerOptions = {
