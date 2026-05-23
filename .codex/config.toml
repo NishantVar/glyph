@@ -1,0 +1,10 @@
+[mcp_servers.ast-grep]
+command = "ast-grep-mcp-server"
+
+[mcp_servers.graphify]
+args = [
+    "-m",
+    "graphify.serve",
+    "/Users/nishantvarshney/genesis/glyph/graphify-out/graph.json",
+]
+command = "python3"
