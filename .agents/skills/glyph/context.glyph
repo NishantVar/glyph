@@ -70,14 +70,19 @@ export const declarations = """
 Top-level building blocks (column 0):
 
 - `skill <name>(<params>) [-> ReturnType]` — the public, compiled
-  entrypoint (one per skill file). Parentheses always required. Return
-  type is optional and folds into the closing sentence of the final Step
-  in compiled output (no separate `### Returns` section). Only domain
+  entrypoint (one per skill file). Parentheses always required. A return
+  type is required whenever the body has a meaningful `return <expr>`;
+  bare `return` and `return none` are the no-meaningful-return form and
+  need no `->` (repairable as `G::analyze::export-missing-return-type`).
+  The return renders as a dedicated `Output:` step at the end of the
+  flow (no separate `### Returns` section — see ADR 0026). Only domain
   types are valid in `->` position; no primitive type names.
 
 - `block <name>(<params>) [-> Type]` — private callable helper, scoped to
   the file. Single-string shorthand: when a block body is exactly one
   instruction string and no other sub-sections, `flow:` may be omitted.
+  Same return-type rule as `skill`: required when the body has a
+  meaningful `return <expr>`, otherwise omit `->`.
 
 - `export block <name>(<params>) [-> Type]` — importable, self-contained
   block. Hard rules:
@@ -123,7 +128,12 @@ Top-level building blocks (column 0):
   the source uses an undefined name and the compiler can confidently
   materialize a definition. The author does not write these by hand;
   review them and promote (rename to `const`/`block`) if they should be
-  hand-authored.
+  hand-authored. Parser-enforced shape rules: (a) every generated decl
+  must come AFTER all non-generated top-level decls
+  (`G::parse::generated-decl-out-of-order`); (b) a `generated block`
+  body is exactly one inline-or-block string — no `flow:`, no
+  `description:`, no `constraints:` / `context:` / `effects:` subsections
+  (`G::parse::generated-block-body-shape`).
 """
 
 export const parameters = """
@@ -521,8 +531,9 @@ Notes:
   always present.
 - Branches project to a single numbered Step with lettered sub-steps
   per arm. Letters reset per arm.
-- The `return` expression folds into the final Step's closing
-  sentence. There is no `### Returns` section.
+- The `return` expression renders as a dedicated `Output:` step at the
+  end of the flow (e.g., `5. Output: …`), not folded into an earlier
+  Step's prose. There is no `### Returns` section. See ADR 0026.
 - Imports compile away — no import paths or module names appear in the
   output.
 """
