@@ -199,7 +199,7 @@ fn parse_md_structure(md: &str) -> MdStructure {
                     continue;
                 }
                 // Numbered list item: "1. ...", "2. ...", etc.
-                if is_numbered_item(trimmed) {
+                if !line.starts_with(" ") && !line.starts_with("\t") && is_numbered_item(trimmed) {
                     if let Some(item) = current_item.take() {
                         if let Some(ref mut h3) = current_h3 {
                             h3.items.push(item);
@@ -210,7 +210,10 @@ fn parse_md_structure(md: &str) -> MdStructure {
                         text,
                         sub_items: Vec::new(),
                     });
-                } else if is_bulleted_item(trimmed) {
+                } else if !line.starts_with(" ")
+                    && !line.starts_with("\t")
+                    && is_bulleted_item(trimmed)
+                {
                     if let Some(item) = current_item.take() {
                         if let Some(ref mut h3) = current_h3 {
                             h3.items.push(item);
@@ -1603,10 +1606,7 @@ fn find_body_h2<'a>(md_struct: &'a MdStructure, h2_name: &str) -> Option<&'a H2S
 fn count_body_items(h2: &H2Section) -> usize {
     h2.content_lines
         .iter()
-        .filter(|l| {
-            let t = l.trim_start();
-            is_numbered_item(t) || is_bulleted_item(t)
-        })
+        .filter(|l| is_numbered_item(l) || is_bulleted_item(l))
         .count()
 }
 
@@ -1639,7 +1639,7 @@ fn body_h2_items(h2: &H2Section) -> Vec<ListItem> {
         if trimmed.is_empty() {
             continue;
         }
-        if is_numbered_item(trimmed) {
+        if !line.starts_with(" ") && !line.starts_with("\t") && is_numbered_item(trimmed) {
             if let Some(it) = current.take() {
                 items.push(it);
             }
@@ -1647,7 +1647,7 @@ fn body_h2_items(h2: &H2Section) -> Vec<ListItem> {
                 text: strip_number_prefix(trimmed),
                 sub_items: Vec::new(),
             });
-        } else if is_bulleted_item(trimmed) {
+        } else if !line.starts_with(" ") && !line.starts_with("\t") && is_bulleted_item(trimmed) {
             if let Some(it) = current.take() {
                 items.push(it);
             }
@@ -3113,6 +3113,17 @@ mod tests {
         assert_eq!(item.sub_items.len(), 2);
         assert_eq!(item.sub_items[0].text, "First sub-step.");
         assert_eq!(item.sub_items[1].text, "Second sub-step.");
+    }
+
+    #[test]
+    fn count_body_items_ignores_indented_numbered_sublist() {
+        // A single top-level step whose body contains an indented numbered
+        // sub-list (3-space indent, as emitted by push_call_body for multi-line
+        // resolved bodies). `count_body_items` must count only the column-0
+        // top-level item, not the indented ones.
+        let md = "## Steps\n\n1. Install the editor extension.\n   1. List the assets attached to the latest release.\n   2. Download the .vsix asset.\n";
+        let s = parse_md_structure(md);
+        assert_eq!(find_h3_items(&s, "Steps"), 1);
     }
 
     // --- format output ---

@@ -241,6 +241,7 @@ pub fn emit_procedure(
                                         return_sentence: rs,
                                     }),
                                     &mut next_span_id,
+                                    &" ".repeat(format!("{}. ", step_num).len()),
                                 );
                             }
                             Some(2) => {
@@ -252,6 +253,7 @@ pub fn emit_procedure(
                                     &anchor,
                                     None,
                                     &mut next_span_id,
+                                    &" ".repeat(format!("{}. ", step_num).len()),
                                 );
                             }
                             Some(3) => {
@@ -263,6 +265,7 @@ pub fn emit_procedure(
                                     &anchor,
                                     None,
                                     &mut next_span_id,
+                                    &" ".repeat(format!("{}. ", step_num).len()),
                                 );
                             }
                             _ if c.bound_name.is_some() => {
@@ -273,6 +276,7 @@ pub fn emit_procedure(
                                     &anchor,
                                     None,
                                     &mut next_span_id,
+                                    &" ".repeat(format!("{}. ", step_num).len()),
                                 );
                             }
                             _ => {
