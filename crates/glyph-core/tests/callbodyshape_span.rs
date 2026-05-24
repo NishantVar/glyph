@@ -688,3 +688,117 @@ fn trivial_tier3_in_arm_renders_follow_procedure() {
         }
     }
 }
+
+// -- Regression: continuation-line indent must match the visible width of
+// the list marker the caller already wrote. Two-digit top-level steps
+// (4-char prefix "NN. ") and lettered branch substeps (6-char prefix
+// "   X. ") would otherwise be mis-indented and parse as siblings.
+
+#[test]
+fn two_digit_step_tier1_body_indents_by_four_spaces() {
+    let src = "block multi_line_routine()\n    \"\"\"\n    First step of the routine.\n    Second step of the routine.\n    Third step of the routine.\n    \"\"\"\n\nskill demo()\n    description: \"Demo with ten flow steps so the tenth crosses the single-digit boundary.\"\n    flow:\n        \"Step one.\"\n        \"Step two.\"\n        \"Step three.\"\n        \"Step four.\"\n        \"Step five.\"\n        \"Step six.\"\n        \"Step seven.\"\n        \"Step eight.\"\n        \"Step nine.\"\n        multi_line_routine()\n";
+    let md = compile_to_md(src);
+    // Sanity: the two-digit marker is present on its own line.
+    assert!(
+        md.contains("10. First step of the routine."),
+        "step 10 must render as a two-digit top-level item:\n{md}"
+    );
+    // Continuation lines must be indented by 4 spaces (width of "10. "),
+    // not 3 (which would parse as a sibling top-level item under
+    // markdown-it's indent-equals-one-tab rule).
+    assert!(
+        md.contains("\n    Second step of the routine."),
+        "continuation line under step 10 must indent by 4 spaces, got:\n{md}"
+    );
+    assert!(
+        md.contains("\n    Third step of the routine."),
+        "continuation line under step 10 must indent by 4 spaces, got:\n{md}"
+    );
+    // Negative: must NOT use the legacy 3-space indent for two-digit steps.
+    assert!(
+        !md.contains("\n   Second step of the routine."),
+        "two-digit step body must not retain the legacy 3-space indent:\n{md}"
+    );
+    // Validator must still pass (i.e. count_body_items must see one
+    // top-level item, not three).
+    let ir_json = compile_to_ir_json(src);
+    let violations = glyph_core::validate_output::validate_output(&ir_json, &md);
+    let body_violations: Vec<_> = violations
+        .iter()
+        .filter(|v| format!("{v:?}").to_lowercase().contains("body"))
+        .collect();
+    assert!(
+        body_violations.is_empty(),
+        "validate_output must not flag body-item-count for nested continuation: {body_violations:?}"
+    );
+}
+
+#[test]
+fn branch_substep_tier1_body_indents_by_six_spaces() {
+    let src = "block multi_line_routine()\n    \"\"\"\n    First step of the routine.\n    Second step of the routine.\n    Third step of the routine.\n    \"\"\"\n\nskill demo(scope = \".\" <\"target scope\">)\n    description: \"Branch arm contains a tier-1 multi-line call.\"\n    flow:\n        if scope == \".\":\n            multi_line_routine()\n";
+    let md = compile_to_md(src);
+    // Sanity: the lettered substep marker is present (`   a. ` lead).
+    assert!(
+        md.contains("   a. First step of the routine."),
+        "branch substep 'a' must render with a 3-space lead + letter marker:\n{md}"
+    );
+    // Continuation lines must be indented by 6 spaces (width of "   a. ").
+    assert!(
+        md.contains("\n      Second step of the routine."),
+        "continuation line under branch substep must indent by 6 spaces, got:\n{md}"
+    );
+    assert!(
+        md.contains("\n      Third step of the routine."),
+        "continuation line under branch substep must indent by 6 spaces, got:\n{md}"
+    );
+    // Negative: must NOT use the legacy 3-space indent for branch substeps.
+    assert!(
+        !md.contains("\n   Second step of the routine."),
+        "branch substep body must not retain the legacy 3-space indent:\n{md}"
+    );
+    // Validator must still pass.
+    let ir_json = compile_to_ir_json(src);
+    let violations = glyph_core::validate_output::validate_output(&ir_json, &md);
+    let body_violations: Vec<_> = violations
+        .iter()
+        .filter(|v| format!("{v:?}").to_lowercase().contains("body"))
+        .collect();
+    assert!(
+        body_violations.is_empty(),
+        "validate_output must not flag body-item-count for nested continuation: {body_violations:?}"
+    );
+}
+
+#[test]
+fn tier2_procedure_with_nested_numbered_body_passes_validator() {
+    let src = "skill procedure_nested_numbered_call()\n    description: \"Probe nested numbered list inside a Tier-2 procedure section.\"\n\n    flow:\n        wrapper()\n\nblock wrapper()\n    flow:\n        helper()\n        \"Second wrapper step.\"\n        \"Third wrapper step.\"\n        \"Fourth wrapper step.\"\n\nblock helper()\n    \"\"\"\n    Do the helper work:\n    1. First nested item.\n    2. Second nested item.\n    \"\"\"\n";
+    let md = compile_to_md(src);
+    assert!(
+        md.contains("### Procedure: wrapper"),
+        "expected Procedure: wrapper H3 section in:\n{md}"
+    );
+    assert!(
+        md.contains("   1. First nested item."),
+        "expected nested '1.' indented by 3 spaces in:\n{md}"
+    );
+    assert!(
+        md.contains("   2. Second nested item."),
+        "expected nested '2.' indented by 3 spaces in:\n{md}"
+    );
+    let ir_json = compile_to_ir_json(src);
+    let violations = glyph_core::validate_output::validate_output(&ir_json, &md);
+    let proc_violations: Vec<_> = violations
+        .iter()
+        .filter(|v| format!("{v:?}").contains("procedure-step-count-mismatch"))
+        .collect();
+    assert!(
+        proc_violations.is_empty(),
+        "validate_output must not flag procedure-step-count-mismatch for nested numbered body: {proc_violations:?}"
+    );
+}
+
+fn compile_to_ir_json(src: &str) -> String {
+    let arena = compile_to_arena(src);
+    glyph_core::emit_ir::serialize_ir_json(&arena, "test.glyph", false)
+        .expect("ir json serialization")
+}

@@ -327,19 +327,20 @@ pub(super) fn emit_lettered_substeps(
                         return_sentence: None,
                     }),
                     next_span_id,
+                    "      ",
                 );
             }
             IrNode::Call(c) if c.projection_tier == Some(2) => {
                 s.push_literal(format!("   {}. ", letter as char));
                 let kebab = crate::emit::templates::kebab_case(&c.target);
                 let anchor = format!("Follow the {kebab} procedure.");
-                crate::emit::scaffold::push_call_body(s, c, &anchor, None, next_span_id);
+                crate::emit::scaffold::push_call_body(s, c, &anchor, None, next_span_id, "      ");
             }
             IrNode::Call(c) if c.projection_tier == Some(3) => {
                 s.push_literal(format!("   {}. ", letter as char));
                 let path = c.procedure_path.as_deref().unwrap_or("unknown");
                 let anchor = crate::emit::templates::external_file_step(path);
-                crate::emit::scaffold::push_call_body(s, c, &anchor, None, next_span_id);
+                crate::emit::scaffold::push_call_body(s, c, &anchor, None, next_span_id, "      ");
             }
             IrNode::Call(c) => panic!("Call to `{}` survived past expand", c.target),
             IrNode::Branch(_) => {
