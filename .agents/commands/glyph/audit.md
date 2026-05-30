@@ -1,15 +1,13 @@
 ---
 name: audit
-description: Runs semantic checks (currently constraint-conflict scanning) against each declaration's resolved constraint set and surfaces any contradictions or tensions to the author.
+description: 'Runs semantic checks (currently constraint-conflict scanning) against each declaration''s resolved constraint set and surfaces any contradictions or tensions to the author.'
 ---
 
 ## Parameters
 
 - **source_path**. Required.
 
-## Instructions
-
-### Steps
+## Steps
 
 1. Follow the scan-constraint-conflicts procedure below.
 
@@ -21,3 +19,4 @@ description: Runs semantic checks (currently constraint-conflict scanning) again
 4. For each such declaration, load `.agents/skills/glyph/semantic_validation.md` and follow its procedure, passing the declaration's resolved constraint set as input.
 5. Aggregate the returned JSON conflict reports across every audited declaration. Surface a single human-readable report grouped by source file and declaration: each `contradiction` is reported as a fatal finding, each `tension` is reported as a warning. The contract is that the author edits the source and recompiles — `/glyph:audit` never rewrites the source or the compiled `.md`.
 6. Exit non-zero if any `contradiction` was reported; exit zero otherwise (tensions are warnings, not failures).
+

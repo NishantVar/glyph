@@ -1471,6 +1471,16 @@ fn find_callee_flow_count(flow: &[Value], proc_name: &str) -> Option<usize> {
 // Check: description-shape-missing (description-driven branch projection)
 // ---------------------------------------------------------------------------
 
+/// Does `md` contain `prose`, modulo the trailing-period strip the emitter
+/// applies before emitting `If <prose>:` / `Decide whether <prose> applies …`
+/// (see `emit/branch.rs::strip_trailing_period`). Matching the emitter's
+/// strip exactly keeps this check as strict as possible while accommodating
+/// the one transformation the emitter makes.
+fn md_contains_prose(md: &str, prose: &str) -> bool {
+    let normalized = prose.trim_end().trim_end_matches('.');
+    md.contains(normalized)
+}
+
 fn check_resolved_predicates(skill: &Value, md: &str, violations: &mut Vec<Violation>) {
     if let Some(flow) = skill.get("flow").and_then(|f| f.as_array()) {
         check_resolved_predicates_in_flow(flow, md, violations);
@@ -1535,7 +1545,7 @@ fn check_resolved_predicates_in_flow(flow: &[Value], md: &str, violations: &mut 
                                     let key = lookup_key_for_token(&tok, kind);
                                     if let Some(prose) = desc_map.get(key).and_then(|v| v.as_str())
                                     {
-                                        if !md.contains(prose) {
+                                        if !md_contains_prose(md, prose) {
                                             violations.push(Violation::new(
                                                 "G::expand::predicate-prose-missing",
                                                 format!(
@@ -1550,7 +1560,7 @@ fn check_resolved_predicates_in_flow(flow: &[Value], md: &str, violations: &mut 
                             }
                             ConditionTokenKind::PredicateLiteral
                                 // Literal form: the inner text IS the prose; no resolved_predicates lookup.
-                                if !md.contains(&tok) => {
+                                if !md_contains_prose(md, &tok) => {
                                     violations.push(Violation::new(
                                         "G::expand::predicate-prose-missing",
                                         format!(
@@ -3366,6 +3376,41 @@ mod tests {
     #[test]
     fn check_resolved_predicates_accepts_literal_form() {
         let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"\"the user opted in\"","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":null,"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
+        let md = "## Steps\n\n1. If the user opted in:\n   a. Skip.\n";
+        let violations = validate_output(ir, md);
+        assert!(violations.is_empty(), "got: {:?}", violations);
+    }
+
+    #[test]
+    fn check_resolved_predicates_accepts_const_form_with_trailing_period_in_ir() {
+        // IR's `resolved_predicates` value carries the trailing `.` from the
+        // authored block description; the emitter strips it (see
+        // emit/branch.rs `strip_trailing_period`) before rendering `If <prose>:`.
+        // The validator must accept the prose modulo that same strip.
+        let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"big","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":{"big":"the change is big."},"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
+        let md = "## Steps\n\n1. If the change is big:\n   a. Stop.\n";
+        let violations = validate_output(ir, md);
+        assert!(violations.is_empty(), "got: {:?}", violations);
+    }
+
+    #[test]
+    fn check_resolved_predicates_accepts_elif_arm_with_trailing_period_in_ir() {
+        // Mirrors `.agents/skills/glyph/SKILL.glyph`: a multi-arm branch whose
+        // both arms resolve to prose ending in `.`. The shared resolved_predicates
+        // map lives on the parent branch (IR schema §ElifBranch). Without the
+        // trailing-period-tolerant match the validator fires on every arm.
+        let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"big","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":{"big":"the change is big.","small":"the change is small."},"then_body":[],"elif_branches":[{"kind":"elif_branch","condition":"small","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"body":[]}],"else_body":null}]}}"#;
+        let md = "## Steps\n\n1. Decide which of the following applies:\n   If the change is big:\n      a. Stop.\n   If the change is small:\n      a. Continue.\n";
+        let violations = validate_output(ir, md);
+        assert!(violations.is_empty(), "got: {:?}", violations);
+    }
+
+    #[test]
+    fn check_resolved_predicates_accepts_literal_form_with_trailing_period() {
+        // Inline-literal predicate ending in `.`; the emitter strips the period
+        // before rendering. The literal call site (the `PredicateLiteral` arm
+        // in `check_resolved_predicates_in_flow`) must apply the same tolerance.
+        let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"\"the user opted in.\"","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":null,"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
         let md = "## Steps\n\n1. If the user opted in:\n   a. Skip.\n";
         let violations = validate_output(ir, md);
         assert!(violations.is_empty(), "got: {:?}", violations);

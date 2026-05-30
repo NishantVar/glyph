@@ -1,20 +1,18 @@
 ---
 name: compile
-description: Runs the full Glyph pipeline — compile, fmt, LLM repair loop, prose reshape, validate-output — and surfaces every emitted compiled `.md` (top-level skills and procedure files) to the user.
+description: 'Runs the full Glyph pipeline — compile, fmt, LLM repair loop, prose reshape, validate-output — and surfaces every emitted compiled `.md` (top-level skills and procedure files) to the user.'
 ---
 
 ## Parameters
 
 - **source_path**. Required.
 
-## Instructions
-
-### Steps
+## Steps
 
 1. Follow the compile-with-repair procedure below.
 2. Follow the expand-and-validate procedure below.
 3. Follow the final-review procedure below.
-4. Follow the show-pipeline-summary procedure below.
+4. Print a single `Issues:` line summarising the main failures encountered across every prior phase — repair iterations consumed in `compile_with_repair`, `validate-output` retries in `expand_and_validate`, and any residual `Needs your attention` items from `final_review`. If no phase encountered any failure, print `Issues: none` instead. Then print an `Output:` list of every emitted `.md` path grouped by source file. Do not print phase tables, exit codes, per-fix snippets, or any other pipeline internals beyond these two sections. Produce: absolute paths of every emitted .md file (zero or more, top-level skills and procedure files), grouped by source file, with any per-file review change summaries surfaced inline.
 
 ### Procedure: compile-with-repair
 
@@ -43,9 +41,4 @@ description: Runs the full Glyph pipeline — compile, fmt, LLM repair loop, pro
 5. If the report lists items only under `Auto-fixed`, re-run `glyph validate-output <dir>/<stem>.ir.json <md_path>` to keep the safety-sandwich invariant. On exit 1, hard-fail with the structural diagnostics. On exit 0, the review report is already shown to the user and the file is done.
 6. Budget at most 2 review passes per file. After the second pass, surface the final report verbatim — including any remaining `Needs your attention` items as warnings — and proceed without further rewriting.
 7. A source file that emitted zero `.md` files in `expand_and_validate` is a no-op for this phase — that is normal, not an error.
-
-### Procedure: show-pipeline-summary
-
-1. Print a single `Issues:` line summarising the main failures encountered across every prior phase — repair iterations consumed in `compile_with_repair`, `validate-output` retries in `expand_and_validate`, and any residual `Needs your attention` items from `final_review`. If no phase encountered any failure, print `Issues: none` instead.
-2. Then print an `Output:` list of every emitted `.md` path grouped by source file. Do not print phase tables, exit codes, per-fix snippets, or any other pipeline internals beyond these two sections.
 
