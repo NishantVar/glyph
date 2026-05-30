@@ -55,6 +55,49 @@ the symptom, the impact, and the proposed fix.
   export block, asserting both the preamble line and the authored description
   survive in the Tier 3 standalone output.
 
+- **`context <name>` marker as a flow statement inside a `block` body drops its
+  operand and degrades to a bare `context` step.** A `context`/constraint marker
+  used as a flow statement is valid per the language surface (sub-sections:
+  "Constraint and context markers may appear … as a flow statement inside
+  `flow:`"), and top-level markers should be hoisted into the block's
+  `context:` sub-section. Instead, when a `context <const-or-name>` marker
+  appears inside a private `block`'s `flow:`, the operand is silently dropped:
+  the marker is lowered to an `inline_instruction` node `{role: "step", text:
+  "context"}` and the block's `callee_context` is left empty. The same shape is
+  likely in `parse_block` as the export-block bug above — the body-level
+  `context <name>` branch captures the `context` keyword as a step but never
+  attaches the following name/string operand.
+
+  - **Reproduction:** compile `.agents/commands/glyph/decompile.glyph`. Its
+    procedure blocks (`classify_and_map_unplaced_content`,
+    `recover_conditionals_as_branches`, `append_unmapped_section`,
+    `retry_unmapped_with_fresh_eyes`) each carry
+    `context decompile_by_semantic_content_not_shape` (and one
+    `context classification_table`) as the first flow statement. In
+    `decompile.ir.json` every one becomes `{"kind":"inline_instruction",
+    "role":"step","text":"context"}` with `callee_context: []`.
+  - **Symptom for downstream tools:** the compiled `decompile.md` renders these
+    as meaningless numbered steps reading just `1. context` / `3. context`. The
+    referenced const prose (here the entire `classification_table` reference,
+    ~12 lines) never reaches the procedure in the compiled output, silently
+    degrading the consuming agent's guidance. `glyph validate-output` does not
+    catch it — structure (step count) is preserved, only the operand content is
+    lost.
+  - **Fix:** audit the body-level `context`/constraint-marker branch in the
+    private-`block` parse path (`crates/glyph-core/src/parse.rs`, mirroring the
+    `parse_export_block` fix from #168 round-3). Capture the marker's name/string
+    operand and route it to the block's context/constraints collection rather
+    than emitting a bare `context` step, then hoist it into `callee_context` in
+    Lower. Add a corpus fixture: a private `block` whose `flow:` begins with
+    `context <const>`, asserting the const prose surfaces as a `### Context`
+    bullet (not a `context` step) in the procedure projection.
+  - **Workaround applied:** `decompile.md` was hand-patched (2026-05-30) to
+    inline the dropped const prose into the affected steps so the output is
+    usable; the patch passes `validate-output` but keeps the content as steps
+    rather than `### Context` markers. **Do not recompile `decompile.glyph`
+    until this is fixed** — a recompile overwrites the patch and reintroduces
+    the bare `context` steps.
+
 ## Formatter (issue #109 follow-ups, codex pass-4 P2)
 
 - **Inline-form `description:` merge separator may not match design intent.**
@@ -137,6 +180,106 @@ the symptom, the impact, and the proposed fix.
   to the child procedure's section, or (c) keeping the literal `call <name>`
   but with a section anchor link. Cites: `crates/glyph-core/src/emit/scaffold.rs`
   step-rendering path.
+
+- **Inlined block's `return <"description">` output target folds onto the
+  preceding instruction as a lowercase sentence fragment.** When a `block`
+  whose flow ends with `return <"...">` is projected `inline` into a parent
+  step (e.g. the callee of a branch-arm call), the scaffold emitter
+  concatenates the block's last instruction string and the raw output-target
+  description into a single `resolved_body_text`, producing a run-on whose
+  second sentence starts lowercase after a period:
+  `…catches expand/validate/review failures. the sub-agent's compilation
+  outcome — either a success report …`. ADR 0026's `Output:`-step rendering
+  only covers a *top-level* `flow:` return; a block's return folded into an
+  inline projection has no equivalent deterministic handling, so the lowercase
+  output description leaks verbatim into the step body.
+  - **Reproduction:** `glyph compile .agents/commands/glyph/teach.glyph
+    --emit-ir`; inspect `teach.ir.json` flow node `n18` (the `if
+    ask_user(...)` branch). Both arm calls — `compile_via_subagent` (n19) and
+    `compile_inline` (n20) — have a `resolved_body_text` ending with the
+    lowercase output-target text from their source `return <"...">`
+    (`.agents/skills/glyph/passes.glyph:27,32`). Compiled `teach.md` Step 11
+    sub-steps show the defect verbatim.
+  - **Impact:** the `.md` is grammatically wrong (lowercase sentence-start,
+    orphaned noun phrase) and the **LLM expand/review pass is forced to repair
+    it** — capitalize and re-join — on every compile. Deterministic structure
+    that the emitter owns is being offloaded onto the bounded LLM, which is
+    exactly what the pipeline is supposed to avoid. The fix happens to be
+    classified `auto_fix`, but it should never reach the LLM at all.
+  - **Fix:** in the scaffold emitter's inline-projection path
+    (`crates/glyph-core/src/emit/scaffold.rs` step-rendering), decide a
+    deterministic rendering for an inlined block's terminal output target —
+    either (a) drop the output-target description for inline projections (the
+    parent step already states the outcome), or (b) render it as a properly
+    capitalized trailing sentence / clause rather than concatenating the raw
+    lowercase `<"...">` body. Needs a design call on which; ADR 0026 should be
+    extended to state how an inlined (non-top-level) return projects. Add a
+    corpus fixture: a block ending in `return <"lowercase description">` called
+    from a branch arm, asserting the compiled step body has no lowercase
+    sentence-start and `validate-output` exits 0.
+
+## Validator (validate-output) + IR emission
+
+- **Nested same-file procedures (reachable only via a call inside another
+  procedure's flow) fail `validate-output` with spurious
+  `procedure-count/name/order` mismatches.** When a `block` is called *inside
+  another block's flow* — rather than from the skill's top-level `flow:` — the
+  scaffold emitter correctly renders it as its own `### Procedure:` section, but
+  `validate-output` never counts it as an expected callee, so a clean compile
+  (`glyph compile … --emit-ir` exits 0) fails the post-expand safety gate.
+
+  - **Reproduction:** `$OBSIDIAN/goals/.agents/commands/notion-sync.glyph`
+    defines `block branch_over_drafter_reply()` (line 80) and calls it at line
+    71 from inside `retrospective_triage_yesterday`'s flow (within the `else`
+    arm). `glyph compile notion-sync.glyph --format json --emit-ir` → exit 0;
+    `glyph validate-output notion-sync.ir.json notion-sync.md` → exit 1 with:
+    ```
+    error[G::expand::procedure-count-mismatch]: expected 11 procedure sections but found 12
+    error[G::expand::procedure-name-mismatch]: procedure section `### Procedure: branch-over-drafter-reply` does not match any callee
+    error[G::expand::procedure-order]: procedure sections are not ordered by first reference from `## Steps`
+    ```
+  - **Verified independently:** a full source↔md semantic-equivalence audit
+    confirms the compiled `notion-sync.md` faithfully represents the source
+    (all 13 blocks, 10 constraints, 5 context consts present and
+    polarity-correct; `branch_over_drafter_reply` rendered both as the
+    in-`retrospective` reference and as a standalone section). The output is
+    correct — only the verification layer is wrong.
+  - **Root cause (two co-conspirators):**
+    1. `crates/glyph-core/src/validate_output.rs:1396`
+       `collect_procedure_calls` walks the top-level `flow` and recurses into
+       `branch` then/elif/else bodies, but **never recurses into a
+       `same_file_procedure` call's own `callee_flow`**. So a procedure
+       reachable only through a nested call is absent from
+       `unique_procedures`. The emitter renders 12 sections; the validator
+       expects 11 → `procedure-count-mismatch`; the orphan section matches no
+       collected callee → `procedure-name-mismatch`; and because it is never
+       referenced from the top-level `## Steps`, the `first_ref_order` walk
+       (validate_output.rs:1366-1393) drops it → `procedure-order`.
+    2. `crates/glyph-core/src/emit_ir.rs` under-serializes the nested call's
+       parent `callee_flow` in the `--emit-ir` JSON: `n36`
+       (`retrospective_triage_yesterday`) emits a `callee_flow` of only 3
+       `inline_instruction` nodes, dropping the `if/elif/else` branch nodes and
+       the nested `branch_over_drafter_reply()` call entirely. Even a fixed
+       `collect_procedure_calls` couldn't discover the nested callee from this
+       JSON — so both sides need fixing.
+  - **Fix:**
+    (a) In `emit_ir.rs`, serialize a `same_file_procedure` call's `callee_flow`
+        with full fidelity — preserve nested `branch` nodes and nested `call`
+        nodes (matching what the in-memory lowered IR and the scaffold emitter
+        already walk).
+    (b) In `validate_output.rs::collect_procedure_calls`, after pushing a
+        `same_file_procedure` target, recurse into that node's `callee_flow`
+        (and its branch arms) so transitively-reachable procedure callees join
+        the expected set. Likewise extend the `procedure-order` first-reference
+        scan (validate_output.rs:1366) to credit references that occur inside a
+        parent procedure section, not only inside top-level `## Steps`, so a
+        nested procedure orders relative to its referencing parent.
+  - **Add a corpus fixture:** a minimal `.glyph` with a top-level flow calling
+    one block, that block's flow calling a second block, asserting
+    `validate-output` exits 0 and both procedure sections are recognized.
+  - **Workaround until fixed:** the compiled `.md` is sound and safe to use;
+    the exit-1 from `validate-output` is a false negative for skills with
+    nested procedures.
 
 ## Testing
 
