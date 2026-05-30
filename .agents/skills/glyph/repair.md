@@ -8,12 +8,6 @@ description: 'Use during a /glyph:compile run when the compiler has exited 2 wit
 - **source_path**. Required.
 - **diagnostics**. Required.
 
-## Constraints
-
-- **Require:** Apply only rewrites that match a diagnostic in the input set. Do not introduce edits that no diagnostic asked for.
-- **Must:** Produce a Glyph source file that parses successfully under Phase 1 of the compiler. If it does not, the failed rewrite is discarded and the agent aborts without retry, surfacing `G::repair::output-invalid`.
-- **Must avoid:** regenerate a `generated const` or `generated block` whose name already resolves via an existing import, the standard library, or another local declaration.
-
 ## Context
 
 - **invocation-shape-is-one-file-with-its-diagnostics**
@@ -28,16 +22,22 @@ description: 'Use during a /glyph:compile run when the compiler has exited 2 wit
 
   When the rewritten output fails Phase 1 parsing, the agent does not retry. The failed rewrite is captured for inspection and the run aborts with `G::repair::output-invalid`.
 
+## Constraints
+
+- **Require:** Apply only rewrites that match a diagnostic in the input set. Do not introduce edits that no diagnostic asked for.
+- **Must:** Produce a Glyph source file that parses successfully under Phase 1 of the compiler. If it does not, the failed rewrite is discarded and the agent aborts without retry, surfacing `G::repair::output-invalid`.
+- **Must avoid:** regenerate a `generated const` or `generated block` whose name already resolves via an existing import, the standard library, or another local declaration.
+
 ## Steps
 
 1. For each `G::parse::operator-in-expression` diagnostic, rewrite the offending `x + y` form as a `combine(x, y)` call, or fold the operands into a single inline instruction string.
 2. For each `G::parse::param-slot-in-non-instruction-string` diagnostic, strip the `{...}` braces, or move the slot into an instruction-bearing string.
-3. For each `G::analyze::undefined-name` diagnostic, append `generated const <name> = "<one sentence>"` after every non-generated declaration in the file.
-4. For each `G::analyze::undefined-call` diagnostic, append `generated block <name>(<inferred-params>)` with a single-string body, after every non-generated declaration.
+3. For each `G::analyze::undefined-name` diagnostic, append `generated const <name> = "<one sentence>"` after every non-generated declaration in the file. Generated decls must come after all hand-authored decls — interleaving violates `G::parse::generated-decl-out-of-order`.
+4. For each `G::analyze::undefined-call` diagnostic, append `generated block <name>(<inferred-params>)` with a single inline-or-block string body, after every non-generated declaration. The body must be exactly one string — no `flow:`, no `description:`, no `constraints:` / `context:` / `effects:` subsections — or it violates `G::parse::generated-block-body-shape`.
 5. For each `G::analyze::ambiguous-role` diagnostic, add an explicit role marker (`require` / `avoid` / `must` / `context`) to the offending entry, or convert it into an instruction string or a call.
 6. For each `G::analyze::missing-return` diagnostic, append `return <expr>` as the final statement of the relevant `flow:`. Use `return none` when there is no meaningful value to return.
 7. For each `G::analyze::export-missing-return-type` diagnostic, infer a named domain type from the returned value (never a primitive name) and add ` -> DomainType` to the offending declaration's header (skill, block, or export block).
-8. For each `G::analyze::nested-branch` diagnostic, extract the inner branch into a `generated block` and replace it with a call passing captured outer-scope bindings.
+8. For each `G::analyze::nested-branch` diagnostic, extract the inner branch into a `generated block` and replace it with a call passing captured outer-scope bindings. The extracted `generated block` must follow all hand-authored decls and its body must be a single string (see `materialize_undefined_call_as_block`); branch logic that does not fit a single-string body must instead be a hand-authored `block`.
 9. For each `G::analyze::missing-description` diagnostic on a skill, generate a single-line `description:` phrased as a trigger condition the consuming agent can match on.
 10. For each `G::analyze::applies-on-undescribed-block` diagnostic where the referenced block is in the same file, generate a trigger-shaped `description:` for that block.
 11. For an `G::analyze::applies-on-undescribed-block` diagnostic where the referenced block is imported from another file, leave it alone — the diagnostic is non-repairable and the imported file must not be edited.

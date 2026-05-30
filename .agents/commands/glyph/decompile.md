@@ -1,6 +1,6 @@
 ---
 name: decompile
-description: Convert an existing compiled-form skill at `source_md` into a Glyph source file at `target`.
+description: 'Convert an existing compiled-form skill at `source_md` into a Glyph source file at `target`.'
 ---
 
 ## Parameters
@@ -8,9 +8,7 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
 - **source_md**. Required.
 - **target**. Required.
 
-## Instructions
-
-### Context
+## Context
 
 - **glyph-overview**
 
@@ -77,14 +75,19 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
   Top-level building blocks (column 0):
 
   - `skill <name>(<params>) [-> ReturnType]` — the public, compiled
-    entrypoint (one per skill file). Parentheses always required. Return
-    type is optional and folds into the closing sentence of the final Step
-    in compiled output (no separate `### Returns` section). Only domain
+    entrypoint (one per skill file). Parentheses always required. A return
+    type is required whenever the body has a meaningful `return <expr>`;
+    bare `return` and `return none` are the no-meaningful-return form and
+    need no `->` (repairable as `G::analyze::export-missing-return-type`).
+    The return renders as a dedicated `Output:` step at the end of the
+    flow (no separate `### Returns` section — see ADR 0026). Only domain
     types are valid in `->` position; no primitive type names.
 
   - `block <name>(<params>) [-> Type]` — private callable helper, scoped to
     the file. Single-string shorthand: when a block body is exactly one
     instruction string and no other sub-sections, `flow:` may be omitted.
+    Same return-type rule as `skill`: required when the body has a
+    meaningful `return <expr>`, otherwise omit `->`.
 
   - `export block <name>(<params>) [-> Type]` — importable, self-contained
     block. Hard rules:
@@ -130,7 +133,12 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
     the source uses an undefined name and the compiler can confidently
     materialize a definition. The author does not write these by hand;
     review them and promote (rename to `const`/`block`) if they should be
-    hand-authored.
+    hand-authored. Parser-enforced shape rules: (a) every generated decl
+    must come AFTER all non-generated top-level decls
+    (`G::parse::generated-decl-out-of-order`); (b) a `generated block`
+    body is exactly one inline-or-block string — no `flow:`, no
+    `description:`, no `constraints:` / `context:` / `effects:` subsections
+    (`G::parse::generated-block-body-shape`).
 
 - **parameters**
 
@@ -528,8 +536,9 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
     always present.
   - Branches project to a single numbered Step with lettered sub-steps
     per arm. Letters reset per arm.
-  - The `return` expression folds into the final Step's closing
-    sentence. There is no `### Returns` section.
+  - The `return` expression renders as a dedicated `Output:` step at the
+    end of the flow (e.g., `5. Output: …`), not folded into an earlier
+    Step's prose. There is no `### Returns` section. See ADR 0026.
   - Imports compile away — no import paths or module names appear in the
     output.
 
@@ -738,7 +747,29 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
 
   Values: "..."  """..."""  3  -1  0.8  true  false  none
 
-### Steps
+## Constraints
+
+- **Must:** Indent every body with exactly 4 spaces. Tabs are a hard error and there are no braces or `end` keywords.
+- **Must avoid:** use `String`, `Int`, `Float`, `Bool`, or `None` as a type annotation in author-facing source. Use named domain types (`BranchName`, `Severity`, `Confirmation`) instead.
+- **Must avoid:** build strings with `${...}`, `+` concatenation, or any other template syntax. The only template-like form is `{name}` parameter slots, legal solely inside instruction-bearing strings.
+- **Must avoid:** write the agent-facing Markdown prose by hand. The Expand pass produces the prose; the author writes structure and intent only.
+- **Must:** ensure every skill file contains exactly one `skill` declaration. Library files contain zero. Two `skill` declarations in one file is a hard error.
+- **Must:** place at most one `return` per `flow:`, and when present it must be the last statement at the top level — never inside an `if`/`elif`/`else` branch arm.
+- **Must:** give every parameter on an `export block` a default value. A required-without-default parameter is a hard error with no LLM repair.
+- **Must:** end every `export block` with an explicit `return` statement (use `return none` if there is no meaningful return value).
+- **Must avoid:** place `return` inside an `if`/`elif`/`else` branch arm. There is no early return in MVP — `return` is restricted to the top level of `flow:` and must be last.
+- **Must avoid:** use `{name}` parameter slots in `description:` bodies, parameter defaults, or any string that is not instruction-bearing. Slots are legal only inside `flow:` instruction strings, string-valued constant bodies, constraint texts, and string arguments to stdlib calls.
+- **Require:** Decompile by semantic content, not by Markdown shape. Authors write meaning in whatever packaging they have on hand — your job is to recover the meaning into Glyph constructs (block, if, flow step, parameter, constraint, context, description, return). UNMAPPED is a last resort, not a fallback for unfamiliar Markdown shapes.
+- **Require:** Reach for the smallest viable surface — `skill`, `require`/`avoid`, `flow:`, inline strings, calls, and `with`. Promote to `block`, named `const`, or types only when they pay for themselves.
+- **Require:** When you do annotate a type, give it a domain name that tells an agent what role the value plays (`BranchName`, `Plan`, `Diagnosis`) — not a primitive-feeling label.
+- **Require:** Ensure any block consulted via `BLOCKNAME.applies()` carries a `description:` — that description is the predicate the agent matches against current context. Missing description on an imported block is a hard error.
+- **Require:** After running the compiler, review the source diff. Repair may have inserted `generated const` / `generated block` definitions, hoisted markers into `constraints:`, or generated a missing `description:`. Promote anything you want to harden by renaming `generated …` to `const` / `block`.
+- **Avoid:** Writing a bare string-valued constant name in `flow:` without a marker. Wrap it with `context`/`require`/`avoid`/`must`, or convert it into a `block` if it really represents an instruction sequence.
+- **Avoid:** Reaching for `must` / `must avoid` for everyday rules. Reserve hard markers for genuinely non-negotiable constraints; default to soft `require` / `avoid`.
+- **Avoid:** Stacking nested calls (`apply(merge(base, overlay(ctx)))`). Nested calls are legal but read and visualize better as named intermediate bindings.
+- **Avoid:** Starting an `avoid` or `must avoid` constraint's const body with a negation word (`do not`, `never`, `no`) — the polarity marker already supplies the negative, so a negation-leading body produces a double-negative bullet (`Avoid do not touch …`). Phrase the body as a noun or gerund phrase that completes `Avoid X` cleanly.
+
+## Steps
 
 1. Read the file at {source_md}. Split the YAML frontmatter from the Markdown body. Within the body, locate the `## Parameters`, `### Context`, `### Steps`, and `### Constraints` sub-sections — note which are present and which are absent.
 2. Follow the map-frontmatter-to-skill-header procedure below.
@@ -752,36 +783,14 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
 10. Scan every instruction string in `flow:` bodies. For any string longer than 10 words, extract it into a named `block` (or `export block` if it must be reachable from another file) and replace the inline string with a call to that block. Pick a verb-phrase name that describes the step's intent. Scan every inline string used as a marker body (`require`/`avoid`/`must`/`must avoid`/`context`) or as a `context:` entry. For any string longer than 10 words, extract it into a named `const` constant (or `export const` if another file imports it) and replace the inline string with a bare-name reference. Skip `description:` strings — leave them inline.
 11. Reorder top-level declarations in the file so that the single `skill` declaration appears first, every `block` and `export block` follows it, and every `const` and `export const` constant comes last. Preserve `import` statements at the very top of the file, above the `skill` declaration.
 12. Rename the file at {source_md} by prepending `old_` to its basename (e.g. `foo.md` becomes `old_foo.md` in the same directory). This preserves the original compiled skill so the upcoming Glyph compile of {target} does not overwrite it. If a file already exists at the destination, abort and surface the conflict to the user — do not overwrite.
-13. Ask the user whether to compile the Glyph source at {target} in a sub-agent (isolated context, more reliable for large skills) or inline (faster, lower overhead). Then drive the full Glyph pipeline via the chosen path — deterministic compile, repair loop, expand, validate, review. If sub-agent: spawn one and have it run the `/glyph:compile` slash command. If inline: load the compile skill content from `.agents/commands/glyph/compile.md` (resolve via the `glyph:compile` slash command if available) and execute its steps yourself, in this conversation. The deterministic compiler alone is not sufficient for verification: only the full pipeline catches expand/validate/review failures. Capture the result as either a success report listing every emitted `.md` path, or the verbatim list of compilation errors — you will consult this outcome in the next step.
+13. Ask the user whether to compile the Glyph source at {target} in a sub-agent (isolated context, more reliable for large skills) or inline (faster, lower overhead). Then drive the full Glyph pipeline via the chosen path — deterministic compile, repair loop, expand, validate, review. If sub-agent: spawn one and have it run the `/glyph:compile` slash command. If inline: load the compile skill content from `.agents/commands/glyph/compile.md` (resolve via the `glyph:compile` slash command if available) and execute its steps yourself, in this conversation. The deterministic compiler alone is not sufficient for verification: only the full pipeline catches expand/validate/review failures. On success, list every emitted `.md` path; on failure, list every diagnostic verbatim. the compilation outcome — either a success report listing the emitted .md paths, or the verbatim list of compilation errors. Refer to this result as compile_outcome.
 14. Decide which of the following applies and follow only that path:
    If there are no errors in compile_outcome:
    a. Follow the retry-unmapped-with-fresh-eyes procedure.
    b. Spawn a sub-agent and instruct it to load `.agents/skills/glyph/decompile_review.md` and follow that procedure, passing the renamed original (same directory as {source_md}, with `old_` prepended to its basename) as `original_md`, and the freshly recompiled `.md` produced from {target} (same directory as {target}, same stem with the `.glyph` extension replaced by `.md`) as `recompiled_md`. Print the resulting equivalence report to the user verbatim.
    Otherwise:
-   a. Print every diagnostic from the compilation result you just produced to the user verbatim. The recompile of {target} failed, so equivalence review against the original is not meaningful — flag the decompile as incomplete and ask the user to fix the source before retrying. Do not return yet — the next step still runs to handle filename cleanup.
-15. This step always runs — regardless of whether the compile succeeded or errored. First, if a recompiled `.md` was produced (same directory as {target}, same stem with `.glyph` replaced by `.md`), restore the original skill name in its frontmatter: Glyph identifier rules force hyphens in skill names to become underscores during decompile (e.g. `obsidian-markdown` becomes `obsidian_markdown`), so read the original `name:` field from the renamed original (`old_<basename>.md` in the same directory as {source_md}) and overwrite only the recompiled file's frontmatter `name:` field with that original value — do not touch any other content. If the compile errored and no recompiled file exists, skip this part. Second, if the equivalence check did not pass — including the case where it could not run because the compile failed — ask the user whether to revert the filenames so the original compiled output is restored to its previous path. If the user agrees: rename `old_<basename>.md` back to `<basename>.md` (removing the `old_` prefix), and if a recompiled `.md` exists, rename it by prefixing its basename with `new_` (so `<basename>.md` becomes `new_<basename>.md`). If a destination already exists during either rename, abort and surface the conflict to the user — do not overwrite. If the equivalence check passed or the user declines the revert, leave both files in place.
-
-### Constraints
-
-- You must indent every body with exactly 4 spaces. Tabs are a hard error and there are no braces or `end` keywords.
-- You must never use `String`, `Int`, `Float`, `Bool`, or `None` as a type annotation in author-facing source. Use named domain types (`BranchName`, `Severity`, `Confirmation`) instead.
-- You must never build strings with `${...}`, `+` concatenation, or any other template syntax. The only template-like form is `{name}` parameter slots, legal solely inside instruction-bearing strings.
-- You must never write the agent-facing Markdown prose by hand. The Expand pass produces the prose; the author writes structure and intent only.
-- You must ensure every skill file contains exactly one `skill` declaration. Library files contain zero. Two `skill` declarations in one file is a hard error.
-- You must place at most one `return` per `flow:`, and when present it must be the last statement at the top level — never inside an `if`/`elif`/`else` branch arm.
-- You must give every parameter on an `export block` a default value. A required-without-default parameter is a hard error with no LLM repair.
-- You must end every `export block` with an explicit `return` statement (use `return none` if there is no meaningful return value).
-- You must never place `return` inside an `if`/`elif`/`else` branch arm. There is no early return in MVP — `return` is restricted to the top level of `flow:` and must be last.
-- You must never use `{name}` parameter slots in `description:` bodies, parameter defaults, or any string that is not instruction-bearing. Slots are legal only inside `flow:` instruction strings, string-valued constant bodies, constraint texts, and string arguments to stdlib calls.
-- Decompile by semantic content, not by Markdown shape. Authors write meaning in whatever packaging they have on hand — your job is to recover the meaning into Glyph constructs (block, if, flow step, parameter, constraint, context, description, return). UNMAPPED is a last resort, not a fallback for unfamiliar Markdown shapes.
-- Reach for the smallest viable surface — `skill`, `require`/`avoid`, `flow:`, inline strings, calls, and `with`. Promote to `block`, named `const`, or types only when they pay for themselves.
-- When you do annotate a type, give it a domain name that tells an agent what role the value plays (`BranchName`, `Plan`, `Diagnosis`) — not a primitive-feeling label.
-- Ensure any block consulted via `BLOCKNAME.applies()` carries a `description:` — that description is the predicate the agent matches against current context. Missing description on an imported block is a hard error.
-- After running the compiler, review the source diff. Repair may have inserted `generated const` / `generated block` definitions, hoisted markers into `constraints:`, or generated a missing `description:`. Promote anything you want to harden by renaming `generated …` to `const` / `block`.
-- Avoid writing a bare string-valued constant name in `flow:` without a marker. Wrap it with `context`/`require`/`avoid`/`must`, or convert it into a `block` if it really represents an instruction sequence.
-- Avoid reaching for `must` / `must avoid` for everyday rules. Reserve hard markers for genuinely non-negotiable constraints; default to soft `require` / `avoid`.
-- Avoid stacking nested calls (`apply(merge(base, overlay(ctx)))`). Nested calls are legal but read and visualize better as named intermediate bindings.
-- Avoid starting an `avoid` or `must avoid` constraint's const body with a negation word (`do not`, `never`, `no`) — the polarity marker already supplies the negative, so a negation-leading body produces a double-negative bullet (`Avoid do not touch …`). Phrase the body as a noun or gerund phrase that completes `Avoid X` cleanly.
+   a. Print every diagnostic in compile_outcome to the user verbatim. The recompile of {target} failed, so equivalence review against the original is not meaningful — flag the decompile as incomplete and ask the user to fix the source before retrying. Do not return yet — the next step still runs to handle filename cleanup.
+15. This step always runs — regardless of whether the compile succeeded or errored. First, if a recompiled `.md` was produced (same directory as {target}, same stem with `.glyph` replaced by `.md`), restore the original skill name in its frontmatter: Glyph identifier rules force hyphens in skill names to become underscores during decompile (e.g. `obsidian-markdown` becomes `obsidian_markdown`), so read the original `name:` field from the renamed original (`old_<basename>.md` in the same directory as {source_md}) and overwrite only the recompiled file's frontmatter `name:` field with that original value — do not touch any other content. If the compile errored and no recompiled file exists, skip this part. Second, if the equivalence check did not pass — including the case where it could not run because the compile failed — ask the user whether to revert the filenames so the original compiled output is restored to its previous path. If the user agrees: rename `old_<basename>.md` back to `<basename>.md` (removing the `old_` prefix), and if a recompiled `.md` exists, rename it by prefixing its basename with `new_` (so `<basename>.md` becomes `new_<basename>.md`). If a destination already exists during either rename, abort and surface the conflict to the user — do not overwrite. If the equivalence check passed or the user declines the revert, leave both files in place. Produce: path to the produced .glyph file.
 
 ### Procedure: map-frontmatter-to-skill-header
 
@@ -791,31 +800,31 @@ description: Convert an existing compiled-form skill at `source_md` into a Glyph
 
 ### Procedure: classify-and-map-unplaced-content
 
-1. Frame this procedure with the guiding principle that decompilation works by semantic content, not by Markdown shape — recover meaning into Glyph constructs and treat UNMAPPED as a last resort, never a fallback for unfamiliar Markdown shapes.
+1. context
 2. Walk the compiled skill body section by section, including non-canonical sub-sections (custom `##` / `###` headers like `## Variables`, `## Workflow`, `## Cookbook`, `### Sending prompts to running sessions`, etc.) and any prose that has not yet been placed by frontmatter mapping. For each unit of unplaced prose, classify it semantically against the catalog of Glyph constructs before deciding it has no Glyph home.
-3. Anchor the classifier on this reference table: prose shaped like "When X" / "If you need Y" / "For the case where" / "Whenever Z" maps to a branch (use `.applies()` when the predicate ships with a block body, an inline string predicate for one-off arms, or a named string `const` when the predicate recurs); a sequence of imperative actions under any header maps to a `block` with a `flow:` body called from the parent flow; "Always" / "Must" / "Never" / "Avoid" / "Prefer" / "Consider" prose maps to a constraint marker with polarity recovered from the verb; if content is neither an instruction (flow step, call, branch, return) nor a constraint (polarity rule) — including reference material such as code snippets, command listings, tables, diagrams, and worked examples — it belongs in `context:` (embed multi-line material as a `"""..."""` block-string const; accept that code-fence formatting is lost but semantic content is preserved; exception: if the template source itself contains a literal `"""` sequence it cannot be embedded without corruption — leave it UNMAPPED with comment `// UNMAPPED: template contains literal triple-quote — cannot embed in Glyph block-string without corruption`); a `## Variables` / `## Configuration` / `## Settings` block of user-editable knobs maps to skill parameters with defaults; "EXAMPLES" or "e.g." trigger phrases fold into the trigger block's `description:`; a closing "This produces / returns / outputs X" maps to a `return <"X">` output target or a `-> DomainType`; an import from another skill or shared library maps to an `import` declaration; only harness/loader metadata the executing agent never reads is truly UNMAPPED — known harness keys: `trigger`, `allowed-tools`, `user-invocable`; emit each with `// UNMAPPED: harness metadata (frontmatter only, not agent-facing)`; every other content belongs in one of the buckets above.
+3. context
 4. Apply the mapping that the classifier produces. For branches: define a new `block` whose body holds the entire branch arm — its steps, its context bullets, and its constraint bullets — and replace the original branch site in the parent flow with an `if PROCNAME.applies()` chain that dispatches by description. Set each new block's `description:` to the predicate prose of its arm so `.applies()` can match against runtime context, rolling any example trigger phrases into the description string.
 5. For each context bullet and constraint bullet that came along inside an extracted arm, classify the wording. If it reads as a file-wide rule, hoist it to the parent skill's `context:` / `constraints:`. If it reads as scoped to this branch, leave it inside the procedure's own `context:` / `constraints:`. If the wording is ambiguous, ask the user.
 6. Recurse on each newly created block: scan its body for nested unplaced content and re-apply this procedure. Stop when no body contains unplaced content.
 
 ### Procedure: recover-conditionals-as-branches
 
-1. Frame this procedure with the guiding principle that decompilation works by semantic content, not by Markdown shape — recover meaning into Glyph constructs and treat UNMAPPED as a last resort, never a fallback for unfamiliar Markdown shapes.
+1. context
 2. Walk the recovered `flow:` steps. For each step that encodes a conditional — an `If <predicate>:` clause with lettered sub-steps, optionally followed by an `Otherwise:` arm with its own sub-steps — break it down into a Glyph `if` / `else` branching statement inline in `flow:`, rather than leaving it as a single prose instruction. The clause's predicate becomes the `if` condition; each arm's lettered sub-steps become that arm's body, mapped to inline instructions, calls, or nested branches.
-3. Before picking a condition form, classify the predicate: **data-driven** (tests a concrete value a call or data source can return — a JSON field, a command output, a file property) vs. **context-driven** (requires agent judgment about qualitative context — "the change is complex", "the user has opted out"). For data-driven predicates: add a binding step before the branch (`value = read_thing()`) and branch with `if value == "literal":` directly — do not reach for `.applies()`. For context-driven predicates: use `BLOCKNAME.applies()` when the predicate ships with a block body; a named string-`const` when the predicate stands on its own and recurs; an inline string literal for a one-off arm. Boolean / `and` / `or` / `not` apply to either class.
+3. Before picking a condition form, classify the predicate: data-driven (tests a concrete value a call or data source can return — a JSON field, a command output, a file property) vs. context-driven (requires agent judgment about qualitative context — "the change is complex", "the user has opted out"). For data-driven predicates: add a binding step before the branch (`value = read_thing()`) and branch with `if value == "literal":` directly — do not reach for `.applies()`. For context-driven predicates: use `BLOCKNAME.applies()` when the predicate ships with a block body; a named string-`const` when the predicate stands on its own and recurs; an inline string literal for a one-off arm. Boolean / `and` / `or` / `not` apply to either class.
 4. Recurse on each arm body — nested `If <predicate>:` / `Otherwise:` structures inside an arm become nested Glyph `if` / `else` statements. Stop when no arm contains an unmapped conditional.
 5. Never lift a conditional arm's contents into a top-level `return`. `return` is forbidden inside branch arms; if the original final step described what the skill produces, that step is handled by `recover_flow_from_steps`, not here.
 
 ### Procedure: append-unmapped-section
 
-1. Frame this procedure with the guiding principle that decompilation works by semantic content, not by Markdown shape — recover meaning into Glyph constructs and treat UNMAPPED as a last resort, never a fallback for unfamiliar Markdown shapes.
-2. Review the original compiled skill against everything mapped so far. UNMAPPED is a last resort: for each candidate unplaced item, re-run the classifier from `classify_and_map_unplaced_content` and confirm that every Glyph construct (block, if, flow step, parameter, constraint, context, description, return) has been considered and rejected before declaring the item UNMAPPED. Genuinely unmappable items are: (1) harness/loader metadata the executing agent never reads — known keys: `trigger`, `allowed-tools`, `user-invocable`; emit each with `// UNMAPPED: harness metadata (frontmatter only, not agent-facing)`; (2) templates whose source contains a literal `"""` sequence (cannot embed without corruption) — emit with `// UNMAPPED: template contains literal triple-quote — cannot embed in Glyph block-string without corruption`. Reference material, code snippets, tables, diagrams, and worked examples are not unmappable — embed them in `context:` using `"""..."""` block-string consts.
+1. context
+2. Review the original compiled skill against everything mapped so far. UNMAPPED is a last resort: for each candidate unplaced item, re-run the classifier from `classify_and_map_unplaced_content` and confirm that every Glyph construct (block, if, flow step, parameter, constraint, context, description, return) has been considered and rejected before declaring the item UNMAPPED. Genuinely unmappable items are harness/loader metadata the executing agent never reads — known harness keys: `trigger`, `allowed-tools`, `user-invocable`. Emit each with: `// UNMAPPED: harness metadata (frontmatter only, not agent-facing)`. Also unmappable: templates whose source contains a literal triple-quote sequence (cannot embed without corruption) — emit with: `// UNMAPPED: template contains literal triple-quote — cannot embed in Glyph block-string without corruption`. Reference material, code snippets, tables, diagrams, and worked examples are not unmappable — embed them in `context:` using triple-quoted block-string consts.
 3. If any unmapped content remains after that re-check, append it verbatim to the end of {target} under a `// UNMAPPED` header comment, with each item on its own `// `-prefixed line.
 4. Report each unmapped item to the user as an error: name the original content, list which Glyph constructs you considered and rejected, and state why it has no Glyph equivalent.
 
 ### Procedure: retry-unmapped-with-fresh-eyes
 
-1. Frame this procedure with the guiding principle that decompilation works by semantic content, not by Markdown shape — recover meaning into Glyph constructs and treat UNMAPPED as a last resort, never a fallback for unfamiliar Markdown shapes.
+1. context
 2. Re-open {target} and scan for any remaining `// UNMAPPED` comments. For each unmapped item, run the classify-and-map procedure on it a second time with the fully-assembled file in front of you — content that resisted classification on the first pass sometimes places cleanly once the surrounding structure exists.
 3. If the second pass produces a mapping, apply it to {target}, then re-run via the `/glyph:icompile` slash command on {target} (passing a brief description of the just-applied mapping as the change argument) to validate. Use `/glyph:icompile` rather than `/glyph:compile` because the retry edit is by definition a small, localized change applied on top of an already-successful compile — incremental compile is the right tool. If `/glyph:icompile` declines the edit as too large, fall back to `/glyph:compile`.
 4. If the second pass still cannot place an item, leave it as UNMAPPED in the file and flag the entire decompile as **uncertain** when reporting back to the user. In the user-facing report: name each remaining UNMAPPED item, list which Glyph constructs you considered and rejected for it, tell the user explicitly that the round-trip is incomplete, and ask them to review before trusting the output.

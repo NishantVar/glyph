@@ -1,6 +1,6 @@
 ---
 name: roundtrip
-description: Round-trip test of the Glyph compile and decompile pipelines. Walks `source` for .glyph files, pairs each with its sibling .md, dispatches one sub-agent per (file, direction) pair in parallel, semantically compares each pipeline's output against the original artifact, and prints an aggregate report with all drift surfaced verbatim.
+description: 'Round-trip test of the Glyph compile and decompile pipelines. Walks `source` for .glyph files, pairs each with its sibling .md, dispatches one sub-agent per (file, direction) pair in parallel, semantically compares each pipeline''s output against the original artifact, and prints an aggregate report with all drift surfaced verbatim.'
 ---
 
 ## Parameters
@@ -12,9 +12,15 @@ description: Round-trip test of the Glyph compile and decompile pipelines. Walks
   one of `both`, `compile`, or `decompile`. Selects which pipeline directions are exercised — `both` runs every surviving file through both directions in parallel.
   Default: "both".
 
-## Instructions
+## Constraints
 
-### Context
+- **Require:** Create a separate workspace under the archive root for each (file, direction) pair. Each workspace is a recursive copy of that entry's import-closure root and is the only filesystem location its pipeline writes to. Compile and decompile on the same file run in distinct workspaces, so they never race.
+- **Require:** Dispatch every (file, direction) sub-agent in a single parallel batch. Sequential dispatch defeats the purpose of the orchestrator and inflates wall-clock time. Wait for every sub-agent to finish before aggregating results.
+- **Require:** Relay every sub-agent's review report and error diagnostic verbatim into the aggregate report. The orchestrator is a relay, not an editor — the user judges whether each drift or failure is acceptable, and surface phrasing of the underlying reports must be preserved.
+- **Must:** Treat every .glyph and .md file under {source} as read-only for the entire run. Every pipeline write — repair, recompile, decompile, internal renames — targets a workspace under the archive root. After any run, no original file has been modified relative to its pre-run content.
+- **Must avoid:** emit the aggregate report as JSON, code-fenced data, or any other structured payload. The aggregate report is plain prose for a human reader, and the underlying sub-agent reports it relays are themselves plain prose.
+
+## Context
 
 - **purpose-is-smoke-detection-not-byte-equality**
 
@@ -131,7 +137,7 @@ description: Round-trip test of the Glyph compile and decompile pipelines. Walks
 
   The orchestrator does not interpret differences — it relays each sub-agent's underlying review report verbatim so the user can judge whether each drift is acceptable.
 
-### Steps
+## Steps
 
 1. Follow the gather-glyph-files-and-preflight procedure below.
 2. Decide which of the following applies and follow only that path:
@@ -142,14 +148,6 @@ description: Round-trip test of the Glyph compile and decompile pipelines. Walks
    b. Follow the spawn-one-subagent-per-file-and-direction procedure.
    c. Scan {source} for any leftover `*.roundtrip.*` files or directories. Under normal operation this sweep finds nothing — every transient lives inside a workspace under the archive root. Strays appear only when a sub-agent crashed before its workspace setup completed, leaving copies behind in {source}. Move every such stray into `<archive>/_orphans/` rather than deleting it; preserving them lets the user investigate post-run.
    d. Print the aggregate report to the user as plain text in the shape defined by aggregate_report_shape, and write the same text to `<archive>/REPORT.md` for post-run inspection. Lead with the header line naming the count of files tested and skipped plus the archive directory's absolute path. List one row per .glyph entry showing per-direction status (`PASS` / `DIFF` / `FAIL` / `SKIP`). Under a `Differences` section, relay every sub-agent's verbatim review-report body — do not interpret, summarise, or normalise the contents. Under a `Failures` section, relay every sub-agent's verbatim error diagnostic. Under a `Skipped` section, list every preflight-skipped entry with its skip reason. The user judges whether each drift or failure is acceptable; the orchestrator is a relay, not an editor.
-
-### Constraints
-
-- Create a separate workspace under the archive root for each (file, direction) pair. Each workspace is a recursive copy of that entry's import-closure root and is the only filesystem location its pipeline writes to. Compile and decompile on the same file run in distinct workspaces, so they never race.
-- Dispatch every (file, direction) sub-agent in a single parallel batch. Sequential dispatch defeats the purpose of the orchestrator and inflates wall-clock time. Wait for every sub-agent to finish before aggregating results.
-- Relay every sub-agent's review report and error diagnostic verbatim into the aggregate report. The orchestrator is a relay, not an editor — the user judges whether each drift or failure is acceptable, and surface phrasing of the underlying reports must be preserved.
-- You must treat every .glyph and .md file under {source} as read-only for the entire run. Every pipeline write — repair, recompile, decompile, internal renames — targets a workspace under the archive root. After any run, no original file has been modified relative to its pre-run content.
-- You must never emit the aggregate report as JSON, code-fenced data, or any other structured payload. The aggregate report is plain prose for a human reader, and the underlying sub-agent reports it relays are themselves plain prose.
 
 ### Procedure: gather-glyph-files-and-preflight
 
