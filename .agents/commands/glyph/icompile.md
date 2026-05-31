@@ -11,7 +11,7 @@ description: 'Apply a small targeted change to both the .glyph source and the si
 ## Constraints
 
 - **Require:** Every edit must touch both the .glyph source and the compiled .md so the two artifacts stay in lockstep.
-- **Must avoid:** invoke `glyph compile`, `glyph fmt`, or any other Glyph CLI subcommand on the source — the whole point of this skill is to bypass the pipeline and preserve unrelated compiled prose verbatim.
+- **Must avoid:** invoke `glyph compile`, `glyph fmt`, or any other source-mutating Glyph CLI subcommand — the whole point of this skill is to bypass the pipeline and preserve unrelated compiled prose verbatim. Read-only commands like `glyph validate-output` are fine; the ban is on commands that rewrite the source or the compiled `.md`.
 - **Avoid:** Do not touch sections of either file that the requested change does not affect — no adjacent reflows, no comment cleanup, no reordering of declarations or steps.
 
 ## Steps

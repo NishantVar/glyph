@@ -47,5 +47,5 @@ block verify_paired_consistency(source_path)
         "If anything is out of sync, surface the mismatch to the user and stop — do not attempt further fix-up edits in this run."
 
 const keep_files_in_sync = "Every edit must touch both the .glyph source and the compiled .md so the two artifacts stay in lockstep."
-const full_pipeline_run = "invoke `glyph compile`, `glyph fmt`, or any other Glyph CLI subcommand on the source — the whole point of this skill is to bypass the pipeline and preserve unrelated compiled prose verbatim"
+const full_pipeline_run = "invoke `glyph compile`, `glyph fmt`, or any other source-mutating Glyph CLI subcommand — the whole point of this skill is to bypass the pipeline and preserve unrelated compiled prose verbatim. Read-only commands like `glyph validate-output` are fine; the ban is on commands that rewrite the source or the compiled `.md`"
 const unrelated_edits = "Do not touch sections of either file that the requested change does not affect — no adjacent reflows, no comment cleanup, no reordering of declarations or steps."
