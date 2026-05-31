@@ -86,6 +86,10 @@ pub struct ProcedureContext<'a> {
     pub text: &'a str,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "emission entry point; long parameter list threads scaffold and IR context"
+)]
 pub fn emit_procedure(
     name: &str,
     description: &str,
@@ -237,6 +241,7 @@ pub fn emit_procedure(
                                         return_sentence: rs,
                                     }),
                                     &mut next_span_id,
+                                    &" ".repeat(format!("{}. ", step_num).len()),
                                 );
                             }
                             Some(2) => {
@@ -248,6 +253,7 @@ pub fn emit_procedure(
                                     &anchor,
                                     None,
                                     &mut next_span_id,
+                                    &" ".repeat(format!("{}. ", step_num).len()),
                                 );
                             }
                             Some(3) => {
@@ -259,6 +265,7 @@ pub fn emit_procedure(
                                     &anchor,
                                     None,
                                     &mut next_span_id,
+                                    &" ".repeat(format!("{}. ", step_num).len()),
                                 );
                             }
                             _ if c.bound_name.is_some() => {
@@ -269,6 +276,7 @@ pub fn emit_procedure(
                                     &anchor,
                                     None,
                                     &mut next_span_id,
+                                    &" ".repeat(format!("{}. ", step_num).len()),
                                 );
                             }
                             _ => {
@@ -326,7 +334,7 @@ pub fn emit_procedure(
         let rendered: Vec<String> = section
             .items
             .iter()
-            .map(|item| render_procedure_freeform_item(item))
+            .map(render_procedure_freeform_item)
             .filter(|s| !s.is_empty())
             .collect();
         match rendered.len() {

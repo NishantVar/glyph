@@ -133,12 +133,31 @@ pub(crate) struct Tier1FoldCtx {
 /// LLM-fill is needed) or the pre-formatted anchor sentence for
 /// Tier-2/3/Stdlib. `tier1` carries last-step folding context and is
 /// `None` for non-Tier-1 callers.
+fn indent_continuation_lines(body: &str, indent: &str) -> String {
+    if !body.contains('\n') {
+        return body.to_string();
+    }
+    let trimmed = body.trim_end_matches('\n');
+    let mut out = String::with_capacity(trimmed.len() + 16);
+    for (i, line) in trimmed.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+            if !line.is_empty() {
+                out.push_str(indent);
+            }
+        }
+        out.push_str(line);
+    }
+    out
+}
+
 pub(crate) fn push_call_body(
     s: &mut Scaffold,
     c: &crate::ir::IrCall,
     anchor_or_body: &str,
     tier1: Option<Tier1FoldCtx>,
     next_span_id: &mut u32,
+    continuation_indent: &str,
 ) {
     let needs_fill = call_needs_llm_fill(c);
     let projection = projection_mode_from(c);
@@ -169,6 +188,7 @@ pub(crate) fn push_call_body(
                 });
             } else {
                 let body_owned = substitute_local_refs_in(anchor_or_body, &c.local_refs);
+                let body_owned = indent_continuation_lines(&body_owned, continuation_indent);
                 let body = body_owned.as_str();
                 let rendered = if t1.is_last {
                     match (t1.return_sentence.as_deref(), body_is_empty) {
@@ -200,7 +220,10 @@ pub(crate) fn push_call_body(
                     },
                 });
             } else {
-                s.push_literal(anchor_or_body.to_string());
+                s.push_literal(indent_continuation_lines(
+                    anchor_or_body,
+                    continuation_indent,
+                ));
             }
         }
     }
@@ -442,6 +465,10 @@ fn producer_step_index(skill: &crate::ir::IrSkill, producer: crate::ir::NodeId) 
 pub struct SpanId(pub u32);
 
 #[derive(Clone, Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "boxing Span would change every Chunk construction/match site; out of scope for lint cleanup"
+)]
 pub enum Chunk {
     Literal(String),
     Span(SpanRef),
@@ -473,16 +500,28 @@ pub enum ProjectionMode {
 #[derive(Clone, Debug, Default)]
 pub struct SpanPayload {
     pub site_modifier: Option<String>,
+    #[allow(
+        dead_code,
+        reason = "read only under cfg(test); retained as emission metadata on the non-test read path"
+    )]
     pub resolved_body: Option<String>,
     pub condition_expression: Option<String>,
     pub resolved_predicates: Option<BTreeMap<String, String>>,
     pub classification: Option<crate::condition::ConditionClassification>,
+    #[expect(
+        dead_code,
+        reason = "populated from branch lowering; retained as emission metadata, not yet consumed on the read path"
+    )]
     pub predicate_shape: BranchPredicateShape,
     pub param_name: Option<String>,
     pub param_type: Option<String>,
     pub param_default: Option<String>,
     // New for CallBodyShape (see docs/superpowers/specs/2026-05-18-callbodyshape-span-emission-design.md §3.5):
     pub target_name: Option<String>,
+    #[allow(
+        dead_code,
+        reason = "CallBodyShape span metadata; read only under cfg(test) on the non-test read path"
+    )]
     pub projection_mode: Option<ProjectionMode>,
     pub local_refs: Vec<crate::ir::LocalRef>,
     pub post_merge_return_sentence: Option<String>,
@@ -918,9 +957,9 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                 &arena.type_registry,
             );
 
-            if visible_count == 0 && proc_sentence.is_some() {
+            if let Some(sentence) = proc_sentence.as_deref().filter(|_| visible_count == 0) {
                 // Return-only block: emit the §8.4 sentence as a standalone step.
-                s.push_literal(format!("1. {}\n", proc_sentence.unwrap()));
+                s.push_literal(format!("1. {sentence}\n"));
             } else {
                 let mut visible_idx: usize = 0;
                 for item in &items {
@@ -968,23 +1007,45 @@ pub fn build(arena: &IrArena, enable_effects: bool) -> Scaffold {
                                                 return_sentence,
                                             }),
                                             &mut next_span_id,
+                                            &" ".repeat(format!("{}. ", step_num).len()),
                                         );
                                     }
                                     Some(2) => {
                                         let callee_kebab = c.target.replace('_', "-");
                                         let anchor =
                                             format!("Follow the {callee_kebab} procedure below.");
-                                        push_call_body(&mut s, c, &anchor, None, &mut next_span_id);
+                                        push_call_body(
+                                            &mut s,
+                                            c,
+                                            &anchor,
+                                            None,
+                                            &mut next_span_id,
+                                            &" ".repeat(format!("{}. ", step_num).len()),
+                                        );
                                     }
                                     Some(3) => {
                                         let proc_path =
                                             c.procedure_path.as_deref().unwrap_or("unknown");
                                         let anchor = templates::external_file_step(proc_path);
-                                        push_call_body(&mut s, c, &anchor, None, &mut next_span_id);
+                                        push_call_body(
+                                            &mut s,
+                                            c,
+                                            &anchor,
+                                            None,
+                                            &mut next_span_id,
+                                            &" ".repeat(format!("{}. ", step_num).len()),
+                                        );
                                     }
                                     _ if c.bound_name.is_some() => {
                                         let anchor = format!("Call `{}`.", c.target);
-                                        push_call_body(&mut s, c, &anchor, None, &mut next_span_id);
+                                        push_call_body(
+                                            &mut s,
+                                            c,
+                                            &anchor,
+                                            None,
+                                            &mut next_span_id,
+                                            &" ".repeat(format!("{}. ", step_num).len()),
+                                        );
                                     }
                                     _ => {
                                         panic!(
@@ -1251,13 +1312,21 @@ fn emit_flow_section(
                             return_sentence,
                         }),
                         next_span_id,
+                        &" ".repeat(format!("{}. ", idx + 1).len()),
                     );
                 }
                 IrNode::Call(c) if c.projection_tier == Some(2) => {
                     s.push_literal(format!("{}. ", idx + 1));
                     let kebab_name = c.target.replace('_', "-");
                     let anchor = format!("Follow the {kebab_name} procedure below.");
-                    push_call_body(s, c, &anchor, None, next_span_id);
+                    push_call_body(
+                        s,
+                        c,
+                        &anchor,
+                        None,
+                        next_span_id,
+                        &" ".repeat(format!("{}. ", idx + 1).len()),
+                    );
 
                     if procedure_seen.insert(c.target.clone()) {
                         procedure_order.push(c.target.clone());
@@ -1267,7 +1336,14 @@ fn emit_flow_section(
                     s.push_literal(format!("{}. ", idx + 1));
                     let proc_path = c.procedure_path.as_deref().unwrap_or("unknown");
                     let anchor = templates::external_file_step(proc_path);
-                    push_call_body(s, c, &anchor, None, next_span_id);
+                    push_call_body(
+                        s,
+                        c,
+                        &anchor,
+                        None,
+                        next_span_id,
+                        &" ".repeat(format!("{}. ", idx + 1).len()),
+                    );
                 }
                 IrNode::Call(c) if c.bound_name.is_some() => {
                     // Flow-position-assignments §9.1: a stdlib or otherwise
@@ -1280,7 +1356,14 @@ fn emit_flow_section(
                     // modifier is present.
                     s.push_literal(format!("{}. ", idx + 1));
                     let anchor = format!("Call `{}`.", c.target);
-                    push_call_body(s, c, &anchor, None, next_span_id);
+                    push_call_body(
+                        s,
+                        c,
+                        &anchor,
+                        None,
+                        next_span_id,
+                        &" ".repeat(format!("{}. ", idx + 1).len()),
+                    );
                 }
                 IrNode::Call(c) => {
                     panic!(
@@ -1402,20 +1485,15 @@ fn trim_trailing_blank_line(s: &mut Scaffold) {
     // The last chunk (if any) is a Literal in the patterns above. If it ends with
     // a redundant trailing newline, trim. The cheapest correct implementation is to
     // walk the tail of `chunks` and pop newlines.
-    loop {
-        match s.chunks.last_mut() {
-            Some(Chunk::Literal(text)) => {
-                while text.ends_with("\n\n") {
-                    text.pop();
-                }
-                if text.is_empty() {
-                    s.chunks.pop();
-                    continue;
-                }
-                break;
-            }
-            _ => break,
+    while let Some(Chunk::Literal(text)) = s.chunks.last_mut() {
+        while text.ends_with("\n\n") {
+            text.pop();
         }
+        if text.is_empty() {
+            s.chunks.pop();
+            continue;
+        }
+        break;
     }
 }
 

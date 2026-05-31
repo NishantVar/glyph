@@ -107,7 +107,7 @@ fn site_tier3_toplevel_with_modifier_hard_fails() {
 const STDLIB_TOPLEVEL: &str = "import \"@glyph/std\" { subagent }\n\nskill delegate(scope = \".\") -> Report\n    description: \"Delegate work to a subagent.\"\n    flow:\n        subagent(scope) with \"focus on lint failures\"\n        return context\n";
 
 #[test]
-#[ignore = "stdlib end-to-end blocked on PR #149 / flow-assign-subagent-cli — re-enable when build_resolved_imports wires @glyph/std; remove #[ignore]"]
+
 fn site_stdlib_toplevel_with_modifier_hard_fails() {
     // End-to-end regression scaffold: gated #[ignore] until Task 9 / PR #149
     // teaches `compile_directory_with_options` to resolve `@glyph/std`. Once
@@ -115,7 +115,8 @@ fn site_stdlib_toplevel_with_modifier_hard_fails() {
     let dir = tempfile::tempdir().unwrap();
     let main_path = dir.path().join("delegate.glyph");
     std::fs::write(&main_path, STDLIB_TOPLEVEL).unwrap();
-    let result = glyph_core::compile_directory_with_options(&[main_path.clone()], false, false);
+    let result =
+        glyph_core::compile_directory_with_options(std::slice::from_ref(&main_path), false, false);
     let bag = result
         .outcomes
         .into_iter()
@@ -326,13 +327,14 @@ fn trivial_tier3_toplevel_renders_follow_procedure() {
 }
 
 #[test]
-#[ignore = "stdlib resolution blocked on PR #149 — same gate as site_stdlib_toplevel_with_modifier_hard_fails"]
+
 fn trivial_stdlib_toplevel_renders_follow_procedure() {
-    let src = "import \"@glyph/std\" { subagent }\n\nskill delegate(scope = \".\") -> Report\n    description: \"Delegate work to a subagent.\"\n    flow:\n        subagent(scope)\n        return context\n";
+    let src = "import \"@glyph/std\" { subagent }\n\nskill delegate(scope = \".\" <\"directory to delegate\">) -> Report\n    description: \"Delegate work to a subagent.\"\n    flow:\n        subagent(scope)\n        return context\n";
     let dir = tempfile::tempdir().unwrap();
     let main_path = dir.path().join("delegate.glyph");
     std::fs::write(&main_path, src).unwrap();
-    let result = glyph_core::compile_directory_with_options(&[main_path.clone()], false, false);
+    let result =
+        glyph_core::compile_directory_with_options(std::slice::from_ref(&main_path), false, false);
     let outcome = result
         .outcomes
         .into_iter()
@@ -354,6 +356,96 @@ fn trivial_stdlib_toplevel_renders_follow_procedure() {
         }
         other => panic!("expected Compiled outcome; got {other:?}"),
     }
+}
+
+// B06 concern 2: an aliased selective stdlib import (`subagent as spawn`)
+// must keep the Agent return-shape so the bound-name step renders the
+// agent prose, not the value prose.
+#[test]
+fn aliased_stdlib_subagent_renders_agent_shape() {
+    let src = "import \"@glyph/std\" { subagent as spawn }\n\nskill delegate(scope = \".\" <\"directory to delegate\">) -> Report\n    description: \"Delegate work to a subagent.\"\n    flow:\n        researcher = spawn(scope)\n        return context\n";
+    let dir = tempfile::tempdir().unwrap();
+    let main_path = dir.path().join("delegate.glyph");
+    std::fs::write(&main_path, src).unwrap();
+    let result =
+        glyph_core::compile_directory_with_options(std::slice::from_ref(&main_path), false, false);
+    let outcome = result
+        .outcomes
+        .into_iter()
+        .find(|(p, _)| p.file_name() == main_path.file_name())
+        .map(|(_, o)| o)
+        .expect("delegate.glyph outcome present");
+    match outcome {
+        glyph_core::FileOutcome::Compiled { diagnostics } => {
+            assert!(
+                diagnostics.sorted().is_empty(),
+                "aliased stdlib-bound Call must compile cleanly: {:?}",
+                diagnostics.sorted()
+            );
+            let md = std::fs::read_to_string(main_path.with_extension("md"))
+                .expect("compiled .md must exist");
+            assert!(
+                md.contains("Refer to this agent as 'researcher.'"),
+                "aliased stdlib subagent must render the Agent-shape step:\n{md}"
+            );
+        }
+        other => panic!("expected Compiled outcome; got {other:?}"),
+    }
+}
+
+// B06 concern 3: `load` is compiler-internal and not author-importable;
+// the compile/directory path must reject it (and unknown selective names)
+// with the same `G::analyze::import-private` diagnostic the check path uses.
+#[test]
+fn stdlib_load_import_is_rejected_on_compile_path() {
+    let src = "import \"@glyph/std\" { load }\n\nskill delegate(scope = \".\" <\"directory to delegate\">) -> Report\n    description: \"Delegate work to a subagent.\"\n    flow:\n        \"do work at {scope}\"\n        return context\n";
+    let dir = tempfile::tempdir().unwrap();
+    let main_path = dir.path().join("delegate.glyph");
+    std::fs::write(&main_path, src).unwrap();
+    let result =
+        glyph_core::compile_directory_with_options(std::slice::from_ref(&main_path), false, false);
+    let outcome = result
+        .outcomes
+        .into_iter()
+        .find(|(p, _)| p.file_name() == main_path.file_name())
+        .map(|(_, outcome)| match outcome {
+            glyph_core::FileOutcome::Compiled { diagnostics }
+            | glyph_core::FileOutcome::Failed { diagnostics } => diagnostics,
+            glyph_core::FileOutcome::Skipped { .. } => panic!("file should not be skipped"),
+        })
+        .expect("delegate.glyph outcome present");
+    let sorted = outcome.sorted();
+    assert!(
+        sorted.iter().any(|d| d.id == "G::analyze::import-private"),
+        "importing `load` from @glyph/std must be rejected: {sorted:?}"
+    );
+}
+
+// B06 concern 3: an unknown selective name from @glyph/std is rejected the
+// same way as `load`.
+#[test]
+fn stdlib_unknown_selective_name_is_rejected_on_compile_path() {
+    let src = "import \"@glyph/std\" { teleport }\n\nskill delegate(scope = \".\" <\"directory to delegate\">) -> Report\n    description: \"Delegate work to a subagent.\"\n    flow:\n        \"do work at {scope}\"\n        return context\n";
+    let dir = tempfile::tempdir().unwrap();
+    let main_path = dir.path().join("delegate.glyph");
+    std::fs::write(&main_path, src).unwrap();
+    let result =
+        glyph_core::compile_directory_with_options(std::slice::from_ref(&main_path), false, false);
+    let outcome = result
+        .outcomes
+        .into_iter()
+        .find(|(p, _)| p.file_name() == main_path.file_name())
+        .map(|(_, outcome)| match outcome {
+            glyph_core::FileOutcome::Compiled { diagnostics }
+            | glyph_core::FileOutcome::Failed { diagnostics } => diagnostics,
+            glyph_core::FileOutcome::Skipped { .. } => panic!("file should not be skipped"),
+        })
+        .expect("delegate.glyph outcome present");
+    let sorted = outcome.sorted();
+    assert!(
+        sorted.iter().any(|d| d.id == "G::analyze::import-private"),
+        "importing an unknown name from @glyph/std must be rejected: {sorted:?}"
+    );
 }
 
 #[test]
@@ -595,4 +687,118 @@ fn trivial_tier3_in_arm_renders_follow_procedure() {
             panic!("main.glyph should not be skipped");
         }
     }
+}
+
+// -- Regression: continuation-line indent must match the visible width of
+// the list marker the caller already wrote. Two-digit top-level steps
+// (4-char prefix "NN. ") and lettered branch substeps (6-char prefix
+// "   X. ") would otherwise be mis-indented and parse as siblings.
+
+#[test]
+fn two_digit_step_tier1_body_indents_by_four_spaces() {
+    let src = "block multi_line_routine()\n    \"\"\"\n    First step of the routine.\n    Second step of the routine.\n    Third step of the routine.\n    \"\"\"\n\nskill demo()\n    description: \"Demo with ten flow steps so the tenth crosses the single-digit boundary.\"\n    flow:\n        \"Step one.\"\n        \"Step two.\"\n        \"Step three.\"\n        \"Step four.\"\n        \"Step five.\"\n        \"Step six.\"\n        \"Step seven.\"\n        \"Step eight.\"\n        \"Step nine.\"\n        multi_line_routine()\n";
+    let md = compile_to_md(src);
+    // Sanity: the two-digit marker is present on its own line.
+    assert!(
+        md.contains("10. First step of the routine."),
+        "step 10 must render as a two-digit top-level item:\n{md}"
+    );
+    // Continuation lines must be indented by 4 spaces (width of "10. "),
+    // not 3 (which would parse as a sibling top-level item under
+    // markdown-it's indent-equals-one-tab rule).
+    assert!(
+        md.contains("\n    Second step of the routine."),
+        "continuation line under step 10 must indent by 4 spaces, got:\n{md}"
+    );
+    assert!(
+        md.contains("\n    Third step of the routine."),
+        "continuation line under step 10 must indent by 4 spaces, got:\n{md}"
+    );
+    // Negative: must NOT use the legacy 3-space indent for two-digit steps.
+    assert!(
+        !md.contains("\n   Second step of the routine."),
+        "two-digit step body must not retain the legacy 3-space indent:\n{md}"
+    );
+    // Validator must still pass (i.e. count_body_items must see one
+    // top-level item, not three).
+    let ir_json = compile_to_ir_json(src);
+    let violations = glyph_core::validate_output::validate_output(&ir_json, &md);
+    let body_violations: Vec<_> = violations
+        .iter()
+        .filter(|v| format!("{v:?}").to_lowercase().contains("body"))
+        .collect();
+    assert!(
+        body_violations.is_empty(),
+        "validate_output must not flag body-item-count for nested continuation: {body_violations:?}"
+    );
+}
+
+#[test]
+fn branch_substep_tier1_body_indents_by_six_spaces() {
+    let src = "block multi_line_routine()\n    \"\"\"\n    First step of the routine.\n    Second step of the routine.\n    Third step of the routine.\n    \"\"\"\n\nskill demo(scope = \".\" <\"target scope\">)\n    description: \"Branch arm contains a tier-1 multi-line call.\"\n    flow:\n        if scope == \".\":\n            multi_line_routine()\n";
+    let md = compile_to_md(src);
+    // Sanity: the lettered substep marker is present (`   a. ` lead).
+    assert!(
+        md.contains("   a. First step of the routine."),
+        "branch substep 'a' must render with a 3-space lead + letter marker:\n{md}"
+    );
+    // Continuation lines must be indented by 6 spaces (width of "   a. ").
+    assert!(
+        md.contains("\n      Second step of the routine."),
+        "continuation line under branch substep must indent by 6 spaces, got:\n{md}"
+    );
+    assert!(
+        md.contains("\n      Third step of the routine."),
+        "continuation line under branch substep must indent by 6 spaces, got:\n{md}"
+    );
+    // Negative: must NOT use the legacy 3-space indent for branch substeps.
+    assert!(
+        !md.contains("\n   Second step of the routine."),
+        "branch substep body must not retain the legacy 3-space indent:\n{md}"
+    );
+    // Validator must still pass.
+    let ir_json = compile_to_ir_json(src);
+    let violations = glyph_core::validate_output::validate_output(&ir_json, &md);
+    let body_violations: Vec<_> = violations
+        .iter()
+        .filter(|v| format!("{v:?}").to_lowercase().contains("body"))
+        .collect();
+    assert!(
+        body_violations.is_empty(),
+        "validate_output must not flag body-item-count for nested continuation: {body_violations:?}"
+    );
+}
+
+#[test]
+fn tier2_procedure_with_nested_numbered_body_passes_validator() {
+    let src = "skill procedure_nested_numbered_call()\n    description: \"Probe nested numbered list inside a Tier-2 procedure section.\"\n\n    flow:\n        wrapper()\n\nblock wrapper()\n    flow:\n        helper()\n        \"Second wrapper step.\"\n        \"Third wrapper step.\"\n        \"Fourth wrapper step.\"\n\nblock helper()\n    \"\"\"\n    Do the helper work:\n    1. First nested item.\n    2. Second nested item.\n    \"\"\"\n";
+    let md = compile_to_md(src);
+    assert!(
+        md.contains("### Procedure: wrapper"),
+        "expected Procedure: wrapper H3 section in:\n{md}"
+    );
+    assert!(
+        md.contains("   1. First nested item."),
+        "expected nested '1.' indented by 3 spaces in:\n{md}"
+    );
+    assert!(
+        md.contains("   2. Second nested item."),
+        "expected nested '2.' indented by 3 spaces in:\n{md}"
+    );
+    let ir_json = compile_to_ir_json(src);
+    let violations = glyph_core::validate_output::validate_output(&ir_json, &md);
+    let proc_violations: Vec<_> = violations
+        .iter()
+        .filter(|v| format!("{v:?}").contains("procedure-step-count-mismatch"))
+        .collect();
+    assert!(
+        proc_violations.is_empty(),
+        "validate_output must not flag procedure-step-count-mismatch for nested numbered body: {proc_violations:?}"
+    );
+}
+
+fn compile_to_ir_json(src: &str) -> String {
+    let arena = compile_to_arena(src);
+    glyph_core::emit_ir::serialize_ir_json(&arena, "test.glyph", false)
+        .expect("ir json serialization")
 }

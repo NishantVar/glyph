@@ -1,0 +1,7 @@
+import "./dep.glyph" { dep_text }
+
+skill main()
+    description: "Entry skill that imports a dependency."
+    require dep_text
+    flow:
+        "ok"

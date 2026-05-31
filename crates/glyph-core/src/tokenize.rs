@@ -33,6 +33,10 @@ pub enum TokenKind {
     Dot,
     /// `==` — branch condition equality (not a value-level operator).
     DoubleEquals,
+    /// `!=` — branch condition inequality (not a value-level operator).
+    /// Mirror of `DoubleEquals`; the parser surfaces it wherever `==` is
+    /// accepted (see `parse_branch_condition`).
+    NotEquals,
     /// `->` — return-type arrow on `skill` / `block` / `export block` headers
     /// per `design/language-surface.md` §3.1/§3.2/§3.3. The parser optionally
     /// consumes `Arrow Ident` after the header `(...)`. Per `design/types.md`
@@ -150,7 +154,7 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
         }
 
         // Indent must be a multiple of 4.
-        if space_count % 4 != 0 {
+        if !space_count.is_multiple_of(4) {
             return Err(TokenizeError::BadIndent {
                 byte_offset: line_start as u32,
             });
@@ -196,6 +200,16 @@ pub fn tokenize(source: &str, file_id: u32) -> Result<(Vec<Token>, LineIndex), T
             } else if b == b'=' && p + 1 < content_end && bytes[p + 1] == b'=' {
                 tokens.push(Token {
                     kind: TokenKind::DoubleEquals,
+                    span: Span::new(file_id, p as u32, (p + 2) as u32),
+                });
+                p += 2;
+            } else if b == b'!' && p + 1 < content_end && bytes[p + 1] == b'=' {
+                // `!=` — branch-condition inequality, mirror of `==`.
+                // Standalone `!` is intentionally NOT a token: it falls
+                // through to the `UnexpectedChar` arm below so `if !x:`
+                // still produces a structured diagnostic.
+                tokens.push(Token {
+                    kind: TokenKind::NotEquals,
                     span: Span::new(file_id, p as u32, (p + 2) as u32),
                 });
                 p += 2;
@@ -483,7 +497,7 @@ fn dedent_block_string(s: &str) -> String {
     let lines: Vec<&str> = s.split('\n').collect();
     let mut common: Option<&str> = None;
     for line in &lines {
-        let stripped = line.trim_start_matches(|c: char| c == ' ' || c == '\t');
+        let stripped = line.trim_start_matches([' ', '\t']);
         if stripped.is_empty() {
             continue;
         }
@@ -506,11 +520,11 @@ fn dedent_block_string(s: &str) -> String {
         if i > 0 {
             out.push('\n');
         }
-        let stripped = line.trim_start_matches(|c: char| c == ' ' || c == '\t');
+        let stripped = line.trim_start_matches([' ', '\t']);
         if stripped.is_empty() {
             // whitespace-only line → empty
-        } else if line.starts_with(prefix) {
-            out.push_str(&line[prefix.len()..]);
+        } else if let Some(rest) = line.strip_prefix(prefix) {
+            out.push_str(rest);
         } else {
             out.push_str(line);
         }
@@ -569,6 +583,18 @@ mod tests {
         assert!(matches!(&toks[1].kind, TokenKind::Ident(s) if s == "if"));
         assert!(matches!(&toks[2].kind, TokenKind::Ident(s) if s == "mode"));
         assert_eq!(toks[3].kind, TokenKind::DoubleEquals);
+        assert!(matches!(&toks[4].kind, TokenKind::StringLit(s) if s == "fast"));
+    }
+
+    #[test]
+    fn tokenize_not_equals() {
+        // B02: `!=` is a first-class branch-condition operator, mirror of `==`.
+        let src = "        if mode != \"fast\"\n";
+        let (toks, _) = tokenize(src, 0).unwrap();
+        assert!(matches!(toks[0].kind, TokenKind::LineStart { indent: 2 }));
+        assert!(matches!(&toks[1].kind, TokenKind::Ident(s) if s == "if"));
+        assert!(matches!(&toks[2].kind, TokenKind::Ident(s) if s == "mode"));
+        assert_eq!(toks[3].kind, TokenKind::NotEquals);
         assert!(matches!(&toks[4].kind, TokenKind::StringLit(s) if s == "fast"));
     }
 

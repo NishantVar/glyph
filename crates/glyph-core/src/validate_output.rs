@@ -199,7 +199,7 @@ fn parse_md_structure(md: &str) -> MdStructure {
                     continue;
                 }
                 // Numbered list item: "1. ...", "2. ...", etc.
-                if is_numbered_item(trimmed) {
+                if !line.starts_with(" ") && !line.starts_with("\t") && is_numbered_item(trimmed) {
                     if let Some(item) = current_item.take() {
                         if let Some(ref mut h3) = current_h3 {
                             h3.items.push(item);
@@ -210,7 +210,10 @@ fn parse_md_structure(md: &str) -> MdStructure {
                         text,
                         sub_items: Vec::new(),
                     });
-                } else if is_bulleted_item(trimmed) {
+                } else if !line.starts_with(" ")
+                    && !line.starts_with("\t")
+                    && is_bulleted_item(trimmed)
+                {
                     if let Some(item) = current_item.take() {
                         if let Some(ref mut h3) = current_h3 {
                             h3.items.push(item);
@@ -266,7 +269,7 @@ fn is_numbered_item(s: &str) -> bool {
     let mut chars = s.chars();
     // Must start with digit(s)
     let first = chars.next();
-    if !first.map_or(false, |c| c.is_ascii_digit()) {
+    if !first.is_some_and(|c| c.is_ascii_digit()) {
         return false;
     }
     for c in chars {
@@ -293,10 +296,8 @@ fn is_bulleted_item(s: &str) -> bool {
 }
 
 fn strip_bullet_prefix(s: &str) -> String {
-    if s.starts_with("- ") {
-        s[2..].to_string()
-    } else if s.starts_with("* ") {
-        s[2..].to_string()
+    if let Some(rest) = s.strip_prefix("- ").or_else(|| s.strip_prefix("* ")) {
+        rest.to_string()
     } else {
         s.to_string()
     }
@@ -467,7 +468,7 @@ fn check_section_shape(md_struct: &MdStructure, skill: &Value, violations: &mut 
     let has_params = skill
         .get("params")
         .and_then(|p| p.as_array())
-        .map_or(false, |a| !a.is_empty());
+        .is_some_and(|a| !a.is_empty());
 
     // Phase 3 (Task 3.11): freeform colon-keyword sections compile to `##`
     // H2s peer to `## Steps` / `## Constraints`. Their headings come from
@@ -650,8 +651,8 @@ fn check_step_order(md_struct: &MdStructure, flow: &[Value], violations: &mut Ve
                         .get("resolved_body_text")
                         .and_then(|t| t.as_str())
                         .filter(|s| !s.is_empty());
-                    if projection == "inline" && body.is_some() {
-                        ir_step_keys.push((body.unwrap().to_string(), StepKeyKind::Prose));
+                    if let Some(body_text) = body.filter(|_| projection == "inline") {
+                        ir_step_keys.push((body_text.to_string(), StepKeyKind::Prose));
                     } else {
                         let target = node.get("target").and_then(|t| t.as_str()).unwrap_or("");
                         ir_step_keys.push((target.to_string(), StepKeyKind::Identifier));
@@ -683,48 +684,46 @@ fn check_step_order(md_struct: &MdStructure, flow: &[Value], violations: &mut Ve
     let steps_items = find_body_h2(md_struct, "Steps")
         .map(body_h2_items)
         .unwrap_or_default();
-    if !steps_items.is_empty() {
-        if steps_items.len() == ir_step_keys.len() {
-            for (i, ((ir_key, key_kind), md_item)) in
-                ir_step_keys.iter().zip(steps_items.iter()).enumerate()
-            {
-                if matches!(key_kind, StepKeyKind::Identifier) && ir_key.starts_with("branch:") {
-                    continue;
+    if !steps_items.is_empty() && steps_items.len() == ir_step_keys.len() {
+        for (i, ((ir_key, key_kind), md_item)) in
+            ir_step_keys.iter().zip(steps_items.iter()).enumerate()
+        {
+            if matches!(key_kind, StepKeyKind::Identifier) && ir_key.starts_with("branch:") {
+                continue;
+            }
+            if ir_key.is_empty() {
+                continue;
+            }
+            let md_lower = md_item.text.to_lowercase();
+            let found = match key_kind {
+                StepKeyKind::Prose => {
+                    let phrase: String = ir_key
+                        .split_whitespace()
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .to_lowercase();
+                    !phrase.is_empty() && md_lower.contains(&phrase)
                 }
-                if ir_key.is_empty() {
-                    continue;
+                StepKeyKind::Identifier => {
+                    let ir_words: Vec<&str> = ir_key
+                        .split(|c: char| c.is_whitespace() || c == '_' || c == '-')
+                        .filter(|w| !w.is_empty())
+                        .collect();
+                    ir_words
+                        .iter()
+                        .any(|w| md_lower.contains(&w.to_lowercase()))
                 }
-                let md_lower = md_item.text.to_lowercase();
-                let found = match key_kind {
-                    StepKeyKind::Prose => {
-                        let phrase: String = ir_key
-                            .split_whitespace()
-                            .take(3)
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                            .to_lowercase();
-                        !phrase.is_empty() && md_lower.contains(&phrase)
-                    }
-                    StepKeyKind::Identifier => {
-                        let ir_words: Vec<&str> = ir_key
-                            .split(|c: char| c.is_whitespace() || c == '_' || c == '-')
-                            .filter(|w| !w.is_empty())
-                            .collect();
-                        ir_words
-                            .iter()
-                            .any(|w| md_lower.contains(&w.to_lowercase()))
-                    }
-                };
-                if !found {
-                    violations.push(Violation::new(
-                        "G::expand::step-order-mismatch",
-                        format!(
-                            "step {} does not match IR flow order (expected content related to `{}`)",
-                            i + 1,
-                            ir_key
-                        ),
-                    ));
-                }
+            };
+            if !found {
+                violations.push(Violation::new(
+                    "G::expand::step-order-mismatch",
+                    format!(
+                        "step {} does not match IR flow order (expected content related to `{}`)",
+                        i + 1,
+                        ir_key
+                    ),
+                ));
             }
         }
     }
@@ -1051,10 +1050,11 @@ fn scan_line_for_curly_refs(line: &str, refs: &mut Vec<String>) {
             }
             if end < bytes.len() && bytes[end] == b'}' {
                 let name = &line[start..end];
-                if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                    if !refs.contains(&name.to_string()) {
-                        refs.push(name.to_string());
-                    }
+                if !name.is_empty()
+                    && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    && !refs.contains(&name.to_string())
+                {
+                    refs.push(name.to_string());
                 }
                 i = end + 1;
             } else {
@@ -1471,6 +1471,16 @@ fn find_callee_flow_count(flow: &[Value], proc_name: &str) -> Option<usize> {
 // Check: description-shape-missing (description-driven branch projection)
 // ---------------------------------------------------------------------------
 
+/// Does `md` contain `prose`, modulo the trailing-period strip the emitter
+/// applies before emitting `If <prose>:` / `Decide whether <prose> applies …`
+/// (see `emit/branch.rs::strip_trailing_period`). Matching the emitter's
+/// strip exactly keeps this check as strict as possible while accommodating
+/// the one transformation the emitter makes.
+fn md_contains_prose(md: &str, prose: &str) -> bool {
+    let normalized = prose.trim_end().trim_end_matches('.');
+    md.contains(normalized)
+}
+
 fn check_resolved_predicates(skill: &Value, md: &str, violations: &mut Vec<Violation>) {
     if let Some(flow) = skill.get("flow").and_then(|f| f.as_array()) {
         check_resolved_predicates_in_flow(flow, md, violations);
@@ -1535,7 +1545,7 @@ fn check_resolved_predicates_in_flow(flow: &[Value], md: &str, violations: &mut 
                                     let key = lookup_key_for_token(&tok, kind);
                                     if let Some(prose) = desc_map.get(key).and_then(|v| v.as_str())
                                     {
-                                        if !md.contains(prose) {
+                                        if !md_contains_prose(md, prose) {
                                             violations.push(Violation::new(
                                                 "G::expand::predicate-prose-missing",
                                                 format!(
@@ -1548,9 +1558,9 @@ fn check_resolved_predicates_in_flow(flow: &[Value], md: &str, violations: &mut 
                                     }
                                 }
                             }
-                            ConditionTokenKind::PredicateLiteral => {
+                            ConditionTokenKind::PredicateLiteral
                                 // Literal form: the inner text IS the prose; no resolved_predicates lookup.
-                                if !md.contains(&tok) {
+                                if !md_contains_prose(md, &tok) => {
                                     violations.push(Violation::new(
                                         "G::expand::predicate-prose-missing",
                                         format!(
@@ -1559,7 +1569,6 @@ fn check_resolved_predicates_in_flow(flow: &[Value], md: &str, violations: &mut 
                                         ),
                                     ));
                                 }
-                            }
                             _ => {}
                         }
                     }
@@ -1607,10 +1616,7 @@ fn find_body_h2<'a>(md_struct: &'a MdStructure, h2_name: &str) -> Option<&'a H2S
 fn count_body_items(h2: &H2Section) -> usize {
     h2.content_lines
         .iter()
-        .filter(|l| {
-            let t = l.trim_start();
-            is_numbered_item(t) || is_bulleted_item(t)
-        })
+        .filter(|l| is_numbered_item(l) || is_bulleted_item(l))
         .count()
 }
 
@@ -1643,7 +1649,7 @@ fn body_h2_items(h2: &H2Section) -> Vec<ListItem> {
         if trimmed.is_empty() {
             continue;
         }
-        if is_numbered_item(trimmed) {
+        if !line.starts_with(" ") && !line.starts_with("\t") && is_numbered_item(trimmed) {
             if let Some(it) = current.take() {
                 items.push(it);
             }
@@ -1651,7 +1657,7 @@ fn body_h2_items(h2: &H2Section) -> Vec<ListItem> {
                 text: strip_number_prefix(trimmed),
                 sub_items: Vec::new(),
             });
-        } else if is_bulleted_item(trimmed) {
+        } else if !line.starts_with(" ") && !line.starts_with("\t") && is_bulleted_item(trimmed) {
             if let Some(it) = current.take() {
                 items.push(it);
             }
@@ -2088,7 +2094,7 @@ mod tests {
 1. Scan for issues.
 2. Report findings.
 ";
-        let violations = validate_output(&ir, &md);
+        let violations = validate_output(&ir, md);
         let extra_h3 = violations
             .iter()
             .filter(|v| v.id == "G::expand::extra-h3")
@@ -3119,6 +3125,17 @@ mod tests {
         assert_eq!(item.sub_items[1].text, "Second sub-step.");
     }
 
+    #[test]
+    fn count_body_items_ignores_indented_numbered_sublist() {
+        // A single top-level step whose body contains an indented numbered
+        // sub-list (3-space indent, as emitted by push_call_body for multi-line
+        // resolved bodies). `count_body_items` must count only the column-0
+        // top-level item, not the indented ones.
+        let md = "## Steps\n\n1. Install the editor extension.\n   1. List the assets attached to the latest release.\n   2. Download the .vsix asset.\n";
+        let s = parse_md_structure(md);
+        assert_eq!(find_h3_items(&s, "Steps"), 1);
+    }
+
     // --- format output ---
     #[test]
     fn json_output_format() {
@@ -3359,6 +3376,41 @@ mod tests {
     #[test]
     fn check_resolved_predicates_accepts_literal_form() {
         let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"\"the user opted in\"","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":null,"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
+        let md = "## Steps\n\n1. If the user opted in:\n   a. Skip.\n";
+        let violations = validate_output(ir, md);
+        assert!(violations.is_empty(), "got: {:?}", violations);
+    }
+
+    #[test]
+    fn check_resolved_predicates_accepts_const_form_with_trailing_period_in_ir() {
+        // IR's `resolved_predicates` value carries the trailing `.` from the
+        // authored block description; the emitter strips it (see
+        // emit/branch.rs `strip_trailing_period`) before rendering `If <prose>:`.
+        // The validator must accept the prose modulo that same strip.
+        let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"big","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":{"big":"the change is big."},"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
+        let md = "## Steps\n\n1. If the change is big:\n   a. Stop.\n";
+        let violations = validate_output(ir, md);
+        assert!(violations.is_empty(), "got: {:?}", violations);
+    }
+
+    #[test]
+    fn check_resolved_predicates_accepts_elif_arm_with_trailing_period_in_ir() {
+        // Mirrors `.agents/skills/glyph/SKILL.glyph`: a multi-arm branch whose
+        // both arms resolve to prose ending in `.`. The shared resolved_predicates
+        // map lives on the parent branch (IR schema §ElifBranch). Without the
+        // trailing-period-tolerant match the validator fires on every arm.
+        let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"big","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":{"big":"the change is big.","small":"the change is small."},"then_body":[],"elif_branches":[{"kind":"elif_branch","condition":"small","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"body":[]}],"else_body":null}]}}"#;
+        let md = "## Steps\n\n1. Decide which of the following applies:\n   If the change is big:\n      a. Stop.\n   If the change is small:\n      a. Continue.\n";
+        let violations = validate_output(ir, md);
+        assert!(violations.is_empty(), "got: {:?}", violations);
+    }
+
+    #[test]
+    fn check_resolved_predicates_accepts_literal_form_with_trailing_period() {
+        // Inline-literal predicate ending in `.`; the emitter strips the period
+        // before rendering. The literal call site (the `PredicateLiteral` arm
+        // in `check_resolved_predicates_in_flow`) must apply the same tolerance.
+        let ir = r#"{"skill":{"flow":[{"kind":"branch","condition":"\"the user opted in.\"","predicate_shape":{"has_boolean_token":false,"has_predicate_token":true,"has_compositional_operator":false},"resolved_predicates":null,"then_body":[],"elif_branches":[],"else_body":null}]}}"#;
         let md = "## Steps\n\n1. If the user opted in:\n   a. Skip.\n";
         let violations = validate_output(ir, md);
         assert!(violations.is_empty(), "got: {:?}", violations);

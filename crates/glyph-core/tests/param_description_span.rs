@@ -121,7 +121,8 @@ fn procedure_param_undescribed_directory_pipeline() {
     let lib_path = dir.path().join("repo_tools.glyph");
     std::fs::write(&lib_path, &lib_src).unwrap();
 
-    let result = glyph_core::compile_directory_with_options(&[lib_path.clone()], false, false);
+    let result =
+        glyph_core::compile_directory_with_options(std::slice::from_ref(&lib_path), false, false);
     let outcome = result
         .outcomes
         .into_iter()
@@ -169,7 +170,8 @@ fn procedure_param_described_directory_pipeline() {
     let lib_path = dir.path().join("repo_tools.glyph");
     std::fs::write(&lib_path, &lib_src).unwrap();
 
-    let result = glyph_core::compile_directory_with_options(&[lib_path.clone()], false, false);
+    let result =
+        glyph_core::compile_directory_with_options(std::slice::from_ref(&lib_path), false, false);
     let outcome = result
         .outcomes
         .into_iter()

@@ -113,8 +113,8 @@ pub fn expand_step1_with_imported_descriptions(
     }
 
     let nodes = arena.nodes_mut();
-    for i in 0..nodes.len() {
-        if let IrNode::Call(c) = &nodes[i] {
+    for ir in nodes.iter_mut() {
+        if let IrNode::Call(c) = &*ir {
             if c.resolved_body.is_none() {
                 continue;
             }
@@ -150,14 +150,14 @@ pub fn expand_step1_with_imported_descriptions(
                 // Mark as Tier 2 — leave the Call node in place.
                 let mut c_clone = c.clone();
                 c_clone.projection_tier = Some(2);
-                nodes[i] = IrNode::Call(c_clone);
+                *ir = IrNode::Call(c_clone);
             } else if wc >= 150 {
                 // Word-count promotion: block has < 4 statements but >= 150
                 // words of expanded prose → promote to Tier 2 (same-file
                 // procedure) per compiled-output.md §Three-Tier Block Projection.
                 let mut c_clone = c.clone();
                 c_clone.projection_tier = Some(2);
-                nodes[i] = IrNode::Call(c_clone);
+                *ir = IrNode::Call(c_clone);
             } else {
                 // Tier 1: inline projection. Keep the Call node in the IR so
                 // `--emit-ir` can preserve call-site metadata such as
@@ -165,7 +165,7 @@ pub fn expand_step1_with_imported_descriptions(
                 // still projects it as the resolved body text.
                 let mut c_clone = c.clone();
                 c_clone.projection_tier = Some(1);
-                nodes[i] = IrNode::Call(c_clone);
+                *ir = IrNode::Call(c_clone);
             }
         }
     }
@@ -250,8 +250,8 @@ pub fn expand_step1_with_imported_descriptions(
     // Tokens with `is_comparison_operand == true` are skipped per
     // `design/data-flow.md` §327.
     let nodes = arena.nodes_mut();
-    for i in 0..nodes.len() {
-        if let IrNode::Branch(br) = &nodes[i] {
+    for ir in nodes.iter_mut() {
+        if let IrNode::Branch(br) = &*ir {
             let mut br_clone = br.clone();
             // Per-branch lookup: skill consts ∪ owning-block params (if any).
             // Skill consts retain precedence on collision, matching the
@@ -266,7 +266,7 @@ pub fn expand_step1_with_imported_descriptions(
             }
             populate_resolved_predicates(&mut br_clone, &lookup, &block_descriptions);
             if br_clone.resolved_predicates.is_some() {
-                nodes[i] = IrNode::Branch(br_clone);
+                *ir = IrNode::Branch(br_clone);
             }
         }
     }
@@ -595,6 +595,97 @@ mod tests {
         let arena = lower::lower(&file).expect("source should lower");
         let arena = expand_step1(arena);
         emit::emit(&arena, false).expect("trivial fixture must compile")
+    }
+
+    #[test]
+    fn return_call_folds_into_final_step() {
+        // Relift of a PRD #159-ignored compile_source test. Driving expand
+        // directly bypasses the analyzer, which now flags an untyped
+        // meaningful return as Repairable and short-circuits compile.
+        // Defence-in-depth: the expand pass must still fold a meaningful
+        // `return <call>` on an untyped skill into the final step (8.4 row 3).
+        let md = compile_markdown(concat!(
+            "block summarize_changes()\n",
+            "    \"Summarize what was changed and why.\"\n",
+            "\n",
+            "skill update_docs()\n",
+            "    description: \"Update documentation.\"\n",
+            "    flow:\n",
+            "        \"Read the repository changes.\"\n",
+            "        return summarize_changes()\n",
+        ));
+        assert!(
+            md.contains("Return the result of summarize_changes()."),
+            "expected return folding in final step:\n{md}"
+        );
+    }
+
+    #[test]
+    fn return_bare_name_folds_into_final_step() {
+        // Relift of a PRD #159-ignored compile_source test. A meaningful
+        // `return <bare-name>` on an untyped skill must still fold into the
+        // final step when expand runs without the analyzer in front of it.
+        let md = compile_markdown(concat!(
+            "skill main()\n",
+            "    description: \"Main skill.\"\n",
+            "    flow:\n",
+            "        \"Compute the result.\"\n",
+            "        return result\n",
+        ));
+        assert!(
+            md.contains("Return the result of result."),
+            "expected return folding for bare name:\n{md}"
+        );
+    }
+
+    #[test]
+    fn return_row1_descriptive_target_folds_into_final_step() {
+        // Relift of a PRD #159-ignored CLI integration test (deleted fixture
+        // return_row1_descriptive.glyph). 8.4 row 1: a descriptive output
+        // target `return <"...">` on an untyped Tier-1 callee folds a
+        // `Produce: <description>.` sentence onto the final step.
+        let md = compile_markdown(concat!(
+            "block diagnose_scope()\n",
+            "    flow:\n",
+            "        \"Inspect the scope.\"\n",
+            "        return <\"a structured diagnosis\">\n",
+            "\n",
+            "skill main()\n",
+            "    description: \"Diagnose the scope.\"\n",
+            "    flow:\n",
+            "        diagnose_scope()\n",
+        ));
+        assert!(
+            md.contains("Inspect the scope. Produce: a structured diagnosis."),
+            "expected 8.4 row-1 descriptive return sentence:\n{md}"
+        );
+    }
+
+    #[test]
+    fn return_row4_named_no_type_folds_into_final_step() {
+        // Relift of a PRD #159-ignored CLI integration test (deleted fixture
+        // return_row4_named_no_type.glyph). 8.4 row 4: a named output target
+        // `return <name>` with no `-> Type` folds a `Produce <name>.` sentence
+        // (name in backticks, no parenthesized type) onto the final step.
+        let md = compile_markdown(concat!(
+            "block diagnose_scope()\n",
+            "    flow:\n",
+            "        \"Inspect the scope.\"\n",
+            "        return <diagnosis>\n",
+            "\n",
+            "skill main()\n",
+            "    description: \"Diagnose the scope.\"\n",
+            "    flow:\n",
+            "        diagnose_scope()\n",
+        ));
+        assert!(
+            md.contains("Inspect the scope. Produce `diagnosis`."),
+            "expected 8.4 row-4 named return sentence:\n{md}"
+        );
+        assert!(
+            !md.contains("`diagnosis` ("),
+            "row 4 must not include a parenthesized type:\n{md}"
+        );
     }
 
     #[test]

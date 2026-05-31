@@ -147,10 +147,15 @@ impl Backend {
         let mut buffer_diagnostics: Vec<LspDiagnostic> = Vec::new();
 
         for (path, bag) in bags.iter() {
+            let file_source: String = if path == &canon_buffer || path == &buffer_path {
+                text.to_string()
+            } else {
+                std::fs::read_to_string(path).unwrap_or_default()
+            };
             let diagnostics: Vec<LspDiagnostic> = bag
                 .sorted()
                 .iter()
-                .map(convert::diagnostic_to_lsp)
+                .map(|d| convert::diagnostic_to_lsp(d, &file_source))
                 .collect();
 
             let is_buffer = path == &canon_buffer || path == &buffer_path;
@@ -405,9 +410,7 @@ impl LanguageServer for Backend {
         };
 
         // 1-indexed for LineIndex; LSP positions are 0-indexed.
-        let off = view
-            .line_index
-            .byte_offset(pos.line.saturating_add(1), pos.character.saturating_add(1));
+        let off = convert::lsp_position_to_byte_offset(pos, &view.line_index, &text);
 
         // Smallest enclosing resolution. Resolutions are span-disjoint by
         // construction (each reference has exactly one resolution), so the
@@ -436,13 +439,13 @@ impl LanguageServer for Backend {
                     Err(_) => return Ok(None),
                 };
                 let target_li = LineIndex::new(&target_text);
-                let range = convert::byte_span_to_lsp_range(r.def_span, &target_li);
+                let range = convert::byte_span_to_lsp_range(r.def_span, &target_li, &target_text);
                 return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                     uri: target_uri,
                     range,
                 })));
             }
-            let range = convert::byte_span_to_lsp_range(r.def_span, &view.line_index);
+            let range = convert::byte_span_to_lsp_range(r.def_span, &view.line_index, &text);
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                 uri,
                 range,
@@ -451,7 +454,7 @@ impl LanguageServer for Backend {
 
         // Fallback: cursor inside a `{name}` slot in a flow inline string.
         if let Some(param_span) = resolve_param_slot(&text, &view.ast, off) {
-            let range = convert::byte_span_to_lsp_range(param_span, &view.line_index);
+            let range = convert::byte_span_to_lsp_range(param_span, &view.line_index, &text);
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                 uri,
                 range,
@@ -641,6 +644,26 @@ fn gather_strings(stmts: &[FlowStmt], out: &mut Vec<String>) {
             _ => {}
         }
     }
+}
+
+/// Run the LSP server over stdio until the client sends `exit`.
+///
+/// Builds a `current_thread` `tokio` runtime (per design §10.F — keeps the
+/// dependency footprint lean given our serial work pattern) and drives a
+/// `tower-lsp::Server` on `stdin`/`stdout`.
+pub fn run_stdio() -> std::io::Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    runtime.block_on(async {
+        let stdin = tokio::io::stdin();
+        let stdout = tokio::io::stdout();
+        let (service, socket) = LspService::new(Backend::new);
+        Server::new(stdin, stdout, socket).serve(service).await;
+    });
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1239,24 +1262,4 @@ skill main()
         // (since prev_line starts at 0).
         assert_eq!(encoded[0].delta_line, raw[0].line);
     }
-}
-
-/// Run the LSP server over stdio until the client sends `exit`.
-///
-/// Builds a `current_thread` `tokio` runtime (per design §10.F — keeps the
-/// dependency footprint lean given our serial work pattern) and drives a
-/// `tower-lsp::Server` on `stdin`/`stdout`.
-pub fn run_stdio() -> std::io::Result<()> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-
-    runtime.block_on(async {
-        let stdin = tokio::io::stdin();
-        let stdout = tokio::io::stdout();
-        let (service, socket) = LspService::new(Backend::new);
-        Server::new(stdin, stdout, socket).serve(service).await;
-    });
-
-    Ok(())
 }

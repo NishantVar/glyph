@@ -1,15 +1,13 @@
 ---
 name: teach
-description: Author or edit a Glyph source file (.glyph) at `target` for a task described by the user.
+description: 'Author or edit a Glyph source file (.glyph) at `target` for a task described by the user.'
 ---
 
 ## Parameters
 
 - **target**. Required.
 
-## Instructions
-
-### Context
+## Context
 
 - **glyph-overview**
 
@@ -76,14 +74,19 @@ description: Author or edit a Glyph source file (.glyph) at `target` for a task 
   Top-level building blocks (column 0):
 
   - `skill <name>(<params>) [-> ReturnType]` — the public, compiled
-    entrypoint (one per skill file). Parentheses always required. Return
-    type is optional and folds into the closing sentence of the final Step
-    in compiled output (no separate `### Returns` section). Only domain
+    entrypoint (one per skill file). Parentheses always required. A return
+    type is required whenever the body has a meaningful `return <expr>`;
+    bare `return` and `return none` are the no-meaningful-return form and
+    need no `->` (repairable as `G::analyze::export-missing-return-type`).
+    The return renders as a dedicated `Output:` step at the end of the
+    flow (no separate `### Returns` section — see ADR 0026). Only domain
     types are valid in `->` position; no primitive type names.
 
   - `block <name>(<params>) [-> Type]` — private callable helper, scoped to
     the file. Single-string shorthand: when a block body is exactly one
     instruction string and no other sub-sections, `flow:` may be omitted.
+    Same return-type rule as `skill`: required when the body has a
+    meaningful `return <expr>`, otherwise omit `->`.
 
   - `export block <name>(<params>) [-> Type]` — importable, self-contained
     block. Hard rules:
@@ -129,7 +132,12 @@ description: Author or edit a Glyph source file (.glyph) at `target` for a task 
     the source uses an undefined name and the compiler can confidently
     materialize a definition. The author does not write these by hand;
     review them and promote (rename to `const`/`block`) if they should be
-    hand-authored.
+    hand-authored. Parser-enforced shape rules: (a) every generated decl
+    must come AFTER all non-generated top-level decls
+    (`G::parse::generated-decl-out-of-order`); (b) a `generated block`
+    body is exactly one inline-or-block string — no `flow:`, no
+    `description:`, no `constraints:` / `context:` / `effects:` subsections
+    (`G::parse::generated-block-body-shape`).
 
 - **parameters**
 
@@ -527,8 +535,9 @@ description: Author or edit a Glyph source file (.glyph) at `target` for a task 
     always present.
   - Branches project to a single numbered Step with lettered sub-steps
     per arm. Letters reset per arm.
-  - The `return` expression folds into the final Step's closing
-    sentence. There is no `### Returns` section.
+  - The `return` expression renders as a dedicated `Output:` step at the
+    end of the flow (e.g., `5. Output: …`), not folded into an earlier
+    Step's prose. There is no `### Returns` section. See ADR 0026.
   - Imports compile away — no import paths or module names appear in the
     output.
 
@@ -737,7 +746,28 @@ description: Author or edit a Glyph source file (.glyph) at `target` for a task 
 
   Values: "..."  """..."""  3  -1  0.8  true  false  none
 
-### Steps
+## Constraints
+
+- **Must:** Indent every body with exactly 4 spaces. Tabs are a hard error and there are no braces or `end` keywords.
+- **Must avoid:** use `String`, `Int`, `Float`, `Bool`, or `None` as a type annotation in author-facing source. Use named domain types (`BranchName`, `Severity`, `Confirmation`) instead.
+- **Must avoid:** build strings with `${...}`, `+` concatenation, or any other template syntax. The only template-like form is `{name}` parameter slots, legal solely inside instruction-bearing strings.
+- **Must avoid:** write the agent-facing Markdown prose by hand. The Expand pass produces the prose; the author writes structure and intent only.
+- **Must:** ensure every skill file contains exactly one `skill` declaration. Library files contain zero. Two `skill` declarations in one file is a hard error.
+- **Must:** place at most one `return` per `flow:`, and when present it must be the last statement at the top level — never inside an `if`/`elif`/`else` branch arm.
+- **Must:** give every parameter on an `export block` a default value. A required-without-default parameter is a hard error with no LLM repair.
+- **Must:** end every `export block` with an explicit `return` statement (use `return none` if there is no meaningful return value).
+- **Must avoid:** place `return` inside an `if`/`elif`/`else` branch arm. There is no early return in MVP — `return` is restricted to the top level of `flow:` and must be last.
+- **Must avoid:** use `{name}` parameter slots in `description:` bodies, parameter defaults, or any string that is not instruction-bearing. Slots are legal only inside `flow:` instruction strings, string-valued constant bodies, constraint texts, and string arguments to stdlib calls.
+- **Require:** Reach for the smallest viable surface — `skill`, `require`/`avoid`, `flow:`, inline strings, calls, and `with`. Promote to `block`, named `const`, or types only when they pay for themselves.
+- **Require:** When you do annotate a type, give it a domain name that tells an agent what role the value plays (`BranchName`, `Plan`, `Diagnosis`) — not a primitive-feeling label.
+- **Require:** Ensure any block consulted via `BLOCKNAME.applies()` carries a `description:` — that description is the predicate the agent matches against current context. Missing description on an imported block is a hard error.
+- **Require:** After running the compiler, review the source diff. Repair may have inserted `generated const` / `generated block` definitions, hoisted markers into `constraints:`, or generated a missing `description:`. Promote anything you want to harden by renaming `generated …` to `const` / `block`.
+- **Avoid:** Writing a bare string-valued constant name in `flow:` without a marker. Wrap it with `context`/`require`/`avoid`/`must`, or convert it into a `block` if it really represents an instruction sequence.
+- **Avoid:** Reaching for `must` / `must avoid` for everyday rules. Reserve hard markers for genuinely non-negotiable constraints; default to soft `require` / `avoid`.
+- **Avoid:** Stacking nested calls (`apply(merge(base, overlay(ctx)))`). Nested calls are legal but read and visualize better as named intermediate bindings.
+- **Avoid:** Starting an `avoid` or `must avoid` constraint's const body with a negation word (`do not`, `never`, `no`) — the polarity marker already supplies the negative, so a negation-leading body produces a double-negative bullet (`Avoid do not touch …`). Phrase the body as a noun or gerund phrase that completes `Avoid X` cleanly.
+
+## Steps
 
 1. Read the user's request and identify the skill's purpose, the runtime parameters it will need, and any task-specific constraints. If {target} is an existing `.glyph` file, read it first and treat the task as an edit. Otherwise, plan to create a new file at {target}.
 2. Decide the file kind: a skill file with exactly one `skill` declaration, or a library file with zero `skill` declarations and at least one `export block` or `export const`.
@@ -748,31 +778,11 @@ description: Author or edit a Glyph source file (.glyph) at `target` for a task 
 7. Scan every instruction string in `flow:` bodies. For any string longer than 10 words, extract it into a named `block` (or `export block` if it must be reachable from another file) and replace the inline string with a call to that block. Pick a verb-phrase name that describes the step's intent. Scan every inline string used as a marker body (`require`/`avoid`/`must`/`must avoid`/`context`) or as a `context:` entry. For any string longer than 10 words, extract it into a named `const` constant (or `export const` if another file imports it) and replace the inline string with a bare-name reference. Skip `description:` strings — leave them inline.
 8. Follow the recognize-conditionals-as-branches procedure below.
 9. Reorder top-level declarations in the file so that the single `skill` declaration appears first, every `block` and `export block` follows it, and every `const` and `export const` constant comes last. Preserve `import` statements at the very top of the file, above the `skill` declaration.
-10. If the user prefers to delegate compilation to a sub-agent rather than run the pipeline inline:
-   a. Spawn a sub-agent and instruct it to run the `/glyph:compile` slash command on the Glyph source file at {target}, drive the full Glyph pipeline (deterministic compile, repair loop, expand, validate, review), and return a structured compilation outcome — on success, list the emitted `.md` paths; on failure, list every diagnostic verbatim. The deterministic compiler alone is not sufficient for verification: only the full pipeline catches expand/validate/review failures. Once the sub-agent reports success, return the path to the authored or updated `.glyph` file at {target}.
+10. Re-read the entire authored `.glyph` file from top to bottom as if you had not written it. Editing in pieces hides drift between intent and output — this pass forces a single global read of the final file. On that fresh read, confirm: every `skill`, `block`, and `export block` that declares `-> Type` ends with an explicit `return` (single-string shorthand without a `flow:` is wrong for any typed declaration); every `export block` parameter has a default; no primitive type names (`String`/`Int`/`Float`/`Bool`/`None`) appear in author-facing source; no `{name}` slots leak into `description:` bodies or parameter defaults; the top-level `return` in any `flow:` is the last statement and never lives inside an `if`/`elif`/`else` arm; declarations are ordered imports → skill → blocks → constants. If any item fails, fix it now — before handing the file off to compilation.
+11. If, when you ask the user whether to compile via a sub-agent or inline, they choose to delegate to a sub-agent:
+   a. Spawn a sub-agent and instruct it to run the `/glyph:compile` slash command on the Glyph source file at {target}, drive the full Glyph pipeline (deterministic compile, repair loop, expand, validate, review), and report a structured compilation outcome — on success, list the emitted `.md` paths; on failure, list every diagnostic verbatim. The deterministic compiler alone is not sufficient for verification: only the full pipeline catches expand/validate/review failures. The sub-agent's compilation outcome is either a success report listing the emitted .md paths, or the verbatim list of compilation errors
    Otherwise:
-   a. Load the compile skill content from `.agents/commands/glyph/compile.md` (resolve via the `glyph:compile` slash command if available) and execute its steps yourself, in this conversation, against the Glyph source at {target}. Drive the full pipeline inline — deterministic compile, repair loop, expand, validate, review — without delegating to a sub-agent, and report the compilation outcome by listing every emitted `.md` path on success or every diagnostic verbatim on failure. Once the inline pipeline succeeds, return the path to the authored or updated `.glyph` file at {target}.
-
-### Constraints
-
-- You must indent every body with exactly 4 spaces. Tabs are a hard error and there are no braces or `end` keywords.
-- You must never use `String`, `Int`, `Float`, `Bool`, or `None` as a type annotation in author-facing source. Use named domain types (`BranchName`, `Severity`, `Confirmation`) instead.
-- You must never build strings with `${...}`, `+` concatenation, or any other template syntax. The only template-like form is `{name}` parameter slots, legal solely inside instruction-bearing strings.
-- You must never write the agent-facing Markdown prose by hand. The Expand pass produces the prose; the author writes structure and intent only.
-- You must ensure every skill file contains exactly one `skill` declaration. Library files contain zero. Two `skill` declarations in one file is a hard error.
-- You must place at most one `return` per `flow:`, and when present it must be the last statement at the top level — never inside an `if`/`elif`/`else` branch arm.
-- You must give every parameter on an `export block` a default value. A required-without-default parameter is a hard error with no LLM repair.
-- You must end every `export block` with an explicit `return` statement (use `return none` if there is no meaningful return value).
-- You must never place `return` inside an `if`/`elif`/`else` branch arm. There is no early return in MVP — `return` is restricted to the top level of `flow:` and must be last.
-- You must never use `{name}` parameter slots in `description:` bodies, parameter defaults, or any string that is not instruction-bearing. Slots are legal only inside `flow:` instruction strings, string-valued constant bodies, constraint texts, and string arguments to stdlib calls.
-- Reach for the smallest viable surface — `skill`, `require`/`avoid`, `flow:`, inline strings, calls, and `with`. Promote to `block`, named `const`, or types only when they pay for themselves.
-- When you do annotate a type, give it a domain name that tells an agent what role the value plays (`BranchName`, `Plan`, `Diagnosis`) — not a primitive-feeling label.
-- Ensure any block consulted via `BLOCKNAME.applies()` carries a `description:` — that description is the predicate the agent matches against current context. Missing description on an imported block is a hard error.
-- After running the compiler, review the source diff. Repair may have inserted `generated const` / `generated block` definitions, hoisted markers into `constraints:`, or generated a missing `description:`. Promote anything you want to harden by renaming `generated …` to `const` / `block`.
-- Avoid writing a bare string-valued constant name in `flow:` without a marker. Wrap it with `context`/`require`/`avoid`/`must`, or convert it into a `block` if it really represents an instruction sequence.
-- Avoid reaching for `must` / `must avoid` for everyday rules. Reserve hard markers for genuinely non-negotiable constraints; default to soft `require` / `avoid`.
-- Avoid stacking nested calls (`apply(merge(base, overlay(ctx)))`). Nested calls are legal but read and visualize better as named intermediate bindings.
-- Avoid starting an `avoid` or `must avoid` constraint's const body with a negation word (`do not`, `never`, `no`) — the polarity marker already supplies the negative, so a negation-leading body produces a double-negative bullet (`Avoid do not touch …`). Phrase the body as a noun or gerund phrase that completes `Avoid X` cleanly.
+   a. Load the compile skill content from `.agents/commands/glyph/compile.md` (resolve via the `glyph:compile` slash command if available) and execute its steps yourself, in this conversation, against the Glyph source at {target}. Drive the full pipeline inline — deterministic compile, repair loop, expand, validate, review — without delegating to a sub-agent. On success, list every emitted `.md` path; on failure, list every diagnostic verbatim. The inline compilation outcome is either a success report listing the emitted .md paths, or the verbatim list of compilation errors
 
 ### Procedure: write-flow-section
 

@@ -26,8 +26,7 @@ pub fn extract_predicate_token(condition: &str) -> Option<(String, ConditionToke
     let trimmed = condition.trim().trim_end_matches(':').trim();
 
     // Form 1: .applies() — "name.applies()"
-    if trimmed.ends_with(".applies()") {
-        let stem = &trimmed[..trimmed.len() - ".applies()".len()];
+    if let Some(stem) = trimmed.strip_suffix(".applies()") {
         if !stem.is_empty() && is_ident(stem) {
             return Some((trimmed.to_string(), ConditionTokenKind::PredicateApplies));
         }
@@ -302,8 +301,7 @@ pub(super) fn emit_lettered_substeps(
     body: &[NodeId],
     next_span_id: &mut u32,
 ) {
-    let mut letter = b'a';
-    for node_id in body {
+    for (letter, node_id) in (b'a'..).zip(body) {
         match arena.get(*node_id) {
             // Flow-position-assignments §9.2: rewrite `{name}` → bare `name`
             // for any slot whose name is a flow-local in scope.
@@ -329,19 +327,20 @@ pub(super) fn emit_lettered_substeps(
                         return_sentence: None,
                     }),
                     next_span_id,
+                    "      ",
                 );
             }
             IrNode::Call(c) if c.projection_tier == Some(2) => {
                 s.push_literal(format!("   {}. ", letter as char));
                 let kebab = crate::emit::templates::kebab_case(&c.target);
                 let anchor = format!("Follow the {kebab} procedure.");
-                crate::emit::scaffold::push_call_body(s, c, &anchor, None, next_span_id);
+                crate::emit::scaffold::push_call_body(s, c, &anchor, None, next_span_id, "      ");
             }
             IrNode::Call(c) if c.projection_tier == Some(3) => {
                 s.push_literal(format!("   {}. ", letter as char));
                 let path = c.procedure_path.as_deref().unwrap_or("unknown");
                 let anchor = crate::emit::templates::external_file_step(path);
-                crate::emit::scaffold::push_call_body(s, c, &anchor, None, next_span_id);
+                crate::emit::scaffold::push_call_body(s, c, &anchor, None, next_span_id, "      ");
             }
             IrNode::Call(c) => panic!("Call to `{}` survived past expand", c.target),
             IrNode::Branch(_) => {
@@ -349,7 +348,6 @@ pub(super) fn emit_lettered_substeps(
             }
             _ => panic!("Unexpected node type in branch body"),
         }
-        letter += 1;
     }
 }
 

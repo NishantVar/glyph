@@ -1,15 +1,19 @@
 ---
 name: semantic_validation
-description: Use during a /glyph:compile run after the compiler has reached exit code 0 on a Glyph source file. Walk the resolved IR's `constraints:` sets and emit a structured JSON conflict report covering every declaration with two or more constraints.
+description: 'Use during a /glyph:compile run after the compiler has reached exit code 0 on a Glyph source file. Walk the resolved IR''s `constraints:` sets and emit a structured JSON conflict report covering every declaration with two or more constraints.'
 ---
 
 ## Parameters
 
 - **constraint_set**. Required.
 
-## Instructions
+## Constraints
 
-### Context
+- **Require:** Classify every unordered pair of entries in the input constraint set. Pairs classified `none` may be omitted from the explicit `conflicts` list, but every pair must have been considered.
+- **Must:** Use exactly one of `contradiction`, `tension`, or `none` as the `type` field on each conflict entry. Any other value fails validation.
+- **Must avoid:** modify the Glyph source file. Phase 3c is read-only — it emits structured diagnostics only.
+
+## Context
 
 - **runs-after-compile-exit-zero**
 
@@ -27,14 +31,8 @@ description: Use during a /glyph:compile run after the compiler has reached exit
 
   Each input constraint entry has the shape `{ id, resolved_text, strength, polarity }`. Strength is `hard` or `soft`; polarity is `positive` or `negative`.
 
-### Steps
+## Steps
 
 1. For every unordered pair of entries in the constraint_set, classify the pair as one of `contradiction`, `tension`, or `none`. A contradiction is a strict conflict the constraints cannot both satisfy; a tension is a soft pull in opposing directions that can coexist; `none` means the pair is independent.
 2. Emit one JSON object of the form `{ conflicts: [{ pair: [id_A, id_B], type: "contradiction" | "tension" | "none", explanation: "..." }, ...] }`. Pairs classified `none` may be omitted from the explicit list, but every pair must have been considered. Produce: the structured JSON conflict report.
-
-### Constraints
-
-- Classify every unordered pair of entries in the input constraint set, omitting only those classified `none` from the explicit `conflicts` list while still considering every pair.
-- You must use exactly one of `contradiction`, `tension`, or `none` as the `type` field on each conflict entry — any other value fails validation.
-- You must never modify the Glyph source file, since Phase 3c is read-only and emits structured diagnostics only.
 

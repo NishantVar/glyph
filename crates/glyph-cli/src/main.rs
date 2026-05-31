@@ -271,33 +271,97 @@ fn run_fmt(path: PathBuf, check: bool, enable_effects: bool) -> ExitCode {
 /// Never writes output files, regardless of outcome. Diagnostics are rendered
 /// per the requested `--format`.
 fn run_check(path: PathBuf, format: OutputFormat, strict: bool, enable_effects: bool) -> ExitCode {
-    let files = match collect_glyph_sources(&path) {
+    let roots = match collect_glyph_sources(&path) {
         Ok(v) => v,
         Err(code) => return code,
     };
 
-    if files.is_empty() {
+    if roots.is_empty() {
         // Directory with no `.glyph` files inside — nothing to check, exit
         // cleanly. (A missing single file would have errored in
         // `collect_glyph_sources`.)
         return ExitCode::from(0);
     }
 
+    // B05: an import-aware check returns diagnostics partitioned by the file
+    // they *originate* in. We aggregate every root's partition under the
+    // dependency's own canonical path, so a file imported by several roots is
+    // checked — and reported — exactly once, and each diagnostic is rendered
+    // against its own source text rather than the entry file's.
+    let mut by_file: std::collections::BTreeMap<PathBuf, DiagBag> =
+        std::collections::BTreeMap::new();
+    // Canonical path -> the path spelling the user actually typed, when a
+    // root maps onto it. Keeps pretty-mode headers showing the relative path
+    // the caller passed instead of an absolute canonicalized one.
+    let mut root_display: std::collections::HashMap<PathBuf, PathBuf> =
+        std::collections::HashMap::new();
+
+    for root in roots {
+        if let Ok(canon) = root.canonicalize() {
+            root_display.entry(canon).or_insert_with(|| root.clone());
+        }
+        for (file, bag) in glyph_core::check_file_partition(&root, enable_effects) {
+            by_file.entry(file).or_default().merge(bag);
+        }
+    }
+
     // Aggregate exit code across files: 1 wins over 2 wins over 0.
     let mut worst: u8 = 0;
-    for file in files {
-        let source = match std::fs::read_to_string(&file) {
+    for (file, bag) in &by_file {
+        // `sorted()` groups identical diagnostics adjacently; `dedup` then
+        // collapses the copies a shared dependency accrues across roots.
+        let mut diags = bag.sorted();
+        diags.dedup();
+        if diags.is_empty() {
+            continue;
+        }
+
+        let source = match std::fs::read_to_string(file) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("glyph: cannot read `{}`: {}", file.display(), e);
                 return ExitCode::from(3);
             }
         };
-        let label = file.display().to_string();
-        // Use import-aware check when the file path is available.
-        let bag = glyph_core::check_file_with_effects(&file, enable_effects);
-        emit_diagnostics(&bag, &label, &source, format);
-        let code = bag.exit_code();
+        let label = root_display.get(file).unwrap_or(file).display().to_string();
+        match format {
+            OutputFormat::Json => {
+                // B05: `Diagnostic.span.file` is set by glyph-core to a bare
+                // basename (e.g. `dep.glyph`). Two imported dependencies that
+                // share a basename would then be indistinguishable in JSON.
+                // Re-label every span — primary and related — with this file's
+                // per-file path so same-basename files in different directories
+                // stay distinct. Clone first; the partition data is not ours to
+                // mutate.
+                let relabeled: Vec<Diagnostic> = diags
+                    .iter()
+                    .cloned()
+                    .map(|mut d| {
+                        d.span.file = label.clone();
+                        for r in &mut d.related {
+                            r.file = label.clone();
+                        }
+                        d
+                    })
+                    .collect();
+                render_ndjson(&relabeled);
+            }
+            OutputFormat::Pretty => render_pretty(&diags, &label, &source),
+        }
+
+        let code = if diags
+            .iter()
+            .any(|d| d.classification == Classification::Error)
+        {
+            1
+        } else if diags
+            .iter()
+            .any(|d| d.classification == Classification::Repairable)
+        {
+            2
+        } else {
+            0
+        };
         worst = combine_exit_codes(worst, code);
     }
 
@@ -370,10 +434,8 @@ fn collect_glyph_sources(path: &std::path::Path) -> Result<Vec<PathBuf>, ExitCod
                 };
                 if ft.is_dir() {
                     stack.push(p);
-                } else if ft.is_file() {
-                    if p.to_string_lossy().ends_with(".glyph") {
-                        out.push(p);
-                    }
+                } else if ft.is_file() && p.to_string_lossy().ends_with(".glyph") {
+                    out.push(p);
                 }
             }
         }
@@ -713,20 +775,10 @@ fn byte_range_from_linecol(
 }
 
 fn locate_byte(source: &str, line: u32, col: u32) -> usize {
-    // Walk line-by-line. col is 1-indexed bytes from start of line.
-    let mut current_line: u32 = 1;
-    let mut line_start: usize = 0;
-    for (idx, b) in source.bytes().enumerate() {
-        if current_line == line {
-            return line_start + (col.saturating_sub(1) as usize).min(idx + 1 - line_start);
-        }
-        if b == b'\n' {
-            current_line += 1;
-            line_start = idx + 1;
-        }
-    }
-    if current_line == line {
-        return line_start + (col.saturating_sub(1) as usize);
-    }
-    source.len().saturating_sub(1)
+    // Resolve a 1-indexed (line, byte-column) pair to an absolute byte offset
+    // via the shared line index, then clamp into the source buffer. `LineIndex`
+    // computes `line_start + (col - 1)`, so a column past the start of the line
+    // advances correctly instead of stopping at the line break.
+    let offset = glyph_core::span::LineIndex::new(source).byte_offset(line, col) as usize;
+    offset.min(source.len())
 }

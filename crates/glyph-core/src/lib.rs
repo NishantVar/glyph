@@ -259,6 +259,22 @@ pub fn check_source_with_effects(
             &mut bag,
             &mut registry,
         );
+    } else if !bag.has_error() && !bag.has_repairable() {
+        // B01 belt-and-suspenders: parsing returned `None` but no
+        // diagnostic was pushed. Surface a hard `G::parse::unexpected`
+        // so `glyph check` can never silently exit 0 on a file the
+        // pipeline considers unparseable. Every parser bail path
+        // should push its own structured diagnostic; if a future
+        // refactor forgets one this fallback keeps the contract.
+        let span = Span::new(file_id, 0, 0);
+        bag.push(
+            Diagnostic::error(
+                "G::parse::unexpected",
+                "source could not be parsed and no specific diagnostic was reported",
+                SourceSpan::from_byte_span(file_label, span, &line_index),
+            ),
+            span,
+        );
     }
 
     bag
@@ -601,6 +617,14 @@ pub struct ExportedNames {
     /// falls back to `TypeTag::String` for every imported name and silently
     /// skips `condition-non-boolean-non-predicate` for imported numerics.
     pub text_value_types: HashMap<String, kind_infer::TypeTag>,
+    /// B03 GAP 6: per-exported-block `description:` sub-section text, keyed by
+    /// the block's name. Re-keyed under the consumer-local spelling in
+    /// `check_one_file` and passed into `analyze_with_imports` so
+    /// `check_applies_in_condition` recognises imported described blocks as
+    /// valid `.applies()` receivers (otherwise
+    /// `G::analyze::applies-on-undescribed-block` fires on every imported
+    /// block reference in an export-block `if`/`elif` condition).
+    pub block_descriptions: HashMap<String, String>,
 }
 
 /// Extract the exported names from a parsed source file.
@@ -616,6 +640,7 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
         types: HashMap::new(),
         text_values: HashMap::new(),
         text_value_types: HashMap::new(),
+        block_descriptions: HashMap::new(),
     };
     for decl in &file.decls {
         match decl {
@@ -653,6 +678,15 @@ fn extract_exports(file: &ast::SourceFile) -> ExportedNames {
                 exports
                     .block_params
                     .insert(b.node.name.clone(), b.node.params.clone());
+                // B03 GAP 6: capture the producer-side `description:` text so the
+                // consumer can plumb it into `check_applies_in_condition` and avoid a
+                // spurious `G::analyze::applies-on-undescribed-block` on a described
+                // imported block used in an export-block condition.
+                if let Some(desc) = b.node.description.as_ref() {
+                    exports
+                        .block_descriptions
+                        .insert(b.node.name.clone(), desc.clone());
+                }
                 if let Some(form) = b.node.terminal_return.as_ref().and_then(|expr| match expr {
                     ReturnExpr::OutputTarget(OutputTargetExpr::Identifier(id)) => {
                         Some(OutputTargetForm::Identifier(id.name.clone()))
@@ -916,6 +950,24 @@ fn check_one_file(
     let file = match parsed {
         Some(f) => f,
         None => {
+            // B01 belt-and-suspenders: parsing returned `None` but the
+            // file's diagnostic bag is still empty. Surface a hard
+            // `G::parse::unexpected` so directory- and check-mode never
+            // silently report a clean exit on an unparseable file.
+            {
+                let entry_bag = bags.entry(key.clone()).or_default();
+                if !entry_bag.has_error() && !entry_bag.has_repairable() {
+                    let span = Span::new(file_id, 0, 0);
+                    entry_bag.push(
+                        Diagnostic::error(
+                            "G::parse::unexpected",
+                            "source could not be parsed and no specific diagnostic was reported",
+                            SourceSpan::from_byte_span(&file_label, span, &line_index),
+                        ),
+                        span,
+                    );
+                }
+            }
             stack.pop();
             return None;
         }
@@ -960,6 +1012,13 @@ fn check_one_file(
     // used for return types above; consumed by `analyze_with_imports` to
     // validate cross-file call-arg counts.
     let mut imported_block_params: HashMap<String, Vec<ast::Param>> = HashMap::new();
+    // B03 GAP 6: consumer-local re-keyed map of producer-side `description:`
+    // text per imported block. Threaded into `analyze_with_imports` so
+    // `check_applies_in_condition` recognises a described imported block as a
+    // valid `.applies()` receiver — without this, the export-block condition
+    // validator (added in GAP 5) would fire
+    // `G::analyze::applies-on-undescribed-block` on every imported block.
+    let mut imported_block_descriptions: HashMap<String, String> = HashMap::new();
     // Task 9: per-import-alias resolved namespace kind, keyed by the
     // consumer-local name. Drives both the alias-case rule (PascalCase iff
     // Type, snake_case iff Value) and the kind-aware lookups in
@@ -1169,6 +1228,12 @@ fn check_one_file(
                             {
                                 imported_block_params.insert(local.to_string(), params.clone());
                             }
+                            // B03 GAP 6: mirror the params re-keying for descriptions.
+                            if let Some(desc) =
+                                dep_exports.block_descriptions.get(&imp_name.name.node)
+                            {
+                                imported_block_descriptions.insert(local.to_string(), desc.clone());
+                            }
                             // Task 9: block re-export → Value alias.
                             let alias_span = imp_name
                                 .alias
@@ -1258,7 +1323,14 @@ fn check_one_file(
                         // PRD #103 / Slice 2 (#105): mirror the alias prefix
                         // on parameter lists.
                         if let Some(params) = dep_exports.block_params.get(b) {
-                            imported_block_params.insert(qualified, params.clone());
+                            imported_block_params.insert(qualified.clone(), params.clone());
+                        }
+                        // B03 GAP 6: prefix imported block descriptions under `alias.name` to
+                        // match the consumer's call-site spelling, so an imported described
+                        // block used in an export-block condition is recognised as a valid
+                        // `.applies()` receiver.
+                        if let Some(desc) = dep_exports.block_descriptions.get(b) {
+                            imported_block_descriptions.insert(qualified, desc.clone());
                         }
                     }
                     // Phase B.7: prefix imported `export type` names under
@@ -1333,7 +1405,11 @@ fn check_one_file(
         &HashSet::new(),
         &HashSet::new(),
         &mut used_import_names,
-        &HashMap::new(),
+        // B03 GAP 6: was `&HashMap::new()` — pass the consumer-local re-keyed
+        // imported-block descriptions so `check_applies_in_condition` (now
+        // invoked on export-block conditions per GAP 5) does not flag a
+        // described imported block as undescribed.
+        &imported_block_descriptions,
         &mut registry,
         &imported_block_return_types,
         &imported_block_params,
@@ -1341,6 +1417,7 @@ fn check_one_file(
         &imported_const_types,
         &imported_type_spans,
         &import_alias_kinds,
+        enable_effects,
     );
 
     // Unused import detection.
@@ -1728,7 +1805,7 @@ pub fn compile_directory_with_layout(
                 for (block_name, rel_path) in emitted {
                     procedure_paths.insert((file.clone(), block_name), rel_path);
                 }
-                let mut lib_diags = outside_root_warn.unwrap_or_else(DiagBag::new);
+                let mut lib_diags = outside_root_warn.unwrap_or_default();
                 lib_diags.merge(proc_diags);
                 if lib_diags.has_error() {
                     failed_files.insert(file.clone());
@@ -1903,7 +1980,7 @@ fn build_call_body_message(
     out.push_str("; this compiler build is using the stub filler. ");
     out.push_str("Enable the LLM expand filler, or drop ");
     out.push_str(remediation);
-    out.push_str(".");
+    out.push('.');
     out
 }
 
@@ -2602,9 +2679,51 @@ struct ResolvedImports {
     /// `sweep_type_decl_name_collisions`. Mirrors the same map the
     /// check-only pipeline builds inside `check_file_recursive`.
     import_alias_kinds: HashMap<String, (crate::name_kind::ResolvedImportKind, crate::span::Span)>,
+    /// B06 concern 3: diagnostics raised while resolving `@glyph/std`
+    /// imports — importing the compiler-internal `load`, an unknown
+    /// selective name, or an unknown stdlib module. The check pipeline
+    /// raises these inline in `check_one_file`; the compile/directory
+    /// pipeline has no equivalent import-validation pass, so they are
+    /// collected here and surfaced by `compile_file_with_resolved_imports`
+    /// (which also keeps such a file off the no-import fast path).
+    import_diagnostics: DiagBag,
 }
 
 /// Build the full resolved import data for a consumer file.
+fn stdlib_synthetic_block(
+    exported_name: &str,
+) -> Option<(
+    String,
+    Vec<ast::Param>,
+    Option<crate::span::Spanned<String>>,
+)> {
+    // Synthetic in-memory definitions for `@glyph/std` selective imports.
+    // `load` is intentionally excluded: it is compiler-internal and not
+    // author-importable (`design/stdlib.md` §The `load` Primitive).
+    let zero = crate::span::Span::new(0, 0, 0);
+    let mk_param = |name: &str, ty: Option<&str>| ast::Param {
+        name: name.to_string(),
+        default: None,
+        default_is_name_ref: false,
+        type_annotation: ty.map(|t| crate::span::Spanned::new(t.to_string(), zero)),
+        description: None,
+        span: zero,
+    };
+    match exported_name {
+        "subagent" => Some((
+            "Spawn a new subagent to perform the given task.".to_string(),
+            vec![mk_param("task", None)],
+            Some(crate::span::Spanned::new("Agent".to_string(), zero)),
+        )),
+        "send" => Some((
+            "Send a follow-up message to the given agent.".to_string(),
+            vec![mk_param("agent", Some("Agent")), mk_param("message", None)],
+            None,
+        )),
+        _ => None,
+    }
+}
+
 fn build_resolved_imports(
     consumer: &Path,
     file_exports: &HashMap<PathBuf, ExportedNames>,
@@ -2626,6 +2745,7 @@ fn build_resolved_imports(
         type_descriptions: std::collections::BTreeMap::new(),
         type_spans: HashMap::new(),
         import_alias_kinds: HashMap::new(),
+        import_diagnostics: DiagBag::new(),
     };
 
     let source = match std::fs::read_to_string(consumer) {
@@ -2636,20 +2756,99 @@ fn build_resolved_imports(
         Ok((file, _)) => file,
         Err(_) => return result,
     };
+    // B06 concern 3: anchor stdlib-import diagnostics to the consumer file.
+    let file_label = consumer.display().to_string();
+    let line_index = LineIndex::new(&source);
 
     for decl in &parsed.decls {
         if let Decl::Import(import_spanned) = decl {
             let import = &import_spanned.node;
-            // TODO(flow-assign-subagent-cli): `@glyph/std` imports skipped
-            // here means the CLI compile path never resolves stdlib
-            // subagent end-to-end. Combined with the fast-path bail-out
-            // in `compile_file_with_resolved_imports` (see TODO ~L2194),
-            // a consumer like `import "@glyph/std" { subagent }` followed
-            // by `researcher = subagent(...)` falls through to the
-            // non-import-aware compile and fires
-            // `G::analyze::stdlib-missing-import`. Tracked as deferred
-            // on PR #149: https://github.com/NishantVar/glyph/pull/149
+
             if import.path.starts_with("@glyph/") {
+                // B06: synthesize `@glyph/std` exported-block metadata so the
+                // CLI/directory compile path resolves stdlib calls (`subagent`,
+                // `send`) end-to-end, mirroring `check_one_file`. `load`, unknown
+                // selective names, and unknown `@glyph/*` modules are not
+                // resolved; each pushes a diagnostic onto
+                // `result.import_diagnostics` (`G::analyze::import-private` /
+                // `G::imports::unknown-stdlib-module`, matching the check path)
+                // which `compile_file_with_resolved_imports` surfaces — B06
+                // concern 3.
+
+                if import.path == "@glyph/std" {
+                    match &import.kind {
+                        ImportKind::Selective(names) => {
+                            for imp_name in names {
+                                let local = imp_name
+                                    .alias
+                                    .as_ref()
+                                    .map(|a| a.node.as_str())
+                                    .unwrap_or(imp_name.name.node.as_str());
+                                let alias_span = imp_name
+                                    .alias
+                                    .as_ref()
+                                    .map(|a| a.span)
+                                    .unwrap_or(imp_name.name.span);
+                                if let Some((body, params, return_type)) =
+                                    stdlib_synthetic_block(&imp_name.name.node)
+                                {
+                                    result.block_names.insert(local.to_string());
+                                    result.block_bodies.insert(local.to_string(), body);
+                                    result.block_params.insert(local.to_string(), params);
+                                    if let Some(rt) = return_type {
+                                        result.block_return_types.insert(local.to_string(), rt);
+                                    }
+                                    result.import_alias_kinds.insert(
+                                        local.to_string(),
+                                        (crate::name_kind::ResolvedImportKind::Value, alias_span),
+                                    );
+                                } else {
+                                    // B06 concern 3: `load` and any unknown selective name are not
+                                    // author-importable from `@glyph/std`. Mirror `check_one_file`'s
+                                    // `G::analyze::import-private` so the compile/directory path
+                                    // rejects the file instead of silently dropping the name.
+                                    result.import_diagnostics.push(
+                                        Diagnostic::error(
+                                            "G::analyze::import-private",
+                                            format!(
+                                                "`{}` is not exported from `{}`",
+                                                imp_name.name.node, import.path
+                                            ),
+                                            SourceSpan::from_byte_span(
+                                                &file_label,
+                                                import_spanned.span,
+                                                &line_index,
+                                            ),
+                                        ),
+                                        import_spanned.span,
+                                    );
+                                }
+                            }
+                        }
+                        // Whole-module `import "@glyph/std" as std` is intentionally not
+                        // resolved: dotted call targets (`std.subagent(...)`) are not yet
+                        // accepted by the parser, so registering `std.subagent` here would
+                        // be dead metadata. Out of scope for B06; the check path's
+                        // whole-module arm only registers names for the unused-import sweep.
+                        ImportKind::WholeModule { .. } => {}
+                    }
+                } else {
+                    // B06 concern 3: an unknown `@glyph/*` module. Mirror the check
+                    // path's `G::imports::unknown-stdlib-module` so the compile path
+                    // fails the file instead of silently dropping the import.
+                    result.import_diagnostics.push(
+                        Diagnostic::error(
+                            "G::imports::unknown-stdlib-module",
+                            format!("unknown stdlib module `{}`", import.path),
+                            SourceSpan::from_byte_span(
+                                &file_label,
+                                import_spanned.span,
+                                &line_index,
+                            ),
+                        ),
+                        import_spanned.span,
+                    );
+                }
                 continue;
             }
             let resolved = match resolve_import_path(consumer, &import.path) {
@@ -2767,6 +2966,7 @@ fn build_resolved_imports(
                         }
                     }
                 }
+
                 ImportKind::WholeModule { alias } => {
                     // Task 9: whole-module aliases bind to the value namespace
                     // (qualified `alias.Type` refs are MVP-unsupported per B.7).
@@ -2914,14 +3114,20 @@ fn compile_file_with_resolved_imports(
     // Phase B.7: also check `type_descriptions` so a types-only consumer
     // (no imported texts/blocks/procedure-paths) still routes through the
     // resolved-imports path that folds imported types into the TypeRegistry.
-    // TODO(flow-assign-subagent-cli): the `build_resolved_imports` pass
-    // skips `@glyph/*` paths (see TODO ~L1963), so a stdlib-only consumer
-    // arrives here with empty collections and falls through to the
-    // non-import-aware `compile_file_with_effects`. That path sees no
-    // import names and `subagent(...)` / `send(...)` references fire
-    // `G::analyze::stdlib-missing-import`. End-to-end stdlib subagent via
-    // CLI compile is deferred. Tracked on PR #149:
-    // https://github.com/NishantVar/glyph/pull/149
+
+    // B06 concern 3: `build_resolved_imports` raises `import-private` /
+    // `unknown-stdlib-module` for an invalid `@glyph/std` import (e.g.
+    // `load`, an unknown selective name, or an unknown module). The
+    // compile/directory path has no separate import-validation pass, so
+    // surface them here — and bail before the no-import fast path, which
+    // would otherwise route an invalid-import file to the non-import-aware
+    // `compile_file_with_layout` and exit 0.
+    if !resolved_imports.import_diagnostics.is_empty() {
+        return Ok(CompileOutcome::Diagnostics(
+            resolved_imports.import_diagnostics.clone(),
+        ));
+    }
+
     if imported_procedure_paths.is_empty()
         && resolved_imports.text_names.is_empty()
         && resolved_imports.block_names.is_empty()
@@ -2969,6 +3175,10 @@ fn compile_file_with_resolved_imports(
 }
 
 /// Compile source with full import context: text values for Lower, block bodies for Validate.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compile-pipeline helper; long parameter list threads resolved-import context"
+)]
 fn compile_source_with_resolved_imports(
     source: &str,
     file_id: u32,
@@ -3038,6 +3248,7 @@ fn compile_source_with_resolved_imports(
         &resolved_imports.text_value_types,
         &resolved_imports.type_spans,
         &resolved_imports.import_alias_kinds,
+        enable_effects,
     );
     if bag.has_error() || bag.has_repairable() {
         return Ok(CompileOutcome::Diagnostics(bag));
@@ -3096,6 +3307,20 @@ fn compile_source_with_resolved_imports(
             if c.callee_return_type_text.is_none() {
                 if let Some(rt) = resolved_imports.block_return_types.get(&c.target) {
                     c.callee_return_type_text = Some(rt.node.clone());
+                }
+            }
+            // B06 concern 2: an aliased imported call (e.g. `subagent as
+            // spawn`) is not recognized by `lower::callee_is_agent`, which
+            // only consults `crate::stdlib_sig` on the *bare* target name.
+            // The resolved `block_return_types` (re-keyed under the local /
+            // alias name) already records the Agent return-shape, so correct
+            // `is_agent` here for bound calls — mirroring scaffold emit's
+            // agent-vs-result prose split.
+            if !c.is_agent && c.bound_name.is_some() {
+                if let Some(rt) = resolved_imports.block_return_types.get(&c.target) {
+                    if rt.node.eq_ignore_ascii_case("Agent") {
+                        c.is_agent = true;
+                    }
                 }
             }
         }
@@ -3750,42 +3975,6 @@ block helper()
             "expected G::parse::gated-section on block, got: {:?}",
             ids
         );
-    }
-
-    #[test]
-    #[ignore = "PRD #159: this surface is now Repairable through compile; relift as expand-pass-level test against IrArena directly. See todo/expand-todos.md."]
-    fn return_call_folds_into_final_step() {
-        // AC1: `return summarize_changes()` becomes the last sentence of the
-        // final numbered step.
-        //
-        // Ignored under PRD #159 — see todo/expand-todos.md. Relift target:
-        // drive the expand pass directly against an IrArena to bypass the
-        // analyzer (which now flags this surface as Repairable).
-        let src = concat!(
-            "block summarize_changes()\n",
-            "    \"Summarize what was changed and why.\"\n",
-            "\n",
-            "skill update_docs()\n",
-            "    description: \"Update documentation.\"\n",
-            "    flow:\n",
-            "        \"Read the repository changes.\"\n",
-            "        return summarize_changes()\n",
-        );
-        let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
-        match outcome {
-            CompileOutcome::Compiled { markdown, .. } => {
-                // The final step should contain the return folding text.
-                assert!(
-                    markdown.contains("Return the result of summarize_changes()."),
-                    "expected return folding in final step:\n{}",
-                    markdown
-                );
-            }
-            CompileOutcome::Diagnostics(bag) => {
-                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
-                panic!("expected compiled output, got diagnostics: {:?}", ids);
-            }
-        }
     }
 
     #[test]
@@ -4760,37 +4949,6 @@ skill main()
                 assert!(
                     markdown.contains("1. Do something."),
                     "step should be preserved:\n{}",
-                    markdown
-                );
-            }
-            CompileOutcome::Diagnostics(bag) => {
-                let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
-                panic!("expected compiled output, got diagnostics: {:?}", ids);
-            }
-        }
-    }
-
-    #[test]
-    #[ignore = "PRD #159: this surface is now Repairable through compile; relift as expand-pass-level test against IrArena directly. See todo/expand-todos.md."]
-    fn return_bare_name_folds_into_final_step() {
-        // `return result` with a bare name should fold.
-        //
-        // Ignored under PRD #159 — see todo/expand-todos.md. Relift target:
-        // drive the expand pass directly against an IrArena to bypass the
-        // analyzer (which now flags this surface as Repairable).
-        let src = concat!(
-            "skill main()\n",
-            "    description: \"Main skill.\"\n",
-            "    flow:\n",
-            "        \"Compute the result.\"\n",
-            "        return result\n",
-        );
-        let outcome = compile_source(src, 0, "test.glyph").expect("should compile");
-        match outcome {
-            CompileOutcome::Compiled { markdown, .. } => {
-                assert!(
-                    markdown.contains("Return the result of result."),
-                    "expected return folding for bare name:\n{}",
                     markdown
                 );
             }
@@ -6911,7 +7069,7 @@ export block inspect(scope = default_scope <\"directory to inspect\">) -> Path
         let tools_lib_path = dir.path().join("tools_lib.glyph");
         std::fs::write(&tools_lib_path, &tools_lib_src).unwrap();
 
-        let result = compile_directory(&[tools_lib_path.clone()]);
+        let result = compile_directory(std::slice::from_ref(&tools_lib_path));
         assert_eq!(result.exit_code, 0, "compile should succeed");
 
         let proc_path = dir.path().join("tools_lib/inspect.md");
@@ -7693,9 +7851,7 @@ skill main()
         let importer_bag = bags.get(&canon_importer).unwrap();
         let importer_ids: Vec<&str> = importer_bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
-            importer_ids
-                .iter()
-                .any(|id| *id == "G::analyze::import-private"),
+            importer_ids.contains(&"G::analyze::import-private"),
             "import-private should surface on the importer. got: {:?}",
             importer_ids
         );

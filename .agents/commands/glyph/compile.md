@@ -1,19 +1,18 @@
 ---
 name: compile
-description: Runs the full Glyph pipeline — compile, fmt, LLM repair loop, prose reshape, validate-output — and surfaces every emitted compiled `.md` (top-level skills and procedure files) to the user.
+description: 'Runs the full Glyph pipeline — compile, fmt, LLM repair loop, prose reshape, validate-output — and surfaces every emitted compiled `.md` (top-level skills and procedure files) to the user.'
 ---
 
 ## Parameters
 
 - **source_path**. Required.
 
-## Instructions
-
-### Steps
+## Steps
 
 1. Follow the compile-with-repair procedure below.
 2. Follow the expand-and-validate procedure below.
 3. Follow the final-review procedure below.
+4. Print a single `Issues:` line summarising the main failures encountered across every prior phase — repair iterations consumed in `compile_with_repair`, `validate-output` retries in `expand_and_validate`, and any residual `Needs your attention` items from `final_review`. If no phase encountered any failure, print `Issues: none` instead. Then print an `Output:` list of every emitted `.md` path grouped by source file. Do not print phase tables, exit codes, per-fix snippets, or any other pipeline internals beyond these two sections. Produce: absolute paths of every emitted .md file (zero or more, top-level skills and procedure files), grouped by source file, with any per-file review change summaries surfaced inline.
 
 ### Procedure: compile-with-repair
 

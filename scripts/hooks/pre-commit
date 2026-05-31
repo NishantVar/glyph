@@ -8,6 +8,14 @@ if [ -n "$staged_rs" ]; then
     echo "pre-commit: running cargo fmt..."
     cargo fmt --all
     git add $staged_rs
+
+    # Rust sources changed, so the installed `glyph` binary on PATH is now
+    # stale. Rebuild + reinstall it (and glyph-lsp) before the .glyph fmt/check
+    # below run, so those checks use the binary matching this commit's source
+    # rather than a stale one. cargo's freshness check makes this a near-no-op
+    # when only test .rs changed. A build failure aborts the commit (set -e).
+    echo "pre-commit: rebuilding and installing glyph (Rust sources changed)..."
+    ./scripts/install.sh
 fi
 
 if [ -n "$staged_glyph" ]; then
@@ -28,13 +36,18 @@ if [ -n "$staged_glyph" ]; then
             esac
         done
 
-        echo "pre-commit: formatting staged .glyph files..."
-        for f in $staged_glyph; do
-            glyph fmt "$f"
-            git add "$f"
-        done
-
+        # Skip fmt on corpus fixtures too — fmt's remove_unused_imports pass
+        # depends on a current-source glyph binary; stale binaries can mis-judge
+        # and strip imports that newer source would preserve. Corpus fixtures
+        # are exactly the place where this destruction is undetectable until
+        # CI fails. cargo nextest is the authoritative gate.
         if [ -n "$check_glyph" ]; then
+            echo "pre-commit: formatting staged .glyph files..."
+            for f in $check_glyph; do
+                glyph fmt "$f"
+                git add "$f"
+            done
+
             echo "pre-commit: checking staged .glyph files..."
             for f in $check_glyph; do
                 glyph check "$f"

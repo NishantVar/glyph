@@ -83,7 +83,7 @@ The catalog below grows as the compiler is implemented. The completeness meta-ru
 | `G::parse::tab-indent` | repairable | Tabs used instead of 4-space indentation |
 | `G::parse::mixed-indent` | repairable | Tabs and spaces on the same line |
 | `G::parse::nested-flow` | error | `flow:` inside `flow:` |
-| `G::parse::effects-disabled` | error | `effects:` sub-section used without `--enable-effects`. The effects subsystem is gated; remove the `effects:` line or pass `--enable-effects`. |
+| `G::parse::gated-section` | error | A gated section (currently `effects:`) is used in a configuration where it is not enabled. The effects subsystem is gated behind `--enable-effects`; remove the `effects:` section or pass `--enable-effects`. |
 | `G::parse::none-with-effects` | error | *(Gated — requires `--enable-effects`.)* `effects: none, reads_files` — `none` alongside other keywords. Detectable in Parse because the token sequence is unambiguous, but semantically an error — `none` exclusivity is a hard rule, not repairable. |
 | `G::parse::multiple-with` | error | Chained `with ... with ...` on a single call |
 | `G::parse::with-on-bare-name` | error | `with` modifier on a non-call statement |
@@ -101,12 +101,25 @@ The catalog below grows as the compiler is implemented. The completeness meta-ru
 | `G::parse::none-as-return-type` | repairable | A declaration header uses `-> None` as a return-type annotation. Declarations with no meaningful return omit `->` entirely. Repair deterministically strips the trailing ` -> None` from declaration headers. Match is case-insensitive on `none` with identifier-boundary semantics; the value keyword `none` (in `return none`, `effects: none`, value positions) is preserved. |
 | `G::parse::malformed-output-target` | error | A `return <...>` output-target candidate matches neither valid form. Identifier-form failures: empty `<>`, whitespace inside brackets, dot access, call syntax, or any non-identifier character. Descriptive-form failures: empty `<"">` (the description string must be non-empty). The same diagnostic ID covers both; the message names the offending shape. |
 | `G::parse::output-target-outside-return` | error | An output-target literal — `<name>` (identifier form) or `<"…">` (descriptive form) — appears outside the single MVP-legal position: the terminal top-level `return …` expression. The same diagnostic ID covers both forms. |
+| `G::parse::bad-indent` | error | Leading indentation on a non-blank line is not a multiple of 4 spaces. Glyph requires consistent 4-space indents. |
+| `G::parse::unterminated-string` | error | A `"…"` string literal is missing its closing `"` (typically because the newline terminates the line before the close quote is seen). |
+| `G::parse::unexpected-char` | error | The tokenizer encountered a character that is not part of any Glyph token (e.g., `@`, `!`, `#` in source position). Distinct from `G::parse::operator-in-expression`, which fires only for the repairable arithmetic operators `+`, `-`, `*`, `/`. |
+| `G::parse::generated-decl-out-of-order` | error | A non-`generated` top-level declaration appears after a `generated const` / `generated block`. Per `design/language-surface.md` §3.6 / §3.7, all `generated` declarations must follow every non-generated top-level declaration; move the offending declaration above the first `generated` declaration. |
+| `G::parse::generated-block-body-shape` | error | A `generated block` body violates the single-inline-or-block-string shape required by `design/language-surface.md` §3.7. Triggers: a multi-statement `flow:` body, or any of `description:` / `constraints:` / `context:` / `effects:` / extra subsections appearing alongside the body. |
+| `G::parse::leading-zero-numeric` | repairable | A numeric literal has a leading zero (e.g. `03`, `01.5`); per `design/values-and-names.md` §Integers, leading zeros are not allowed on integers or float integer parts. Repair strips the leading zero(s). |
+| `G::parse::marker-missing-operand` | error | A marker keyword (`require` / `avoid` / `must` / `context`) inside a freeform section appears with no following name or string operand. |
+| `G::parse::flow-statement-in-freeform` | error | A `flow:`-only statement appears inside a freeform section, where flow statements are not allowed. |
+| `G::parse::effect-keyword-outside-effects-section` | error | An effect keyword appears in a freeform section; effect keywords are valid only inside the `effects:` section. |
+| `G::parse::unknown-marker-word` | error | A line in a freeform section begins with a word that is not a recognized marker keyword (`require`, `avoid`, `must`, `must avoid`, or `context`). |
+| `G::parse::applies-outside-condition` | error | A `NAME.applies()` trigger predicate appears outside an `if`/`elif` condition; it is legal only in condition position. |
+| `G::parse::assign-rhs-not-call` | repairable | The right-hand side of a flow assignment (`x = …`) is not a call expression; bare-name aliasing is not supported. |
+| `G::parse::unexpected` | repairable / error | Catch-all parser failure. **Repairable**: parser bails with an unstructured error and no specific ID is wired. **Error**: parsing produces no AST and no other diagnostic was raised — a hard fallback so `glyph check` cannot silently exit 0 on an unparseable source. |
 
 ### Analyze phase
 
 | ID | Classification | Trigger |
 |---|---|---|
-| `G::analyze::undefined-name` | repairable | Bare name doesn't resolve to any declaration; repair generates a definition |
+| `G::analyze::undefined-name` | error | A bare name or `{name}` slot does not resolve to a visible declaration: used as a constraint/context marker or as a parameter default but not a declared `const`, or used in constraint/context position but not a constraint-only / context-only skill. Hard error — no repair. |
 | `G::analyze::undefined-call` | repairable | Parens-call doesn't resolve; repair generates a `generated block` |
 | `G::analyze::name-collision` | error | Two value-namespace names collide after case normalization. Cross-namespace canonical-equal pairs (e.g., `type Mode` + `block mode_name`) do not fire this — they live in disjoint namespaces. |
 | `G::analyze::type-case-violation` | error | A type identifier is not strict PascalCase (no underscores, leading uppercase). Fires for `type` decls, `-> Foo` return annotations, `param: Foo` parameter type annotations, and selective type imports. Examples that fail: `type repo_context`, `-> plan`, `param: Repo_Context`. |
@@ -140,11 +153,19 @@ The catalog below grows as the compiler is implemented. The completeness meta-ru
 | `G::analyze::no-exports-in-library` | error | A library file (zero `skill` declarations) has zero `export` declarations — it has no consumer-visible contribution. Add at least one `export block` or `export const`. |
 | `G::analyze::missing-required-arg` | error | A `call <name>(...)` flow statement omits a positional argument for a callee parameter that has no default. Applies uniformly to private `block`, same-file `export block`, and imported `export block` callees. The diagnostic span pins the offending callee identifier at the call site (not the enclosing skill header), so an IDE can highlight the broken call. Skill parameters are *not* subject to this rule — they are runtime-required inputs surfaced in `## Parameters`. |
 | `G::analyze::missing-description` | repairable | A `skill` declaration omits `description:`; Repair generates one from the skill name and body and adds it as a `description:` sub-section in the source |
-| `G::analyze::const-in-flow` | repairable | A bare name (or undefined identifier) appears in `flow:` without a keyword prefix (`require`/`avoid`/`must`/`context`); `const` declarations are passive constants and are not legal as flow instruction steps. Repair adds parentheses and materializes a `generated block`. |
+| `G::analyze::text-in-flow` | repairable | A bare name appears as a statement in `flow:` without a keyword prefix or call parentheses. Repair adds `()` for a block call, or a keyword prefix (`require`/`avoid`/`must`/`context`) for a constraint or context. |
 | `G::analyze::applies-on-non-block` | error | `NAME.applies()` was called where `NAME` resolves to something other than a `block` or `export block` declaration (e.g., a `const`, an `import` alias, a parameter). The trigger predicate is defined only on blocks. |
 | `G::analyze::applies-on-undescribed-block` | repairable / error | `BLOCKNAME.applies()` is called on a block that lacks a `description:` sub-section. **Repairable** when the block is defined in the same file under compilation; Repair adds a trigger-shaped `description:` to the block. **Error** when the block is imported from another file; the author must edit the source library directly because Repair is single-file. |
 | `G::analyze::condition-non-boolean-non-predicate` | error | An `if` / `elif` condition contains a token that is neither boolean-kinded nor a recognised predicate form. The token resolves to an `int`- or `float`-kinded declaration (the compiler does not implicitly truth-test numerics), or to another non-string, non-boolean kind that condition position cannot accept. The author must rewrite the condition explicitly (e.g., compare to a literal). Opaque/domain-kinded bindings fall through to boolean treatment and do not trigger this error. |
 | `G::analyze::unmerged-duplicate-subsection` | error | A `Skill`, `Block`, or `ExportBlock` AST node still has a non-empty `extra_subsections` slot when Analyze runs — i.e., the parser recorded duplicate sub-sections (`G::parse::duplicate-subsection`) but the deterministic merge did not run or could not consume them (e.g., `--no-repair`, `glyph fmt --check`, or a merge failure). Analyze emits this hard error so Lower never sees an inconsistent declaration shape. The author must either re-run with Repair enabled or fix the duplicates manually. |
+| `G::analyze::duplicate-type-decl` | error | Two `type` declarations in the same file resolve to the same canonical type name; each domain type may be declared at most once per file. |
+| `G::analyze::duplicate-section` | error | A named sub-section (catalogued or freeform) appears more than once in a single declaration body; each may appear at most once. |
+| `G::analyze::cardinality-violation` | error | A cardinality-`one` section (e.g. `goal:`) is given zero items or more than one; exactly one item is required. |
+| `G::analyze::flow-assign-in-block-unsupported` | error | A flow-position assignment (`x = …`) appears inside a `block` flow; assignments are supported only in skill `flow:` blocks. |
+| `G::analyze::redeclared-flow-binding` | error | A flow assignment binds a name already declared in the same scope (parameter, `const`, or an earlier binding). |
+| `G::analyze::assignment-rhs-has-no-value` | error | The right-hand side of a flow assignment calls a callee that declares no return type, so there is no value for the binding to hold. |
+| `G::analyze::use-before-bind` | error | A name is referenced before its flow binding is in scope — used earlier than its assignment, or leaked out of a branch arm. |
+| `G::analyze::call-arg-type-mismatch` | error | A flow-assignment call passes an argument whose type does not match the callee parameter's declared type. |
 
 ### Validate phase
 
@@ -157,6 +178,7 @@ Validate is the final correctness gate before any LLM touches the IR. It checks 
 | `G::validate::malformed-branch` | error | A `Branch` IR node lacks the shape Expand expects — missing `if` arm, or an arm body that is not well-formed |
 | `G::validate::recursive-call` | error | The local block-to-block call graph within a file contains a cycle; recursion is forbidden in MVP |
 | `G::validate::empty-step` | error | A Step-projecting IR node has empty body text; silently-empty Steps are rejected |
+| `G::validate::no-root-skill` | error | The lowered IR arena contains no root `skill` node, so Validate has nothing to project and cannot proceed |
 
 ### Build phase
 

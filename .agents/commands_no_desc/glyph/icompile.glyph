@@ -8,12 +8,12 @@
 // tandem. Deliberately bypasses the full compile pipeline so unrelated
 // prose in the compiled output is preserved verbatim.
 
-skill icompile(source_path, change)
+skill icompile(source_path, change) -> IncrementalEditSummary
 
-    require keep_files_in_sync
-    must avoid full_pipeline_run
-    avoid unrelated_edits
-
+    constraints:
+        require keep_files_in_sync
+        must avoid full_pipeline_run
+        avoid unrelated_edits
     flow:
         read_source_and_compiled(source_path)
         plan_paired_edit(change)

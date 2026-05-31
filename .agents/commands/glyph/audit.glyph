@@ -5,7 +5,7 @@
 // the skill may not behave as intended. Currently runs the constraint-
 // conflict scan; more semantic checks may be added over time.
 
-skill audit(source_path)
+skill audit(source_path) -> ConstraintAuditReport
     description: "Runs semantic checks (currently constraint-conflict scanning) against each declaration's resolved constraint set and surfaces any contradictions or tensions to the author."
 
     flow:

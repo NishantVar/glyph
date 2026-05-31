@@ -66,7 +66,7 @@ fn is_call_receiver(buf: &str) -> bool {
     }
     buf.chars()
         .last()
-        .map_or(false, |c| c.is_ascii_alphanumeric() || c == '_')
+        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Split a condition string into tokens, treating `"..."` as a single token
@@ -77,7 +77,9 @@ fn is_call_receiver(buf: &str) -> bool {
 /// so that `classify_token` can match the `.applies()` suffix. The
 /// `is_call_receiver` helper distinguishes the two cases.
 ///
-/// // TODO: escaped quotes are not supported (`"a\"b"` truncates at the backslash-quote).
+/// Backslash escapes (`\"`, `\\`, `\n`, `\t`, and unknown `\X`) are honored
+/// inside `"..."` and preserved verbatim in the returned token text, mirroring
+/// the canonical string-literal escape policy in `tokenize.rs`.
 pub fn tokenize_condition(s: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut iter = s.chars().peekable();
@@ -93,6 +95,26 @@ pub fn tokenize_condition(s: &str) -> Vec<String> {
                 while let Some(&inner) = iter.peek() {
                     iter.next();
                     lit.push(inner);
+                    if inner == '\\' {
+                        // Backslash escape — consume the next char verbatim so an
+                        // escaped quote (`\"`) or escaped backslash (`\\`) does not
+                        // terminate the literal. Token text preserves the surface form
+                        // (the raw source slice including the escape sequence); the
+                        // recognized-escapes set mirrors `tokenize.rs`
+                        // (`scan_triple_string` and the inline `"..."` scanner):
+                        // `\"`, `\\`, `\n`, `\t`. Unknown escapes (`\X`) and a trailing
+                        // `\` at end of input are preserved as literal source bytes —
+                        // we do not decode here because consumers compare against the
+                        // surface token text. A trailing `\` with no following char
+                        // falls through to the outer loop terminating naturally
+                        // (matching the canonical scanner's `p + 1 < content_end`
+                        // guard).
+                        if let Some(&esc) = iter.peek() {
+                            iter.next();
+                            lit.push(esc);
+                        }
+                        continue;
+                    }
                     if inner == '"' {
                         break;
                     }
@@ -323,7 +345,7 @@ impl<'a> ConditionContext<'a> {
 /// Mirrors the dispatch in `analyze.rs::classify_token` (Task 6 rewires the
 /// analyze caller to consult this version).
 fn classify_token(tok: &str, ctx: &ConditionContext) -> ConditionTokenKind {
-    if matches!(tok, "and" | "or" | "not" | "==" | "(" | ")") {
+    if matches!(tok, "and" | "or" | "not" | "==" | "!=" | "(" | ")") {
         return ConditionTokenKind::Operator;
     }
     if tok.starts_with('"') {
@@ -419,19 +441,19 @@ pub fn classify_condition(condition: &str, ctx: &ConditionContext) -> ConditionC
 
     let mut is_operand = vec![false; raw.len()];
     for (i, tok) in raw.iter().enumerate() {
-        if tok == "==" {
+        if tok == "==" || tok == "!=" {
             if i > 0 {
                 let lhs_end = i - 1;
                 let lhs_start = match_paren_left(&raw, lhs_end);
-                for j in lhs_start..=lhs_end {
-                    is_operand[j] = true;
+                for slot in is_operand.iter_mut().take(lhs_end + 1).skip(lhs_start) {
+                    *slot = true;
                 }
             }
             if i + 1 < raw.len() {
                 let rhs_start = i + 1;
                 let rhs_end = match_paren_right(&raw, rhs_start);
-                for j in rhs_start..=rhs_end {
-                    is_operand[j] = true;
+                for slot in is_operand.iter_mut().take(rhs_end + 1).skip(rhs_start) {
+                    *slot = true;
                 }
             }
         }
@@ -451,7 +473,7 @@ pub fn classify_condition(condition: &str, ctx: &ConditionContext) -> ConditionC
                 ConditionTokenKind::Operator => {
                     if matches!(text.as_str(), "and" | "not") {
                         summary.has_compositional_operator = true;
-                    } else if text == "==" {
+                    } else if text == "==" || text == "!=" {
                         summary.has_boolean_token = true;
                         summary.has_comparison_operator = true;
                     }
@@ -875,5 +897,73 @@ mod tests {
                 "boolean flag differs for `{cond}`"
             );
         }
+    }
+
+    // ─── B15: condition tokenizer handles backslash escapes in strings ───
+    //
+    // Escape policy mirrors `tokenize.rs` (`scan_triple_string` and the
+    // inline `"..."` scanner): `\"` and `\\` (and `\n`, `\t`) are
+    // recognized; unknown escapes (`\X`) and a trailing `\` at end of
+    // input are preserved as literal source bytes. `tokenize_condition`
+    // keeps the surface-form token (the verbatim source slice, quotes
+    // and escapes included), so the produced token equals the source
+    // string and therefore covers the full source range (span
+    // preservation by construction).
+
+    #[test]
+    fn tokenize_escaped_quote_is_single_literal() {
+        // Source: `"a\"b"` — 6 chars: `"`, `a`, `\`, `"`, `b`, `"`.
+        // Pre-fix this split at the `\"` and produced two tokens.
+        let src = r#""a\"b""#;
+        let toks = tokenize_condition(src);
+        assert_eq!(toks.len(), 1, "expected single token, got {:?}", toks);
+        assert_eq!(
+            toks[0], src,
+            "token text must preserve the verbatim source slice"
+        );
+        // Span preservation: token text length equals source byte length,
+        // so the token's source range is `[0, src.len())`.
+        assert_eq!(toks[0].len(), src.len());
+    }
+
+    #[test]
+    fn tokenize_escaped_backslash_is_single_literal() {
+        // Source: `"a\\b"` — escaped backslash inside the literal.
+        let src = r#""a\\b""#;
+        let toks = tokenize_condition(src);
+        assert_eq!(toks.len(), 1, "expected single token, got {:?}", toks);
+        assert_eq!(toks[0], src);
+        assert_eq!(toks[0].len(), src.len());
+    }
+
+    #[test]
+    fn tokenize_escaped_quote_does_not_bleed_into_following_operator() {
+        // Adversarial: `\"` inside a literal followed by `==` and another
+        // token. The literal must close at the *real* closing quote, not
+        // at the escaped one — otherwise the `==` is swallowed.
+        let src = r#""a\"b" == risk"#;
+        assert_eq!(tokenize_condition(src), vec![r#""a\"b""#, "==", "risk"]);
+    }
+
+    #[test]
+    fn tokenize_plain_string_unchanged_regression() {
+        // Regression: a plain (no-escape) string still tokenizes as one
+        // token whose text equals the source slice.
+        let src = r#""hello world""#;
+        assert_eq!(tokenize_condition(src), vec![src]);
+    }
+
+    #[test]
+    fn tokenize_trailing_backslash_at_end_of_input_preserved() {
+        // `tokenize_condition` returns `Vec<String>` and has no error
+        // path. A trailing `\` with no following char (and no closing
+        // `"`) is preserved as a literal `\` — the resulting token is
+        // the verbatim source (`"a\`), matching the canonical
+        // tokenize.rs guard (`p + 1 < content_end` falls through to the
+        // literal-byte branch when `\` is the last byte).
+        let src = "\"a\\";
+        let toks = tokenize_condition(src);
+        assert_eq!(toks.len(), 1, "expected single token, got {:?}", toks);
+        assert_eq!(toks[0], src);
     }
 }

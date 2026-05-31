@@ -541,17 +541,17 @@ fn ast_rewrite_inner(
             continue;
         }
         // A line at indent 0 that starts a declaration keyword.
-        if !line.starts_with(' ') && !line.starts_with('\t') {
-            if trimmed.starts_with("skill ")
+        if !line.starts_with(' ')
+            && !line.starts_with('\t')
+            && (trimmed.starts_with("skill ")
                 || trimmed.starts_with("block ")
                 || trimmed.starts_with("export block ")
                 || trimmed.starts_with("export const ")
                 || trimmed.starts_with("const ")
                 || trimmed.starts_with("generated ")
-                || trimmed.starts_with("import ")
-            {
-                decl_starts.push(i);
-            }
+                || trimmed.starts_with("import "))
+        {
+            decl_starts.push(i);
         }
     }
 
@@ -573,8 +573,8 @@ fn ast_rewrite_inner(
 
     for (decl_idx, &(start, end)) in decl_ranges.iter().enumerate() {
         // Emit any lines before this declaration (blank lines between decls).
-        for i in last_end..start {
-            out.push_str(lines[i]);
+        for line in lines.iter().take(start).skip(last_end) {
+            out.push_str(line);
             out.push('\n');
         }
         last_end = end;
@@ -586,8 +586,8 @@ fn ast_rewrite_inner(
             || header.starts_with("generated ")
         {
             // Pass through unchanged.
-            for i in start..end {
-                out.push_str(lines[i]);
+            for line in lines.iter().take(end).skip(start) {
+                out.push_str(line);
                 out.push('\n');
             }
             continue;
@@ -608,8 +608,8 @@ fn ast_rewrite_inner(
     }
 
     // Emit any trailing lines after the last declaration.
-    for i in last_end..lines.len() {
-        out.push_str(lines[i]);
+    for line in lines.iter().skip(last_end) {
+        out.push_str(line);
         out.push('\n');
     }
 
@@ -711,7 +711,7 @@ fn rewrite_decl_body(
         let trimmed = line.trim();
         if trimmed.is_empty() {
             // Blank line — accumulate with current section or skip.
-            if let Some(_) = &current_kind {
+            if current_kind.is_some() {
                 current_lines.push(line.to_string());
             }
             continue;
@@ -738,12 +738,8 @@ fn rewrite_decl_body(
                 Some(SectionKind::BodyConstraintMarker)
             } else if is_context_marker(trimmed) {
                 Some(SectionKind::BodyContextMarker)
-            } else if let Some(name) = freeform_section_header_name(trimmed) {
-                // Phase 3 / D9: a colon-keyword section whose name is not in
-                // the built-in catalogue (e.g. `quality:`, `risks:`).
-                Some(SectionKind::Freeform(name))
             } else {
-                None
+                freeform_section_header_name(trimmed).map(SectionKind::Freeform)
             };
 
             if let Some(kind) = new_kind {
@@ -785,7 +781,7 @@ fn rewrite_decl_body(
     // Flush last section.
     if let Some(kind) = current_kind {
         sections.push(Section {
-            kind: kind,
+            kind,
             lines: current_lines,
         });
     }
@@ -1438,7 +1434,7 @@ fn placeholder_description(s: &str) -> Option<&str> {
     if inner.is_empty() {
         return None;
     }
-    if inner.contains(|c: char| c == '"' || c == '\\' || c == '\n' || c == '\t' || c == '\r') {
+    if inner.contains(['"', '\\', '\n', '\t', '\r']) {
         return None;
     }
     Some(inner)

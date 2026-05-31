@@ -1,11 +1,9 @@
 ---
 name: glyph
-description: Entry point for the Glyph toolkit. Use when the user wants to author, compile, audit, decompile, or learn the Glyph DSL. Routes the request to the matching `/glyph:*` slash command.
+description: 'Entry point for the Glyph toolkit. Use when the user wants to author, compile, audit, decompile, or learn the Glyph DSL. Routes the request to the matching `/glyph:*` slash command.'
 ---
 
-## Instructions
-
-### Context
+## Context
 
 - **toolkit-slash-commands**
 
@@ -15,7 +13,7 @@ description: Entry point for the Glyph toolkit. Use when the user wants to autho
 
   Internal skills loaded by Glyph slash commands when the pipeline reaches their stage: `repair` (Phase 3b LLM source-rewrite, loaded by `/glyph:compile` when the compiler exits 2 with repairable diagnostics), `semantic_validation` (LLM semantic check on a declaration's resolved constraint set, loaded by `/glyph:audit` for every declaration with 2 or more constraints; currently runs the constraint-conflict scan), and `expand` (Phase 4 LLM span-fill, loaded by `/glyph:compile` to fill the marked prose spans in the scaffolded compiled `.md` against its resolved IR side-map).
 
-### Steps
+## Steps
 
 1. Decide which of the following applies and follow only that path:
    If User wants to author or edit a `.glyph` source file, or wants the Glyph DSL syntax taught or explained. Triggers include phrases like `write a glyph skill`, `teach me glyph`, `how does glyph syntax work`, or any request to create or edit a `.glyph` file:

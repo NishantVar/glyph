@@ -1,0 +1,13 @@
+// B12: `generated block` body must be a single inline-or-block string per
+// design/language-surface.md §3.7 ("Body is a single inline or block
+// string ... multi-statement `flow:` bodies are not [allowed]").
+// Expect `G::parse::generated-block-body-shape`.
+skill main()
+    description: "Demo."
+    flow:
+        offending_helper()
+
+generated block offending_helper()
+    flow:
+        "first instruction"
+        "second instruction"

@@ -162,9 +162,9 @@ fn resolve_block_body_text(
 ) -> Result<String, LowerError> {
     let mut parts: Vec<String> = Vec::new();
     for stmt in &block.flow {
-        match stmt {
-            FlowStmt::InlineString(s) => parts.push(s.clone()),
-            _ => {} // Other flow stmt types not handled for Tier 1 inline in this slice.
+        // Other flow stmt types are not handled for Tier 1 inline in this slice.
+        if let FlowStmt::InlineString(s) = stmt {
+            parts.push(s.clone());
         }
     }
     Ok(parts.join(" "))
@@ -452,6 +452,7 @@ fn lower_output_contract_for_flow(
 ///   1. Same-file blocks / export-blocks — case-insensitive "Agent" on the
 ///      raw `-> Type` text.
 ///   2. Stdlib — `crate::stdlib_sig(name).is_agent` (covers `subagent`).
+///
 /// Anything else (unresolved callee, plain `-> DomainType`, no annotation)
 /// is treated as not-agent.
 fn callee_is_agent(
@@ -541,10 +542,10 @@ fn lower_flow_body(
                 let resolved_body = if let Some(block) = blocks.get(target.node.as_str()) {
                     let body_text = resolve_block_body_text(block, texts)?;
                     Some(body_text)
-                } else if let Some(eb) = export_blocks.get(target.node.as_str()) {
-                    Some(resolve_export_block_body_text(eb))
                 } else {
-                    None
+                    export_blocks
+                        .get(target.node.as_str())
+                        .map(|eb| resolve_export_block_body_text(eb))
                 };
                 // Issue #84 chunk 6: same-file callee return-type lookup. Reads
                 // `BlockDecl::return_type` from the same `blocks` map used for
@@ -895,10 +896,10 @@ pub fn lower_with_imports(
                     } => {
                         let resolved_body = if let Some(callee) = blocks.get(target.node.as_str()) {
                             Some(resolve_block_body_text(callee, &texts)?)
-                        } else if let Some(eb) = export_blocks.get(target.node.as_str()) {
-                            Some(resolve_export_block_body_text(eb))
                         } else {
-                            None
+                            export_blocks
+                                .get(target.node.as_str())
+                                .map(|eb| resolve_export_block_body_text(eb))
                         };
                         let callee_rt_spanned = blocks
                             .get(target.node.as_str())
@@ -1216,10 +1217,11 @@ pub fn lower_with_imports(
                 let resolved_body = if let Some(block) = blocks.get(target.node.as_str()) {
                     let body_text = resolve_block_body_text(block, &texts)?;
                     Some(body_text)
-                } else if let Some(eb) = export_blocks.get(target.node.as_str()) {
-                    Some(resolve_export_block_body_text(eb))
                 } else {
-                    None // Analyze already flagged undefined-call.
+                    // Falls back to None for an undefined call; Analyze already flagged it.
+                    export_blocks
+                        .get(target.node.as_str())
+                        .map(|eb| resolve_export_block_body_text(eb))
                 };
                 // Issue #84 chunk 6: same-file callee return-type lookup —
                 // see the matching site in `lower_flow_body` above for the

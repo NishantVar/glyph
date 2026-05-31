@@ -4,10 +4,10 @@
 //! `update_docs.glyph` per `docs/reference/mvp-acceptance.md` §1.
 
 use crate::ast::{
-    BlockDecl, ConstDecl, ConstValue, ConstraintMarker, ConstraintMarkerKind, ContextEntry, Decl,
-    DuplicateSubsection, ElifBranch, ExportBlockDecl, FlowStmt, FreeformItem, FreeformSection,
-    ImportDecl, ImportKind, ImportName, Param, ReservedMarker, ReturnExpr, SectionSpan, Skill,
-    SourceFile, TypeDecl,
+    BlockDecl, ConditionRef, ConstDecl, ConstValue, ConstraintMarker, ConstraintMarkerKind,
+    ContextEntry, Decl, DuplicateSubsection, ElifBranch, ExportBlockDecl, FlowCallRef, FlowStmt,
+    FreeformItem, FreeformSection, ImportDecl, ImportKind, ImportName, Param, ReservedMarker,
+    ReturnExpr, SectionSpan, Skill, SourceFile, TypeDecl,
 };
 use crate::diagnostic::{Classification, DiagBag, Diagnostic, SourceSpan};
 use crate::output_target::{OutputTargetExpr, OutputTargetParseError};
@@ -177,7 +177,40 @@ pub fn parse_with_diagnostics_opts(
             );
             return None;
         }
-        Err(_) => {
+        Err(TokenizeError::BadIndent { byte_offset }) => {
+            let span = Span::new(file_id, byte_offset, byte_offset + 1);
+            bag.push(
+                Diagnostic::error(
+                    "G::parse::bad-indent",
+                    "indentation is not a multiple of 4 spaces; Glyph requires 4-space indents",
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+            return None;
+        }
+        Err(TokenizeError::UnterminatedString { byte_offset }) => {
+            let span = Span::new(file_id, byte_offset, byte_offset + 1);
+            bag.push(
+                Diagnostic::error(
+                    "G::parse::unterminated-string",
+                    "string literal is missing its closing `\"`",
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
+            return None;
+        }
+        Err(TokenizeError::UnexpectedChar { byte_offset, ch }) => {
+            let span = Span::new(file_id, byte_offset, byte_offset + 1);
+            bag.push(
+                Diagnostic::error(
+                    "G::parse::unexpected-char",
+                    format!("unexpected character `{}`; not part of any Glyph token", ch),
+                    SourceSpan::from_byte_span(file_label, span, line_index),
+                ),
+                span,
+            );
             return None;
         }
     };
@@ -524,12 +557,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn bump(&mut self) -> &Token {
-        let t = &self.tokens[self.pos];
-        self.pos += 1;
-        t
-    }
-
     fn at_eof(&self) -> bool {
         matches!(self.peek().kind, TokenKind::Eof)
     }
@@ -758,6 +785,11 @@ impl<'a> Parser<'a> {
 
     fn parse_file(&mut self) -> Result<SourceFile, ParseError> {
         let mut decls = Vec::new();
+        // B12: track the first `generated` top-level decl span so a
+        // following non-`generated` decl can be flagged with
+        // `G::parse::generated-decl-out-of-order`. See
+        // `design/language-surface.md` §3.6, §3.7.
+        let mut first_generated_span: Option<Span> = None;
         loop {
             // Skip any leading LineStart with indent 0 plus advance to a top-level decl keyword.
             if self.at_eof() {
@@ -780,6 +812,30 @@ impl<'a> Parser<'a> {
                     });
                 }
             };
+            let kw_span = self.peek().span;
+            // B12: §3.6/§3.7 placement — a non-`generated` top-level decl must
+            // not appear after the first `generated const` / `generated block`.
+            if kw != "generated" {
+                if let Some(prev) = first_generated_span {
+                    self.bag.push(
+                        Diagnostic {
+                            id: "G::parse::generated-decl-out-of-order".into(),
+                            classification: Classification::Error,
+                            message: format!(
+                                "non-`generated` top-level declaration `{}` must not appear after a `generated` declaration",
+                                kw
+                            ),
+                            span: SourceSpan::from_byte_span(self.file_label, kw_span, self.line_index),
+                            related: Vec::new(),
+                            hints: vec![format!(
+                                "first `generated` declaration starts at byte {}; move this declaration above it (see design/language-surface.md §3.6, §3.7)",
+                                prev.start
+                            )],
+                        },
+                        kw_span,
+                    );
+                }
+            }
             match kw.as_str() {
                 "skill" => {
                     let d = self.parse_skill()?;
@@ -802,13 +858,11 @@ impl<'a> Parser<'a> {
                     decls.push(Decl::TypeDecl(d));
                 }
                 "generated" => {
-                    // TODO(#81 follow-up): enforce placement order per
-                    // language-surface.md §3.6 line 342 / §3.7 line 375 (all
-                    // `generated const` / `generated block` decls must appear
-                    // after all non-generated top-level decls).
-                    //
                     // Peek the token after `generated` to dispatch:
                     // `generated const` (§3.6) vs `generated block` (§3.7).
+                    // Placement order (all `generated` decls must follow every
+                    // non-generated top-level decl) is enforced above via
+                    // `first_generated_span` / `G::parse::generated-decl-out-of-order`.
                     let saved = self.pos;
                     self.pos += 1; // skip `generated`
                     let next_kw = match &self.peek().kind {
@@ -840,6 +894,9 @@ impl<'a> Parser<'a> {
                             });
                         }
                     }
+                    // B12: mark that we have seen a `generated` decl so any subsequent
+                    // non-`generated` decl is flagged with `G::parse::generated-decl-out-of-order`.
+                    first_generated_span.get_or_insert(kw_span);
                 }
                 "export" => {
                     // Peek at the word after `export` to decide:
@@ -929,32 +986,27 @@ impl<'a> Parser<'a> {
         let mut freeform_sections: Vec<FreeformSection> = Vec::new();
 
         // Parse body lines at indent 1.
-        loop {
-            match self.current_line_indent() {
-                Some(1) => {
-                    self.parse_skill_body_line(
-                        &mut description,
-                        &mut body_constraints,
-                        &mut body_context,
-                        &mut context_section,
-                        &mut context_section_present,
-                        &mut effects,
-                        &mut effects_present,
-                        &mut flow,
-                        &mut flow_present,
-                        &mut constraints_section_present,
-                        &mut body_bare_names,
-                        &mut extra_subsections,
-                        &mut description_span,
-                        &mut context_section_span,
-                        &mut constraints_section_span,
-                        &mut effects_span,
-                        &mut flow_span,
-                        &mut freeform_sections,
-                    )?;
-                }
-                _ => break,
-            }
+        while let Some(1) = self.current_line_indent() {
+            self.parse_skill_body_line(
+                &mut description,
+                &mut body_constraints,
+                &mut body_context,
+                &mut context_section,
+                &mut context_section_present,
+                &mut effects,
+                &mut effects_present,
+                &mut flow,
+                &mut flow_present,
+                &mut constraints_section_present,
+                &mut body_bare_names,
+                &mut extra_subsections,
+                &mut description_span,
+                &mut context_section_span,
+                &mut constraints_section_span,
+                &mut effects_span,
+                &mut flow_span,
+                &mut freeform_sections,
+            )?;
         }
 
         let end_span = if self.pos > 0 {
@@ -1108,6 +1160,18 @@ impl<'a> Parser<'a> {
         let mut has_return = false;
         let mut has_meaningful_return = false;
         let mut body_refs: Vec<String> = Vec::new();
+        // B03 GAP 1: non-return flow-position call sites — `foo(args)` at flow-root
+        // or inside an `if`/`elif`/`else` branch body. Terminal `return foo(args)`
+        // is captured separately in `terminal_return`. The body walker harvests
+        // these when the current logical line did NOT start with `return` (the
+        // `line_kw_was_return` gate).
+        let mut flow_calls: Vec<FlowCallRef> = Vec::new();
+        // B03 GAP 5: per-export-block accumulator for captured `if`/`elif`
+        // condition expressions. Each entry holds the raw expression text
+        // (between the keyword and the trailing `:`) plus its byte span,
+        // for downstream `applies-on-non-block` validation and the
+        // import-usage sweep.
+        let mut condition_refs: Vec<ConditionRef> = Vec::new();
         // Issue #166: structural capture of body-level
         // `require` / `avoid` / `must` / `must avoid` markers and
         // `context <name>` / `context "..."` entries. Mirrors the
@@ -1129,6 +1193,26 @@ impl<'a> Parser<'a> {
         let mut description: Option<String> = None;
         let mut effects: Vec<String> = Vec::new();
         let mut flow_strings: Vec<String> = Vec::new();
+        // B03: flat-scanner tracking for parse-time return-rule diagnostics on
+        // `export block` bodies. Mirrors `check_return_rules` (which operates on
+        // `Vec<FlowStmt>`); ExportBlockDecl has no structured `flow` field, so
+        // the rules are enforced inline here.
+        //
+        // - `flow_root_return_count` increments once per `return` line at the
+        //   flow-root indent (== 2). > 1 fires `G::parse::multiple-returns`.
+        // - `flow_in_branch_return_seen` flips true when a `return` appears at
+        //   indent > 2 inside the `flow:` section (i.e. nested in an
+        //   `if`/`elif`/`else` body) and fires `G::parse::return-in-branch`.
+        // - `flow_return_not_terminal_seen` flips true when a non-return content
+        //   line at the flow root immediately follows a `return` at the flow
+        //   root and fires `G::parse::return-not-terminal`. Suppressed when
+        //   multiple-returns fires (mirrors `check_return_rules`).
+        // - `prev_root_line_was_return` is per-iteration scratch driving the
+        //   above adjacency check.
+        let mut flow_root_return_count: usize = 0;
+        let mut flow_in_branch_return_seen: bool = false;
+        let mut flow_return_not_terminal_seen: bool = false;
+        let mut prev_root_line_was_return: bool = false;
         // Issue #85 chunk 4b (D4): last-write-wins capture of the
         // structurally-parsed return expression. See
         // `ExportBlockDecl::terminal_return` for the language invariant.
@@ -1201,6 +1285,15 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     let mut line_is_section_header = false;
                     let mut output_target_return_span: Option<Span> = None;
+                    // B03: per-iteration flag — set true inside the `return` dispatch arm
+                    // below. Read after the body walker to drive `prev_root_line_was_return`.
+                    let mut line_kw_was_return: bool = false;
+                    // B03 GAP 3: per-iteration flag — set true when this line dispatches as
+                    // an `if`/`elif` condition header. Read by the body walker's harvest
+                    // gate to skip identifiers in condition-position, which are NOT flow
+                    // calls. Without this gate, `if helper(x):` would over-collect
+                    // `helper(x)` as a standalone flow call.
+                    let mut line_in_if_condition: bool = false;
                     // Check if line starts with a sub-section keyword or `return`.
                     if let TokenKind::Ident(kw) = &self.peek().kind {
                         // Section-header keywords (`description`, `effects`,
@@ -1210,6 +1303,54 @@ impl<'a> Parser<'a> {
                         // computed once; downstream uses still reference `kw`
                         // (the author's original spelling) for diagnostics
                         // and freeform-section names.
+                        // B03 GAP 3: detect `if`/`elif` condition header lines BEFORE the
+                        // dispatch match runs. These keywords have no arm in the match below
+                        // (they fall through to the catch-all `_ =>`, which leaves the cursor
+                        // at position 0 since `next_is_colon` is false for `if cond:` — the
+                        // next token is the condition, not `:`). Setting the per-iteration
+                        // flag here lets the body walker's harvest gate skip condition-
+                        // position identifiers (e.g. the `helper` in `if helper(x):`) so they
+                        // are NOT over-collected as standalone flow calls.
+                        if kw == "if" || kw == "elif" {
+                            line_in_if_condition = true;
+                            // B03 GAP 5: capture the condition expression that follows the
+                            // `if`/`elif` keyword on this line. Walk tokens forward from the
+                            // keyword until we hit `:` (condition terminator), `Eof`, or the
+                            // next `LineStart` (defensive — a well-formed condition has its
+                            // `:` on the same line). The condition text is the source slice
+                            // between the first non-keyword token and the terminator;
+                            // `check_applies_in_condition` only substring-scans for
+                            // `.applies()`, so the exact whitespace fidelity is not material.
+                            let mut scan = self.pos + 1;
+                            while let Some(tok) = self.tokens.get(scan) {
+                                if matches!(
+                                    tok.kind,
+                                    TokenKind::Colon | TokenKind::Eof | TokenKind::LineStart { .. }
+                                ) {
+                                    break;
+                                }
+                                scan += 1;
+                            }
+                            if let (Some(first_tok), Some(end_tok)) =
+                                (self.tokens.get(self.pos + 1), self.tokens.get(scan))
+                            {
+                                let start_byte = first_tok.span.start;
+                                let end_byte = end_tok.span.start;
+                                if end_byte > start_byte {
+                                    let raw = self.source[start_byte as usize..end_byte as usize]
+                                        .trim()
+                                        .to_string();
+                                    if !raw.is_empty() {
+                                        let span = Span {
+                                            file_id: first_tok.span.file_id,
+                                            start: start_byte,
+                                            end: end_byte,
+                                        };
+                                        condition_refs.push(ConditionRef { raw, span });
+                                    }
+                                }
+                            }
+                        }
                         let dispatch_kw: std::borrow::Cow<'_, str> = if kw
                             .eq_ignore_ascii_case("description")
                             || kw.eq_ignore_ascii_case("effects")
@@ -1224,6 +1365,17 @@ impl<'a> Parser<'a> {
                         match dispatch_kw.as_ref() {
                             "return" => {
                                 has_return = true;
+                                // B03: classify this `return` for parse-time return-rule checking.
+                                // A `return` at the flow-root indent (2) is a root return. A `return`
+                                // at indent > 2 lives in an `if`/`elif`/`else` branch body.
+                                line_kw_was_return = true;
+                                if current_section == Some("flow") {
+                                    if line_indent == 2 {
+                                        flow_root_return_count += 1;
+                                    } else if line_indent > 2 {
+                                        flow_in_branch_return_seen = true;
+                                    }
+                                }
                                 // Distinguish meaningful (`return foo`,
                                 // `return some_call()`, `return "lit"`) from
                                 // non-meaningful (bare `return`,
@@ -1665,6 +1817,81 @@ impl<'a> Parser<'a> {
                             }
                         }
                     }
+                    // B03 GAP 9: validate `.applies` shape in export-block conditions.
+                    // `parse_branch_condition` (used for inner block bodies) emits these
+                    // diagnostics directly; export-block conditions take the body-walker
+                    // path, which never invokes `parse_branch_condition` — so the same
+                    // malformed-`.applies` forms (no parens, args inside parens) parsed
+                    // silently before this gate. We re-walk the condition tokens AFTER
+                    // the outer `if let TokenKind::Ident(kw) = ...` block closes, so
+                    // `kw`'s immutable borrow on `self` is dropped and `self.bag.push`
+                    // is borrow-safe. Each `matches!` / `map` reads `self.tokens` via a
+                    // short-lived borrow that ends before the push runs.
+                    if line_in_if_condition {
+                        let mut scan = self.pos + 1;
+                        while let Some(tok) = self.tokens.get(scan) {
+                            if matches!(
+                                tok.kind,
+                                TokenKind::Colon | TokenKind::Eof | TokenKind::LineStart { .. }
+                            ) {
+                                break;
+                            }
+                            scan += 1;
+                        }
+                        let mut vscan = self.pos + 1;
+                        while vscan < scan {
+                            let cur_info: Option<(Span, bool)> = self.tokens.get(vscan).map(|t| {
+                                let is_applies =
+                                    matches!(&t.kind, TokenKind::Ident(s) if s == "applies");
+                                (t.span, is_applies)
+                            });
+                            let prev_is_dot = vscan > 0
+                                && matches!(
+                                    self.tokens.get(vscan - 1).map(|t| &t.kind),
+                                    Some(TokenKind::Dot)
+                                );
+                            let next_is_lparen = matches!(
+                                self.tokens.get(vscan + 1).map(|t| &t.kind),
+                                Some(TokenKind::Lparen)
+                            );
+                            let after_lparen_is_rparen = matches!(
+                                self.tokens.get(vscan + 2).map(|t| &t.kind),
+                                Some(TokenKind::Rparen)
+                            );
+                            if let Some((applies_span, true)) = cur_info {
+                                if prev_is_dot {
+                                    if !next_is_lparen {
+                                        self.bag.push(
+                                            Diagnostic::error(
+                                                "G::parse::applies-no-parens",
+                                                "`.applies` must be followed by `()` — write `.applies()`",
+                                                SourceSpan::from_byte_span(
+                                                    self.file_label,
+                                                    applies_span,
+                                                    self.line_index,
+                                                ),
+                                            ),
+                                            applies_span,
+                                        );
+                                    } else if !after_lparen_is_rparen {
+                                        self.bag.push(
+                                            Diagnostic::error(
+                                                "G::parse::applies-with-args",
+                                                "`.applies()` must not be called with arguments",
+                                                SourceSpan::from_byte_span(
+                                                    self.file_label,
+                                                    applies_span,
+                                                    self.line_index,
+                                                ),
+                                            ),
+                                            applies_span,
+                                        );
+                                    }
+                                }
+                            }
+                            vscan += 1;
+                        }
+                    }
                     if current_section == Some("flow") && !line_is_section_header {
                         let item_index = flow_item_count;
                         flow_item_count += 1;
@@ -1684,6 +1911,62 @@ impl<'a> Parser<'a> {
                             TokenKind::Ident(ident) => {
                                 if !body_keywords.contains(&ident.as_str()) {
                                     body_refs.push(ident.clone());
+                                    // B03 GAP 1: harvest non-return flow-position calls. Gated on
+                                    // `current_section == flow` (don't pick up effect/description idents)
+                                    // and `!line_kw_was_return` (terminal `return foo(...)` is captured by
+                                    // `terminal_return` via `parse_return_expr`; the body walker re-iterates
+                                    // those tokens for body_refs accounting, so without the gate the same
+                                    // call would be double-collected). The next token must be `(`. The
+                                    // walker's `self.pos` is left unchanged — a separate `probe` cursor
+                                    // scans the argument list.
+                                    if current_section == Some("flow")
+                                        && !line_kw_was_return
+                                        && !line_in_if_condition
+                                        && !matches!(
+                                            self.pos
+                                                .checked_sub(1)
+                                                .and_then(|i| self.tokens.get(i))
+                                                .map(|t| &t.kind),
+                                            Some(TokenKind::Dot),
+                                        )
+                                    {
+                                        if let Some(next) = self.tokens.get(self.pos + 1) {
+                                            if matches!(next.kind, TokenKind::Lparen) {
+                                                let target =
+                                                    Spanned::new(ident.clone(), self.peek().span);
+                                                let mut args: Vec<String> = Vec::new();
+                                                let mut depth: usize = 0;
+                                                let mut probe = self.pos + 1;
+                                                while let Some(tok) = self.tokens.get(probe) {
+                                                    if matches!(
+                                                        tok.kind,
+                                                        TokenKind::LineStart { .. }
+                                                            | TokenKind::Eof
+                                                    ) {
+                                                        break;
+                                                    }
+                                                    match &tok.kind {
+                                                        TokenKind::Lparen => depth += 1,
+                                                        TokenKind::Rparen => {
+                                                            depth -= 1;
+                                                            if depth == 0 {
+                                                                break;
+                                                            }
+                                                        }
+                                                        TokenKind::Ident(a) if depth == 1 => {
+                                                            args.push(a.clone())
+                                                        }
+                                                        TokenKind::StringLit(a) if depth == 1 => {
+                                                            args.push(a.clone())
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                    probe += 1;
+                                                }
+                                                flow_calls.push(FlowCallRef { target, args });
+                                            }
+                                        }
+                                    }
                                     // Capture effect names
                                     if current_section == Some("effects") {
                                         if current_dup_kind == Some("effects") {
@@ -1749,6 +2032,23 @@ impl<'a> Parser<'a> {
                         }
                         self.pos += 1;
                     }
+                    // B03: per-iteration state update for parse-time return-rule detection.
+                    // After the body walker has run, classify this line for the
+                    // flow-root return-not-terminal adjacency rule. Restricted to
+                    // flow-root content lines (current_section == flow && indent == 2
+                    // && not a section header); section headers, freeform sections,
+                    // and branch-body lines all bypass.
+                    if current_section == Some("flow")
+                        && line_indent == 2
+                        && !line_is_section_header
+                    {
+                        if !line_kw_was_return && prev_root_line_was_return {
+                            flow_return_not_terminal_seen = true;
+                        }
+                        prev_root_line_was_return = line_kw_was_return;
+                    } else {
+                        prev_root_line_was_return = false;
+                    }
                 }
                 _ => break,
             }
@@ -1778,6 +2078,45 @@ impl<'a> Parser<'a> {
             kw_span
         };
         let span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
+        // B03: emit parse-time return-rule diagnostics now that the body has been
+        // scanned. Mirrors the order in `check_return_rules`:
+        //   1. `G::parse::return-in-branch` (per-flow-section; suppresses peers
+        //      only inside the in-branch recursion in the FlowStmt version, so
+        //      we still fire root rules here independently — matches existing
+        //      same-file analyze behaviour).
+        //   2. `G::parse::multiple-returns` when > 1 root returns; suppresses
+        //      return-not-terminal.
+        //   3. `G::parse::return-not-terminal` otherwise.
+        let decl_span = Span::new(kw_span.file_id, kw_span.start, end_span.end);
+        if flow_in_branch_return_seen {
+            self.bag.push(
+                Diagnostic::error(
+                    "G::parse::return-in-branch",
+                    "`return` is not allowed inside an `if`/`elif`/`else` branch",
+                    SourceSpan::from_byte_span(self.file_label, decl_span, self.line_index),
+                ),
+                decl_span,
+            );
+        }
+        if flow_root_return_count > 1 {
+            self.bag.push(
+                Diagnostic::error(
+                    "G::parse::multiple-returns",
+                    "more than one `return` statement in `flow:`",
+                    SourceSpan::from_byte_span(self.file_label, decl_span, self.line_index),
+                ),
+                decl_span,
+            );
+        } else if flow_return_not_terminal_seen {
+            self.bag.push(
+                Diagnostic::error(
+                    "G::parse::return-not-terminal",
+                    "`return` must be the last statement in `flow:`",
+                    SourceSpan::from_byte_span(self.file_label, decl_span, self.line_index),
+                ),
+                decl_span,
+            );
+        }
         Ok(Spanned::new(
             ExportBlockDecl {
                 name,
@@ -1793,6 +2132,8 @@ impl<'a> Parser<'a> {
                 flow_strings,
                 return_type,
                 terminal_return,
+                flow_calls,
+                condition_refs,
                 extra_subsections,
                 description_span,
                 context_section_span,
@@ -1852,456 +2193,428 @@ impl<'a> Parser<'a> {
         let mut freeform_sections: Vec<FreeformSection> = Vec::new();
 
         // Parse body lines at indent 1.
-        loop {
-            match self.current_line_indent() {
-                Some(1) => {
-                    // Peek at the keyword on this line.
-                    let saved_pos = self.pos;
-                    self.expect_line_start()?;
-                    match &self.peek().kind {
-                        TokenKind::Ident(kw) => {
-                            let kw = kw.clone();
-                            let kw_tok_span = self.peek().span;
-                            // Section-header keywords are case-insensitive at
-                            // dispatch (catalogue and duplicate-check already
-                            // lowercase). The original spelling is kept in
-                            // `kw` for downstream diagnostics and any AST
-                            // node (e.g. `FreeformSection.name`) that quotes
-                            // what the author wrote.
-                            let kw_lower = kw.to_ascii_lowercase();
-                            // Issue #165: body-level constraint markers
-                            // (`require X`, `avoid X`, `must X`, `must avoid X`)
-                            // mirror the Skill body-line parser. Marker
-                            // keywords are case-sensitive (language keywords);
-                            // section-header keywords below are not. Fall
-                            // through to the section dispatch / freeform path
-                            // when not a marker.
-                            if matches!(kw.as_str(), "require" | "avoid" | "must") {
-                                self.pos += 1;
-                                let kind = match kw.as_str() {
-                                    "require" => ConstraintMarkerKind::Require,
-                                    "avoid" => ConstraintMarkerKind::Avoid,
-                                    "must" => {
-                                        // Could be `must avoid <name>`.
-                                        if let TokenKind::Ident(next) = &self.peek().kind {
-                                            if next == "avoid" {
-                                                self.pos += 1;
-                                                ConstraintMarkerKind::MustAvoid
-                                            } else {
-                                                ConstraintMarkerKind::Must
-                                            }
-                                        } else {
-                                            ConstraintMarkerKind::Must
-                                        }
+        while let Some(1) = self.current_line_indent() {
+            // Peek at the keyword on this line.
+            let saved_pos = self.pos;
+            self.expect_line_start()?;
+            match &self.peek().kind {
+                TokenKind::Ident(kw) => {
+                    let kw = kw.clone();
+                    let kw_tok_span = self.peek().span;
+                    // Section-header keywords are case-insensitive at
+                    // dispatch (catalogue and duplicate-check already
+                    // lowercase). The original spelling is kept in
+                    // `kw` for downstream diagnostics and any AST
+                    // node (e.g. `FreeformSection.name`) that quotes
+                    // what the author wrote.
+                    let kw_lower = kw.to_ascii_lowercase();
+                    // Issue #165: body-level constraint markers
+                    // (`require X`, `avoid X`, `must X`, `must avoid X`)
+                    // mirror the Skill body-line parser. Marker
+                    // keywords are case-sensitive (language keywords);
+                    // section-header keywords below are not. Fall
+                    // through to the section dispatch / freeform path
+                    // when not a marker.
+                    if matches!(kw.as_str(), "require" | "avoid" | "must") {
+                        self.pos += 1;
+                        let kind = match kw.as_str() {
+                            "require" => ConstraintMarkerKind::Require,
+                            "avoid" => ConstraintMarkerKind::Avoid,
+                            "must" => {
+                                // Could be `must avoid <name>`.
+                                if let TokenKind::Ident(next) = &self.peek().kind {
+                                    if next == "avoid" {
+                                        self.pos += 1;
+                                        ConstraintMarkerKind::MustAvoid
+                                    } else {
+                                        ConstraintMarkerKind::Must
                                     }
-                                    _ => unreachable!(),
-                                };
-                                let (name, name_span) = self.expect_ident(None)?;
-                                body_constraints.push(ConstraintMarker {
-                                    marker: kind,
-                                    name: Spanned::new(name, name_span),
-                                });
+                                } else {
+                                    ConstraintMarkerKind::Must
+                                }
+                            }
+                            _ => unreachable!(),
+                        };
+                        let (name, name_span) = self.expect_ident(None)?;
+                        body_constraints.push(ConstraintMarker {
+                            marker: kind,
+                            name: Spanned::new(name, name_span),
+                        });
+                        continue;
+                    }
+                    match kw_lower.as_str() {
+                        "description" => {
+                            self.pos += 1;
+                            self.expect(&TokenKind::Colon)?;
+                            let s = self.consume_string_after_colon()?;
+                            if description.is_some() {
+                                // Issue #109: duplicate `description:` on a block.
+                                let span = kw_tok_span;
+                                self.bag.push(
+                                    Diagnostic {
+                                        id: "G::parse::duplicate-subsection".into(),
+                                        classification: Classification::Repairable,
+                                        message: "duplicate `description:` sub-section in block body".into(),
+                                        span: SourceSpan::from_byte_span(
+                                            self.file_label,
+                                            span,
+                                            self.line_index,
+                                        ),
+                                        related: Vec::new(),
+                                        hints: vec![
+                                            "remove the duplicate or merge contents into one `description:`".into(),
+                                        ],
+                                    },
+                                    span,
+                                );
+                                extra_subsections.push(DuplicateSubsection::Description(s));
+                            } else {
+                                description = Some(s);
+                                description_span = Some(self.section_span_for(kw_tok_span));
+                            }
+                        }
+                        "effects" => {
+                            // Block-body `effects:` gating. The
+                            // bare-bool `enable_effects` flag is the
+                            // single source of truth (the CLI derives
+                            // it from the catalogue at the boundary
+                            // before invoking the parser).
+                            let gated_by_flag = !self.enable_effects;
+                            if gated_by_flag {
+                                let eff_span = kw_tok_span;
+                                self.bag.push(
+                                    Diagnostic::error(
+                                        "G::parse::gated-section",
+                                        "section `effects:` is not enabled in this configuration",
+                                        SourceSpan::from_byte_span(
+                                            self.file_label,
+                                            eff_span,
+                                            self.line_index,
+                                        ),
+                                    ),
+                                    eff_span,
+                                );
+                                // Skip the rest of the line.
+                                while !self.at_eof()
+                                    && !matches!(self.peek().kind, TokenKind::LineStart { .. })
+                                {
+                                    self.pos += 1;
+                                }
+                            } else {
+                                self.pos += 1;
+                                let colon_span = self.expect(&TokenKind::Colon)?;
+                                // Phase 5: dispatch through the
+                                // catalogue-named `effect_keywords`
+                                // body-grammar parser. Local buffer
+                                // keeps duplicate-recovery (issue
+                                // #109) independent of the canonical
+                                // `effects` slot.
+                                let local_effects =
+                                    self.parse_body_grammar_effect_keywords(colon_span)?;
+                                if effects_present {
+                                    let span = kw_tok_span;
+                                    self.bag.push(
+                                        Diagnostic {
+                                            id: "G::parse::duplicate-subsection".into(),
+                                            classification: Classification::Repairable,
+                                            message: "duplicate `effects:` sub-section in block body".into(),
+                                            span: SourceSpan::from_byte_span(
+                                                self.file_label,
+                                                span,
+                                                self.line_index,
+                                            ),
+                                            related: Vec::new(),
+                                            hints: vec![
+                                                "remove the duplicate or merge contents into one `effects:`".into(),
+                                            ],
+                                        },
+                                        span,
+                                    );
+                                    extra_subsections
+                                        .push(DuplicateSubsection::Effects(local_effects));
+                                } else {
+                                    effects_present = true;
+                                    effects.extend(local_effects);
+                                    effects_span = Some(self.section_span_for(kw_tok_span));
+                                }
+                            }
+                        }
+                        "flow" => {
+                            self.pos += 1;
+                            self.expect(&TokenKind::Colon)?;
+                            // Phase 5: dispatch through the
+                            // catalogue-named `statements`
+                            // body-grammar parser. Local buffer
+                            // keeps duplicate-recovery (issue #109)
+                            // independent of the canonical `flow`
+                            // slot.
+                            let local_flow = self.parse_body_grammar_statements(2)?;
+                            if flow_present {
+                                let span = kw_tok_span;
+                                self.bag.push(
+                                    Diagnostic {
+                                        id: "G::parse::duplicate-subsection".into(),
+                                        classification: Classification::Repairable,
+                                        message: "duplicate `flow:` sub-section in block body".into(),
+                                        span: SourceSpan::from_byte_span(
+                                            self.file_label,
+                                            span,
+                                            self.line_index,
+                                        ),
+                                        related: Vec::new(),
+                                        hints: vec![
+                                            "remove the duplicate or merge contents into one `flow:`".into(),
+                                        ],
+                                    },
+                                    span,
+                                );
+                                extra_subsections.push(DuplicateSubsection::Flow(local_flow));
+                            } else {
+                                flow_present = true;
+                                flow.extend(local_flow);
+                                flow_span = Some(self.section_span_for(kw_tok_span));
+                            }
+                        }
+                        "context" => {
+                            // Issue #165: `context` at indent 1 has
+                            // two forms — the `context:` sub-section
+                            // header, or a body-level marker
+                            // (`context <name>` / `context "..."`).
+                            // The sub-section path mirrors `Skill`
+                            // and routes the first-occurrence body
+                            // into `body_context`; duplicates land in
+                            // `extra_subsections`. The body-level
+                            // marker path accumulates into
+                            // `body_context` and never fires
+                            // `G::parse::duplicate-subsection`.
+                            self.pos += 1;
+                            if !matches!(self.peek().kind, TokenKind::Colon) {
+                                // Body-level `context <name>` or
+                                // `context "..."`. No sub-section
+                                // bookkeeping; just push and
+                                // continue.
+                                match &self.peek().kind {
+                                    TokenKind::Ident(name) => {
+                                        let v = name.clone();
+                                        let name_span = self.peek().span;
+                                        self.pos += 1;
+                                        body_context.push(ContextEntry::NameRef(Spanned::new(
+                                            v, name_span,
+                                        )));
+                                    }
+                                    TokenKind::StringLit(s) => {
+                                        let v = s.clone();
+                                        self.pos += 1;
+                                        body_context.push(ContextEntry::InlineString(v));
+                                    }
+                                    _ => {
+                                        return Err(ParseError::Unexpected {
+                                            span: self.peek().span,
+                                            message: "expected name or string after `context`"
+                                                .into(),
+                                        });
+                                    }
+                                }
                                 continue;
                             }
-                            match kw_lower.as_str() {
-                                "description" => {
-                                    self.pos += 1;
-                                    self.expect(&TokenKind::Colon)?;
-                                    let s = self.consume_string_after_colon()?;
-                                    if description.is_some() {
-                                        // Issue #109: duplicate `description:` on a block.
-                                        let span = kw_tok_span;
-                                        self.bag.push(
-                                            Diagnostic {
-                                                id: "G::parse::duplicate-subsection".into(),
-                                                classification: Classification::Repairable,
-                                                message: "duplicate `description:` sub-section in block body".into(),
-                                                span: SourceSpan::from_byte_span(
-                                                    self.file_label,
-                                                    span,
-                                                    self.line_index,
-                                                ),
-                                                related: Vec::new(),
-                                                hints: vec![
-                                                    "remove the duplicate or merge contents into one `description:`".into(),
-                                                ],
-                                            },
-                                            span,
-                                        );
-                                        extra_subsections.push(DuplicateSubsection::Description(s));
-                                    } else {
-                                        description = Some(s);
-                                        description_span = Some(self.section_span_for(kw_tok_span));
-                                    }
-                                }
-                                "effects" => {
-                                    // Block-body `effects:` gating. The
-                                    // bare-bool `enable_effects` flag is the
-                                    // single source of truth (the CLI derives
-                                    // it from the catalogue at the boundary
-                                    // before invoking the parser).
-                                    let gated_by_flag = !self.enable_effects;
-                                    if gated_by_flag {
-                                        let eff_span = kw_tok_span;
-                                        self.bag.push(
-                                            Diagnostic::error(
-                                                "G::parse::gated-section",
-                                                "section `effects:` is not enabled in this configuration",
-                                                SourceSpan::from_byte_span(self.file_label, eff_span, self.line_index),
-                                            ),
-                                            eff_span,
-                                        );
-                                        // Skip the rest of the line.
-                                        while !self.at_eof()
-                                            && !matches!(
-                                                self.peek().kind,
-                                                TokenKind::LineStart { .. }
-                                            )
-                                        {
-                                            self.pos += 1;
-                                        }
-                                    } else {
-                                        self.pos += 1;
-                                        let colon_span = self.expect(&TokenKind::Colon)?;
-                                        // Phase 5: dispatch through the
-                                        // catalogue-named `effect_keywords`
-                                        // body-grammar parser. Local buffer
-                                        // keeps duplicate-recovery (issue
-                                        // #109) independent of the canonical
-                                        // `effects` slot.
-                                        let local_effects =
-                                            self.parse_body_grammar_effect_keywords(colon_span)?;
-                                        if effects_present {
-                                            let span = kw_tok_span;
-                                            self.bag.push(
-                                                Diagnostic {
-                                                    id: "G::parse::duplicate-subsection".into(),
-                                                    classification: Classification::Repairable,
-                                                    message: "duplicate `effects:` sub-section in block body".into(),
-                                                    span: SourceSpan::from_byte_span(
-                                                        self.file_label,
-                                                        span,
-                                                        self.line_index,
-                                                    ),
-                                                    related: Vec::new(),
-                                                    hints: vec![
-                                                        "remove the duplicate or merge contents into one `effects:`".into(),
-                                                    ],
-                                                },
-                                                span,
-                                            );
-                                            extra_subsections
-                                                .push(DuplicateSubsection::Effects(local_effects));
-                                        } else {
-                                            effects_present = true;
-                                            effects.extend(local_effects);
-                                            effects_span = Some(self.section_span_for(kw_tok_span));
-                                        }
-                                    }
-                                }
-                                "flow" => {
-                                    self.pos += 1;
-                                    self.expect(&TokenKind::Colon)?;
-                                    // Phase 5: dispatch through the
-                                    // catalogue-named `statements`
-                                    // body-grammar parser. Local buffer
-                                    // keeps duplicate-recovery (issue #109)
-                                    // independent of the canonical `flow`
-                                    // slot.
-                                    let local_flow = self.parse_body_grammar_statements(2)?;
-                                    if flow_present {
-                                        let span = kw_tok_span;
-                                        self.bag.push(
-                                            Diagnostic {
-                                                id: "G::parse::duplicate-subsection".into(),
-                                                classification: Classification::Repairable,
-                                                message: "duplicate `flow:` sub-section in block body".into(),
-                                                span: SourceSpan::from_byte_span(
-                                                    self.file_label,
-                                                    span,
-                                                    self.line_index,
-                                                ),
-                                                related: Vec::new(),
-                                                hints: vec![
-                                                    "remove the duplicate or merge contents into one `flow:`".into(),
-                                                ],
-                                            },
-                                            span,
-                                        );
-                                        extra_subsections
-                                            .push(DuplicateSubsection::Flow(local_flow));
-                                    } else {
-                                        flow_present = true;
-                                        flow.extend(local_flow);
-                                        flow_span = Some(self.section_span_for(kw_tok_span));
-                                    }
-                                }
-                                "context" => {
-                                    // Issue #165: `context` at indent 1 has
-                                    // two forms — the `context:` sub-section
-                                    // header, or a body-level marker
-                                    // (`context <name>` / `context "..."`).
-                                    // The sub-section path mirrors `Skill`
-                                    // and routes the first-occurrence body
-                                    // into `body_context`; duplicates land in
-                                    // `extra_subsections`. The body-level
-                                    // marker path accumulates into
-                                    // `body_context` and never fires
-                                    // `G::parse::duplicate-subsection`.
-                                    self.pos += 1;
-                                    if !matches!(self.peek().kind, TokenKind::Colon) {
-                                        // Body-level `context <name>` or
-                                        // `context "..."`. No sub-section
-                                        // bookkeeping; just push and
-                                        // continue.
-                                        match &self.peek().kind {
-                                            TokenKind::Ident(name) => {
-                                                let v = name.clone();
-                                                let name_span = self.peek().span;
-                                                self.pos += 1;
-                                                body_context.push(ContextEntry::NameRef(
-                                                    Spanned::new(v, name_span),
-                                                ));
-                                            }
-                                            TokenKind::StringLit(s) => {
-                                                let v = s.clone();
-                                                self.pos += 1;
-                                                body_context.push(ContextEntry::InlineString(v));
-                                            }
-                                            _ => {
-                                                return Err(ParseError::Unexpected {
-                                                    span: self.peek().span,
-                                                    message:
-                                                        "expected name or string after `context`"
-                                                            .into(),
-                                                });
-                                            }
-                                        }
-                                        continue;
-                                    }
-                                    self.expect(&TokenKind::Colon)?;
-                                    let mut local_entries: Vec<ContextEntry> = Vec::new();
-                                    // Short form: `context: "inline"` on the same line.
-                                    //
-                                    // Phase 3 (Task 3.12): `{name}` slots are
-                                    // permitted in `context:` bodies — Expand
-                                    // substitutes parameter values into the
-                                    // compiled prose. The slot diagnostic
-                                    // previously fired here has been removed.
-                                    if let TokenKind::StringLit(s) = &self.peek().kind {
+                            self.expect(&TokenKind::Colon)?;
+                            let mut local_entries: Vec<ContextEntry> = Vec::new();
+                            // Short form: `context: "inline"` on the same line.
+                            //
+                            // Phase 3 (Task 3.12): `{name}` slots are
+                            // permitted in `context:` bodies — Expand
+                            // substitutes parameter values into the
+                            // compiled prose. The slot diagnostic
+                            // previously fired here has been removed.
+                            if let TokenKind::StringLit(s) = &self.peek().kind {
+                                let v = s.clone();
+                                self.pos += 1;
+                                local_entries.push(ContextEntry::InlineString(v));
+                            }
+                            // Long form: indented entries at indent 2.
+                            while let Some(2) = self.current_line_indent() {
+                                self.expect_line_start()?;
+                                match &self.peek().kind {
+                                    TokenKind::StringLit(s) => {
                                         let v = s.clone();
                                         self.pos += 1;
                                         local_entries.push(ContextEntry::InlineString(v));
                                     }
-                                    // Long form: indented entries at indent 2.
-                                    loop {
-                                        match self.current_line_indent() {
-                                            Some(2) => {
-                                                self.expect_line_start()?;
-                                                match &self.peek().kind {
-                                                    TokenKind::StringLit(s) => {
-                                                        let v = s.clone();
-                                                        self.pos += 1;
-                                                        local_entries
-                                                            .push(ContextEntry::InlineString(v));
-                                                    }
-                                                    TokenKind::Ident(name) => {
-                                                        let v = name.clone();
-                                                        let name_span = self.peek().span;
-                                                        self.pos += 1;
-                                                        local_entries.push(ContextEntry::NameRef(
-                                                            Spanned::new(v, name_span),
-                                                        ));
-                                                    }
-                                                    _ => {
-                                                        return Err(ParseError::Unexpected {
-                                                            span: self.peek().span,
-                                                            message: "expected string literal or name in `context:` body".into(),
-                                                        });
-                                                    }
-                                                }
-                                            }
-                                            _ => break,
-                                        }
+                                    TokenKind::Ident(name) => {
+                                        let v = name.clone();
+                                        let name_span = self.peek().span;
+                                        self.pos += 1;
+                                        local_entries.push(ContextEntry::NameRef(Spanned::new(
+                                            v, name_span,
+                                        )));
                                     }
-                                    if context_present {
-                                        let span = kw_tok_span;
-                                        self.bag.push(
-                                            Diagnostic {
-                                                id: "G::parse::duplicate-subsection".into(),
-                                                classification: Classification::Repairable,
-                                                message: "duplicate `context:` sub-section in block body".into(),
-                                                span: SourceSpan::from_byte_span(
-                                                    self.file_label,
-                                                    span,
-                                                    self.line_index,
-                                                ),
-                                                related: Vec::new(),
-                                                hints: vec![
-                                                    "remove the duplicate or merge contents into one `context:`".into(),
-                                                ],
-                                            },
-                                            span,
-                                        );
-                                        extra_subsections
-                                            .push(DuplicateSubsection::Context(local_entries));
-                                    } else {
-                                        context_present = true;
-                                        // Issue #165: first `context:` body
-                                        // populates `body_context`, mirroring
-                                        // `Skill`'s `body_context` /
-                                        // `context_section` routing (Block
-                                        // has a single combined field).
-                                        body_context.extend(local_entries);
-                                        context_section_span =
-                                            Some(self.section_span_for(kw_tok_span));
-                                    }
-                                }
-                                "constraints" => {
-                                    // Issue #109 codex pass-3 finding 9.
-                                    self.pos += 1;
-                                    self.expect(&TokenKind::Colon)?;
-                                    let mut local_markers: Vec<ConstraintMarker> = Vec::new();
-                                    loop {
-                                        match self.current_line_indent() {
-                                            Some(2) => {
-                                                self.expect_line_start()?;
-                                                match &self.peek().kind {
-                                                    TokenKind::Ident(kw) => {
-                                                        let kw = kw.clone();
-                                                        self.pos += 1;
-                                                        let kind = match kw.as_str() {
-                                                            "require" => {
-                                                                ConstraintMarkerKind::Require
-                                                            }
-                                                            "avoid" => ConstraintMarkerKind::Avoid,
-                                                            "must" => {
-                                                                if let TokenKind::Ident(next) =
-                                                                    &self.peek().kind
-                                                                {
-                                                                    if next == "avoid" {
-                                                                        self.pos += 1;
-                                                                        ConstraintMarkerKind::MustAvoid
-                                                                    } else {
-                                                                        ConstraintMarkerKind::Must
-                                                                    }
-                                                                } else {
-                                                                    ConstraintMarkerKind::Must
-                                                                }
-                                                            }
-                                                            _ => {
-                                                                return Err(ParseError::Unexpected {
-                                                                    span: self.peek().span,
-                                                                    message: format!("expected constraint keyword (`require`, `avoid`, `must`), found `{}`", kw),
-                                                                });
-                                                            }
-                                                        };
-                                                        let (name, name_span) =
-                                                            self.expect_ident(None)?;
-                                                        local_markers.push(ConstraintMarker {
-                                                            marker: kind,
-                                                            name: Spanned::new(name, name_span),
-                                                        });
-                                                    }
-                                                    _ => {
-                                                        return Err(ParseError::Unexpected {
-                                                            span: self.peek().span,
-                                                            message: "expected constraint marker in `constraints:` body".into(),
-                                                        });
-                                                    }
-                                                }
-                                            }
-                                            _ => break,
-                                        }
-                                    }
-                                    if constraints_present {
-                                        let span = kw_tok_span;
-                                        self.bag.push(
-                                            Diagnostic {
-                                                id: "G::parse::duplicate-subsection".into(),
-                                                classification: Classification::Repairable,
-                                                message: "duplicate `constraints:` sub-section in block body".into(),
-                                                span: SourceSpan::from_byte_span(
-                                                    self.file_label,
-                                                    span,
-                                                    self.line_index,
-                                                ),
-                                                related: Vec::new(),
-                                                hints: vec![
-                                                    "remove the duplicate or merge contents into one `constraints:`".into(),
-                                                ],
-                                            },
-                                            span,
-                                        );
-                                        extra_subsections
-                                            .push(DuplicateSubsection::Constraints(local_markers));
-                                    } else {
-                                        constraints_present = true;
-                                        // Issue #165: first `constraints:`
-                                        // body populates `body_constraints`,
-                                        // mirroring `Skill`'s contract.
-                                        body_constraints.extend(local_markers);
-                                        constraints_section_span =
-                                            Some(self.section_span_for(kw_tok_span));
-                                    }
-                                }
-                                _ => {
-                                    // Phase 3.B: an unrecognized
-                                    // colon-keyword at indent 1 is a
-                                    // candidate freeform section. Pre-Phase 4
-                                    // we hardcode the closed set above; any
-                                    // remaining `<other>:` falls through to
-                                    // `parse_freeform_section`. If the
-                                    // header is *not* `<ident>:` we restore
-                                    // pos and skip the line (legacy
-                                    // tolerance). Use `kw` (not the
-                                    // lowercased dispatch key) so the
-                                    // section name preserves author spelling.
-                                    self.pos += 1; // consume the ident token
-                                    if matches!(self.peek().kind, TokenKind::Colon) {
-                                        self.pos += 1; // consume the colon
-                                        let section = self.parse_freeform_section(
-                                            kw.clone(),
-                                            kw_tok_span,
-                                            2,
-                                        )?;
-                                        freeform_sections.push(section);
-                                    } else {
-                                        // Not a freeform header — restore
-                                        // pos and consume the rest of the
-                                        // line as before so legacy block
-                                        // bodies keep parsing.
-                                        self.pos = saved_pos;
-                                        self.expect_line_start()?;
-                                        while !self.at_eof()
-                                            && !matches!(
-                                                self.peek().kind,
-                                                TokenKind::LineStart { .. }
-                                            )
-                                        {
-                                            self.pos += 1;
-                                        }
+                                    _ => {
+                                        return Err(ParseError::Unexpected {
+                                            span: self.peek().span,
+                                            message:
+                                                "expected string literal or name in `context:` body"
+                                                    .into(),
+                                        });
                                     }
                                 }
                             }
+                            if context_present {
+                                let span = kw_tok_span;
+                                self.bag.push(
+                                    Diagnostic {
+                                        id: "G::parse::duplicate-subsection".into(),
+                                        classification: Classification::Repairable,
+                                        message: "duplicate `context:` sub-section in block body".into(),
+                                        span: SourceSpan::from_byte_span(
+                                            self.file_label,
+                                            span,
+                                            self.line_index,
+                                        ),
+                                        related: Vec::new(),
+                                        hints: vec![
+                                            "remove the duplicate or merge contents into one `context:`".into(),
+                                        ],
+                                    },
+                                    span,
+                                );
+                                extra_subsections.push(DuplicateSubsection::Context(local_entries));
+                            } else {
+                                context_present = true;
+                                // Issue #165: first `context:` body
+                                // populates `body_context`, mirroring
+                                // `Skill`'s `body_context` /
+                                // `context_section` routing (Block
+                                // has a single combined field).
+                                body_context.extend(local_entries);
+                                context_section_span = Some(self.section_span_for(kw_tok_span));
+                            }
                         }
-                        TokenKind::StringLit(s) => {
-                            // Single-string shorthand: bare string at indent 1, no flow: header.
-                            let v = s.clone();
+                        "constraints" => {
+                            // Issue #109 codex pass-3 finding 9.
                             self.pos += 1;
-                            flow.push(FlowStmt::InlineString(v));
+                            self.expect(&TokenKind::Colon)?;
+                            let mut local_markers: Vec<ConstraintMarker> = Vec::new();
+                            while let Some(2) = self.current_line_indent() {
+                                self.expect_line_start()?;
+                                match &self.peek().kind {
+                                    TokenKind::Ident(kw) => {
+                                        let kw = kw.clone();
+                                        self.pos += 1;
+                                        let kind = match kw.as_str() {
+                                            "require" => ConstraintMarkerKind::Require,
+                                            "avoid" => ConstraintMarkerKind::Avoid,
+                                            "must" => {
+                                                if let TokenKind::Ident(next) = &self.peek().kind {
+                                                    if next == "avoid" {
+                                                        self.pos += 1;
+                                                        ConstraintMarkerKind::MustAvoid
+                                                    } else {
+                                                        ConstraintMarkerKind::Must
+                                                    }
+                                                } else {
+                                                    ConstraintMarkerKind::Must
+                                                }
+                                            }
+                                            _ => {
+                                                return Err(ParseError::Unexpected {
+                                                    span: self.peek().span,
+                                                    message: format!("expected constraint keyword (`require`, `avoid`, `must`), found `{}`", kw),
+                                                });
+                                            }
+                                        };
+                                        let (name, name_span) = self.expect_ident(None)?;
+                                        local_markers.push(ConstraintMarker {
+                                            marker: kind,
+                                            name: Spanned::new(name, name_span),
+                                        });
+                                    }
+                                    _ => {
+                                        return Err(ParseError::Unexpected {
+                                            span: self.peek().span,
+                                            message:
+                                                "expected constraint marker in `constraints:` body"
+                                                    .into(),
+                                        });
+                                    }
+                                }
+                            }
+                            if constraints_present {
+                                let span = kw_tok_span;
+                                self.bag.push(
+                                    Diagnostic {
+                                        id: "G::parse::duplicate-subsection".into(),
+                                        classification: Classification::Repairable,
+                                        message: "duplicate `constraints:` sub-section in block body".into(),
+                                        span: SourceSpan::from_byte_span(
+                                            self.file_label,
+                                            span,
+                                            self.line_index,
+                                        ),
+                                        related: Vec::new(),
+                                        hints: vec![
+                                            "remove the duplicate or merge contents into one `constraints:`".into(),
+                                        ],
+                                    },
+                                    span,
+                                );
+                                extra_subsections
+                                    .push(DuplicateSubsection::Constraints(local_markers));
+                            } else {
+                                constraints_present = true;
+                                // Issue #165: first `constraints:`
+                                // body populates `body_constraints`,
+                                // mirroring `Skill`'s contract.
+                                body_constraints.extend(local_markers);
+                                constraints_section_span = Some(self.section_span_for(kw_tok_span));
+                            }
                         }
                         _ => {
-                            // Skip unrecognised tokens on this line.
-                            while !self.at_eof()
-                                && !matches!(self.peek().kind, TokenKind::LineStart { .. })
-                            {
-                                self.pos += 1;
+                            // Phase 3.B: an unrecognized
+                            // colon-keyword at indent 1 is a
+                            // candidate freeform section. Pre-Phase 4
+                            // we hardcode the closed set above; any
+                            // remaining `<other>:` falls through to
+                            // `parse_freeform_section`. If the
+                            // header is *not* `<ident>:` we restore
+                            // pos and skip the line (legacy
+                            // tolerance). Use `kw` (not the
+                            // lowercased dispatch key) so the
+                            // section name preserves author spelling.
+                            self.pos += 1; // consume the ident token
+                            if matches!(self.peek().kind, TokenKind::Colon) {
+                                self.pos += 1; // consume the colon
+                                let section =
+                                    self.parse_freeform_section(kw.clone(), kw_tok_span, 2)?;
+                                freeform_sections.push(section);
+                            } else {
+                                // Not a freeform header — restore
+                                // pos and consume the rest of the
+                                // line as before so legacy block
+                                // bodies keep parsing.
+                                self.pos = saved_pos;
+                                self.expect_line_start()?;
+                                while !self.at_eof()
+                                    && !matches!(self.peek().kind, TokenKind::LineStart { .. })
+                                {
+                                    self.pos += 1;
+                                }
                             }
                         }
                     }
                 }
-                _ => break,
+                TokenKind::StringLit(s) => {
+                    // Single-string shorthand: bare string at indent 1, no flow: header.
+                    let v = s.clone();
+                    self.pos += 1;
+                    flow.push(FlowStmt::InlineString(v));
+                }
+                _ => {
+                    // Skip unrecognised tokens on this line.
+                    while !self.at_eof() && !matches!(self.peek().kind, TokenKind::LineStart { .. })
+                    {
+                        self.pos += 1;
+                    }
+                }
             }
         }
 
@@ -2752,35 +3065,28 @@ impl<'a> Parser<'a> {
                         }
                     }
                     // Long form: indented entries at indent 2.
-                    loop {
-                        match self.current_line_indent() {
-                            Some(2) => {
-                                self.expect_line_start()?;
-                                match &self.peek().kind {
-                                    TokenKind::StringLit(s) => {
-                                        let v = s.clone();
-                                        self.pos += 1;
-                                        local_entries.push(ContextEntry::InlineString(v));
-                                    }
-                                    TokenKind::Ident(name) => {
-                                        let v = name.clone();
-                                        let name_span = self.peek().span;
-                                        self.pos += 1;
-                                        local_entries.push(ContextEntry::NameRef(Spanned::new(
-                                            v, name_span,
-                                        )));
-                                    }
-                                    _ => {
-                                        return Err(ParseError::Unexpected {
-                                            span: self.peek().span,
-                                            message:
-                                                "expected string literal or name in `context:` body"
-                                                    .into(),
-                                        });
-                                    }
-                                }
+                    while let Some(2) = self.current_line_indent() {
+                        self.expect_line_start()?;
+                        match &self.peek().kind {
+                            TokenKind::StringLit(s) => {
+                                let v = s.clone();
+                                self.pos += 1;
+                                local_entries.push(ContextEntry::InlineString(v));
                             }
-                            _ => break,
+                            TokenKind::Ident(name) => {
+                                let v = name.clone();
+                                let name_span = self.peek().span;
+                                self.pos += 1;
+                                local_entries
+                                    .push(ContextEntry::NameRef(Spanned::new(v, name_span)));
+                            }
+                            _ => {
+                                return Err(ParseError::Unexpected {
+                                    span: self.peek().span,
+                                    message: "expected string literal or name in `context:` body"
+                                        .into(),
+                                });
+                            }
                         }
                     }
                     if *context_section_present {
@@ -2848,53 +3154,46 @@ impl<'a> Parser<'a> {
                 // sub-section can be recovered into `extra_subsections`
                 // intact (issue #109) without polluting `body_constraints`.
                 let mut local_markers: Vec<ConstraintMarker> = Vec::new();
-                loop {
-                    match self.current_line_indent() {
-                        Some(2) => {
-                            self.expect_line_start()?;
-                            match &self.peek().kind {
-                                TokenKind::Ident(kw) => {
-                                    let kw = kw.clone();
-                                    self.pos += 1;
-                                    let kind = match kw.as_str() {
-                                        "require" => ConstraintMarkerKind::Require,
-                                        "avoid" => ConstraintMarkerKind::Avoid,
-                                        "must" => {
-                                            if let TokenKind::Ident(next) = &self.peek().kind {
-                                                if next == "avoid" {
-                                                    self.pos += 1;
-                                                    ConstraintMarkerKind::MustAvoid
-                                                } else {
-                                                    ConstraintMarkerKind::Must
-                                                }
-                                            } else {
-                                                ConstraintMarkerKind::Must
-                                            }
+                while let Some(2) = self.current_line_indent() {
+                    self.expect_line_start()?;
+                    match &self.peek().kind {
+                        TokenKind::Ident(kw) => {
+                            let kw = kw.clone();
+                            self.pos += 1;
+                            let kind = match kw.as_str() {
+                                "require" => ConstraintMarkerKind::Require,
+                                "avoid" => ConstraintMarkerKind::Avoid,
+                                "must" => {
+                                    if let TokenKind::Ident(next) = &self.peek().kind {
+                                        if next == "avoid" {
+                                            self.pos += 1;
+                                            ConstraintMarkerKind::MustAvoid
+                                        } else {
+                                            ConstraintMarkerKind::Must
                                         }
-                                        _ => {
-                                            return Err(ParseError::Unexpected {
-                                                span: self.peek().span,
-                                                message: format!("expected constraint keyword (`require`, `avoid`, `must`), found `{}`", kw),
-                                            });
-                                        }
-                                    };
-                                    let (name, name_span) = self.expect_ident(None)?;
-                                    local_markers.push(ConstraintMarker {
-                                        marker: kind,
-                                        name: Spanned::new(name, name_span),
-                                    });
+                                    } else {
+                                        ConstraintMarkerKind::Must
+                                    }
                                 }
                                 _ => {
                                     return Err(ParseError::Unexpected {
                                         span: self.peek().span,
-                                        message:
-                                            "expected constraint marker in `constraints:` body"
-                                                .into(),
+                                        message: format!("expected constraint keyword (`require`, `avoid`, `must`), found `{}`", kw),
                                     });
                                 }
-                            }
+                            };
+                            let (name, name_span) = self.expect_ident(None)?;
+                            local_markers.push(ConstraintMarker {
+                                marker: kind,
+                                name: Spanned::new(name, name_span),
+                            });
                         }
-                        _ => break,
+                        _ => {
+                            return Err(ParseError::Unexpected {
+                                span: self.peek().span,
+                                message: "expected constraint marker in `constraints:` body".into(),
+                            });
+                        }
                     }
                 }
                 if *constraints_section_present {
@@ -3161,7 +3460,7 @@ impl<'a> Parser<'a> {
                                 self.bag.push(
                                     Diagnostic::error(
                                         "G::parse::marker-missing-operand",
-                                        &format!(
+                                        format!(
                                             "`{}` in `{}:` requires a following name or string operand",
                                             w, section_name
                                         ),
@@ -3188,7 +3487,7 @@ impl<'a> Parser<'a> {
                         self.bag.push(
                             Diagnostic::error(
                                 "G::parse::flow-statement-in-freeform",
-                                &format!(
+                                format!(
                                     "flow statement `{}` is not allowed in freeform section `{}:`",
                                     w, section_name
                                 ),
@@ -3214,7 +3513,7 @@ impl<'a> Parser<'a> {
                         self.bag.push(
                             Diagnostic::error(
                                 "G::parse::effect-keyword-outside-effects-section",
-                                &format!(
+                                format!(
                                     "effect keyword `{}` is only valid inside the `effects:` section; found in freeform section `{}:`",
                                     w, section_name
                                 ),
@@ -3254,7 +3553,7 @@ impl<'a> Parser<'a> {
                             self.bag.push(
                                 Diagnostic::error(
                                     "G::parse::unknown-marker-word",
-                                    &format!(
+                                    format!(
                                         "`{}` is not a recognized marker keyword in freeform section `{}:` (expected `require`, `avoid`, `must`, `must avoid`, or `context`)",
                                         w, section_name
                                     ),
@@ -3296,7 +3595,7 @@ impl<'a> Parser<'a> {
                 self.bag.push(
                     Diagnostic::error(
                         "G::parse::unexpected",
-                        &format!("could not classify freeform item: `{text}`"),
+                        format!("could not classify freeform item: `{text}`"),
                         SourceSpan::from_byte_span(self.file_label, tok_span, self.line_index),
                     ),
                     tok_span,
@@ -3915,6 +4214,7 @@ impl<'a> Parser<'a> {
     ///   * any identifier whose preceding token in `parts` is `.` — covers
     ///     the `applies` method-name in `.applies()` and any other dotted
     ///     accessor that might land here in malformed input
+    ///
     /// The list is the source of truth for the resolution-table walkers
     /// (analyze.rs) that wire goto-def for branch-condition references.
     /// Validates applies() syntax: no-parens and with-args diagnostics.
@@ -4006,6 +4306,10 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::DoubleEquals => {
                     parts.push("==".into());
+                    self.pos += 1;
+                }
+                TokenKind::NotEquals => {
+                    parts.push("!=".into());
                     self.pos += 1;
                 }
                 TokenKind::Dot => {
@@ -4306,10 +4610,12 @@ impl<'a> Parser<'a> {
     /// declaration head.
     ///
     /// Per §3.7 a `generated block` admits no return type. Authors who need
-    /// one should promote to a hand-authored `block`. Body shape (single
-    /// inline/block string vs. multi-statement `flow:`) is not enforced
-    /// here — repair emits a single string body, and §3.7 placement-order
-    /// enforcement is deferred alongside §3.6.
+    /// one should promote to a hand-authored `block`. Body shape (a single
+    /// inline-or-block string — no `description:` / `constraints:` /
+    /// `context:` / `effects:` / extras, and no multi-statement `flow:` body)
+    /// is enforced here as `G::parse::generated-block-body-shape` (hard).
+    /// §3.6 / §3.7 placement order is enforced in `parse_file` as
+    /// `G::parse::generated-decl-out-of-order` (hard).
     fn parse_generated_block(&mut self) -> Result<Spanned<BlockDecl>, ParseError> {
         let (_, gen_span) = self.expect_ident(Some("generated"))?;
         let mut decl = self.parse_block_decl()?;
@@ -4321,6 +4627,27 @@ impl<'a> Parser<'a> {
                           promote to a hand-authored `block` if one is needed"
                     .to_string(),
             });
+        }
+        let bad_shape = decl.node.description.is_some()
+            || !decl.node.body_constraints.is_empty()
+            || !decl.node.body_context.is_empty()
+            || !decl.node.effects.is_empty()
+            || !decl.node.extra_subsections.is_empty()
+            || !decl.node.freeform_sections.is_empty()
+            || decl.node.flow.len() != 1
+            || !matches!(decl.node.flow.first(), Some(FlowStmt::InlineString(_)))
+            || decl.node.flow_span.is_some();
+        if bad_shape {
+            self.bag.push(
+                Diagnostic::error(
+                    "G::parse::generated-block-body-shape",
+                    "`generated block` body must be a single inline-or-block string \
+                     (see design/language-surface.md §3.7); multi-statement `flow:` \
+                     bodies and other sub-sections are not allowed",
+                    SourceSpan::from_byte_span(self.file_label, gen_span, self.line_index),
+                ),
+                gen_span,
+            );
         }
         decl.node.generated = true;
         decl.span = Span::new(gen_span.file_id, gen_span.start, decl.span.end);
@@ -5318,9 +5645,7 @@ skill foo()
     flow:
         return <a.b>
 ";
-        let err = parse(src, 0)
-            .err()
-            .expect("expected parse error for `<a.b>`");
+        let err = parse(src, 0).expect_err("expected parse error for `<a.b>`");
         assert!(
             matches!(err, ParseError::Unexpected { .. }),
             "expected ParseError::Unexpected, got {:?}",
@@ -5337,9 +5662,7 @@ skill foo()
     flow:
         return <foo
 ";
-        let err = parse(src, 0)
-            .err()
-            .expect("expected parse error for unclosed `<foo`");
+        let err = parse(src, 0).expect_err("expected parse error for unclosed `<foo`");
         assert!(
             matches!(err, ParseError::Unexpected { .. }),
             "expected ParseError::Unexpected, got {:?}",
@@ -5675,8 +5998,7 @@ export block foo() -> Report
         let _ = parse_with_diagnostics(src, 0, "t.glyph", &line_index, &mut bag);
         let ids: Vec<_> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
-            ids.iter()
-                .any(|id| *id == "G::parse::output-target-outside-return"),
+            ids.contains(&"G::parse::output-target-outside-return"),
             "expected output-target-outside-return diagnostic, got {ids:?}"
         );
     }
@@ -6328,13 +6650,12 @@ skill foo()
         // least one param-slot diagnostic, both repairable.
         let ids: Vec<&str> = bag.iter().map(|d| d.id.as_str()).collect();
         assert!(
-            ids.iter().any(|id| *id == "G::parse::duplicate-subsection"),
+            ids.contains(&"G::parse::duplicate-subsection"),
             "expected duplicate-subsection in bag, got {:?}",
             ids
         );
         assert!(
-            ids.iter()
-                .any(|id| *id == "G::parse::param-slot-in-non-instruction-string"),
+            ids.contains(&"G::parse::param-slot-in-non-instruction-string"),
             "expected param-slot-in-non-instruction-string in bag, got {:?}",
             ids
         );
@@ -7137,7 +7458,7 @@ mod import_decl_tests {
         // mention both `,` and `}` and pin the span to the `b` token, not
         // to a `LineStart`.
         let src = "import \"./x.glyph\" { a\n    b\n}\n";
-        let err = parse(src, 0).err().expect("expected ParseError");
+        let err = parse(src, 0).expect_err("expected ParseError");
         match err {
             ParseError::Unexpected { ref message, span } => {
                 assert!(
