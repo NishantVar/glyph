@@ -53,9 +53,14 @@ block install_editor_extension(repo_root)
     Default path — download the prebuilt `.vsix` from the latest GitHub release:
     1. List the assets attached to the latest release. Prefer `gh release view --repo NishantVar/glyph --json assets -q '.assets[].name'`; otherwise parse `curl -fsSL https://api.github.com/repos/NishantVar/glyph/releases/latest`.
     2. If a `.vsix` asset is published, download it to a temp directory (using `gh release download` or `curl` as in `install_cli_binary`).
-    3. Probe for VS Code-compatible editors: VS Code (`code`), Cursor (`cursor`), Windsurf (`windsurf`), Antigravity (`antigravity`), VSCodium (`codium`). Include OS-specific fallback paths (e.g. `/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code` on macOS).
+    3. Probe for VS Code-compatible editors by attempting two checks per candidate, in order: first `command -v <cli>` to check PATH, and if that fails, the OS-specific fallback path for the current platform. Record an editor as detected only when one probe resolves to an executable. The candidate set and fallbacks are:
+       - VS Code (PATH `code`; macOS `/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code`; Windows `%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\bin\\code.cmd`)
+       - Cursor (PATH `cursor`; macOS `/Applications/Cursor.app/Contents/Resources/app/bin/cursor`; Windows `%LOCALAPPDATA%\\Programs\\cursor\\resources\\app\\bin\\cursor.cmd`)
+       - Antigravity (typically not on PATH; macOS `/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity` or `~/.antigravity/antigravity/bin/antigravity`; Linux `~/.antigravity/antigravity/bin/antigravity`)
+       - Windsurf (PATH `windsurf`; macOS `/Applications/Windsurf.app/Contents/Resources/app/bin/windsurf`)
+       - VSCodium (PATH `codium`; macOS `/Applications/VSCodium.app/Contents/Resources/app/bin/codium`)
     4. If any editors are found, ask the user which ones to install the extension into.
-    5. For each chosen editor: first run `<cli> --uninstall-extension glyph.glyph-language` to remove any older version (ignore errors if not installed), then run `<cli> --install-extension <vsix_path>`.
+    5. For each chosen editor, run two commands in order: first `<cli> --uninstall-extension glyph.glyph-language` (treat the `extension not installed` error as success), then `<cli> --install-extension <vsix_path>`. Capture stdout and stderr of both. If an install fails, record the exact CLI output for that editor and continue with the remaining editors — never abort the loop on a single failure. After the loop completes, print a per-IDE status table with three columns: editor name, install status (ok or failed), and the captured CLI output for any failure.
 
     Fallback — build the `.vsix` from source. Use this when the latest release does not include a `.vsix` asset, the download failed, or the user explicitly opts to build:
     1. Verify the source repo is present at `{repo_root}/editors/vscode/package.json`. If missing, instruct the user to clone https://github.com/NishantVar/glyph and rerun with the correct `repo_root`, then skip this phase and continue with the rest of the installation.
