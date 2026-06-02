@@ -1,0 +1,20 @@
+type Audience = <"engineer or Claude users">
+
+skill explain_glyph(audience: Audience = "engineer") -> Pitch
+    description: "Convince an audience why Glyph exists by walking source and output together."
+
+    must avoid abstract_features
+
+    flow:
+        if "audience is technical":
+            teach_glyph()
+        else:
+            teach_glyph() with "no technical details"
+        return <"a before/after Glyph walkthrough tailored to {audience}">
+
+block teach_glyph() -> Pitch
+    flow:
+        "Read the docs to extract the relevant details"
+        return <"a before/after walkthrough">
+
+const abstract_features = "feature-list slides. Let one before/after carry the case."
