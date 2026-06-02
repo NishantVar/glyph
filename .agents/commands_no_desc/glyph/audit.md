@@ -9,9 +9,7 @@ name: audit
 
 - **source_path**. Required.
 
-## Instructions
-
-### Steps
+## Steps
 
 1. Follow the scan-constraint-conflicts procedure below.
 
