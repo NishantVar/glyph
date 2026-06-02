@@ -1,0 +1,11 @@
+# Exclude noise from graphify knowledge graph
+
+# Parallel worktree mirrors (same files re-indexed N times)
+.worktrees/
+.claude/worktrees/
+
+# External / unrelated repos cloned for experimentation
+tmp/
+
+# Generated outputs (graphify already skips graphify-out and target by default)
+.agents/commands_no_desc/
