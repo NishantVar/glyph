@@ -2,20 +2,6 @@
 
 Glyph is a human-readable, visualizable DSL for authoring reusable agent skills that compiles into explicit, task-specific instructions for coding agents. See the top-level [README.md](README.md) for the public project description.
 
-## Context and Org Topology
-
-- [CONTEXT-MAP.md](CONTEXT-MAP.md) — mandatory lightweight context index: which
-  context a path belongs to, who owns it, and where its glossary and ADRs live.
-  Use it as the one lookup path for semantic context.
-- [agents/org-transition-plan.md](agents/org-transition-plan.md) — durable
-  approved org truth: the seated roster, ownership matrix, gate coverage, and
-  day-one artifact contract.
-
-`.agents/**` is Glyph **product / dogfood** artifact surface (skills, commands,
-the round-trip harness). The visible `agents/**` tree is the **Flux org
-scaffold** (roster, handoffs, reviews, decisions, quality findings). These are
-separate — never collapse or symlink one onto the other.
-
 ## Documentation Layout
 
 Documentation is split by audience. Pick the folder that matches what you're writing or reading.
