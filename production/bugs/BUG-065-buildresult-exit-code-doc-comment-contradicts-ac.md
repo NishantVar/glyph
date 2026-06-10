@@ -1,0 +1,42 @@
+# BUG-065: BuildResult.exit_code doc comment contradicts actual repairable-only exit code (says 1, code returns 2)
+
+**Severity:** low | **Confidence:** high | **Status:** confirmed
+**Location:** `crates/glyph-core/src/lib.rs:1449`
+**Found by:** lib-1 | **Audit date:** unknown-date
+
+## Description
+
+The `BuildResult.exit_code` field is documented as `0 = all ok, 1 = any failure/skip`, but the implementation can return exit code `2`. In `compile_directory_with_layout`, `exit_code = if any_failure { 1 } else { diag_worst }`. When a build has only repairable diagnostics and no hard errors or dependent skips, `any_failure` stays false and `diag_worst` is `2`, so the method returns `2`. The doc comment silently omits this third tier. The runtime value `2` is correct per the authoritative CLI contract (`docs/reference/cli.md`: repairable-only → exit 2); the defect is solely the misleading struct doc comment, which would lead a maintainer to assume any skip implies exit 1.
+
+Note: the specific two-file trigger in the original report (b.glyph imports a.glyph where a has repairable-only diagnostics) does NOT produce exit 2 — it produces exit 1, because line 1685 unconditionally sets `any_failure = true` whenever any file is skipped. The `2` case only occurs when a repairable-only file has no consumers in the same build.
+
+## Trigger / Reproduction
+
+Build a directory containing a single `.glyph` file that has only a repairable diagnostic (e.g. `G::analyze::duplicate-import`) and no other files that import it. The build records `FileOutcome::Failed` but `any_failure` stays false; `exit_code = diag_worst = 2`. The doc comment claims any failure/skip yields exit 1, but exit 2 is returned.
+
+## Evidence
+
+```rust
+/// Overall exit code for the build (0 = all ok, 1 = any failure/skip).
+pub exit_code: u8,
+
+// ...later in compile_directory_with_layout:
+let exit_code = if any_failure { 1 } else { diag_worst };
+```
+
+## Recommended Resolution
+
+Update the doc comment on `BuildResult.exit_code` to describe the real three-tier contract, referencing `docs/reference/cli.md` so it stays aligned with the CLI exit-code matrix:
+
+```rust
+/// Overall exit code for the build:
+/// - 0 = all ok (or warnings only)
+/// - 1 = any hard error or dependency-error skip
+/// - 2 = repairable diagnostics only (no hard errors, no skips)
+/// See docs/reference/cli.md for the authoritative exit-code matrix.
+pub exit_code: u8,
+```
+
+## Verification Notes
+
+The doc comment at lib.rs:1449 reads `0 = all ok, 1 = any failure/skip` but omits the `2 = repairable only` case entirely. The logic at line 1867 (`let exit_code = if any_failure { 1 } else { diag_worst }`) confirms `2` is reachable when `any_failure` is false and `diag_worst = 2`. The two-file scenario described in the original claim is wrong (line 1685 sets `any_failure = true` for any skipped file, confirmed by test at lib.rs:7180 asserting exit_code=1 for a directory compile failure). The real `2` case is a repairable-only single-file-or-no-consumers build. No code change needed — only the doc comment requires correction.
