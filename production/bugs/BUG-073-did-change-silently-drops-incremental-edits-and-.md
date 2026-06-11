@@ -40,3 +40,43 @@ Either request `include_text` on save and have `did_save` prefer `params.text` w
 ## Verification Notes
 
 The initialize handler advertises only `TextDocumentSyncCapability::Kind(FULL)` — not a `TextDocumentSyncOptions` struct — so no `SaveOptions` and no `include_text: true` are ever set. The `did_save` handler explicitly prefers `doc.text` via `(Some(t), _) => t`, meaning the promised resync path is unreachable for conformant and non-conformant clients alike. Only affects non-conformant clients that send incremental changes despite FULL sync being advertised — any LSP-conformant client (Neovim, VS Code) sends full document text, so this dead-code path is never reached in practice, justifying low severity.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced. The report is correct: a ranged `textDocument/didChange` payload is ignored under the advertised FULL sync path, and a subsequent `textDocument/didSave` without `text` re-lints the stale cached buffer rather than the editor's real content.
+
+**Reproduction/Refutation:** I reproduced this against the real `target/debug/glyph-lsp` process over JSON-RPC, without editing source. The script opened a buffer with invalid text (`skill main(\n`), then sent a non-conformant ranged change whose replacement text was valid Glyph, then sent `didSave` with no `text` field. Diagnostics stayed stale. Sending the same valid text as a full-change event (`range == None`) and saving immediately cleared diagnostics, isolating the stale behavior to the ranged-change branch.
+
+**Evidence:**
+
+- Graphify first-pass context query for LSP document sync pointed at the LSP document state in `crates/glyph-lsp/src/lib.rs`.
+- Bounded source read of `crates/glyph-lsp/src/lib.rs:216-337` confirmed:
+  - `initialize` advertises `text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL))`, which serializes as bare `1`.
+  - `did_change` only assigns `doc.text = change.text` when `change.range.is_none()`.
+  - `did_save` matches `(Some(t), _) => t`, so cached text wins over any save payload, and there is no advertised `include_text` save option.
+- `rg -n "SaveOptions|include_text|text_document_sync|did_change|did_save" crates/glyph-lsp/src/lib.rs` found no save-options capability and only the cited handlers/capability path.
+- `cargo build -p glyph-lsp` passed.
+- `cargo test -p glyph-lsp --lib` passed: `32 passed; 0 failed`.
+- Live LSP repro output:
+
+```json
+{
+  "advertised_textDocumentSync": 1,
+  "after_open_bad_text": {
+    "count": 1,
+    "messages": ["expected identifier"]
+  },
+  "after_ranged_change_then_save_no_text": {
+    "count": 1,
+    "messages": ["expected identifier"]
+  },
+  "after_full_change_then_save_no_text": {
+    "count": 0,
+    "messages": []
+  }
+}
+```
+
+The temporary repro directory under `tmp/bug073-lsp-repro` was removed after the run.
+
+**Resolution Input:** Preserve the existing suggested resolution. Either request `include_text` on save and have `did_save` prefer `params.text` when present, apply incremental changes properly in `did_change` instead of dropping them, or correct the comment to state that ranged/incremental edits under FULL sync are not recoverable through the current save path. Advertising save options with `include_text: true` also supports the intended resync behavior, but only if `did_save` gives the save payload priority over stale cached text.

@@ -40,3 +40,28 @@ This makes `set_enabled` consistent with the case-insensitive contract of `get`/
 ## Verification Notes
 
 Code at lines 130-134 confirmed: `set_enabled` calls `self.entries.get_mut(name)` with raw name. `get` (line 116) and `is_known` (line 137) both call `to_ascii_lowercase()` before the BTreeMap lookup. Only current caller is `glyph-cli/src/main.rs:140` with hardcoded `"effects"` — no other callers exist (grep confirmed). The bug is real as a latent contract divergence. The proposed fix is correct and sufficient.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced / confirmed.
+
+**Reproduction/Refutation:** A temporary scratch crate under `tmp/bug069-repro` loaded `SectionCatalogue`, verified that mixed-case lookup APIs resolve `"Effects"`, then compared `set_enabled` behavior for mixed-case, upper-case, and lowercase names. `set_enabled("Effects", true)` and `set_enabled("EFFECTS", true)` left `effects_enabled()` false, while `set_enabled("effects", true)` changed it to true. This reproduces the reported latent case-normalization divergence. The scratch crate was removed after the run.
+
+**Evidence:**
+
+- Graphify query for `SectionCatalogue set_enabled case normalization` located `SectionCatalogue` and its `.get()`, `.set_enabled()`, `.is_known()`, and `.effects_enabled()` methods in `crates/glyph-core/src/sections/mod.rs`.
+- Bounded source read of `crates/glyph-core/src/sections/mod.rs:70-175` showed `get` lowercases with `name.to_ascii_lowercase()`, `is_known` lowercases with `name.to_ascii_lowercase()`, and `set_enabled` still calls `self.entries.get_mut(name)` with the raw input.
+- `rg -n "set_enabled|effects_enabled|SectionCatalogue" crates tests docs/reference production/bugs -g '!target'` found the production caller at `crates/glyph-cli/src/main.rs:140` passing hardcoded lowercase `"effects"`.
+- `rg -n "^\\[effects\\]|enabled" crates/glyph-core/src/sections -g '*.toml' -g '*.rs'` and `sed -n '1,80p' crates/glyph-core/src/sections/catalogue.toml` confirmed `[effects] enabled = false`, giving the reproduction a visible before/after state.
+- Reproduction command: `cargo run --quiet --manifest-path tmp/bug069-repro/Cargo.toml`
+
+```text
+is_known("Effects")=true
+get("Effects").is_some()=true
+effects before=false
+after set_enabled("Effects", true)=false
+after set_enabled("EFFECTS", true)=false
+after set_enabled("effects", true)=true
+```
+
+**Resolution Input:** The existing recommended resolution should be preserved: normalize `name` with `to_ascii_lowercase()` inside `set_enabled` before calling `get_mut`. No source-code fix was made in this independent pass.

@@ -62,3 +62,48 @@ Direct code inspection confirms the asymmetry. In `analyze_with_diagnostics`, th
 duplicate-section (`block_cardinality_violation.glyph`, `duplicate_section_freeform.glyph`)
 are single-file with no imports, so no test exercises the gap. The proposed fix is correct
 and complete.
+
+## Independent Agent Finding
+
+### Verdict
+
+Reproduced. The current CLI reports both diagnostics on the single-file path, but accepts the
+same private-block violations when a valid import forces the import-aware path.
+
+### Reproduction/Refutation
+
+Created scratch fixtures under `tmp/bug018-independent-agent/` with a valid imported const,
+a no-import control, and matching imported variants for a private `block helper()`.
+
+Commands run:
+
+```sh
+cargo run -q -p glyph-cli -- compile tmp/bug018-independent-agent/single.glyph --format json
+cargo run -q -p glyph-cli -- compile tmp/bug018-independent-agent/with_import.glyph --format json
+cargo run -q -p glyph-cli -- compile tmp/bug018-independent-agent/single_duplicate.glyph --format json
+cargo run -q -p glyph-cli -- compile tmp/bug018-independent-agent/with_import_duplicate.glyph --format json
+rg -n "check_section_cardinality\\(|check_duplicate_sections\\(|check_block_freeform_slots\\(" crates/glyph-core/src/analyze.rs
+```
+
+### Evidence
+
+`single.glyph` exited 1 and emitted `G::analyze::cardinality-violation` with message
+"section goal: accepts only one item but 2 were provided". `with_import.glyph` exited 0
+with no diagnostics.
+
+`single_duplicate.glyph` exited 1 and emitted `G::analyze::duplicate-section` with message
+"duplicate quality: sub-section". `with_import_duplicate.glyph` exited 0 with no
+diagnostics.
+
+Graphify located `analyze_with_imports`, `check_block_freeform_slots`,
+`check_section_cardinality`, and `check_duplicate_sections` in
+`crates/glyph-core/src/analyze.rs`. The bounded `rg` check corroborated the asymmetry:
+single-file `Decl::Block` calls appear at lines 3064, 3079, and 3086, while the imports-path
+private block arm has only `check_block_freeform_slots` at line 4585.
+
+### Resolution Input
+
+Keep the existing suggested resolution. Add imports-path parity for private `Decl::Block` by
+calling `check_section_cardinality` and `check_duplicate_sections` after
+`check_block_freeform_slots`, and add regression coverage for both imported private-block
+cardinality and duplicate-section cases.

@@ -66,3 +66,37 @@ for steps 27 and 28. Running with 160 steps panicked with
 `thread 'main' panicked: attempt to add with overflow` at `range.rs:434` in the debug build.
 There are no upstream constraints capping branch arm body sizes to 26 nodes, and the test
 corpus only exercises small arms.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced. The report is valid for both the invalid-marker case and the
+debug-build overflow panic.
+
+**Reproduction/Refutation:** I created two scratch `.glyph` files under `tmp/bug-021/`:
+one branch arm with 28 inline steps, and one branch arm with 160 inline steps. Compiling
+the 28-step file completed with exit code 0 but emitted non-letter substep markers after
+`z.`. Compiling the 160-step file in the default dev/debug build exited 101 with the
+reported `RangeFrom<u8>` overflow panic.
+
+**Evidence:**
+
+- `cargo run -p glyph-cli -- compile --format json --output tmp/bug-021/repro-28.md tmp/bug-021/repro-28.glyph`
+  exited 0. The generated markdown contained:
+  - `y. step 025.`
+  - `z. step 026.`
+  - `{. step 027.`
+  - `|. step 028.`
+- `cargo run -p glyph-cli -- compile --format json --output tmp/bug-021/repro-160.md tmp/bug-021/repro-160.glyph`
+  exited 101 and printed:
+  `panicked at .../library/core/src/iter/range.rs:434:1: attempt to add with overflow`.
+- Narrow source inspection matched the root cause: `emit_lettered_substeps` iterates
+  `(b'a'..).zip(body)` and formats `letter as char`, while the validator helpers
+  `is_lettered_subitem` and `strip_letter_prefix` only accept/strip a single
+  lowercase-letter prefix.
+
+**Resolution Input:** Keep the existing recommended resolution. The emitter should use a
+bounded, alphabetic multi-letter label generator rather than raw `u8` iteration, and the
+validator-side letter-prefix parsing must be updated at the same time so labels like
+`aa.` are accepted and stripped consistently. Also consider adding regression coverage
+for both 28-step and 160-step branch arms; the 28-step case currently emits malformed
+markdown without a non-zero CLI exit.

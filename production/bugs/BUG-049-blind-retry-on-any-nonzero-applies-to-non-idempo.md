@@ -49,3 +49,18 @@ Either restrict the wrapper's documented usage to idempotent read/query commands
 ## Verification Notes
 
 The script at lines 5-7 explicitly documents `gh pr create` and `gh pr merge` as valid usage, and `issue-agent-prompt.md` lines 257-296 instructs agents to call both commands through `gh_retry.sh`. The retry loop (lines 34-48) blindly retries any non-zero exit. In the documented scenario — `gh pr create` succeeds server-side but the client gets a transient network error reading the response — the retry will attempt `gh pr create` again, returning exit 1 ("a pull request already exists"). The wrapper then reports permanent failure even though the PR exists. Severity is low because the trigger condition (network drop specifically between server write and client response read) is uncommon.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced / confirmed.
+
+**Reproduction/Refutation:** I reproduced the wrapper control flow locally without contacting GitHub by exporting a fake `gh` function into `gh_retry.sh`. The fake command simulates the reported post-write failure mode: attempt 1 creates a PR URL and exits non-zero to represent a transport drop after the server-side create; attempts 2-4 return `a pull request already exists for this branch`. `gh_retry.sh` retried all non-zero results and exited 1 after attempt 4, even though the simulated PR had been created on attempt 1. This confirms the reported hazard for documented non-idempotent usage.
+
+**Evidence:**
+
+- Graphify was queried first for retry/idempotency context, but the existing graph did not surface this shell-wrapper path, so I used bounded exact reads for the script and prompt.
+- `nl -ba .agents/skills/issue-list-orchestrator/scripts/gh_retry.sh | sed -n '1,90p'` shows documented usage includes `gh pr create` and `gh pr merge` at lines 5-7, the blind retry rationale at lines 17-21, and the retry loop at lines 34-48. The loop runs `"$@"`, retries any non-zero `rc`, and gives up only after `max_attempts=4`.
+- `nl -ba .agents/skills/issue-list-orchestrator/references/issue-agent-prompt.md | sed -n '250,305p'` shows agents are instructed to run `gh pr create` through `gh_retry.sh` at lines 257-262 and `gh pr merge --squash --auto` through `gh_retry.sh` at lines 295-296. Line 301 escalates `gh pr create failed after retries`, matching the reported false-failure outcome.
+- Local reproduction command summary: `bash -c '<fake exported gh>; bash .agents/skills/issue-list-orchestrator/scripts/gh_retry.sh gh pr create --base main --head bug049 --title t --body b'` exited 1. Output showed `fake-gh attempt=1`, a simulated PR URL, `simulated transport drop after server-side create`, then retries on duplicate-PR errors for attempts 2, 3, and 4, ending with `[gh_retry] gave up after 4 attempts (last rc=1): gh pr create ...`.
+
+**Resolution Input:** Preserve the existing suggested resolution. Restrict the wrapper and its documentation to idempotent read/query commands, or make the wrapper idempotency-aware for `gh pr create` and `gh pr merge` by checking whether the PR already exists / is already merged on retry and treating that state as success. At minimum, remove `gh pr create` and `gh pr merge` from documented `gh_retry.sh` usage and downstream issue-agent instructions.

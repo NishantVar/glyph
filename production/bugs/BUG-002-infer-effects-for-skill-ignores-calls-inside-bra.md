@@ -64,3 +64,27 @@ Apply the same recursion both to the skill's own flow when seeding the worklist 
 ## Verification Notes
 
 Confirmed end-to-end by running `cargo run -p glyph-cli -- check --enable-effects` on a skill with an effectful call inside a branch — zero `effects-under-declared` diagnostics emitted. Same skill with the call at top level correctly fires the error. Code trace confirms the flat `filter_map` at lines 6051–6058. The sibling `infer_effects_for_flow` uses a recursive `walk()` that correctly handles all three cases, confirming the divergence is real and `analyze` is the defective pass.
+
+## Independent Agent Finding
+
+### Verdict
+
+Confirmed.
+
+### Reproduction/Refutation
+
+Created targeted scratch fixtures under `tmp/` for a branch-nested call, a top-level control call, and a return-position call. Ran:
+
+- `cargo run -q -p glyph-cli -- check --enable-effects --format json tmp/bug002_branch.glyph`
+- `cargo run -q -p glyph-cli -- check --enable-effects --format json tmp/bug002_top_level.glyph`
+- `cargo run -q -p glyph-cli -- check --enable-effects --format json tmp/bug002_return.glyph`
+
+The branch-nested and return-position fixtures both exited `0` with no diagnostics even though each called a `block dangerous()` declaring `effects: writes_fs` from a `skill` declaring `effects: none`. The top-level control exited `1` and emitted `G::analyze::effects-under-declared` with message `` `effects: none` declared but call graph infers: writes_fs ``.
+
+### Evidence
+
+Graphify located the relevant implementation at `crates/glyph-core/src/analyze.rs:6042`. A bounded source read confirmed `infer_effects_for_skill` seeds its worklist with only `FlowStmt::Call` and expands block flows with only top-level `FlowStmt::Call`. A bounded read of `infer_effects_for_flow` confirmed the sibling walker recurses into `FlowStmt::Branch` bodies and handles `FlowStmt::Return(ReturnExpr::Call { .. })`, matching the report's claimed divergence.
+
+### Resolution Input
+
+Use a shared recursive call-target collector for both skill-flow seeding and block-flow expansion in `infer_effects_for_skill`. It should visit branch `then`, `elif`, and `else` bodies and include `ReturnExpr::Call` targets, then preserve the existing worklist/visited behavior for transitive block effects and stdlib effects.

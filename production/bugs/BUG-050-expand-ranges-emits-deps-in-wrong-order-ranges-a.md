@@ -54,3 +54,30 @@ Process refs in a single left-to-right pass so source order is preserved: iterat
 ## Verification Notes
 
 The two-pass approach is confirmed to produce out-of-source-order output. The `deps` field is used as a set for topological dependency checking (all deps must be `merged` before an issue is `ready`), so ordering is irrelevant to the actual consumer behavior — making this low severity. The proposed single-pass combined regex fix correctly produces source-order output.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced.
+
+**Reproduction/Refutation:** Graphify located `expand_ranges()` in `.agents/skills/issue-list-orchestrator/scripts/parse_issues.py` and showed it is called by `parse()`. Bounded source reads confirmed the implementation first consumes `RANGE_RE` matches into `ids`, then scans the remaining text for single `#N` references. Running the helper directly on `#2, #4-#15, #19, #20, #21` produced `['4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '2', '19', '20', '21']`, so the earlier `#2` is emitted after the range. Running the production fixture through `parse_issues.py mvp-issues.md` and selecting slice `23` produced the same deps order.
+
+**Evidence:** Commands run:
+
+```bash
+python3 - <<'PY'
+import importlib.util
+from pathlib import Path
+path = Path('.agents/skills/issue-list-orchestrator/scripts/parse_issues.py')
+spec = importlib.util.spec_from_file_location('parse_issues', path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(mod.expand_ranges('#2, #4-#15, #19, #20, #21'))
+PY
+
+python3 .agents/skills/issue-list-orchestrator/scripts/parse_issues.py mvp-issues.md \
+  | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(i for i in data["issues"] if i["id"]=="23")["deps"])'
+```
+
+Both commands printed `['4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '2', '19', '20', '21']`. The shipped fixture line is `- **Blocked by:** all relevant feature slices (#2, #4–#15, #19, #20, #21)`, so the JSON order does not preserve source order. Consumer docs still describe readiness as all dependencies being merged, so this reproduces an emitted-order defect without showing a scheduler correctness regression.
+
+**Resolution Input:** Preserve the existing suggested resolution: process refs in a single left-to-right combined-regex pass, expanding ranges in place and retaining the existing de-duplication behavior. No source changes were made in this independent pass.

@@ -32,3 +32,28 @@ Classify the return type with the same canonical form used by `name_to_typetag`:
 ## Verification Notes
 
 The grammar accepts identifiers with underscores in type positions without restriction, so `A_gent` is a valid parse. The analyzer does not reject it: `is_builtin_type_name("A_gent")` returns true (because `canonicalize_identifier` strips underscores, yielding `"agent"` which is in `CANONICAL_BUILTINS`). In `callee_is_agent`, `rt.node.eq_ignore_ascii_case("Agent")` returns false for `"A_gent"` (length 7 != 5), while `name_to_typetag("A_gent")` correctly yields `TypeTag::Agent` via canonicalization. Running the compiler on a file with `block foo() -> A_gent` / `x = foo()` produces "Refer to this result as x." instead of "Refer to this agent as 'x.'" — exactly the silent wrong output described. Lower.rs even has a comment at line 88 documenting that the `eq_ignore_ascii_case` approach was a bug for `name_to_typetag` (Issue #84), confirming the fix was known but never applied to `callee_is_agent`.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced. The report is still valid in the current working tree.
+
+**Reproduction/Refutation:** I created a temporary `tmp/bug032-agent.glyph` fixture with a same-file `block foo() -> A_gent` and a bound call `x = foo()`, then ran `cargo run -q -p glyph-cli -- compile tmp/bug032-agent.glyph --emit-ir --format json`. The command exited 0, so the underscore-perturbed built-in type is accepted and reaches lower/emit.
+
+**Evidence:**
+- Graphify query located the relevant implementation nodes at `crates/glyph-core/src/lower.rs`: `name_to_typetag()` and `callee_is_agent()`.
+- `rg` still finds `name_to_typetag()` canonicalizing via `canonicalize_identifier(name)` while `callee_is_agent()` still uses raw `rt.node.eq_ignore_ascii_case("Agent")` in both the block and export-block arms.
+- Generated Markdown contained: `Create an agent-shaped result. Return a \`A_gent\`. Refer to this result as x.`
+- Generated IR for the same call contained:
+
+```json
+{
+  "target": "foo",
+  "bound_name": "x",
+  "return_type": "agent",
+  "is_agent": false
+}
+```
+
+This confirms the reported mismatch: `return_type` is classified as agent through canonicalization, while `is_agent` remains false because `callee_is_agent` compares the raw `A_gent` token with ASCII-case-only matching.
+
+**Resolution Input:** Preserve the existing suggested resolution. `callee_is_agent` should classify same-file block and export-block return types using the same canonical form as `name_to_typetag`, e.g. `canonicalize_identifier(&rt.node) == "agent"`, and the two lower-pass raw `eq_ignore_ascii_case("Agent")` checks should be replaced together so `return_type` and `is_agent` stay consistent.

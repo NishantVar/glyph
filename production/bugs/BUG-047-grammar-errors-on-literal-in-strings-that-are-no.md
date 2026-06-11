@@ -59,3 +59,22 @@ And add it to the `string_literal` repeat's `choice`. Update corpus tests to cov
 ## Verification Notes
 
 Live reproduction confirmed: `tree-sitter parse` on a file containing `"value is {0}"` produces `(ERROR [2, 18] - [2, 21])` with exit 1. The compiler compiles the same file cleanly. None of the workspace crates depend on tree-sitter; the LSP uses `glyph_core::check_source_with_resolutions`. Impact is limited to editor syntax-highlighting plugins (Neovim/Helix/VS Code/Zed) using tree-sitter-glyph. The `extras` whitespace issue creates a secondary mismatch where `{ name }` is a valid interpolation in tree-sitter but literal text in the compiler.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced.
+
+**Reproduction/Refutation:** Created a temporary fixture `tmp/bug-047-repro.glyph` containing:
+
+```glyph
+skill test()
+    description: "value is {0}"
+    flow:
+        "value is {0}"
+```
+
+`tree-sitter parse ../tmp/bug-047-repro.glyph` from `tree-sitter-glyph/` exited 1 and emitted `ERROR` nodes for both `{0}` instances. `cargo run -q -p glyph-cli -- check --format json tmp/bug-047-repro.glyph` exited 0 with no diagnostics, so the same input is accepted by the compiler check path.
+
+**Evidence:** Graphify located the relevant split between `tree-sitter-glyph` string/interpolation grammar and `glyph-core` tokenization. A bounded source check confirmed the report is current: `tree-sitter-glyph/grammar.js` lines 586-646 define `string_literal` as `repeat(choice($.interpolation, $.string_content))`, `string_content` as `/[^"\\{]+/`, and `interpolation` as `{` + `identifier` + `}`. `crates/glyph-core/src/tokenize.rs` lines 298-339 accumulates inline string contents into `TokenKind::StringLit(value)` without treating `{` specially. The live tree-sitter output included `(ERROR [1, 27] - [1, 30] (integer_literal ...))` and `(ERROR [3, 18] - [3, 21] (integer_literal ...))` around the `{0}` text.
+
+**Resolution Input:** No source changes were made. Preserve the existing suggested resolution: add a low-precedence literal-brace fallback for non-interpolation `{` content and add corpus coverage for `{0}`, `{}`, and `{ name }`. When source edits are allowed, verify both inline strings and block strings because both currently route `{` through the same `interpolation` rule.

@@ -61,3 +61,32 @@ Apply the same fix to both `strip_trailing_comment` and `trailing_comment_after_
 ## Verification Notes
 
 The `prev != '\\'` single-char lookback is confirmed in both functions at `fmt.rs` lines 1194-1234. For `"path\\"  // note`, when the scanner reaches the closing `"` at the end of the literal, `prev` is the second `\`, so the condition `prev != '\\'` is false and `in_string` stays `true`. The `// note` comment is never detected. Downstream, `unwrap_string_literal` receives `"path\\"  // note`, calls `strip_suffix('"')` which fails (last char is `e`), returns `None`, and `bodies.push(...)` is skipped — the description value is silently dropped from the merge. This only fires on the duplicate-section merge path (`matching.len() > 1`); single sections use the verbatim early-return and are unaffected. No existing tests cover this triple combination (escaped-backslash-terminated string + trailing comment + duplicate section merge).
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced / confirmed.
+
+**Reproduction/Refutation:** I created a temporary `tmp/bug64-repro.glyph` with a duplicate `description:` section where the first value ended in an escaped backslash and carried a trailing line comment:
+
+```glyph
+skill bug64()
+    description: "path\\"  // a note about paths
+    description: "second desc"
+    flow:
+        "do work"
+```
+
+Running `cargo run -q -p glyph-cli -- fmt tmp/bug64-repro.glyph` exited 0 and rewrote the file to:
+
+```glyph
+skill bug64()
+    description: "second desc"
+    flow:
+        "do work"
+```
+
+That reproduces the reported content loss: the first description body is dropped during the duplicate-section merge. Two controls narrow the trigger: without the trailing comment, `description: "path\\"` merges as `description: "path\\\nsecond desc"`; with a trailing comment but no escaped trailing backslash, `description: "path"` merges as `description: "path\nsecond desc"`.
+
+**Evidence:** Graphify located the relevant formatter nodes in `crates/glyph-core/src/fmt.rs` (`trailing_comment_after_keyword` and `unwrap_string_literal`). A bounded source read confirmed both `strip_trailing_comment` and `trailing_comment_after_keyword` still close strings using the single-character `prev != '\\'` check at lines 1194-1234, and `unwrap_string_literal` still requires a final `"` via `strip_suffix('"')` at lines 1239-1241. The runtime output above matches the described failure path: the comment is not recognized outside the string, so the payload is not a clean quoted literal and the first body is skipped.
+
+**Resolution Input:** Preserve the existing suggested resolution. Replace the one-character previous-char check with an escape-state scanner in both formatter helpers, and add a regression covering duplicate `description:` merge with a string ending in `\\` followed by `//`.

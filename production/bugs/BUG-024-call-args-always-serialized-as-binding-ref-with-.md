@@ -81,3 +81,71 @@ breakage is confined to `--emit-ir` JSON output consumed by the expand agent —
 discrimination causes the agent to misinterpret a string literal as a binding reference.
 The fix is a multi-layer change: the arg type erasure at `Vec<String>` must be addressed
 first; patching only `serialize_call` is insufficient.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced / confirmed.
+
+**Reproduction/Refutation:** Created a temporary repro file at
+`tmp/bug024-repro.glyph` with a valid `produce("my_dir")` call and ran:
+
+```bash
+cargo run -q -p glyph-cli -- compile --emit-ir --format json tmp/bug024-repro.glyph
+```
+
+The command exited `0` and wrote `tmp/bug024-repro.ir.json`. Inspecting the emitted call
+node with:
+
+```bash
+jq '.skill.flow[] | select(.kind == "call") | {node_id,target,args}' tmp/bug024-repro.ir.json
+```
+
+produced:
+
+```json
+{
+  "node_id": "n2",
+  "target": "produce",
+  "args": {
+    "my_dir": {
+      "kind": "binding_ref",
+      "name": "my_dir",
+      "node_id": "n2_0"
+    }
+  }
+}
+```
+
+A targeted node-id scan:
+
+```bash
+jq -r '.. | objects | select(has("node_id")) | .node_id' tmp/bug024-repro.ir.json \
+  | rg -n -v '^n(0|[1-9][0-9]*)$'
+```
+
+reported `3:n2_0`, confirming the fabricated call-arg expression ID does not match the
+documented node-id format.
+
+**Evidence:** Graphify located the relevant implementation nodes:
+`serialize_call()`, `FlowStmt`, and `IrCall`. Bounded source reads confirmed the pipeline
+erases argument kind before IR emission:
+
+- `crates/glyph-core/src/parse.rs:4089-4122` accepts both `TokenKind::Ident` and
+  `TokenKind::StringLit` but pushes both into the same `Vec<String>`.
+- `crates/glyph-core/src/ast.rs:371-395` stores `FlowStmt::Call.args` as `Vec<String>`.
+- `crates/glyph-core/src/ir.rs:349-358` stores `IrCall.args` as `Vec<String>`.
+- `crates/glyph-core/src/lower.rs:1210-1268` clones the AST args into the IR call.
+- `crates/glyph-core/src/emit_ir.rs:320-340` emits every arg as
+  `{"kind":"binding_ref","name":arg}` and fabricates `node_id` with
+  `format!("n{}_{}", c.node_id.0, i)`.
+
+The documented contract requires expression node IDs to use `n<integer>` and says every
+`Expr` sub-node receives an ID (`docs/reference/ir-json.md:49`,
+`docs/architecture/ir-schema.md:321`). It also defines string literals as
+`{"kind":"literal","value":{"kind":"string","value":"."}}`
+(`docs/reference/ir-json.md:506-525`).
+
+**Resolution Input:** Preserve the existing recommended resolution. The evidence supports
+the report's claim that this is a multi-layer fix: parse/AST/lower must preserve call-arg
+kind before `serialize_call` can emit correct `binding_ref` vs `literal` expression shapes
+and assign conforming real expression node IDs.

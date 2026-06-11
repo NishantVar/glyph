@@ -35,3 +35,44 @@ Pick one Windows target and use it everywhere. Since the CI is the canonical aut
 ## Verification Notes
 
 All three code paths are confirmed exactly as described. `scripts/release.sh` lines 70-71 build and name the Windows artifact with `x86_64-pc-windows-gnu`. `.github/workflows/release.yml` line 27 sets the Windows target to `x86_64-pc-windows-msvc`, producing `glyph-${github.ref_name}-x86_64-pc-windows-msvc.zip`. The install skill maps Windows/x86_64 to `x86_64-pc-windows-gnu` and downloads `glyph-<tag>-x86_64-pc-windows-gnu.zip`. The canonical release path is a tag push triggering release.yml (CI), which publishes the msvc artifact. The gnu-suffixed asset is never produced during a normal release, causing a 404 for every Windows user of the install skill.
+
+## Independent Agent Finding
+
+### Verdict
+
+Partially reproduced. The source-level mismatch is real: the CI workflow would publish `glyph-<vtag>-x86_64-pc-windows-msvc.zip` for a v-prefixed release tag, while the install skill requests `glyph-<tag>-x86_64-pc-windows-gnu.zip`. The current live latest release checked on 2026-06-10 does not reproduce the reported 404 symptom: GitHub release `0.1.0` contains `glyph-0.1.0-x86_64-pc-windows-gnu.zip`, and no Release workflow runs were returned by `gh run list --workflow Release`.
+
+### Reproduction/Refutation
+
+Reproduced the mismatch without building by deriving artifact names from the current files. The derived CI asset was `glyph-vBUG010-repro-x86_64-pc-windows-msvc.zip`; both `scripts/release.sh` and the install skill derived `glyph-vBUG010-repro-x86_64-pc-windows-gnu.zip`; the comparison exited non-zero with `MISMATCH: CI does not publish the installer-requested asset`.
+
+Refuted the current-production 404 for the latest release by querying GitHub: `gh release view --repo NishantVar/glyph --json tagName,assets` returned `tag=0.1.0` and the Windows asset `glyph-0.1.0-x86_64-pc-windows-gnu.zip`. The workflow trigger is only `v[0-9]+.[0-9]+.[0-9]+*`, so the unprefixed `0.1.0` release is not evidence of the current CI path publishing assets.
+
+### Evidence
+
+Commands run and summarized:
+
+```sh
+# Graphify MCP query: release.sh Windows asset target triple x86_64-pc publishing asset packaging release script bug report
+# Summary: surfaced the release documentation cluster; exact script details required bounded file reads.
+
+rg -n "x86_64-pc-windows|windows-msvc|windows-gnu|github\\.ref_name|target:|zip" .github/workflows/release.yml .agents/skills/install/SKILL.glyph .agents/skills/install/SKILL.md scripts/release.sh
+# Summary: current workflow line 27 uses x86_64-pc-windows-msvc; release.sh lines 70-71 use x86_64-pc-windows-gnu; install skill maps Windows/x86_64 to x86_64-pc-windows-gnu.
+
+VERSION=vBUG010-repro; ci_target=$(awk '/build: windows/{in_windows=1} in_windows && /target:/{print $2; exit}' .github/workflows/release.yml); release_sh_target=$(rg -o 'x86_64-pc-windows-[a-z]+' scripts/release.sh | head -n 1); install_target=$(rg -o 'x86_64-pc-windows-[a-z]+' .agents/skills/install/SKILL.glyph | head -n 1)
+# Followed by comparing glyph-${VERSION}-${ci_target}.zip against glyph-${VERSION}-${install_target}.zip.
+# Summary: exited 1; CI asset was msvc, installer asset was gnu.
+
+gh release view --repo NishantVar/glyph --json tagName,assets -q '.tagName as $tag | "tag=" + $tag, (.assets[].name | select(test("windows|x86_64-pc")))'
+# Summary: tag=0.1.0; glyph-0.1.0-x86_64-pc-windows-gnu.zip.
+
+git show 0.1.0:.github/workflows/release.yml | sed -n '15,30p;44,62p'
+# Summary: tag 0.1.0 workflow also names the Windows CI target x86_64-pc-windows-msvc.
+
+gh run list --repo NishantVar/glyph --workflow Release --limit 20
+# Summary: returned no Release workflow runs.
+```
+
+### Resolution Input
+
+Keep the existing recommendation to make `release.sh`, `.github/workflows/release.yml`, and the install skill agree on one Windows triple. Also decide whether release tags are meant to be prefixed (`v0.1.0`) or unprefixed (`0.1.0`), because the current workflow only triggers for v-prefixed tags while the published latest release is unprefixed.

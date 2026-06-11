@@ -47,3 +47,36 @@ Or equivalently: after building `out` via `split('\n')`, pop all trailing newlin
 ## Verification Notes
 
 Code at fmt.rs lines 109–126 confirmed exactly as described. Empirically reproduced: a file with a parse-triggering unterminated string and a trailing blank line grew by one byte per `glyph fmt` run across three consecutive invocations. The parse-failure fast path at lines 68–76 returns `after_preparse` directly, confirming the growth path. The proposed fix — counting trailing newlines and reproducing that exact count — is correct and complete.
+
+## Independent Agent Finding
+
+### Verdict
+
+Reproduced independently. `glyph fmt` appends one newline byte per run for an invalid `.glyph` file ending in a blank line.
+
+### Reproduction/Refutation
+
+Created `tmp/bug007-repro.glyph` containing an unterminated string and a trailing blank line, then ran `cargo run -q -p glyph-cli -- fmt tmp/bug007-repro.glyph` three times.
+
+### Evidence
+
+- Graphify located `preparse_rewrite()` at `crates/glyph-core/src/fmt.rs:81`.
+- Bounded source reads confirmed `fmt_source` returns `after_preparse` on parse failure (`crates/glyph-core/src/fmt.rs:68-75`) and `preparse_rewrite` skips the trailing-pop when the source ends with `\n\n` (`crates/glyph-core/src/fmt.rs:112-120`).
+- Clean measurement command:
+
+```bash
+printf 'initial bytes=%s\n' "$(wc -c < tmp/bug007-repro.glyph)"
+for i in 1 2 3; do
+  cargo run -q -p glyph-cli -- fmt tmp/bug007-repro.glyph
+  rc=$?
+  printf 'run %s exit=%s bytes=%s\n' "$i" "$rc" "$(wc -c < tmp/bug007-repro.glyph)"
+done
+```
+
+Summarized output: initial `47` bytes; run 1 exited `0` and produced `48` bytes; run 2 exited `0` and produced `49` bytes; run 3 exited `0` and produced `50` bytes. The final tail hex was `7465640a0a0a0a0a`, showing accumulated trailing newlines.
+
+- Parse-error confirmation command: `cargo run -q -p glyph-cli -- check tmp/bug007-repro.glyph`. It exited `1` with `error[G::parse::unterminated-string]`, so the reproduction exercises a parse-error file.
+
+### Resolution Input
+
+Keep the existing suggested resolution: preserve the exact source trailing-newline count in `preparse_rewrite` rather than special-casing one versus two trailing newlines. Add regression coverage for `fmt_source` idempotency on a parse-failing source ending in `\n\n`; a small CLI-level check would also pin the in-place rewrite behavior.

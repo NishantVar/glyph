@@ -32,3 +32,13 @@ Change the printed paths to `./scripts/release.sh v$NEW_VERSION` and `./scripts/
 ## Verification Notes
 
 `bump_version.sh` line 4 changes to the repo root. Lines 55-56 print `./release.sh` and `./upload.sh`. Both scripts live exclusively in `scripts/` and do not exist at the repo root. The usage strings in both scripts explicitly show the `./scripts/` prefix. Only affects the instructional text printed to the developer — the actual scripts work fine when invoked correctly. No compiled output, no data loss, no crash. Severity is low.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced. The report is valid.
+
+**Reproduction/Refutation:** I did not run `./scripts/bump_version.sh <new-version>` because that path mutates version files, updates lockfiles, commits, and tags. Instead, I used the lower-risk equivalent checks for the reported failure path: verified the exact printed Next Steps in `scripts/bump_version.sh`, verified the script locations, and executed the printed root-relative commands from the repository root. Both printed commands fail because there is no `release.sh` or `upload.sh` at the repo root.
+
+**Evidence:** `rg --files | rg '(^|/)(bump_version|release|upload)\.sh$'` returned only `scripts/release.sh`, `scripts/upload.sh`, and `scripts/bump_version.sh`. Bounded reads showed `scripts/bump_version.sh:4` changes to the repo root and `scripts/bump_version.sh:55-56` print `./release.sh v$NEW_VERSION` and `./upload.sh v$NEW_VERSION`. `scripts/release.sh:33` and `scripts/upload.sh:9-10` advertise `./scripts/...` usage. Running `./release.sh v0.2.0` from the repo root exited 127 with `zsh:1: no such file or directory: ./release.sh`; running `./upload.sh v0.2.0` exited 127 with the same missing-file error for `./upload.sh`.
+
+**Resolution Input:** Keep the existing recommended resolution: change the printed Next Steps in `scripts/bump_version.sh` to `./scripts/release.sh v$NEW_VERSION` and `./scripts/upload.sh v$NEW_VERSION`.

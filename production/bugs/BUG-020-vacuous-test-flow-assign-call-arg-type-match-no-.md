@@ -92,3 +92,50 @@ multiple of 4), but `parse_file` immediately returns `Err(ParseError::Unexpected
 seeing `indent != 0`. The test was run live and confirmed to pass while producing only
 `G::parse::unexpected`. Every other test in the surrounding range uses column-0 declaration
 headers; this is the only one with indented top-level declarations.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced. The current test is vacuous: it passes because the fixture fails
+in Phase 1 parsing before `analyze_with_diagnostics` can evaluate call argument types.
+
+**Reproduction/Refutation:** I inspected the current test fixture and confirmed
+`flow_assign_call_arg_type_match_no_diag` still starts each top-level declaration with
+four spaces, unlike `flow_assign_call_arg_type_mismatch_emits_diag`, whose declarations
+start at column 0. A targeted test run passes, but a matching temporary fixture reports
+only `G::parse::unexpected` for nonzero top-level indentation. A de-indented control
+fixture reaches Phase 2 analysis, proving the indentation is what prevents the original
+negative test from exercising the analyzer path.
+
+**Evidence:**
+
+- Graphify query for `flow_assign_call_arg_type_match_no_diag`,
+  `parse_with_diagnostics_opts`, and `check_source_with_effects` identified the relevant
+  nodes in `analyze.rs`, `parse.rs`, and `lib.rs`.
+- `rg -n -C 18 "flow_assign_call_arg_type_(mismatch_emits_diag|match_no_diag)|fn diag_ids" crates/glyph-core/src/analyze.rs`
+  showed the positive sibling fixture starts at column 0, while the negative fixture at
+  `analyze.rs:11175-11188` has four leading spaces before `block`/`skill`.
+- `sed -n '786,812p' crates/glyph-core/src/parse.rs` confirmed `parse_file` rejects any
+  top-level `LineStart` where `indent != 0` with the message
+  `top-level declaration must be at indent 0, got {indent}`.
+- `sed -n '232,270p' crates/glyph-core/src/lib.rs` confirmed analysis runs only under
+  `if let Some(file) = parsed`, so a parse failure skips `analyze_with_diagnostics`.
+- `cargo test -p glyph-core flow_assign_call_arg_type_match_no_diag -- --nocapture`
+  exited 0 and reported
+  `test analyze::flow_assign_tests::flow_assign_call_arg_type_match_no_diag ... ok`
+  with `1 passed; 0 failed; 910 filtered out`.
+- `cargo run -p glyph-cli -- check tmp/bug020-indented.glyph` exited 2 and emitted a
+  single diagnostic:
+  `warning[G::parse::unexpected]: top-level declaration must be at indent 0, got 1`
+  at `tmp/bug020-indented.glyph:1:1`.
+- `cargo run -p glyph-cli -- check tmp/bug020-deindented.glyph` reached analysis and
+  emitted `G::analyze::typed-decl-missing-return` diagnostics for `produce` and `consume`,
+  with no `G::parse::unexpected` and no `G::analyze::call-arg-type-mismatch`.
+
+**Resolution Input:** Preserve the suggested resolution: de-indent the fixture so the
+test reaches analysis, and add an assertion that no `G::parse::*` diagnostic is present.
+Under the current analyzer, the de-indented fixture may still produce
+`G::analyze::typed-decl-missing-return` because the blocks declare return types without
+explicit value-producing `return` statements. If the intent is a fully clean negative
+fixture, add explicit returns or otherwise align the fixture with current typed-block
+rules; at minimum, the parse-diagnostic assertion prevents this exact vacuous coverage
+from recurring.

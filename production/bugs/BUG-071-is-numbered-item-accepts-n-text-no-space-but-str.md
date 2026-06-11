@@ -54,3 +54,30 @@ Option 1 is preferable as it keeps the stricter/correct definition consistent wi
 ## Verification Notes
 
 Code inconsistency confirmed at lines 268-292. `is_numbered_item` accepts `"1.text"` (no guard on trailing space); `strip_number_prefix` uses `find(". ")` and returns input unchanged for `"1.text"`. Both `parse_md_structure` and `body_h2_items` use this pair. Impact is limited: `check_step_order` uses substring `contains()` matching so most cases still match; the only realistic hard breakage is the `starts_with("Output:")` check at line 1721 for a `return` node. The emitter always produces `N. ` with space, so this is only reachable on non-standard agent-reshaped Markdown.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced. The bug is present in the public `glyph validate-output` path, not just in the helper snippets.
+
+**Reproduction/Refutation:** Graphify identified `is_numbered_item()` in `crates/glyph-core/src/validate_output.rs` and its callers `parse_md_structure()`, `body_h2_items()`, and `count_body_items()`. A scratch fixture under `tmp/bug-071/` used one IR flow node:
+
+```json
+{ "kind": "return", "form": "description", "description": "absolute paths of every emitted file", "ty": null }
+```
+
+The control Markdown used `1. Output: absolute paths of every emitted file.` and the reproduced case used `1.Output: absolute paths of every emitted file.`.
+
+**Evidence:**
+
+```text
+$ cargo run -q -p glyph-cli -- validate-output tmp/bug-071/return.ir.json tmp/bug-071/spaced.md --format pretty
+exit 0, no output
+
+$ cargo run -q -p glyph-cli -- validate-output tmp/bug-071/return.ir.json tmp/bug-071/no-space.md --format pretty
+exit 1
+error[G::expand::malformed-markdown]: expected step 1 to be an `Output:` line for the flow Return node, got: "1.Output: absolute paths of every emitted file."
+```
+
+The no-space line is counted as a numbered item, otherwise the failure would have been a missing step or step-count mismatch. The diagnostic also shows the parsed `ListItem.text` still includes the `1.` marker, confirming `strip_number_prefix` did not strip it.
+
+**Resolution Input:** Preserve the existing recommended resolution. Option 1 remains preferable: make `is_numbered_item` require a marker boundary that matches emitted Markdown, so `N.text` is not accepted as a numbered item unless the stripping helper is intentionally widened in the same change.

@@ -30,3 +30,19 @@ Surface the write/`create_dir_all` failure: attach an error diagnostic to the fi
 ## Verification Notes
 
 The code at lines 1766-1769 of `lib.rs` exactly matches the claimed pattern: `let _ = std::fs::create_dir_all(parent)` and `atomic_write(&ir_path, &ir_json).ok()` both discard errors, and line 1775 unconditionally pushes `FileOutcome::Compiled`. The exit code is only set non-zero via `any_failure`, which is never set from an IR write failure. The same silent discard pattern exists for library procedure files at line 2508, but the IR case is more impactful because it is the input to `validate-output`. There is no upstream guard that would prevent a read-only output directory from reaching this code path.
+
+## Independent Agent Finding
+
+Verdict: Reproduced. `glyph compile --emit-ir` reports success when the expected IR JSON sidecar cannot be written, leaving the primary Markdown artifact present and the IR artifact missing.
+
+Reproduction/Refutation: I created `tmp/bug029/input.glyph` as a minimal valid skill, created `tmp/bug029/out/renamed.ir.json` as a directory to block the expected sidecar path, then ran:
+
+```sh
+cargo run -q -p glyph-cli -- compile tmp/bug029/input.glyph --output tmp/bug029/out/renamed.md --emit-ir --format json
+```
+
+The command exited `0` with no diagnostic output. A follow-up artifact check showed `tmp/bug029/out/renamed.md` as a regular file and `tmp/bug029/out/renamed.ir.json` still as a directory, so no IR JSON file was produced. Running the downstream validator against the expected path failed with exit `3` and `glyph: cannot read \`tmp/bug029/out/renamed.ir.json\`: Is a directory (os error 21)`.
+
+Evidence: The implementation still drops both error paths in `crates/glyph-core/src/lib.rs`: `let _ = std::fs::create_dir_all(parent);` followed by `atomic_write(&ir_path, &ir_json).ok();`, then unconditionally records `FileOutcome::Compiled`. The reproduction demonstrates the swallowed `atomic_write` failure with a directory/file conflict at the IR sidecar path.
+
+Resolution Input: Preserve the existing suggested resolution: surface the `create_dir_all` and IR `atomic_write` failures instead of discarding them. Either attach an error diagnostic so the file outcome becomes `Failed` and the CLI exits non-zero, or thread the `io::Result` upward. The IR sidecar write should follow the primary Markdown write pattern that maps `atomic_write` errors into `CompileError::Write`.

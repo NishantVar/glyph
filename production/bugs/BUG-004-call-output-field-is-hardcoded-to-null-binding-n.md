@@ -55,3 +55,40 @@ Then either drop the redundant `bound_name` field entirely or document it in `ir
 ## Verification Notes
 
 Code at `emit_ir.rs` line 307 unambiguously hardcodes `"output": Value::Null` in `serialize_call`, while the lines that follow correctly populate `bound_name` from `c.bound_name`. The corpus fixture `legal_cross_kind.ir.json` confirms the behavior in emitted artifacts. The field `bound_name` appears nowhere in `ir-json.md`. The existing test covers `bound_name` but not `output`, so the contract violation is untested. Fix is a one-line change.
+
+## Independent Agent Finding
+
+### Verdict
+
+Confirmed. A fresh `glyph compile --emit-ir` reproduction emits `output: null` for an assigned call while putting the binding name in `bound_name`, which contradicts the documented IR JSON contract.
+
+### Reproduction/Refutation
+
+Ran a targeted compile against the existing minimal corpus fixture, writing only to a temporary directory under `tmp/` and removing it with a shell trap:
+
+```bash
+cargo run -q -p glyph-cli -- compile crates/glyph-cli/tests/corpus/valid/legal_cross_kind.glyph --emit-ir --format json --out-dir "$scratch"
+jq '{target: .skill.flow[0].target, bound_name: .skill.flow[0].bound_name, output: .skill.flow[0].output, return_local_ref: .skill.return_local_ref}' "$ir_path"
+```
+
+Relevant output:
+
+```json
+{
+  "target": "ask_skills_link_mode",
+  "bound_name": "link_mode",
+  "output": null,
+  "return_local_ref": {
+    "name": "link_mode",
+    "node_id": "n3"
+  }
+}
+```
+
+### Evidence
+
+Static inspection matches the live repro. `crates/glyph-core/src/emit_ir.rs:342` inserts `"output": Value::Null`; `crates/glyph-core/src/emit_ir.rs:394-400` serializes `c.bound_name` into `"bound_name"`. The documented contract says `Call.output` is the binding name when `x = call(...)` is present (`docs/reference/ir-json.md:144`, `docs/architecture/ir-schema.md:100`). The existing fixture already shows the same mismatch in `crates/glyph-cli/tests/corpus/valid/legal_cross_kind.ir.json:12` and `:31`.
+
+### Resolution Input
+
+The suggested resolution is appropriate: serialize `output` from `c.bound_name`. Existing tests should assert `call["output"] == "link_mode"` or equivalent for an assigned call. If `bound_name` remains, document it as an alias/deprecated field; otherwise remove it in a schema-compatible migration.

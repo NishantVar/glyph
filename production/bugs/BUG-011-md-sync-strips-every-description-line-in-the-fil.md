@@ -37,3 +37,31 @@ Scope the strip to the frontmatter only. Track frontmatter state in awk: count `
 ## Verification Notes
 
 The awk `.md` branch applies `/^[[:space:]]*description:/ { next }` to every line in the file with no guard restricting it to the YAML frontmatter. The source file `.agents/commands/glyph/decompile.md` contains `description:` lines at lines 590, 606, 631, 645, 652, 662, 680 inside indented code-block worked examples. Comparing the source against the checked-in generated output at `.agents/commands_no_desc/glyph/decompile.md` confirms the corruption: source line 590 (`description: "Update repository documentation to match current code."`) is absent from the generated file. The script comment explicitly claims it only handles the frontmatter banner/description, so this is an unintentional scope violation with live impact on agents consuming these command files.
+
+## Independent Agent Finding
+
+### Verdict
+
+Reproduced. The `.md` sync path strips every line whose leading whitespace is followed by `description:`, including worked-example Glyph code inside markdown bodies.
+
+### Reproduction/Refutation
+
+I did not run `scripts/sync_commands_no_desc.sh` against the real repository outputs because this task's write scope is limited to this report. Instead, I copied the script and `decompile.md` into `tmp/bug011-repro.nFzs5q/` and ran the copied script there.
+
+Commands run, summarized:
+
+- Graphify `query_graph` for `sync_commands_no_desc.sh` / `description` / `commands_no_desc`: returned only generic frontmatter nodes, so exact verification used targeted file inspection.
+- `git status --short`: showed pre-existing unrelated changes in `.claude/settings.json`, BUG-001 through BUG-006 reports, and untracked `.claude/agents/probe-*` files.
+- `nl -ba scripts/sync_commands_no_desc.sh | sed -n '1,110p'`: confirmed the `.md` branch has an unguarded `/^[[:space:]]*description:/ { next }` rule at line 57.
+- `rg -n "^[[:space:]]*description:" .agents/commands/glyph/decompile.md .agents/commands/glyph/teach.md .agents/commands_no_desc/glyph/decompile.md .agents/commands_no_desc/glyph/teach.md`: found `description:` lines in the source markdown files, including worked examples, and no matches in the generated checked-in files.
+- `nl -ba .agents/commands/glyph/decompile.md | sed -n '584,594p'` and `nl -ba .agents/commands_no_desc/glyph/decompile.md | sed -n '586,596p'`: source line 590 contains the worked-example description; generated output jumps directly from `skill update_docs(scope = ".")` to `require accuracy`.
+- Scratch reproduction: copied `scripts/sync_commands_no_desc.sh` and `.agents/commands/glyph/decompile.md` under `tmp/bug011-repro.nFzs5q/`, then ran `bash tmp/bug011-repro.nFzs5q/scripts/sync_commands_no_desc.sh`. The copied script reported a successful sync.
+- `awk 'FNR==1{if (NR>1) print prev, count; prev=FILENAME; count=0} /^[[:space:]]*description:/{count++} END{print prev, count}' tmp/bug011-repro.nFzs5q/.agents/commands/glyph/decompile.md tmp/bug011-repro.nFzs5q/.agents/commands_no_desc/glyph/decompile.md`: source count was `10`; generated count was `0`.
+
+### Evidence
+
+The copied source file had ten matching `description:` lines, while the copied generated output had zero. In the reproduced generated file, the worked example around `skill update_docs(scope = ".")` is missing `description: "Update repository documentation to match current code."` exactly as reported.
+
+### Resolution Input
+
+The recommended resolution is appropriate: track YAML frontmatter state in the `.md` awk branch and skip `description:` only inside the first frontmatter block. The same audit should cover the `.glyph` branch because it uses the same unscoped skip rule.

@@ -37,3 +37,15 @@ Recompile `.agents/skills/e2e_tests/glyph_review.glyph` with the current compile
 ## Verification Notes
 
 Reproduced directly: the committed HEAD blob of `.agents/skills/e2e_tests/glyph_review.md` ends step 3 with the old inline fold "...the report is for a human reader. Produce: the human-readable equivalence report shown to the user." with no step 4. Compiling the committed `.glyph` source with the current compiler deterministically emits step 3 ending at "...for a human reader." plus a separate "4. Output: the human-readable equivalence report shown to the user." — exactly the ADR-0026 Output-flow-node style. The working tree already carries this corrected `.md` as an unstaged change. `glyph check` on the source exits 0, so no check-based CI gate flags the drift. Severity is low because this is a dogfood agent-skill corpus file, not compiler source or a crash path — the only impact is an agent reading slightly stale self-instructions.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced.
+
+**Reproduction/Refutation:** I reproduced the stale committed output without editing the dogfood skill files by compiling to scratch output:
+`cargo run -p glyph-cli -- compile --output tmp/bug088/glyph_review.md .agents/skills/e2e_tests/glyph_review.glyph`.
+The command exited 0. Diffing the generated scratch file against `git show HEAD:.agents/skills/e2e_tests/glyph_review.md` showed the same one-hunk drift described above: committed HEAD keeps the final return folded into step 3 as inline `Produce: ...`, while the current compiler emits step 3 without that suffix plus a separate `4. Output: the human-readable equivalence report shown to the user.`
+
+**Evidence:** `cargo run -p glyph-cli -- compile --help` reports that plain `compile` writes Markdown next to the source, so I used `--output tmp/bug088/glyph_review.md` to stay within scratch space. `tail -n 10 tmp/bug088/glyph_review.md` ended with `3. ... the report is for a human reader.` followed by `4. Output: the human-readable equivalence report shown to the user.` The targeted strict check also matched the report's CI-gap claim: `cargo run -p glyph-cli -- check --strict .agents/skills/e2e_tests/glyph_review.glyph` exited 0 with no diagnostics.
+
+**Resolution Input:** Keep the existing recommended resolution: regenerate and commit `.agents/skills/e2e_tests/glyph_review.md` from the current compiler, and add a CI gate that recompiles dogfood `.glyph` sources and diffs the committed Markdown outputs so this class of stale output is caught.

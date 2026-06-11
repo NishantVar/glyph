@@ -52,3 +52,20 @@ Replace the §Return Folding template table in `docs/reference/compiled-output.m
 ## Verification Notes
 
 `grep -r "as your result" crates/` returns zero results. Multiple tests in `expand.rs`, `mod.rs`, `scaffold.rs`, and `imported_tier1_output_contract.rs` encode the `Produce ...` and `Output: ...` forms. The `as your result` wording originates from older design documents (`design/compiled-output.md`, `llm_expand_pass.md`) that were never carried forward into the actual implementation.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced. The report is valid: `docs/reference/compiled-output.md` documents obsolete `as your result` return-folding prose, while the compiler emits deterministic `Produce ...` folds for inlined block return contracts and separate `Output: ...` steps for skill-level returns.
+
+**Reproduction/Refutation:** I compiled isolated scratch fixtures with `./target/debug/glyph`:
+
+- `./target/debug/glyph compile tmp/bug043-fold-desc.glyph --output tmp/bug043-fold-desc.md` exited 0 and emitted `1. Inspect the scope. Produce: a structured diagnosis.`
+- `./target/debug/glyph compile tmp/bug043-fold-ident.glyph --output tmp/bug043-fold-ident.md` exited 0 and emitted ``1. Inspect the scope. Produce `diagnosis` (`Diagnosis`): root cause and severity.``
+- `./target/debug/glyph compile crates/glyph-cli/tests/corpus/valid/skill_meaningful_return_no_type_fixed.glyph --output tmp/bug043-skill-desc.md` exited 0 and emitted `1. Output: a structured diagnosis of repo scope.`
+- `./target/debug/glyph compile crates/glyph-cli/tests/corpus/valid/return_row2_named_with_type_decl.glyph --output tmp/bug043-row2.md` exited 0 and emitted `2. Output: diagnosis.`
+
+None of these outputs contain the documented `as your result` wording.
+
+**Evidence:** `rg -n 'as your result' crates` returned no matches. `rg -n 'as your result|Return Folding' docs/reference/compiled-output.md` showed the stale contract at lines 245-246, plus line 90 still says there is no separate `## Output` section. `rg -n 'Produce:|Produce `|Output:' crates/glyph-core/src/emit/templates.rs crates/glyph-core/src/emit/scaffold.rs` showed the implementation templates at `templates.rs:113,117-120` and ADR 0026 `Output:` rendering at `scaffold.rs:418-447`.
+
+**Resolution Input:** Keep the existing recommended resolution. Update `docs/reference/compiled-output.md` so §Return Folding documents the actual `Produce ...` fold forms, and also documents the ADR 0026 separate `Output: ...` step behavior for skill/block output contracts. The current recommendation correctly preserves the implementation as source of truth rather than changing compiler behavior.

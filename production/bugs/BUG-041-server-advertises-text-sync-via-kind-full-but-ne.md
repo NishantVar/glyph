@@ -54,3 +54,29 @@ Add `TextDocumentSyncOptions` and `TextDocumentSyncSaveOptions` to the `lsp_type
 ## Verification Notes
 
 The `Kind` form serializes to a bare integer on the wire with no `save` field, giving conformant clients no signal that `textDocument/didSave` is expected. The `did_change` handler explicitly does not re-lint (only caches buffer text), so `did_save` is the only re-lint path. VS Code and Neovim paper over this by sending `didSave` unconditionally; the defect is masked in practice on the two most common editors but violates the LSP 3.17 capability contract.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced.
+
+**Reproduction/Refutation:** I reproduced the capability mismatch by source inspection and by serializing the exact `lsp_types` capability variant used by `initialize`. The server advertises `TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)`, which serializes as the bare JSON value `1`. The recommended options form serializes as `{"change":1,"save":true}`. Because `did_change` only updates the cached buffer text and `did_save` is the re-lint/publish path, a client that waits for `textDocumentSync.save` before sending `textDocument/didSave` will not trigger post-open diagnostic refresh.
+
+**Evidence:**
+- Graphify was queried first for `glyph-lsp` initialize/text sync/save/change diagnostics context; it did not return useful code-level nodes, so I used bounded `rg`/`sed` reads for exact implementation details.
+- `rg -n "TextDocumentSyncOptions|TextDocumentSyncSaveOptions|register_capability|text_document_sync|did_save|did_change" crates/glyph-lsp/src/lib.rs` returned only:
+  - `231: text_document_sync: Some(TextDocumentSyncCapability::Kind(`
+  - `298: async fn did_change(...)`
+  - `321: async fn did_save(...)`
+  This confirms there is no source import/use of `TextDocumentSyncOptions`, `TextDocumentSyncSaveOptions`, or dynamic `register_capability` in `crates/glyph-lsp/src/lib.rs`.
+- Bounded source reads confirmed `initialize` sets `TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)`, `did_change` says it does not re-lint, and `did_save` calls `self.lint_and_publish(uri, &text).await`.
+- `rg -n "didOpen|didSave|Diagnostic Behaviour|diagnostics" design/glyph-lsp.md docs/architecture/lsp.md` confirmed the intended diagnostic behavior is on `didOpen` and `didSave`; `docs/architecture/lsp.md` also says v1 does not auto-republish on change.
+- Scratch serialization check (`cargo run --manifest-path tmp/lsp-sync-serialization/Cargo.toml --quiet`) output:
+
+  ```text
+  kind=1
+  options={"change":1,"save":true}
+  ```
+
+- The LSP 3.17 specification documents `textDocumentSync.save` as the server capability indicating interest in `textDocument/didSave` notifications: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_didSave
+
+**Resolution Input:** Preserve the existing suggested resolution. Advertise text sync with `TextDocumentSyncCapability::Options(TextDocumentSyncOptions { change: Some(TextDocumentSyncKind::FULL), save: Some(TextDocumentSyncSaveOptions::Supported(true)), ..Default::default() })` and import `TextDocumentSyncOptions` plus `TextDocumentSyncSaveOptions`. No source change was made in this reproduction pass.

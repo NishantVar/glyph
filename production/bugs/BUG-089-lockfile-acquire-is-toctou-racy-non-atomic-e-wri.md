@@ -38,3 +38,18 @@ Use an atomic create-or-fail primitive. Simplest: replace the file-lock with a d
 ## Verification Notes
 
 The TOCTOU race between `[[ -e "$LOCK" ]]` and `printf > "$LOCK"` is structurally present at lines 26-31 and matches the described pattern exactly. Real-world severity is low rather than medium: the orchestrator's design is explicitly single-session, the lockfile's primary stated purpose is crash recovery detection (not high-throughput mutual exclusion), the race window is on the order of microseconds, and two orchestrators launching at the same millisecond is implausible in human-driven interactive use. The skill's own instructions tell users to manually verify before removing a stale lock. The proposed fix (`mkdir` atomic lock or `set -C` noclobber) is correct and cheap.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced. The production `acquire` path is a real non-atomic TOCTOU lock acquisition.
+
+**Reproduction/Refutation:** I ran the production script by absolute path from an isolated scratch working directory, so its relative `LOCK="tmp/orchestrator/state.json.lock"` wrote only to `tmp/bug-089-repro/tmp/orchestrator/state.json.lock`. With an initially absent lock, 64 parallel `acquire` invocations were launched against the same lock path. On the first attempt, 5 invocations exited 0, meaning multiple callers independently believed they acquired the same lock.
+
+**Evidence:**
+- Graphify query for `issue-list-orchestrator check_lockfile lockfile acquire state.json orchestrator` located the orchestrator lock path and `scripts/check_lockfile.sh (acquire|release|check)`, and showed the Orchestrator calls the helper.
+- Bounded source read confirmed `.agents/skills/issue-list-orchestrator/scripts/check_lockfile.sh:24-31` performs `[[ -e "$LOCK" ]]` before a separate `printf ... > "$LOCK"` write.
+- Documentation read confirmed `.agents/skills/issue-list-orchestrator/references/state-schema.md` says the lockfile ensures only one Orchestrator session writes to `state.json` at a time.
+- Targeted reproduction command summary: from `tmp/bug-089-repro`, run 50 attempts of `seq 1 64 | xargs -P64 ... bash "$script" acquire`, deleting the scratch-local lock before each attempt and stopping on multiple successes.
+- Observed output: `reproduced iteration=1 successes=5`. The final scratch lock contained one overwritten writer record: `claude-orchestrator`, `acquired_at=2026-06-10T17:48:19Z`, `pid=10708`.
+
+**Resolution Input:** Preserve the existing suggested resolution. Replace the check-then-write sequence with an atomic create-or-fail primitive, either a directory lock via `mkdir "$LOCK"` with metadata inside it, or a file lock using `set -C`/noclobber so creation maps to `O_CREAT|O_EXCL` semantics.

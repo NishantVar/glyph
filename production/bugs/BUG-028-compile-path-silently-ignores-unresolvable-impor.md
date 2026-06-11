@@ -30,3 +30,18 @@ Detect unresolvable filesystem imports on the compile path and surface `G::analy
 ## Verification Notes
 
 In `build_resolved_imports` (lib.rs L2854-2857), when `resolve_import_path` returns `None` for a filesystem import, the code does `None => continue` with no diagnostic pushed to `result.import_diagnostics`. In contrast, `check_one_file` (L1109-1122) pushes `G::analyze::missing-file` in the same `None` arm. Since `compile_file_with_resolved_imports` (L3125-3129) only returns an error outcome when `import_diagnostics` is non-empty, a consumer file with an unresolvable import compiles successfully and exits 0. The `compute_import_closure` path also silently skips non-resolving imports (L1511). The only test for `missing-file` (L6260-6283) calls `check_file`, not the compile pipeline, so this divergence has no test coverage. Reproduced end-to-end: `glyph check` exits 1 with `G::analyze::missing-file`; `glyph compile` exits 0 and produces valid `consumer.md`.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced.
+
+**Reproduction/Refutation:** Copied the existing missing-import fixture into `tmp/bug-028-repro/consumer.glyph`. The fixture imports `./nonexistent.glyph` selectively and never references the imported `something` name in its flow. Running the same file through `check` and `compile` reproduced the reported check/compile divergence.
+
+**Evidence:**
+
+- `cargo run -q -p glyph-cli -- check tmp/bug-028-repro/consumer.glyph --format json` exited 1 and emitted `G::analyze::missing-file` with message `imported file './nonexistent.glyph' not found`.
+- `cargo run -q -p glyph-cli -- compile tmp/bug-028-repro/consumer.glyph --format json` exited 0 and emitted no diagnostic output.
+- `compile` produced `tmp/bug-028-repro/consumer.md` containing frontmatter for `main` and a single compiled step, `Do something.`
+- Graphify located the relevant implementation nodes at `check_one_file`, `resolve_import_path`, and `compile_directory_with_layout`. Bounded source reads confirmed the same root cause described above: `check_one_file` pushes `G::analyze::missing-file` when `resolve_import_path` returns `None`, while the compile DAG/import-resolution path skips unresolved filesystem imports.
+
+**Resolution Input:** Preserve the existing suggested resolution. The compile path should emit `G::analyze::missing-file` for unresolved filesystem imports and fail consistently with `check`, including the unused-import case where no later undefined-call diagnostic masks the missing file. Add regression coverage that runs both `check` and `compile` against an unused selective import of a nonexistent `.glyph` file and asserts matching nonzero behavior.

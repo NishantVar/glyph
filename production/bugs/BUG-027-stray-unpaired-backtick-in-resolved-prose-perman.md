@@ -33,3 +33,30 @@ The proposed fix of "reset `in_backtick` at end of input" is incorrect — the w
 ## Verification Notes
 
 A lone backtick token (single character `` ` ``) passes the `starts_with('`')` check at line 31 but fails the combined `starts_with && ends_with && len >= 2` check at line 26 (because `len == 1`). This sets `in_backtick = true` and counts 1 word, then every subsequent whitespace-separated token is skipped. Python simulation of the exact algorithm confirms `count_words("use the \` char then x y z")` returns 3 instead of 7. The `body_text` field reaches `count_words` without any sanitization, and the tokenizer treats backticks as ordinary characters within string literals (no rejection). The `wc >= 150` gate is only reached when `is_tier2` is already false, meaning a simple block with a lone backtick in its prose could be incorrectly kept at Tier 1.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced.
+
+**Reproduction/Refutation:** I used Graphify first to locate `count_words()` in `crates/glyph-core/src/expand.rs` and confirm it feeds `expand_step1_with_imported_descriptions()`. I then ran a scratch Cargo binary under `tmp/bug027_repro` that path-depended on the real `glyph-core` crate and called `glyph_core::expand::count_words` directly; no production source files were edited.
+
+**Evidence:** Command run:
+
+```sh
+cargo run --quiet --manifest-path tmp/bug027_repro/Cargo.toml
+```
+
+Summarized output:
+
+```text
+sample="use the ` char then x y z"
+sample_split_count=8
+sample_count_words=3
+threshold_plain_split_count=150
+threshold_count_words=3
+threshold_promotes_by_wc=false
+```
+
+This reproduces the permanent undercount: once the standalone backtick token is seen, later tokens are skipped as if they were inside a code span. The threshold case also demonstrates the Tier-2 promotion risk: a body with 150 whitespace-separated tokens is counted as 3, so the `wc >= 150` promotion condition would not fire. One nuance: the sample sentence has 8 whitespace-separated tokens if the standalone backtick token is counted as an ordinary word; if policy ignores that punctuation token, the expected count would be 7. Either interpretation still reproduces the reported bug because the current result is 3.
+
+**Resolution Input:** Preserve the existing suggested resolution. Do not use an end-of-input reset as the fix, because the skipped words have already been lost. A targeted regression should exercise an unbalanced standalone backtick token and the 150-word promotion boundary.

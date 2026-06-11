@@ -45,3 +45,43 @@ Make the comment scan aware of triple-quoted block strings: detect `"""` openers
 ## Verification Notes
 
 The `classify_comments` function resets `in_string = false` on every `\n`. For a triple-quoted block string, the three `"` bytes on the opening line toggle `in_string` as `false→true→false→true`, leaving it `true`, but the subsequent `\n` immediately resets it to `false`. On the next content line (e.g. `see // note`), `in_string` is `false`, so the `//` check fires and emits a spurious `Comment` token. A test insertion confirmed: `spurious Comment tokens inside block string: [RawSemToken { line: 3, start: 12, length: 7, token_type: 10 }]`. The existing tests `comment_inside_string_is_not_classified` and `triple_quoted_string_splits_into_per_line_tokens` do not cover this combination.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced.
+
+**Reproduction/Refutation:** I used the existing public collector API directly against the reported fixture:
+
+```glyph
+skill s()
+    flow:
+        """
+        see // note
+        """
+```
+
+The temporary harness called `glyph_core::semantic_tokens::collect_semantic_tokens(src, 0)` and filtered emitted tokens for `SemTokenType::Comment`, `SemTokenType::GlyphFlowString`, and line 3. The harness was created under `tmp/bug036-repro/` and removed after the run.
+
+**Evidence:** Graphify first located semantic-token/token context, and a bounded read confirmed `crates/glyph-core/src/semantic_tokens.rs` still has `classify_comments` reset `in_string = false` on every newline before scanning for `//`.
+
+Command run:
+
+```sh
+cargo run --manifest-path tmp/bug036-repro/Cargo.toml --quiet
+```
+
+Summarized output:
+
+```text
+line3="        see // note"
+comment_tokens=[RawSemToken { line: 3, start: 12, length: 7, token_type: 10, modifiers: 0 }]
+flow_string_tokens=[..., RawSemToken { line: 3, start: 0, length: 19, token_type: 11, modifiers: 0 }, ...]
+line3_tokens=[
+  RawSemToken { line: 3, start: 0, length: 19, token_type: 11, modifiers: 0 },
+  RawSemToken { line: 3, start: 12, length: 7, token_type: 10, modifiers: 0 }
+]
+```
+
+This reproduces the reported overlap: the whole block-string content line is emitted as `GlyphFlowString` (`token_type: 11`) while the `// note` suffix is also emitted as `Comment` (`token_type: 10`).
+
+**Resolution Input:** Keep the existing recommended resolution. The narrowest fix remains making the comment pass triple-quote-aware, or better, masking comment scanning with lexer string spans so `//` inside any `StringLit` cannot be classified as a comment.

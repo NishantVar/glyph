@@ -36,3 +36,33 @@ Use NUL-delimited iteration: `git diff --cached --name-only -z --diff-filter=ACM
 ## Verification Notes
 
 Lines 10, 32, and 46 all use unquoted variable expansion, confirmed by direct inspection. The path-with-spaces scenario is theoretical for a Rust/Glyph project — no source file in this repo has a space in its name. The partial-staging issue requires deliberate `git add -p` usage. This affects only the contributor pre-commit workflow, not compiler output or user-facing behavior. Severity is low.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced. The report is valid for both the path-with-spaces word splitting defect and the partial-staging restage behavior.
+
+**Reproduction/Refutation:** I reproduced the shell behavior in an isolated temporary Git repository under `tmp/`, rather than running the project hook directly, so the test did not disturb this repository's index or trigger the hook's `cargo fmt --all` / `./scripts/install.sh` side effects. The harness used the same shell constructs from `scripts/hooks/pre-commit`: `staged_rs=$(git diff --cached --name-only --diff-filter=ACM | grep '\.rs$' || true)`, unquoted `git add $staged_rs`, and `for f in $staged_glyph`.
+
+**Evidence:**
+
+```text
+CASE 1: unquoted git add on staged .rs path with space
+staged_rs=<src space/lib.rs>
+git_add_status=128
+fatal: pathspec 'src' did not match any files
+
+CASE 2: for-loop word splitting on staged .glyph path with space
+staged_glyph=<glyph space/test.glyph>
+loop_tokens=<glyph><space/test.glyph>
+
+CASE 3: git add staged_rs restages unstaged hunks
+staged_rs=<src/lib.rs>
+before_cached_contains_unstaged=no
+before_worktree_has_unstaged=yes
+after_cached_contains_unstaged=yes
+after_worktree_has_unstaged=no
+```
+
+Bounded inspection of `scripts/hooks/pre-commit` also confirmed the live hook still has `git add $staged_rs` on line 10, `for f in $staged_glyph` on line 32, and `for f in $check_glyph` on line 46.
+
+**Resolution Input:** Preserve the existing suggested resolution. The source fix should use per-path, NUL-delimited handling and `git add -- "$f"` style pathspec protection, and it should include regression coverage for both a staged path containing a space and a partially staged `.rs` file whose unstaged content must remain unstaged after the hook runs.

@@ -34,3 +34,28 @@ Replace `G::analyze::const-in-flow` with the real `G::analyze::text-in-flow` at 
 ## Verification Notes
 
 A grep across all Rust source under `crates/` returns zero hits for `const-in-flow` — the ID was never implemented. The actual compiler (`analyze.rs:5409`) emits `G::analyze::text-in-flow` with classification `Repairable`, which is also what `docs/reference/diagnostics.md` (line 156) catalogs as the stable contract. The integration test in `crates/glyph-cli/tests/constraints_context.rs:357` explicitly asserts `G::analyze::text-in-flow` fires. The language guide's pitfalls table (line 1316) also uses the bare name `const-in-flow` without the `G::analyze::` prefix. The name `const-in-flow` appears only in architecture/design docs and a worktree — it was an earlier planned name the implementation never adopted.
+
+## Independent Agent Finding
+
+### Verdict
+
+Reproduced. The bug report is valid: the language guide cites `G::analyze::const-in-flow` as an error, but the compiler emits `G::analyze::text-in-flow` with classification `repairable`.
+
+### Reproduction/Refutation
+
+- Graphify orientation query for diagnostic IDs returned the diagnostic implementation node (`crates/glyph-core/src/diagnostic.rs`) and docs/reference areas; bounded reads then targeted the guide, diagnostic catalog, analyzer, and focused CLI test.
+- `sed -n '185,205p' GLYPH_LANGUAGE_GUIDE.md` shows line 196 documenting a bare string const in `flow:` as an error with `G::analyze::const-in-flow`.
+- `sed -n '1308,1322p' GLYPH_LANGUAGE_GUIDE.md` shows the pitfalls table listing bare `const-in-flow`.
+- `sed -n '148,162p' docs/reference/diagnostics.md` shows `G::analyze::text-in-flow` cataloged as `repairable`; there is no `G::analyze::const-in-flow` entry in that catalog slice.
+- `rg -n "const-in-flow|text-in-flow" GLYPH_LANGUAGE_GUIDE.md docs/reference/diagnostics.md crates/glyph-core/src crates/glyph-cli/tests -g '*.rs' -g '*.md'` found `const-in-flow` only in `GLYPH_LANGUAGE_GUIDE.md`, while `text-in-flow` appears in the reference diagnostics, analyzer, AST/lower comments, and CLI test.
+- Created `tmp/bug-015-repro.glyph` with a bare `validate_style` const name in `flow:` and ran `target/debug/glyph check tmp/bug-015-repro.glyph --format json`; the command exited `2` and emitted `{"id":"G::analyze::text-in-flow","classification":"repairable",...}`.
+
+### Evidence
+
+- `crates/glyph-core/src/analyze.rs:5409` sets `id: "G::analyze::text-in-flow"` and `classification: Classification::Repairable` for `FlowStmt::BareName`.
+- `crates/glyph-cli/tests/constraints_context.rs:346` defines `bare_name_in_flow_fires_text_in_flow_diagnostic`, expects exit code `2`, and asserts `G::analyze::text-in-flow`.
+- The scratch CLI output names `validate_style` and recommends adding `()` or a keyword prefix, matching the repairable recovery path rather than a hard `const-in-flow` error.
+
+### Resolution Input
+
+Keep the existing suggested resolution: replace the guide's `G::analyze::const-in-flow` / error wording with `G::analyze::text-in-flow` / repairable, and update the pitfalls table entry to use the real diagnostic ID.

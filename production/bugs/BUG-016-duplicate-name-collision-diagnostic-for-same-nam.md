@@ -40,3 +40,34 @@ Delete the redundant `seen_exports` block in `analyze_with_diagnostics` (lines 3
 ## Verification Notes
 
 Confirmed by direct code inspection and live reproduction: running `glyph check` on a file with two `export block walkthrough` declarations produces exactly two `G::analyze::name-collision` errors at the same span — one from each code path. `DiagBag::push` at `diagnostic.rs:197` is a plain `Vec::push` with no deduplication. `sweep_value_name_collisions` records all `Decl::Const` (not just exported ones) and `Decl::ExportBlock`, which is a strict superset of what `seen_exports` covers. The `seen_exports` sweep is entirely redundant and emits a lower-quality diagnostic (no `related` span). The same pattern repeats in the imports path. The existing tests use `contains` assertions and will continue to pass after the redundant blocks are deleted.
+
+## Independent Agent Finding
+
+### Verdict
+
+Reproduced. The current repo emits two Error-tier `G::analyze::name-collision` diagnostics for the same duplicate `export block` declaration span.
+
+### Reproduction/Refutation
+
+Used a temporary fixture at `tmp/bug016-duplicate-export-block.glyph` with two identical `export block dup_name()` declarations, each containing `flow: return none`.
+
+Command run:
+
+```sh
+cargo run -q -p glyph-cli -- check tmp/bug016-duplicate-export-block.glyph --format json > tmp/bug016.out 2> tmp/bug016.err
+```
+
+Output summary: exit code `1`, stdout contained `2` NDJSON diagnostics, stderr was empty.
+
+### Evidence
+
+`rg -n "duplicate export name|seen_exports|sweep_value_name_collisions" crates/glyph-core/src/analyze.rs` found the legacy `seen_exports` sweep before `sweep_value_name_collisions()` in both paths: no-import path around `analyze.rs:3099-3148`, import-aware path around `analyze.rs:4601-4636`.
+
+The reproduction output contained:
+
+- `G::analyze::name-collision`: ``duplicate export name `dup_name``` at `tmp/bug016-duplicate-export-block.glyph` line 5 col 1 through line 7 col 19.
+- `G::analyze::name-collision`: ``export block `dup_name` collides with earlier `dup_name` (canonically equal)`` at the same line 5 col 1 through line 7 col 19 span, with `related` pointing to the first declaration.
+
+### Resolution Input
+
+The existing recommended resolution is still supported: remove the redundant legacy `seen_exports` sweeps and let `sweep_value_name_collisions()` produce the single canonical collision diagnostic with the related span. No source-code changes were made for this independent finding.

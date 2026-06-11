@@ -54,3 +54,44 @@ Compute each import's full line span (from `line_col(span.start)` to `line_col(s
 ## Verification Notes
 
 Bug confirmed by both code analysis and live CLI reproduction. Running `glyph fmt` on a file with a multi-line selective import followed by a duplicate produced corrupted output with orphaned continuation lines from the first occurrence. `imp.span.end` is set in `parse.rs` from `kw_span.start` to `end_span.end`, making the full range available to fix this. All existing collapse tests use only single-line imports, so this code path was never exercised.
+
+## Independent Agent Finding
+
+### Verdict
+
+Confirmed.
+
+### Reproduction/Refutation
+
+Created `tmp/bug001-repro.glyph` with a multi-line selective import followed by a duplicate same-path import, then ran:
+
+```sh
+cargo run -q -p glyph-cli -- fmt tmp/bug001-repro.glyph
+```
+
+The command exited 0 and rewrote the file with orphaned continuation lines:
+
+```text
+1  import "./h" { foo, bar }
+2      foo,
+3      bar
+4  }
+```
+
+Then ran:
+
+```sh
+cargo run -q -p glyph-cli -- check tmp/bug001-repro.glyph --format json
+```
+
+The check exited 2 with `G::parse::unexpected`, reporting `top-level declaration must be at indent 0, got 1` at line 2.
+
+### Evidence
+
+Static inspection matches the live failure: `crates/glyph-core/src/fmt.rs` records only `line_col(imp.span.start)` as `line_idx`, stores only those start-line indices in `Group.line_indices`, drops only later start lines via `to_drop.insert(idx)`, and replaces only `g.first_line_idx` with a merged single-line import. The reconstruction loop iterates physical lines and skips/substitutes only those single indices, so the original lines between the first import start and end remain in output.
+
+Existing formatter tests around duplicate import collapse cover single-line selective and whole-module imports, but not multi-line selective imports.
+
+### Resolution Input
+
+Use full import line ranges for duplicate-collapse replacement/drop decisions. A regression test should include a multi-line selective import followed by a duplicate import and assert the formatted output contains one merged import with no orphaned selector or closing-brace lines, then reparses cleanly.

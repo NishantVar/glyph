@@ -73,3 +73,42 @@ skill emitter at `scaffold.rs:772-773` single-quotes and escapes the same field.
 cause` produced `description: Diagnose: find the root cause` in the YAML frontmatter, which
 Python's `yaml.safe_load` rejects with "mapping values are not allowed here". The divergence
 between the two emitter paths is the root cause; the fix is straightforward.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced. The production report is still valid on the current checkout.
+
+**Reproduction/Refutation:** I created a scratch library fixture at `tmp/bug022/repro.glyph`
+with an `export block diagnose_issue()` whose description was exactly
+`"Diagnose: find the root cause"` and whose flow text exceeded the Tier-3 procedure-file
+threshold. Running `cargo run -q -p glyph-cli -- compile tmp/bug022/repro.glyph --format=json`
+exited `0` and emitted `tmp/bug022/repro/diagnose-issue.md`. Its frontmatter contained the
+raw, unquoted line:
+
+```yaml
+description: Diagnose: find the root cause
+```
+
+Parsing the isolated frontmatter with Python/PyYAML failed with:
+
+```text
+ScannerError: mapping values are not allowed here
+  in "<unicode string>", line 4, column 22:
+    description: Diagnose: find the root cause
+                         ^
+```
+
+This reproduces the reported behavior rather than refuting it.
+
+**Evidence:** Graphify was queried first for BUG-022/frontmatter/procedure context; it pointed
+to the compiled-output frontmatter docs and compiler context. Targeted structural/source checks
+then confirmed the current emitter split: `crates/glyph-core/src/emit/mod.rs:115` still has
+`format!("description: {}\n", description)`, while `crates/glyph-core/src/emit/scaffold.rs:771-774`
+still uses `format!("description: '{}'\n", skill.description.replace('\'', "''"))`. The live
+compile proved that `eb.node.description` reaches the procedure emitter unchanged and produces
+invalid YAML for a colon-space description.
+
+**Resolution Input:** Keep the existing recommended resolution: encode procedure descriptions
+with the same single-quoted YAML scalar escaping used by the skill scaffold path, and preferably
+extract a shared helper so skill and procedure frontmatter cannot drift. Consider deciding how
+both emitters should handle embedded newlines at the same time.

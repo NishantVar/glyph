@@ -55,3 +55,40 @@ Option 1 is preferred as it avoids ambiguity between the string literal `"true"`
 ## Verification Notes
 
 Code at `emit_ir.rs` lines 186–193 confirmed exactly as described. The lower.rs tests confirm the storage shape: `params[0].default.as_deref() == Some("true")` for bool, `Some("42")` for int, `Some("none")` for none. The IR-JSON spec explicitly requires typed Value-union shapes for non-string literals. The only existing emit-IR test for param defaults covers a string default, leaving all other types untested. Bug is silent — produces wrong-kind JSON without any error or warning.
+
+## Independent Agent Finding
+
+### Verdict
+
+Confirmed. The current compiler still serializes every parameter default as `{"kind":"string", ...}` in `--emit-ir`, including int, float, bool, and `none` defaults.
+
+### Reproduction/Refutation
+
+Used Graphify first for orientation (`god_nodes`, then queries for `serialize_param`, `IrParam`, and `Param.default`). It narrowed the issue to `crates/glyph-core/src/emit_ir.rs`, `crates/glyph-core/src/ir.rs`, and `crates/glyph-core/src/lower.rs`.
+
+Created a scratch repro under `tmp/bug005-param-default-repro/repro.glyph` with defaults `3`, `3.14`, `true`, `none`, and `"text"`; inline parameter descriptions were required to satisfy the current expand pass.
+
+Commands run:
+
+```sh
+cargo run -q -p glyph-cli -- compile --emit-ir -o tmp/bug005-param-default-repro/out tmp/bug005-param-default-repro/repro.glyph --format json
+jq '.skill.params[] | {name, default}' tmp/bug005-param-default-repro/out/repro.ir.json
+```
+
+Relevant output:
+
+```json
+{"name":"attempts","default":{"kind":"string","value":"3"}}
+{"name":"temperature","default":{"kind":"string","value":"3.14"}}
+{"name":"verbose","default":{"kind":"string","value":"true"}}
+{"name":"mode","default":{"kind":"string","value":"none"}}
+{"name":"label","default":{"kind":"string","value":"text"}}
+```
+
+### Evidence
+
+`serialize_param` still strips surrounding quotes and then unconditionally inserts `json!({ "kind": "string", "value": raw })`. `IrParam.default` remains `Option<String>`, so the emitter has no preserved literal kind. `docs/reference/ir-json.md` says `Param.default` is a `Value`, and the Value union requires `int`, `float`, `bool`, and `none` discriminators with native JSON values.
+
+### Resolution Input
+
+The existing preferred resolution is appropriate: carry a typed value from lowering into `IrParam.default` rather than re-parsing at emission time. The live repro shows why emit-time parsing is weaker: once defaults are only strings, string literals that look like `true`, `3`, or `none` are ambiguous without additional source-kind metadata.

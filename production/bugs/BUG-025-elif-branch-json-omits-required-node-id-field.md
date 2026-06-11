@@ -27,3 +27,13 @@ Add a `node_id: NodeId` field to `IrElifBranch`, allocate it during Lower's pre-
 ## Verification Notes
 
 Running the actual compiler on `predicate_const_multi_arm.glyph` confirms the bug: the emitted `elif_branch` object contains `body`, `condition`, `kind`, and `predicate_shape` fields but no `node_id`. The IR JSON contract in `docs/reference/ir-json.md` §ElifBranch marks `node_id` as required, and `docs/architecture/ir-schema.md` §Allocation explicitly states every `ElifBranch` inside a `Branch` receives an ID. `IrElifBranch` at `ir.rs:469–482` has only three fields (`condition`, `body`, `predicate_shape`/`classification`) — no `node_id` field — confirming the root cause. The proposed fix is correct and complete.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced. The production bug is valid: emitted IR JSON for an `elif_branch` omits the contract-required `node_id` field.
+
+**Reproduction/Refutation:** Copied `crates/glyph-cli/tests/fixtures/predicate_const_multi_arm.glyph` to `tmp/bug-025/predicate_const_multi_arm.glyph` and ran `cargo run -q -p glyph-cli -- compile tmp/bug-025/predicate_const_multi_arm.glyph --emit-ir`. The compile exited `0` and wrote `tmp/bug-025/predicate_const_multi_arm.ir.json`. Inspecting the emitted `elif_branch` with `jq '.. | objects | select(.kind? == "elif_branch")' tmp/bug-025/predicate_const_multi_arm.ir.json` showed no `node_id`; `jq -r '.. | objects | select(.kind? == "elif_branch") | keys | @json' ...` returned `["body","condition","kind","predicate_shape"]`, and `jq -r '[.. | objects | select(.kind? == "elif_branch") | has("node_id")] | @json' ...` returned `[false]`.
+
+**Evidence:** Graphify located the relevant implementation path at `serialize_elif()` in `crates/glyph-core/src/emit_ir.rs`, `IrElifBranch` in `crates/glyph-core/src/ir.rs`, and the IR schema allocation docs. A bounded ast-grep read of `serialize_elif()` confirmed it inserts `kind`, `condition`, `body`, and `predicate_shape`, but never inserts `node_id`. A bounded ast-grep read of `IrElifBranch` confirmed the struct has `condition`, `body`, `predicate_shape`, and `classification`, but no `node_id`. The contract still requires the field: `docs/reference/ir-json.md` §ElifBranch lists `node_id` as required, and `docs/architecture/ir-schema.md` §Allocation says every `ElifBranch` inside a `Branch` receives an ID.
+
+**Resolution Input:** Preserve the existing suggested resolution. Add `node_id: NodeId` to `IrElifBranch`, allocate it during Lower's pre-order traversal for each `elif` arm, emit it from `serialize_elif` as `node_id_str(elif.node_id)`, and add a regression assertion that every emitted `elif_branch` carries `node_id`.

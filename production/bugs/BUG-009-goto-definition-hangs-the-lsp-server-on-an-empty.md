@@ -31,3 +31,33 @@ Skip empty strings before the search loop. Add `if s.is_empty() { continue; }` a
 ## Verification Notes
 
 The infinite loop is confirmed end-to-end: (1) the tokenizer emits `StringLit("")` for `""` with no guard, (2) the parser pushes it as `FlowStmt::InlineString("")` with no guard, (3) the LSP's goto_definition calls `check_source_with_resolutions_at_path` which does parse+analyze only — not the IR lowering pipeline that contains the empty-step validator — so empty strings reach `resolve_param_slot` in the AST, (4) inside the while loop, `body_text[search_from..].find("")` always returns `Some(0)`, making `search_from += 0+0 = 0` forever. The cursor check `abs_start..abs_end` is degenerate (zero-width range) so it is never satisfied. Because the runtime is `current_thread` tokio, the spinning loop blocks the entire server. The `if s.is_empty() { continue; }` fix is correct.
+
+## Independent Agent Finding
+
+### Verdict
+
+Reproduced. The current worktree still hangs `textDocument/definition` for a document whose flow contains a bare empty inline string.
+
+### Reproduction/Refutation
+
+I built only the LSP crate, then drove the real `target/debug/glyph-lsp` over stdio with a scratch client. The client completed `initialize`, opened:
+
+```glyph
+skill main()
+    description: "main."
+    flow:
+        ""
+```
+
+and sent `textDocument/definition` at line 1, character 4, inside the enclosing decl but outside any normal resolution. The definition response timed out after the initialize handshake. A control run with the same document shape but `flow: "x"` returned `result: null`, so the timeout is specific to the empty inline flow string path rather than the scratch LSP client or handler setup.
+
+### Evidence
+
+- `cargo build -p glyph-lsp` succeeded, building `glyph-lsp v0.1.0`.
+- `python3 tmp/repro_bug_009_lsp_hang.py` exited 124 and printed `definition_response_timeout saw_initialize=True messages=1`.
+- `python3 tmp/repro_bug_009_lsp_hang.py --non-empty` exited 0 and printed `definition_response_received` with `{"id":2,"jsonrpc":"2.0","result":null}`.
+- Source inspection of `crates/glyph-lsp/src/lib.rs` shows `resolve_param_slot` still loops with `body_text[search_from..].find(s.as_str())` and advances `search_from += rel + s.len()` without an `s.is_empty()` guard.
+
+### Resolution Input
+
+The existing recommended resolution is supported: skip empty flow strings before the search loop. Add a regression test that exercises `resolve_param_slot` or `textDocument/definition` with a bare `""` flow step and verifies it returns `None` promptly.

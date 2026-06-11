@@ -50,3 +50,35 @@ crate::ir::IrBlockFlowItem::Branch { node_id } => {
 ## Verification Notes
 
 The code divergence is confirmed: `mod.rs` `Branch` arm calls `emit_to_scaffold` with no `is_last`/`return_sentence` check; `scaffold.rs` Tier-2 emitter lines 985-989 explicitly appends the trailing step when `is_last`. The `docs/architecture/ir-semantics.md` line 103 contracts "byte-identical Tier 2 / Tier 3 shape", making this a genuine contract violation. The bug is latent in production because `lib.rs:2466-2471` currently synthesizes only `IrBlockFlowItem::Inline` items, but the Branch arm is live public code. The proposed fix is correct and complete.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced.
+
+**Reproduction/Refutation:** I created a temporary standalone Cargo harness under `tmp/bug058-repro` that calls the public `glyph_core::emit::emit_procedure` API with a single synthetic `IrBlockFlowItem::Branch` and `OutputTargetForm::Identifier("current_branch")`. The harness expected the Tier-3 procedure output to include the trailing §8.4 sentence ``2. Produce `current_branch`.`` after the branch step. It instead emitted only the branch opener and reported the expected return sentence missing. The temporary harness was removed after capture.
+
+**Evidence:**
+
+- Graphify located `emit_procedure()` at `crates/glyph-core/src/emit/mod.rs:93` and the branch rendering path at `crates/glyph-core/src/emit/branch.rs`.
+- Bounded source reads confirmed the current Tier-3 `Branch` arm at `crates/glyph-core/src/emit/mod.rs:291-301` still only calls `branch::emit_to_scaffold(...)`; it does not check `is_last` or append `return_sentence`.
+- The sibling Tier-2 path at `crates/glyph-core/src/emit/scaffold.rs:973-989` still appends `format!("{}. {}\n", step_num + 1, sent)` when the final visible item is a branch.
+- `crates/glyph-core/src/lib.rs:2462-2472` still synthesizes only `IrBlockFlowItem::Inline` items for the current production call site, so the bug remains latent through that route.
+- Command run:
+
+```console
+$ cargo run --quiet --manifest-path tmp/bug058-repro/Cargo.toml
+--- emitted procedure ---
+---
+name: helper
+kind: procedure
+description: Returns the branch.
+---
+
+## Steps
+
+1. Decide whether the change needs review applies and, if so:
+--- end ---
+REPRODUCED: missing expected trailing return sentence: "2. Produce `current_branch`.\n"
+```
+
+**Resolution Input:** Preserve the existing recommended resolution. Mirror the Tier-2 branch handling in `emit_procedure`: after `branch::emit_to_scaffold`, if `is_last` and `return_sentence` is `Some`, push a trailing `{step_num + 1}. {sentence}\n` literal into the local scaffold. A focused regression test should construct a branch-backed `IrBlockFlowItem` as the final visible procedure item and assert that the emitted Tier-3 markdown includes the standalone §8.4 return sentence.

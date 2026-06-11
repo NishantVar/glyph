@@ -37,3 +37,49 @@ Either delete the `graphify-out/**` line from `.gitattributes` (it is a no-op gi
 ## Verification Notes
 
 `git ls-files "graphify-out"` returns empty and `git check-ignore -v graphify-out/graph.json` resolves to `.gitignore:1:graphify-out/`. Git attributes only apply to tracked files, so the rule is a confirmed no-op. Zero impact on compiler behavior, CLI output, or any functional aspect of the project — purely a maintenance/clarity issue.
+
+## Independent Agent Finding
+
+### Verdict
+
+Reproduced, with one narrow qualification: the `.gitattributes` pattern does syntactically match `graphify-out/graph.json` when queried with `git check-attr`, but because `graphify-out/` is ignored and there are currently no tracked files under that path, the rule has no effect on normal repository diffs or GitHub language accounting.
+
+### Reproduction/Refutation
+
+The current repository state reproduces the report:
+
+- `.gitignore` starts with `graphify-out/`.
+- `.gitattributes` contains `graphify-out/** -diff linguist-generated=true`.
+- `git ls-files graphify-out` returned no tracked paths.
+- `git check-ignore -v graphify-out/graph.json` returned `.gitignore:1:graphify-out/	graphify-out/graph.json`.
+- `git add --dry-run graphify-out/graph.json` failed with Git's ignored-path message and exit code `1`, including the hint to use `-f` to add it anyway.
+
+The qualification is:
+
+- `git check-attr -a -- graphify-out/graph.json` returned `diff: unset` and `linguist-generated: true`, so the attribute rule is not malformed. It is dead for the repository's current tracked-file and normal-add behavior, not because Git cannot match the path.
+
+### Evidence
+
+Graphify orientation found only the configured graphify MCP entry and did not identify any implementation dependency that would make `graphify-out/` a required tracked artifact. The decisive evidence is Git metadata behavior:
+
+```text
+$ git ls-files graphify-out
+# no output
+
+$ git check-ignore -v graphify-out/graph.json
+.gitignore:1:graphify-out/	graphify-out/graph.json
+
+$ git check-attr -a -- graphify-out/graph.json
+graphify-out/graph.json: diff: unset
+graphify-out/graph.json: linguist-generated: true
+
+$ git add --dry-run graphify-out/graph.json
+The following paths are ignored by one of your .gitignore files:
+graphify-out
+...
+exit=1
+```
+
+### Resolution Input
+
+Keep the existing recommended resolution: either delete the `graphify-out/**` line from `.gitattributes` if `graphify-out/` is intended to remain untracked generated output, or un-ignore the path in `.gitignore` if the intended policy is to commit `graphify-out/` while collapsing its diffs/language stats. The current files still encode contradictory maintenance intent.

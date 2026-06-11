@@ -40,3 +40,43 @@ pub exit_code: u8,
 ## Verification Notes
 
 The doc comment at lib.rs:1449 reads `0 = all ok, 1 = any failure/skip` but omits the `2 = repairable only` case entirely. The logic at line 1867 (`let exit_code = if any_failure { 1 } else { diag_worst }`) confirms `2` is reachable when `any_failure` is false and `diag_worst = 2`. The two-file scenario described in the original claim is wrong (line 1685 sets `any_failure = true` for any skipped file, confirmed by test at lib.rs:7180 asserting exit_code=1 for a directory compile failure). The real `2` case is a repairable-only single-file-or-no-consumers build. No code change needed — only the doc comment requires correction.
+
+## Independent Agent Finding
+
+### Verdict
+
+Reproduced. The production bug is real as a documentation defect: `BuildResult.exit_code` can be `2` for repairable-only diagnostics even though the struct field comment documents only `0` and `1`. The dependent-skip trigger is refuted: when a repairable-only failed file has a dependent in the same directory build, the dependent is skipped and the aggregate exit code is `1`.
+
+### Reproduction/Refutation
+
+I used Graphify first to locate `BuildResult` and `compile_directory_with_layout`, then checked only the narrow implementation regions around `BuildResult`, `any_failure`, `diag_worst`, and the exit-code calculation.
+
+Single repairable-only file:
+
+```text
+$ cargo run --quiet --manifest-path tmp/bug-065-repro/Cargo.toml -- crates/glyph-cli/tests/corpus/repairable/missing_description.glyph
+exit_code=2
+/Users/nishantvarshney/genesis/glyph/crates/glyph-cli/tests/corpus/repairable/missing_description.glyph failed diag_exit_code=2
+  G::analyze::missing-description Repairable
+```
+
+Dependent skip case:
+
+```text
+$ cargo run --quiet --manifest-path tmp/bug-065-repro/Cargo.toml -- tmp/bug-065-repro/a.glyph tmp/bug-065-repro/b.glyph
+exit_code=1
+/Users/nishantvarshney/genesis/glyph/tmp/bug-065-repro/a.glyph failed diag_exit_code=2
+  G::analyze::missing-description Repairable
+/Users/nishantvarshney/genesis/glyph/tmp/bug-065-repro/b.glyph skipped failed_dep=/Users/nishantvarshney/genesis/glyph/tmp/bug-065-repro/a.glyph
+```
+
+### Evidence
+
+- `crates/glyph-core/src/lib.rs` defines `BuildResult.exit_code` with the doc comment `0 = all ok, 1 = any failure/skip`, omitting `2`.
+- `compile_directory_with_layout` initializes `any_failure = false`, sets it to `true` for skipped files and hard-error failures, but not for repairable-only `FileOutcome::Failed` diagnostics.
+- The aggregate calculation is `let exit_code = if any_failure { 1 } else { diag_worst };`, so a repairable-only failed outcome with `diag_worst = 2` and no skips returns `2`.
+- `docs/reference/cli.md` documents the authoritative three-tier matrix: `0` success, `1` hard errors, `2` repairable diagnostics only, and states that `1` wins over `2`.
+
+### Resolution Input
+
+Preserve the existing suggested resolution. No source behavior change is indicated; update only the `BuildResult.exit_code` doc comment so it describes the three-tier contract and points maintainers to `docs/reference/cli.md`.

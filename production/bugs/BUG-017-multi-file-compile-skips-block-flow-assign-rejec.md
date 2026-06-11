@@ -65,3 +65,34 @@ of them. The function has degree 3 total — defined twice and called exactly on
 `analyze_with_diagnostics`. A private block with a flow-position assignment in a multi-file
 project routed through `analyze_with_imports` will never trigger the error that single-file
 analysis correctly emits.
+
+## Independent Agent Finding
+
+### Verdict
+
+Reproduced. The current import-aware analysis path still accepts a private `block` flow assignment that the no-import path rejects with `G::analyze::flow-assign-in-block-unsupported`.
+
+### Reproduction/Refutation
+
+Created scratch repro files under `tmp/bug017/`: a no-import `single/single.glyph` control and an import-based `multi/` directory where `main.glyph` imports `inspect_repo` from `imported.glyph`, then calls it from a private block as `ctx = inspect_repo(scope)`.
+
+Commands run:
+
+```sh
+cargo run -q -p glyph-cli -- compile tmp/bug017/single/single.glyph --format json
+cargo run -q -p glyph-cli -- compile tmp/bug017/multi --format json
+cargo run -q -p glyph-cli -- check tmp/bug017/multi --format json
+sed -n '1,80p' tmp/bug017/multi/main.md
+```
+
+### Evidence
+
+- No-import control exited `1` and emitted `G::analyze::flow-assign-in-block-unsupported` at `tmp/bug017/single/single.glyph:10:9-10:11` for bound name `ctx`.
+- Import directory compile exited `0` with no diagnostics.
+- Import directory `check` also exited `0` with no diagnostics, confirming the analyzer did not report the forbidden block-flow assignment.
+- The generated `tmp/bug017/multi/main.md` was emitted and contained only `1. Return a \`Report\`.` under `## Steps`; the accepted private-block binding was not surfaced as an error.
+- Bounded source inspection found the no-import block arm calling `check_block_flow_assign_rejected(&spanned.node.flow, ...)`, while the import-path `Decl::Block` arm around `crates/glyph-core/src/analyze.rs:4468-4628` had no equivalent call.
+
+### Resolution Input
+
+The existing recommended resolution is correct: add `check_block_flow_assign_rejected(&spanned.node.flow, file_label, line_index, bag);` to the `Decl::Block` arm in `analyze_with_imports`, mirroring the no-import analysis path.

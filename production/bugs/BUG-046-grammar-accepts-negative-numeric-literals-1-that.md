@@ -48,3 +48,69 @@ Decide the canonical behavior and align all three:
 ## Verification Notes
 
 Live reproduction confirmed: `cargo run -p glyph-cli -- compile` on a file with `const x = -1` emits `warning[G::parse::operator-in-expression]` for both `-1` and `-1.5`. The grammar at lines 649-650 uses `/-?[0-9]+/`, accepting these as single tokens without error. No tree-sitter corpus test covers negative literals, so the grammar's permissiveness is untested. This is a real three-way divergence (grammar vs. compiler vs. user guide) that silently degrades valid-per-guide input.
+
+## Independent Agent Finding
+
+### Verdict
+
+Reproduced. The report is still valid in the current workspace: tree-sitter accepts negative integer and float literals as clean literal nodes, while the compiler-side tokenizer/parser rejects the leading `-` with `G::parse::operator-in-expression`.
+
+### Reproduction/Refutation
+
+Scratch input used:
+
+```glyph
+const x = -1
+const y = -1.5
+```
+
+Targeted compiler check:
+
+```text
+$ cargo run -p glyph-cli -- check tmp/bug046-negative.glyph
+warning[G::parse::operator-in-expression]: operator `-` is not supported in expressions; MVP Glyph has no value-level operators
+  --> tmp/bug046-negative.glyph:1:11
+```
+
+The two-line compiler check stops after the first repairable diagnostic, so the float case was checked in isolation:
+
+```text
+$ cargo run -p glyph-cli -- check tmp/bug046-negative-float.glyph
+warning[G::parse::operator-in-expression]: operator `-` is not supported in expressions; MVP Glyph has no value-level operators
+  --> tmp/bug046-negative-float.glyph:1:11
+```
+
+Tree-sitter parse of the two-line file from `tree-sitter-glyph/`:
+
+```text
+$ tree-sitter parse ../tmp/bug046-negative.glyph
+(source_file
+  (const_declaration
+    name: (identifier)
+    value: (integer_literal))
+  (const_declaration
+    name: (identifier)
+    value: (float_literal)))
+```
+
+No `ERROR` node was emitted by tree-sitter.
+
+### Evidence
+
+Current grammar still allows a leading sign:
+
+```javascript
+integer_literal: (_) => /-?[0-9]+/,
+float_literal: (_) => /-?[0-9]+\.[0-9]+/,
+```
+
+Current compiler tokenizer still only enters numeric tokenization when the current byte is an ASCII digit, and the `->` branch comment explicitly says bare `-` falls through to `UnexpectedChar` to preserve `G::parse::operator-in-expression`. The existing `tokenize_stray_minus_still_unexpected` test also expects `TokenizeError::UnexpectedChar { ch: '-', .. }`.
+
+The documentation split also remains:
+- `design/values-and-names.md` says signed numeric literals are deferred beyond MVP.
+- `design/language-surface.md` says negative numeric literals are not yet supported.
+- `GLYPH_LANGUAGE_GUIDE.md` says negative integer literals are allowed.
+
+### Resolution Input
+
+Preserve the existing recommended resolution. My input is that the compiler tokenizer and design docs agree on "negative literals deferred", while the tree-sitter grammar and user guide are the outliers. Unless there is a deliberate product decision to support signed numeric literals now, the lower-risk alignment is the second branch above: remove `-?` from the tree-sitter integer/float regexes, update the language guide, and add a negative-literal tree-sitter corpus case that expects an error.

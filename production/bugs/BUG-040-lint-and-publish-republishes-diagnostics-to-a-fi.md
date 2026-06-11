@@ -46,3 +46,33 @@ The partial fix of only guarding line 209 is insufficient: it leaves the uncondi
 ## Verification Notes
 
 `lint_and_publish` publishes dep diagnostics unconditionally at line ~174, then stamps `last_dep_uris` only under a guarded write-lock at line ~201-205, then publishes buffer diagnostics unconditionally at line ~209. `did_close` (line 339) removes the Document from `docs` and publishes empties using the `last_dep_uris` that existed at close time. tower-lsp 0.20 does not serialize handlers; a concurrent save+close results in `did_close` clearing squiggles, then the still-running `lint_and_publish` re-publishing diagnostics to the now-closed URI. The dep diagnostic leak is also confirmed: dep URIs published at line ~174 after the document was removed are never added to `last_dep_uris` (guarded block returns None), so they are never cleared by any future operation.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced. The production bug report is valid.
+
+**Reproduction/Refutation:** I drove the real `target/debug/glyph-lsp` over stdio with JSON-RPC, using a scratch fixture under `tmp/` containing `main.glyph` plus 80 imported dependency files. I first opened the file and waited for an initial non-empty `textDocument/publishDiagnostics` for `main.glyph`, then sent `textDocument/didSave` immediately followed by `textDocument/didClose`. The post-save/close notification stream contained an empty diagnostics publish for the closed `main.glyph`, followed later by a non-empty diagnostics publish for the same closed URI.
+
+**Evidence:**
+
+- Graphify first pass: `query_graph("lint publish diagnostics behavior CLI...")` only surfaced `crates/glyph-cli/src/main.rs` and did not contain enough LSP detail, so I used bounded source reads for exact code.
+- Source check: `crates/glyph-lsp/src/lib.rs` still has unconditional dep publishes at lines 173-175, a guarded document stamp at lines 201-205, and an unconditional final buffer publish at lines 208-210. `did_close` removes the document at lines 341-347 and publishes empty diagnostics for the buffer/deps at lines 353-362.
+- Concurrency check: tower-lsp 0.20 routes server tasks through `buffer_unordered(self.max_concurrency)` with default max concurrency 4, so notifications are not handler-serialized.
+- Build command: `cargo build -q -p glyph-lsp` completed with exit 0.
+- Live LSP repro command: inline Python JSON-RPC harness spawning `target/debug/glyph-lsp`; scratch directory `tmp/bug040-*` was removed afterward.
+- Summarized repro output:
+
+```text
+NUM_DEPS 80
+POST_SAVE_CLOSE_MAIN_COUNTS [0, 81]
+POST_SAVE_CLOSE_DEP_NONEMPTY 80
+POST_SAVE_CLOSE_DEP_EMPTY 80
+EMPTY_THEN_NONEMPTY_MAIN True
+POST_SAVE_CLOSE_SEQUENCE excerpt:
+005 dt_ms=21.6 uri=main.glyph count=0 first_id=None
+120 dt_ms=26.8 uri=main.glyph count=81 first_id=G::analyze::unused-import
+```
+
+The `main.glyph count=0` notification is the close-time clear. The later `main.glyph count=81` notification is the in-flight save lint publishing diagnostics after the document had been closed.
+
+**Resolution Input:** Preserve the existing recommended resolution. A complete fix must gate both dep publishes and the final buffer publish, or use a per-URI epoch/generation check that aborts stale in-flight publishes after `did_close`. Guarding only the final buffer publish would still allow dep diagnostics to be reattached and lost from `last_dep_uris` tracking.

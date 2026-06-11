@@ -50,3 +50,17 @@ Alternatively, centralize a `skip_to_line_end()` helper and call it at the end o
 ## Verification Notes
 
 Reproduced end-to-end: running `cargo run -p glyph-cli -- check` on `skill foo()\n    somename extra trailing tokens\n    flow:\n        "x"\n` emits exactly `G::parse::unexpected: expected start of line` anchored at `extra`, while the identical input in a `block` parses cleanly. A skill with a bare-name body line and NO trailing tokens compiles normally and advances to analysis (showing `G::analyze::missing-description`), confirming parsing succeeds when the cursor lands correctly. With trailing tokens, the flow section is silently dropped — no `G::analyze::empty-skill-body` error is emitted — confirming the parse cursor is left mid-line. The same failure was reproduced with `require someName extra` and `context someName extra`, confirming all three affected arms.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced.
+
+**Reproduction/Refutation:** I created minimal scratch inputs under `tmp/bug-034/` and ran the CLI against the reported trigger and two controls. The skill-body bare-name line with trailing tokens reproduces the reported parse abort. The equivalent `block` input does not produce a parse diagnostic; it advances to analysis and reports only that the file has no `skill` or `export` declarations. A skill-body bare-name line without trailing tokens also advances to analysis and reports `G::analyze::missing-description`.
+
+**Evidence:**
+
+- `cargo run -q -p glyph-cli -- check --format json tmp/bug-034/skill-trailing.glyph` exited `2` and emitted `G::parse::unexpected` with message `expected start of line`, span `line 2, col 14..18`, anchored at `extra`.
+- `cargo run -q -p glyph-cli -- check --format json tmp/bug-034/block-trailing.glyph` exited `1` and emitted `G::analyze::no-exports-in-library`, with no parse diagnostic.
+- `cargo run -q -p glyph-cli -- check --format json tmp/bug-034/skill-no-trailing.glyph` exited `2` and emitted `G::analyze::missing-description`, with no parse diagnostic.
+
+**Resolution Input:** Preserve the existing recommended resolution: ensure `parse_skill_body_line` drains remaining same-line tokens after body-level bare-name/single-operand constructs, preferably via a shared `skip_to_line_end()` helper, so the parser cursor always lands on `LineStart`/EOF before returning to the outer declaration loop.

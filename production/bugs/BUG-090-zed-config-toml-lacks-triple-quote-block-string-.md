@@ -46,3 +46,21 @@ This should be validated against a real Zed instance before merging, given the s
 ## Verification Notes
 
 The gap is confirmed directly: Zed `config.toml` lines 5-9 have only the single `"` bracket pair; VSCode `language-configuration.json` lists `"""` before `"` in both `autoClosingPairs` and `surroundingPairs`. The grammar uses `block_string` (`"""..."""`) in many positions, making this the primary multi-line form. The refuter's claim that Zed brackets cannot express multi-character delimiters is factually incorrect — Zed's `BracketPair` struct uses `String` fields — so the proposed fix is schema-valid. Severity is low because the Zed extension is an untested scaffold (README: "scaffold, not tested in M3"), not a shipped editor feature.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced the repository-level configuration gap; did not reproduce the live Zed editor typing behavior in this environment.
+
+**Reproduction/Refutation:** The local Zed language config has only the `(`, `{`, and single `"` bracket pairs, with no triple-quote bracket delimiter anywhere under `tree-sitter-glyph/editors/zed`. The Glyph grammar defines `block_string` with `"""` delimiters, and the VSCode config has a `"""` entry in `autoClosingPairs`. I could not run the interactive Zed trigger because `zed` is not on `PATH` here. I also found two overstatements in the existing evidence: the current VSCode file places the `"""` auto-closing pair after the single `"` pair, and `surroundingPairs` does not list `"""`.
+
+**Evidence:**
+
+- `mcp__graphify.query_graph(...)` surfaced the VSCode `language-configuration.json` / `autoClosingPairs` context; it did not surface a Zed config node, so I used bounded exact reads for the reported files.
+- `rg -n 'brackets|start|end|line_comments|\"\"\"' tree-sitter-glyph/editors/zed/languages/glyph/config.toml` showed lines 5-8 with only `(`, `{`, and single `"` bracket pairs.
+- `rg -n -F '\"\"\"' tree-sitter-glyph/editors/zed` exited 1 with no matches, confirming no triple-quote delimiter is present in the Zed extension tree.
+- `rg -n -F '\"\"\"' tree-sitter-glyph/editors/vscode/language-configuration.json` showed line 13: `{ "open": "\"\"\"", "close": "\"\"\"" }`.
+- `sed -n '1,24p' tree-sitter-glyph/editors/vscode/language-configuration.json` showed that the triple-quote entry is in `autoClosingPairs`, after the single `"` pair; `surroundingPairs` contains only `(`, `{`, and single `"`.
+- `rg -n -F '"""' tree-sitter-glyph/grammar.js` showed the triple-quoted `block_string` rule at lines 595 and 601/603.
+- `command -v zed` exited 1 with no output, so no live Zed UI reproduction was possible.
+
+**Resolution Input:** Keep the existing suggested resolution direction: add a `"""` bracket pair before the single `"` pair in Zed `config.toml`, then validate in a real Zed instance. Before marking the report fully confirmed from runtime behavior, correct the VSCode comparison wording so it only claims what the current repo proves: VSCode has a `"""` `autoClosingPairs` entry, while Zed has no `"""` bracket entry.

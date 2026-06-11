@@ -31,3 +31,25 @@ Make the temp name unique per writer — e.g. append `.tmp.<pid>.<rand>` or use 
 ## Verification Notes
 
 The code at lib.rs:1876-1893 confirms the fixed `.tmp` suffix: `tmp_path_for` appends a constant `.tmp`, so two concurrent invocations targeting the same output share the identical `foo.md.tmp`. The `atomic_write` function's three-step sequence (`remove_file`, `write`, `rename`) is not atomic across processes. The project's own integration test at `crates/glyph-cli/tests/walking_skeleton.rs:24-25` explicitly documents this problem: "Copy the corpus source to a tempdir to avoid parallel-test races on the shared output file (atomic_write uses a `.tmp` intermediate)" — the maintainers already hit this in the test suite and worked around it by isolating each test to its own unique directory. The docs at `docs/reference/cli.md:223` describe single-process crash-safety but are silent on concurrency.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced. The current implementation is unsafe under concurrent writers targeting the same output path.
+
+**Reproduction/Refutation:** I first used Graphify to locate the implementation context; it identified `atomic_write()` and `tmp_path_for()` in `crates/glyph-core/src/lib.rs`. Bounded source inspection confirmed that `atomic_write` computes one shared tmp path, removes it, writes to it, then renames it, while `tmp_path_for` appends the constant `.tmp` suffix. I then ran a scratch harness under `tmp/bug030-repro` that links to `glyph-core` and starts 16 threads against one output path: one writer uses a 256 MiB payload and 15 writers use distinct small payloads.
+
+**Evidence:** The targeted command was `cargo run --quiet --manifest-path tmp/bug030-repro/Cargo.toml`. It reproduced on round 0 with 15 `No such file or directory (os error 2)` failures from `atomic_write`, which is consistent with one writer renaming the shared tmp file while the other writers still expect it to exist. The final file was also byte-corrupt relative to every complete writer payload:
+
+```text
+round=0
+failures=15
+failed_writer=BIG err=No such file or directory (os error 2)
+...
+final_len=4126
+final_matches_writer=<none>
+final_first_line=writer=SMALL-1
+```
+
+Follow-up inspection of the final output showed it began as `SMALL-1` but ended with an extra trailing byte from another writer (`END=SMALL-1\n4`), so the observed output was not just last-writer-wins; it was a mixed payload produced by the shared tmp inode race. `rg -n "atomic_write\(" crates/glyph-core/src/lib.rs` also shows this function is used for compile output paths at lines 545 and 3169, plus emitted IR/library outputs at lines 1769 and 2508.
+
+**Resolution Input:** Preserve the existing suggested resolution. Each writer needs a private temp file in the target directory, followed by a single rename/persist step onto the final path. `tempfile::NamedTempFile::new_in(parent)` or a suffix containing enough uniqueness such as pid plus random/counter would address the reproduced collision; a fixed `.tmp` sibling cannot provide concurrent safety.

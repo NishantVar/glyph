@@ -36,3 +36,16 @@ Either:
 ## Verification Notes
 
 `IrBranch.predicate_shape` and `IrElifBranch.predicate_shape` are both `#[serde(skip)]` in `ir.rs`, indicating developer intent to exclude the field from JSON. Yet `serialize_branch` and `serialize_elif` in `emit_ir.rs` explicitly insert it. The published contract in `ir-json.md §Branch` documents seven fields and `§ElifBranch` four fields — `predicate_shape` appears in neither. This is confirmed schema drift: every `--emit-ir` Branch and ElifBranch node carries an undocumented field. Non-breaking under the versioning policy (consumers must ignore unknown fields), hence low severity.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced. The production report remains confirmed.
+
+**Reproduction/Refutation:** Ran `cargo run -q -p glyph-cli -- compile crates/glyph-cli/tests/fixtures/predicate_const_multi_arm.glyph --emit-ir --out-dir tmp/bug061 --format json`; it exited 0 and generated `tmp/bug061/predicate_const_multi_arm.ir.json`. Inspecting that JSON showed `predicate_shape` on both the branch and the elif arm. The generated `predicate_shape` path count was `2`. Scratch artifacts under `tmp/bug061` were removed after inspection.
+
+**Evidence:** Graphify located the relevant implementation at `serialize_branch()` and `serialize_elif()` in `crates/glyph-core/src/emit_ir.rs`. Bounded reads confirmed both serializers explicitly insert `predicate_shape`, while `IrBranch.predicate_shape` and `IrElifBranch.predicate_shape` in `crates/glyph-core/src/ir.rs` are marked `#[serde(skip)]`. Bounded documentation reads confirmed `docs/reference/ir-json.md` and `docs/architecture/ir-schema.md` document Branch/ElifBranch fields without `predicate_shape`. Generated JSON keys were:
+
+- Branch: `condition, elif_branches, else_body, kind, node_id, predicate_shape, resolved_predicates, then_body`
+- ElifBranch: `body, condition, kind, predicate_shape`
+
+**Resolution Input:** Preserve the existing suggested resolution. The evidence supports either documenting `predicate_shape` as an additive optional field in the public IR schema, or removing manual emission from `serialize_branch` and `serialize_elif` to honor the `#[serde(skip)]` intent. No source code or other reports were changed.

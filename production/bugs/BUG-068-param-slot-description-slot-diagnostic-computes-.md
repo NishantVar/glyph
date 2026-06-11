@@ -40,3 +40,20 @@ Compute the slot span from the source text rather than the decoded content. Opti
 ## Verification Notes
 
 Both call sites (parse.rs:2701 and 2934) hardcode `+1`. The tokenizer produces the same `TokenKind::StringLit(String)` for both inline and triple-quoted strings with no distinguishing flag. Triple-quoted strings are confirmed valid in `description:` fields (tokenizer test `tokenize_triple_quoted_in_description_field`). `start_in_content` is an offset into the already-decoded-and-dedented string, not raw source bytes. For `"""text {foo}"""` the caret lands 2 bytes too early. Impact is cosmetic (mis-positioned underline only); diagnostic ID, message, and hints are all correct; nothing panics. Final severity is low per verifier consensus, though the bug is filed at medium due to the span being materially wrong for block strings.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced.
+
+**Reproduction/Refutation:** I reproduced the wrong span in the current tree with scratch `.glyph` fixtures and `glyph check --format json`. The diagnostic ID, classification, message, and recovery behavior are correct; the reported span is the wrong byte/column for block strings and for decoded escapes before the slot.
+
+**Evidence:**
+
+- Source inspection with `rg`/bounded reads found both parser call sites still computing `span_start` from decoded content via `lit_span.start + 1`: `crates/glyph-core/src/parse.rs:2701` for parameter defaults and `crates/glyph-core/src/parse.rs:2934` for `description:`.
+- `crates/glyph-core/src/tokenize.rs:431-447` confirms triple strings begin content scanning at `start + 3`, decode escapes, then apply `strip_block_newlines` and `dedent_block_string`. `crates/glyph-core/src/slot.rs:40-76` confirms `scan_slots` returns offsets in that decoded string content.
+- `cargo run -p glyph-cli -- check --format json tmp/BUG-068-repro.glyph` on `description: """text {param}"""` reported span line 2 col 24; `awk` found the actual `{param}` starts at line 2 col 26.
+- `cargo run -p glyph-cli -- check --format json tmp/BUG-068-repro-multiline.glyph` on a dedented multi-line block description reported span line 3 col 8; the actual `{param}` starts at line 3 col 17.
+- `cargo run -p glyph-cli -- check --format json tmp/BUG-068-repro-param-default.glyph` on `skill foo(x = """text {param}""")` reported span line 1 col 21; the actual `{param}` starts at line 1 col 23.
+- `cargo run -p glyph-cli -- check --format json tmp/BUG-068-repro-escape.glyph` on `description: "a\n {param}"` reported span line 2 col 22; the actual `{param}` starts at line 2 col 23.
+
+**Resolution Input:** Preserve the existing recommended resolution. Option 2 (`+ 3` for block strings) would fix only the simple single-line triple-quote offset; it would not fix dedent/newline stripping or escape decoding. Option 3, scanning the raw source slice for the offending `{name}` bytes, is the most complete resolution.

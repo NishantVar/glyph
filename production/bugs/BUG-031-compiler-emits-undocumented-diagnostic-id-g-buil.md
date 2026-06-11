@@ -32,3 +32,13 @@ Either add `G::build::compile-error` to the diagnostics.md Build-phase catalog (
 ## Verification Notes
 
 The catch-all `Err(e)` arm at lib.rs line 1828 synthesizes `G::build::compile-error` for any `CompileError` variant that isn't `CompileError::Lower(LowerError::NoSkill)`. Confirmed reachable via `CompileError::Validate(...)` (from `validate::validate(&arena).map_err(CompileError::Validate)?`), `CompileError::Lower(LowerError::UndefinedConstraintRef)`, `UndefinedContextRef`, and `CompileError::Read`/`Write` for I/O failures. The diagnostics.md catalog (lines 174-181) lists six `G::validate::*` IDs as the stable documented contract, but these IDs are never actually emitted by the compiler — they are short-circuited through the catch-all. `G::build::compile-error` is absent from the catalog, violating the Catalog Completeness Rule and `mvp-acceptance.md §Diagnostic IDs`.
+
+## Independent Agent Finding
+
+Verdict: Reproduced. The current compiler still emits undocumented error diagnostic ID `G::build::compile-error` through the build catch-all.
+
+Reproduction/Refutation: I reproduced the fallback via the `CompileError::Read` path using an isolated scratch file in `tmp/`: create a valid `.glyph` file, make it unreadable with `chmod 000`, then run `cargo run --quiet -p glyph-cli -- compile --format json tmp/bug031_unreadable.glyph`. The command exited `1` and emitted NDJSON with `id:"G::build::compile-error"` and `classification:"error"`. I also tested the report's undefined-constraint example shape; in the current checkout that no longer reaches the build fallback and instead emits `G::analyze::undefined-name`, so that specific example is stale even though the underlying bug is still real.
+
+Evidence: `crates/glyph-core/src/lib.rs:1839-1849` still synthesizes `Diagnostic::error("G::build::compile-error", format!("compile pipeline failed: {:?}", e), ...)` for non-`NoSkill` `CompileError`s. `docs/reference/diagnostics.md` still lists only `G::build::skipped-due-to-failed-import` and `G::build::import-outside-out-dir` under the Build phase; `rg -n "G::build::compile-error" docs/reference/diagnostics.md` returned no matches. The reproduction command output was: `{"id":"G::build::compile-error","classification":"error","message":"compile pipeline failed: Read { ... PermissionDenied ... }", ...}`.
+
+Resolution Input: Preserve the existing recommended resolution. Either document `G::build::compile-error` as an intentional build-phase fallback, or replace the catch-all with structured diagnostics for each underlying `Read`/`Write`/`Parse`/`Lower`/`Validate` failure path. If replacing it, include the read/write failure paths in addition to the Validate-specific `diagnostic_id()` mapping noted above.

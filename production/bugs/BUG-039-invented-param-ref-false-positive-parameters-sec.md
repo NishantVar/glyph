@@ -46,3 +46,23 @@ Make `find_curly_refs` skip lines within the `## Parameters` H2 section: track a
 ## Verification Notes
 
 The code at `validate_output.rs` line 919-920 has a clear mismatch between the comment ("excluding ## Parameters section") and the implementation: `find_curly_refs(md)` is called on the entire markdown string. The `find_curly_refs` function (lines 986-1009) only skips fenced code blocks and 4-space-indented lines, with no logic to track or skip a `## Parameters` H2 section. The `emit_parameters_section` in `scaffold.rs` emits parameter descriptions verbatim via `push_literal` without escaping curly braces. Reproducing with `cargo run -p glyph-cli -- validate-output` on a crafted IR JSON whose `target` param has description `"falls back to the {placeholder} value"` confirms the spurious `G::expand::invented-param-ref` error. No existing test covers `{ident}` tokens in `## Parameters` bullet text.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced.
+
+**Reproduction/Refutation:** Created a temporary IR/Markdown pair under `tmp/bug-039-repro/` with one declared parameter, `target`. The Markdown had a `## Parameters` bullet containing `falls back to the {placeholder} value`, and the only body/runtime slot was the valid declared slot `1. retrieve {target}`. Running validate-output rejected the pair solely because `{placeholder}` appeared in the parameter description. The temporary repro files were removed after the run.
+
+**Evidence:** Targeted implementation read confirmed `check_param_refs` calls `find_curly_refs(md)` over the full Markdown body, while `find_curly_refs` skips fenced, indented, and inline-code regions but does not skip the `## Parameters` section. Reproduction command:
+
+```sh
+cargo run -q -p glyph-cli -- validate-output tmp/bug-039-repro/repro.ir.json tmp/bug-039-repro/repro.md --format json
+```
+
+Observed exit code: `1`. Output:
+
+```json
+{"classification":"error","id":"G::expand::invented-param-ref","message":"`{placeholder}` reference does not match any declared parameter"}
+```
+
+**Resolution Input:** Keep the existing recommended resolution: make `find_curly_refs` skip the `## Parameters` H2 section, or scan only non-Parameters body sections from parsed structure. Add a focused regression test where a parameter bullet description contains an undeclared `{placeholder}` token while the body contains only declared parameter refs; validate-output should pass.

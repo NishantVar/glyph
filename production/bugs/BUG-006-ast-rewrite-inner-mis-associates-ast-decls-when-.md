@@ -55,3 +55,37 @@ Option (b) is more robust against future new `Decl` variants being added without
 ## Verification Notes
 
 Code at fmt.rs lines 544–552 confirmed to list seven prefixes with no `type` or `export type`. Parser at parse.rs lines 856–858 and 926–929 pushes `Decl::TypeDecl` into `file.decls` in source order. Live reproduction: `glyph fmt` on a file with `type T = <"...">` then a skill with `return "<x>"` leaves the placeholder unrewritten. Corpus fixtures `return_row2_named_with_type_decl.glyph` and `return_row5_expr_with_type_decl.glyph` use the triggering pattern but no fmt test exercises them, leaving the misalignment untested.
+
+## Independent Agent Finding
+
+### Verdict
+
+Confirmed.
+
+### Reproduction/Refutation
+
+Created two scratch inputs under `tmp/bug-006/`: one skill with no preceding `type` declaration, and the same skill preceded by `type Severity = <"low | medium | high">`.
+
+Commands run:
+
+```bash
+cargo run -q -p glyph-cli -- fmt tmp/bug-006/without_type.glyph
+cargo run -q -p glyph-cli -- fmt tmp/bug-006/with_type.glyph
+```
+
+Both commands exited 0. The control file rewrote `return "<the severity>"` to `return <"the severity">`. The file with the preceding `type` declaration left the placeholder unchanged as `return "<the severity>"`.
+
+### Evidence
+
+Graphify orientation found the relevant formatter path at `ast_rewrite_inner()` / `placeholder_string_return_target()` and the AST node `TypeDecl`. Bounded source reads confirmed `ast_rewrite_inner` builds `decl_starts` from indent-0 prefixes that include `skill`, `block`, `export block`, `export const`, `const`, `generated`, and `import`, but not `type` or `export type`; the same loop later uses `file.decls.get(decl_idx)` for the matching AST declaration. Parser reads confirmed both `type` and `export type` push `Decl::TypeDecl` into `file.decls` in source order.
+
+Relevant live outputs after formatting:
+
+```text
+without_type.glyph: return <"the severity">
+with_type.glyph:    return "<the severity>"
+```
+
+### Resolution Input
+
+The existing recommended resolution is appropriate. The most robust fix is to stop depending on positional alignment between the text-scanned declaration list and `file.decls`; matching by source span/line would avoid this class of drift when new declaration variants are added. As a narrower fix, adding `type ` and `export type ` to the scanner should restore one-to-one alignment for the current AST variants.

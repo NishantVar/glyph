@@ -56,3 +56,40 @@ fi
 ## Verification Notes
 
 `git add` on a missing pathspec exits 128. The `if [ -d "editors/vscode" ]` guard on the npm update block was added precisely because the directory may not always be present, making this an inconsistency introduced when the guard was added. The `package-lock.json` add (lines 43-45) is already correctly guarded, making the unguarded `package.json` add on line 41 the sole defect.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced. The report is valid.
+
+**Reproduction/Refutation:** I first queried Graphify for `scripts/bump_version.sh` / VS Code package context, then performed a bounded read of the 56-line `scripts/bump_version.sh`. The script still has `set -e`, guards the npm update with `if [ -d "editors/vscode" ]`, and unconditionally runs `git add Cargo.toml Cargo.lock editors/vscode/package.json`. I reproduced the failure in an isolated scratch Git repo under `tmp/` by copying the real bump script, omitting `editors/vscode/`, and shadowing only `cargo update --workspace` so the run reached the exact staging step without modifying the real checkout.
+
+**Evidence:** Targeted run summary:
+
+```text
+PATH="$PWD/fake-bin:$PATH" bash scripts/bump_version.sh 0.2.0
+exit_code=128
+
+Bumping version to 0.2.0...
+✅ Updated Cargo.toml
+✅ Updated Cargo.lock
+fatal: pathspec 'editors/vscode/package.json' did not match any files
+
+git status --short
+ M Cargo.lock
+ M Cargo.toml
+?? run.out
+
+git tag --list
+# no tags
+
+git log --oneline -1
+32cb362 baseline
+
+rg -n "^version = " Cargo.toml Cargo.lock
+Cargo.lock:6:version = "0.2.0"
+Cargo.toml:3:version = "0.2.0"
+```
+
+The scratch fixture was removed after the run. `git diff -- Cargo.toml Cargo.lock` in the real checkout was empty after cleanup.
+
+**Resolution Input:** Preserve the existing recommended resolution. Stage `Cargo.toml` and `Cargo.lock` unconditionally, then guard `editors/vscode/package.json` with `[ -f "editors/vscode/package.json" ]`, matching the already-guarded `package-lock.json` add.

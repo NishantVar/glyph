@@ -40,3 +40,40 @@ Correct `compiled-output.md` line 55 to `Goal, Parameters, Constraints, Context,
 ## Verification Notes
 
 `scaffold.rs` explicitly documents the slot order in its `RenderUnit` struct comment. `docs/architecture/ir-semantics.md` lines 79-80 and 144-145 independently confirm Constraints=slot 3, Context=slot 4. Both `cli.md` line 53 and `GLYPH_LANGUAGE_GUIDE.md` §7 list the recommended source order as `constraints:` before `context:`, matching the implementation. `compiled-output.md` is the sole outlier. This is a documentation-only inconsistency with no runtime or compiler behavior impact.
+
+## Independent Agent Finding
+
+### Verdict
+
+Reproduced. The compiler emits canonical/default hoisted constraints before context, while `docs/reference/compiled-output.md:55` documents the reverse order. This remains a documentation-only inconsistency; I did not find evidence of runtime/compiler behavior being wrong.
+
+### Reproduction/Refutation
+
+Created a scratch fixture at `tmp/bug-075/default_order.glyph` with body-level `require` and `context` markers and a `flow:` block, then compiled it with:
+
+```bash
+cargo run -q -p glyph-cli -- compile tmp/bug-075/default_order.glyph --output tmp/bug-075/default_order.md
+rg -n "^## " tmp/bug-075/default_order.md
+```
+
+The generated heading order was:
+
+```text
+6:## Constraints
+10:## Context
+16:## Steps
+```
+
+The generated body confirmed `## Constraints` precedes `## Context` for synthetic canonical placement.
+
+### Evidence
+
+- `crates/glyph-core/src/emit/scaffold.rs:28-29` documents the canonical slots as Goal=1, Parameters=2, Constraints=3, Context=4, Flow=5.
+- `crates/glyph-core/src/emit/scaffold.rs:636-682` assigns `Parameters => Some(2)`, `Constraints => Some(3)`, `ContextSection => Some(4)`, and `Flow => Some(5)`.
+- `docs/reference/cli.md:53` says the recommended source order is `description -> effects -> goal -> constraints -> context -> flow`, matching the emitted default body order.
+- `GLYPH_LANGUAGE_GUIDE.md:416-423` likewise recommends `constraints:` before `context:`.
+- `docs/reference/compiled-output.md:55` still lists the canonical default order as `Goal, Parameters, Context, Constraints, Steps`, which reverses the observed and implemented slot order for Context/Constraints.
+
+### Resolution Input
+
+Keep the existing suggested resolution: correct `docs/reference/compiled-output.md:55` to `Goal, Parameters, Constraints, Context, Steps`. No source-code fix appears necessary for this report.

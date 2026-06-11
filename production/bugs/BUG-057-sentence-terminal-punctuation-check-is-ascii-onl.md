@@ -42,3 +42,28 @@ Note: the fix description originally claimed identical duplicates exist in `emit
 ## Verification Notes
 
 End-to-end compilation of a `.glyph` file with `const focus_cjk = "保持専注。"` followed by `require focus_cjk` produced `**Require:** 保持専注。.` — the CJK full stop (U+3002) is not recognized, so an ASCII period is appended. The tokenizer stores raw UTF-8 bytes unchanged through to the emitter, so non-ASCII const values pass through. The fix is straightforward: add the four common non-ASCII terminators to the single `matches!` call in `constraint.rs`.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced.
+
+**Reproduction/Refutation:** I created a temporary `tmp/bug057/repro.glyph` skill with four `require` constraints whose const values ended in `。`, `！`, `？`, and `…`, then compiled it with:
+
+```sh
+cargo run -q -p glyph-cli -- compile tmp/bug057/repro.glyph --output tmp/bug057/repro.md
+```
+
+The command exited 0 and produced redundant ASCII periods after all four already-terminal non-ASCII punctuation marks.
+
+**Evidence:** Graphify located `ends_with_sentence_punctuation()` at `crates/glyph-core/src/emit/constraint.rs:25`. An ast-grep check found the implementation still matches only `Some('.') | Some('!') | Some('?')`. The generated Markdown contained:
+
+```md
+- **Require:** 保持专注。.
+- **Require:** 保持专注！.
+- **Require:** 保持专注？.
+- **Require:** 保持专注….
+```
+
+This confirms the reported emitter behavior through the real CLI path.
+
+**Resolution Input:** Preserve the existing recommended resolution: extend the single `matches!` arm in `constraint.rs` to include the common non-ASCII terminators `。`, `！`, `？`, and `…`. I did not edit source code.

@@ -39,3 +39,13 @@ if !input.extension().map_or(false, |e| e == "glyph") {
 ## Verification Notes
 
 The code path is confirmed end-to-end. `compiled_output_path` at lib.rs:2192-2199 strips `.md` suffix and re-appends `.md`, yielding an output path identical to the input. `run_compile` in `main.rs` performs no extension check and accepts any `PathBuf`. `atomic_write` fires when `CompileOutcome::Compiled` is returned. Live reproduction produced exit 0 with source overwrite. Severity is low (not medium/critical) because it requires storing valid Glyph source in a `.md`-named file, which is non-standard usage explicitly discouraged by docs (`glyph compile <path-to.glyph>`), but data loss does occur on success when triggered.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced for `.md` single-file input. Partially narrowed for extensionless input: an extensionless source is accepted and compiles successfully, but in the tested case it did not overwrite the extensionless input itself; it wrote a sibling `<input>.md` file instead.
+
+**Reproduction/Refutation:** Using `crates/glyph-cli/tests/fixtures/predicate_inline_literal.glyph` as a valid source fixture, I copied it under `tmp/bug-067-repro/` as both `predicate_inline_literal_copy.md` and `extensionless_source`. Running `cargo run -p glyph-cli -- compile tmp/bug-067-repro/predicate_inline_literal_copy.md` exited 0 and changed the `.md` input from Glyph source into compiled Markdown in place. Running `cargo run -p glyph-cli -- compile tmp/bug-067-repro/extensionless_source` also exited 0, but left `extensionless_source` unchanged and created `extensionless_source.md` containing the compiled Markdown.
+
+**Evidence:** Before compiling, `predicate_inline_literal_copy.md` had SHA-256 `75c93e57b7f217e180a88490e604e1eb1e3bf14f9db2c595394dbb6f967e5c96` and size 274 bytes. After the compile command exited 0, the same path had SHA-256 `e460597a9b0c36b4071dca2cc34c7c0fa4ac06056ab06a61effb7cfc4da08eec` and size 253 bytes, with content beginning with compiled Markdown frontmatter (`---`, `name: predicate_inline_literal`). For the extensionless run, `extensionless_source` remained at SHA-256 `75c93e57b7f217e180a88490e604e1eb1e3bf14f9db2c595394dbb6f967e5c96` and size 274 bytes, while `extensionless_source.md` was created with SHA-256 `e460597a9b0c36b4071dca2cc34c7c0fa4ac06056ab06a61effb7cfc4da08eec` and size 253 bytes.
+
+**Resolution Input:** Preserve the existing suggested resolution. A single-file `.glyph` extension check prevents both the reproduced `.md` self-overwrite and the acceptance of extensionless sources. A canonicalized input/output equality guard is still useful as a direct data-loss backstop, but by itself would not reject extensionless inputs that generate neighboring `.md` files.

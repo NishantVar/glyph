@@ -56,3 +56,34 @@ This ensures an indent-0 `type` declaration resets the section state to `None`, 
 ## Verification Notes
 
 `is_top_level_decl_keyword` lists `"skill" | "block" | "export" | "generated" | "const" | "import"` with `"type"` absent. The lex pass at lines 248-252 resets `section = Section::None` only when this function returns true. In `parse.rs`, `RESERVED_KEYWORDS = &["type"]` confirms `type` is a real top-level decl keyword. The `StringLit` branch classifies any string as `GlyphFlowString` when `section == Section::Flow`. The AST pass has `Decl::TypeDecl(_) => {}` (no-op), so the wrong lex-pass classification survives. The fix of adding `"type"` to `is_top_level_decl_keyword` is correct and complete.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced / confirmed.
+
+**Reproduction/Refutation:** I created a disposable scratch Cargo harness under `tmp/bug035-repro` that depends on the local `glyph-core` crate and calls `collect_semantic_tokens` on the report's trigger. The bare `type` declaration after a `flow:` section reproduced the incorrect classification; the string inside `<"...">` was emitted as `glyphFlowString` instead of plain `string`. A control case with `export type` emitted the type description string as plain `string`, matching the report's claim that `export` resets section state. A bare `type` after `context:` similarly emitted `glyphContextString`.
+
+**Evidence:**
+
+- Source inspection, bounded to `crates/glyph-core/src/semantic_tokens.rs`, found `is_top_level_decl_keyword` matches only `"skill" | "block" | "export" | "generated" | "const" | "import"`; `"type"` is absent.
+- Targeted reproduction command:
+
+```sh
+CARGO_TARGET_DIR=tmp/bug035-repro/target cargo run --quiet --manifest-path tmp/bug035-repro/Cargo.toml
+```
+
+Output summary:
+
+```text
+case=bare_type_after_flow
+line=5 start=20 length=26 type=11(glyphFlowString) modifiers=0
+case=export_type_after_flow
+line=5 start=0 length=6 type=0(keyword) modifiers=0
+line=5 start=27 length=26 type=7(string) modifiers=0
+case=bare_type_after_context
+line=5 start=20 length=26 type=12(glyphContextString) modifiers=0
+```
+
+This confirms the report's root cause: an indent-0 bare `type` declaration does not reset the lex pass `section`, so the type description string inherits the preceding `flow:` or `context:` section classification.
+
+**Resolution Input:** Preserve the existing recommended resolution: add `"type"` to `is_top_level_decl_keyword`. Add a focused semantic-token regression test for bare `type` after `flow:` and/or `context:`; keeping the `export type` control would guard the intended reset behavior.

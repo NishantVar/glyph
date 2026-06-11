@@ -46,3 +46,37 @@ No code change is needed in `line_col` itself, because all consumers (pretty-pri
 ## Verification Notes
 
 The doc comment at span.rs:68-69 asserting byte == character is demonstrably false — multi-byte UTF-8 is allowed in string literals. Live reproduction on `--format json` confirmed: `col: 17` (byte) vs expected character column `16` for a line with `é`. The CLI pretty-print and LSP paths are not broken — both correctly handle byte columns downstream. Only `--format json` exposes the raw byte column, violating the public diagnostic contract. Final severity is low per verifier consensus given the limited affected path; filed at medium due to the documented public contract violation.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced the core defect. `glyph check --format json` emits byte-based columns for diagnostics on UTF-8 lines, while the public diagnostics contract describes character columns. I refute only the exact numeric example in the existing prose for `x = "café" 🌟`: current output is `col: 13`, and the character column is `12`, not `17` vs `16`.
+
+**Reproduction/Refutation:** I created `tmp/bug070.glyph` with:
+
+```glyph
+x = "café" 🌟
+```
+
+Then ran:
+
+```sh
+cargo run -q -p glyph-cli -- check --format json tmp/bug070.glyph
+```
+
+The command exited `1` and emitted:
+
+```json
+{"id":"G::parse::unexpected-char","classification":"error","message":"unexpected character `🌟`; not part of any Glyph token","span":{"file":"tmp/bug070.glyph","start":{"line":1,"col":13},"end":{"line":1,"col":13}}}
+```
+
+For the same source line, `python3 -c 's="x = \"café\" 🌟"; i=s.index("🌟"); print(f"star byte_col={len(s[:i].encode())+1} char_col={len(s[:i])+1}")'` printed:
+
+```text
+star byte_col=13 char_col=12
+```
+
+This confirms the JSON span column is the byte column, not the character column. The existing report's `17`/`16` numbers do not match this exact snippet, but the reported failure mode is valid.
+
+**Evidence:** Graphify first located the relevant implementation path at `LineIndex::line_col` / `LineIndex::byte_offset` in `crates/glyph-core/src/span.rs`. Bounded source reads confirmed `LineIndex::line_col` computes `col = byte_offset - self.line_starts[idx] + 1`; `SourceSpan::from_byte_span` uses that result directly; and `render_ndjson` serializes `Diagnostic` without converting columns. A bounded read of `docs/reference/diagnostics.md` confirmed the public contract says column equals the number of characters from the start of the line.
+
+**Resolution Input:** Preserve the existing recommended resolution. The important decision remains whether JSON diagnostics should continue exposing byte columns and the public contract should be corrected, or whether the JSON serialization path should convert to character columns before emission. If this report is later edited, update the reproduction numbers for the exact sample to `13` byte column vs `12` character column.

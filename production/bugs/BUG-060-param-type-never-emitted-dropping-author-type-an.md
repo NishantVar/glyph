@@ -41,3 +41,41 @@ Alternatively, change `IrParam.type_annotation` from `Option<String>` to `Option
 ## Verification Notes
 
 Running `--emit-ir` on a file with `risk: RiskLevel = "medium"` confirms the output param JSON has no `"type"` field, even though `IrParam.type_annotation` is `Some("RiskLevel")`. The `serialize_param` function never reads `param.type_annotation`, confirmed by the comment "always omitted in current IR". The IR JSON contract in `docs/reference/ir-json.md §Param` explicitly specifies `"type" | TypeTag | no | Omitted when duck-typed`, making this a real contract violation. Severity is low because type annotations are currently informational-only and the compiled `.md` output is unaffected.
+
+## Independent Agent Finding
+
+**Verdict:** Reproduced. The report is valid.
+
+**Reproduction/Refutation:** I compiled the existing typed-param fixture `crates/glyph-cli/tests/corpus/valid/type_level_lookup.glyph`, which contains `skill assess(risk: RiskLevel = "medium")`, with `--emit-ir` and wrote outputs only under `tmp/bug-060/`.
+
+Command:
+
+```sh
+cargo run -q -p glyph-cli -- compile crates/glyph-cli/tests/corpus/valid/type_level_lookup.glyph --emit-ir --format json --output tmp/bug-060/type_level_lookup.md
+```
+
+The command exited 0 and emitted `tmp/bug-060/type_level_lookup.ir.json`. Inspecting the param node with:
+
+```sh
+jq '.. | objects | select(.kind? == "param")' tmp/bug-060/type_level_lookup.ir.json
+```
+
+produced:
+
+```json
+{
+  "default": {
+    "kind": "string",
+    "value": "medium"
+  },
+  "kind": "param",
+  "name": "risk",
+  "node_id": "n0_0"
+}
+```
+
+The source has `risk: RiskLevel`, but the emitted param JSON has no `"type"` field, so this reproduces the reported drop.
+
+**Evidence:** Graphify located `serialize_param()` in `crates/glyph-core/src/emit_ir.rs` and `IrParam` in `crates/glyph-core/src/ir.rs`. Bounded source reads confirmed `IrParam` has `type_annotation: Option<String>`, lower copies `p.type_annotation` into `IrParam`, and `serialize_param` only inserts `node_id`, `kind`, `name`, and optional `default`. The IR JSON contract's `Param` table defines `type | TypeTag | no | Omitted when duck-typed`, and TypeTag serialization represents domain types as `{"domain_type": "repo_context"}` style objects.
+
+**Resolution Input:** Keep the existing recommended resolution. Either emit `param.type_annotation` by converting the raw annotation through the same TypeTag conversion used for returns, or store `Option<TypeTag>` on `IrParam` during lowering and serialize that directly. No source-code changes were made by this reproduction pass.
